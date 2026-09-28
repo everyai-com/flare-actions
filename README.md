@@ -46,6 +46,17 @@ Manual fallback (if you prefer each step by hand): `wrangler d1 create`,
 3. Set webhook secret → `GITHUB_WEBHOOK_SECRET`. App ID + PEM → `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`.
 4. Install the App on your repo.
 
+## Dashboard
+
+Open `https://<worker>/dashboard` and log in with your `ADMIN_TOKEN`
+(shown once by `npm run setup`, kept in gitignored `.env`).
+
+- **Runs** — see every run and drill into job logs.
+- **Access** — issue named tokens to hand out: `runner` tokens can pull
+  jobs and report status (for CI machines and teammates), `readonly`
+  tokens can only view runs. Each token is shown once at creation;
+  revoke any token and it stops working immediately.
+
 ## Runner
 
 ```bash

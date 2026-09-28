@@ -90,6 +90,60 @@ export async function nextQueuedJob(db: Db): Promise<(JobRow & { repo: string; s
   return row;
 }
 
+export interface TokenRow {
+  id: string;
+  name: string;
+  token_hash: string;
+  scopes: string;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+export interface TokenPublic {
+  id: string;
+  name: string;
+  scopes: string;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+export async function createToken(
+  db: Db,
+  token: { id: string; name: string; tokenHash: string; scopes: string },
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO api_tokens (id, name, token_hash, scopes, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, NULL)",
+    )
+    .bind(token.id, token.name, token.tokenHash, token.scopes, nowIso())
+    .run();
+}
+
+export async function listTokens(db: Db): Promise<TokenPublic[]> {
+  const res = await db
+    .prepare("SELECT id, name, scopes, created_at, revoked_at FROM api_tokens ORDER BY created_at DESC")
+    .bind()
+    .all<TokenPublic>();
+  return res.results;
+}
+
+export async function findLiveToken(db: Db, tokenHash: string): Promise<TokenRow | null> {
+  return db
+    .prepare("SELECT * FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL")
+    .bind(tokenHash)
+    .first<TokenRow>();
+}
+
+export async function revokeToken(db: Db, id: string): Promise<boolean> {
+  const current = await db.prepare("SELECT id FROM api_tokens WHERE id = ?").bind(id).first<{ id: string }>();
+  if (!current) return false;
+  await db
+    .prepare("UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
+    .bind(nowIso(), id)
+    .run();
+  return true;
+}
+
 export async function updateJob(
   db: Db,
   id: string,

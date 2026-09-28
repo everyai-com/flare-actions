@@ -81,9 +81,11 @@ for (const q of ["flare-actions-runs", "flare-actions-dlq"]) {
 // 6. Secrets (piped via stdin; values never appear in commands)
 const webhookSecret = randomBytes(32).toString("hex");
 const runnerToken = randomBytes(32).toString("hex");
+const adminToken = randomBytes(32).toString("hex");
 for (const [name, value] of [
   ["GITHUB_WEBHOOK_SECRET", webhookSecret],
   ["RUNNER_TOKEN", runnerToken],
+  ["ADMIN_TOKEN", adminToken],
 ]) {
   const r = run("npx", ["wrangler", "secret", "put", name, "--config", config], { input: value });
   if (r.status !== 0 && !dryRun) fail(`secret put ${name} failed:\n${r.stdout}\n${r.stderr}`);
@@ -105,6 +107,7 @@ if (!dryRun) {
     FLARE_ACTIONS_URL: workerUrl,
     RUNNER_TOKEN: runnerToken,
     GITHUB_WEBHOOK_SECRET: webhookSecret,
+    ADMIN_TOKEN: adminToken,
   };
   const lines = existsSync(path) ? readFileSync(path, "utf8").split("\n") : [];
   const seen = new Set();
@@ -128,5 +131,6 @@ if (!dryRun) {
   console.log(`Worker:  ${workerUrl}`);
   console.log(`Webhook: ${workerUrl}/webhooks/github`);
   console.log(`Webhook secret (paste once into your GitHub App): ${webhookSecret}`);
+  console.log(`Dashboard: ${workerUrl}/dashboard (password = ADMIN_TOKEN in .env)`);
   console.log("Next: create the GitHub App (see README), then `npm run runner` and `npm run cli -- runs`.");
 }

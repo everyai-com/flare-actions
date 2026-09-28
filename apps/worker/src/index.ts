@@ -1,10 +1,14 @@
 import {
   createJob,
   createRun,
+  createToken,
+  findLiveToken,
   getJobsForRun,
   getRun,
   listRuns,
+  listTokens,
   nextQueuedJob,
+  revokeToken,
   updateJob,
   updateRunStatus,
 } from "./db";
@@ -15,6 +19,8 @@ import {
   postCommitStatus,
   verifyGitHubSignature,
 } from "./github";
+import { DASHBOARD_HTML } from "./dashboard";
+import { hashToken, newTokenValue, normalizeScopes, parseScopes, scopesAllow } from "./tokens";
 
 // Secrets are set via `wrangler secret put` / `.dev.vars`, never in
 // wrangler.jsonc. `wrangler types` may or may not include them in the
@@ -24,6 +30,7 @@ import {
 interface WorkerSecrets {
   GITHUB_WEBHOOK_SECRET?: string;
   RUNNER_TOKEN?: string;
+  ADMIN_TOKEN?: string;
   GITHUB_APP_ID?: string;
   GITHUB_PRIVATE_KEY?: string;
 }
@@ -46,7 +53,7 @@ function log(level: string, msg: string, extra?: Record<string, unknown>): void 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 }
 
@@ -59,10 +66,45 @@ async function timingSafeEqualStr(a: string, b: string): Promise<boolean> {
   return bytesEqual(new Uint8Array(da), new Uint8Array(db));
 }
 
-async function requireRunnerToken(request: Request, env: WorkerEnv): Promise<boolean> {
+type AuthScope = "admin" | "runner" | "readonly";
+
+function getBearer(request: Request): string | null {
   const header = request.headers.get("Authorization");
-  if (!header || !header.startsWith("Bearer ") || !env.RUNNER_TOKEN) return false;
-  return timingSafeEqualStr(header.slice("Bearer ".length), env.RUNNER_TOKEN);
+  if (!header || !header.startsWith("Bearer ")) return null;
+  return header.slice("Bearer ".length);
+}
+
+async function isAdminRequest(request: Request, env: WorkerEnv): Promise<boolean> {
+  const bearer = getBearer(request);
+  if (!bearer || !env.ADMIN_TOKEN) return false;
+  return timingSafeEqualStr(bearer, env.ADMIN_TOKEN);
+}
+
+// Admin password plus the legacy env runner token plus D1-issued
+// dashboard tokens. Admin does everything; runner runs + reads;
+// readonly only reads runs.
+async function authScope(request: Request, env: WorkerEnv): Promise<AuthScope | null> {
+  if (await isAdminRequest(request, env)) return "admin";
+  const bearer = getBearer(request);
+  if (!bearer) return null;
+  if (env.RUNNER_TOKEN && (await timingSafeEqualStr(bearer, env.RUNNER_TOKEN))) return "runner";
+  const row = await findLiveToken(env.DB, await hashToken(bearer));
+  if (!row) return null;
+  const scopes = parseScopes(row.scopes);
+  if (scopesAllow(scopes, "run")) return "runner";
+  if (scopesAllow(scopes, "read")) return "readonly";
+  return null;
+}
+
+async function requireScope(
+  request: Request,
+  env: WorkerEnv,
+  need: "run" | "read",
+): Promise<AuthScope | null> {
+  const scope = await authScope(request, env);
+  if (!scope) return null;
+  if (scope === "admin" || scope === "runner") return scope;
+  return need === "read" ? scope : null;
 }
 
 async function reportGitHubStatus(
@@ -140,7 +182,7 @@ async function handleStatusCallback(
   runId: string,
 ): Promise<Response> {
   try {
-    if (!(await requireRunnerToken(request, env))) return json({ error: "unauthorized" }, 401);
+    if (!(await requireScope(request, env, "run"))) return json({ error: "unauthorized" }, 401);
     const body = (await request.json()) as { status?: string; jobId?: string; log?: string };
     if (!body.status || !body.jobId) return json({ error: "missing status or jobId" }, 400);
     if (!["running", "success", "failure", "error"].includes(body.status)) {
@@ -164,26 +206,58 @@ async function handleStatusCallback(
   }
 }
 
+async function handleCreateToken(request: Request, env: WorkerEnv): Promise<Response> {
+  try {
+    if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
+    const body = (await request.json()) as { name?: unknown; scopes?: unknown };
+    if (typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 64) {
+      return json({ error: "name is required (1-64 chars)" }, 400);
+    }
+    const scopes = body.scopes === undefined ? ["runner"] : normalizeScopes(body.scopes);
+    if (!scopes) return json({ error: "scopes must be a non-empty array of runner|readonly" }, 400);
+    const id = crypto.randomUUID();
+    const value = newTokenValue();
+    await createToken(env.DB, { id, name: body.name.trim(), tokenHash: await hashToken(value), scopes: scopes.join(",") });
+    log("info", "token issued", { id });
+    return json({ id, name: body.name.trim(), scopes, token: value }, 201);
+  } catch (err) {
+    log("error", "create token failed", { error: String(err) });
+    return json({ error: "create token failed" }, 500);
+  }
+}
+
+function dashboardResponse(): Response {
+  return new Response(DASHBOARD_HTML, {
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
+
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     try {
+      if (request.method === "GET" && url.pathname === "/") {
+        return Response.redirect(new URL("/dashboard", url).toString(), 302);
+      }
+      if (request.method === "GET" && url.pathname === "/dashboard") {
+        return dashboardResponse();
+      }
       if (request.method === "POST" && url.pathname === "/webhooks/github") {
         return await handleWebhook(request, env, ctx);
       }
       if (request.method === "GET" && url.pathname === "/v1/runs") {
-        if (!(await requireRunnerToken(request, env))) return json({ error: "unauthorized" }, 401);
+        if (!(await requireScope(request, env, "read"))) return json({ error: "unauthorized" }, 401);
         return json({ runs: await listRuns(env.DB) });
       }
       const runMatch = /^\/v1\/runs\/([^/]+)$/.exec(url.pathname);
       if (request.method === "GET" && runMatch) {
-        if (!(await requireRunnerToken(request, env))) return json({ error: "unauthorized" }, 401);
+        if (!(await requireScope(request, env, "read"))) return json({ error: "unauthorized" }, 401);
         const run = await getRun(env.DB, runMatch[1]);
         if (!run) return json({ error: "run not found" }, 404);
         return json({ run, jobs: await getJobsForRun(env.DB, run.id) });
       }
       if (request.method === "GET" && url.pathname === "/v1/jobs/next") {
-        if (!(await requireRunnerToken(request, env))) return json({ error: "unauthorized" }, 401);
+        if (!(await requireScope(request, env, "run"))) return json({ error: "unauthorized" }, 401);
         const job = await nextQueuedJob(env.DB);
         if (!job) return json({ job: null }, 200);
         await updateJob(env.DB, job.id, { status: "running" });
@@ -192,6 +266,20 @@ export default {
       const statusMatch = /^\/v1\/runs\/([^/]+)\/status$/.exec(url.pathname);
       if (request.method === "POST" && statusMatch) {
         return await handleStatusCallback(request, env, ctx, statusMatch[1]);
+      }
+      if (request.method === "GET" && url.pathname === "/v1/admin/tokens") {
+        if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
+        return json({ tokens: await listTokens(env.DB) });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/tokens") {
+        return await handleCreateToken(request, env);
+      }
+      const revokeMatch = /^\/v1\/admin\/tokens\/([^/]+)\/revoke$/.exec(url.pathname);
+      if (request.method === "POST" && revokeMatch) {
+        if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
+        const ok = await revokeToken(env.DB, revokeMatch[1]);
+        if (!ok) return json({ error: "token not found" }, 404);
+        return json({ ok: true });
       }
       return json({ error: "not found" }, 404);
     } catch (err) {
