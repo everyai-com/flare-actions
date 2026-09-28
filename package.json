@@ -13,6 +13,9 @@
     "packages/*"
   ],
   "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "runner": "npm --workspace apps/runner start",
+    "cli": "npm --workspace apps/cli start",
     "dev": "wrangler dev --config apps/worker/wrangler.jsonc",
     "deploy": "wrangler deploy --config apps/worker/wrangler.jsonc",
     "deploy:dry": "wrangler deploy --dry-run --config apps/worker/wrangler.jsonc",
@@ -22,6 +25,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260926.1",
+    "@types/node": "^22.20.4",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0",
     "wrangler": "^4.120.0"

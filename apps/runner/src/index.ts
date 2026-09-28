@@ -1,9 +1,10 @@
-import { FlareClient } from "@flare-actions/runner-sdk";
+import { FlareClient, loadEnv } from "@flare-actions/runner-sdk";
 
+loadEnv();
 const baseUrl = process.env["FLARE_ACTIONS_URL"];
 const token = process.env["RUNNER_TOKEN"];
 if (!baseUrl || !token) {
-  console.error("Set FLARE_ACTIONS_URL and RUNNER_TOKEN");
+  console.error("Run `npm run setup` first, or set FLARE_ACTIONS_URL and RUNNER_TOKEN");
   process.exit(1);
 }
 

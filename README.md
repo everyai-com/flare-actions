@@ -21,26 +21,23 @@ MVP A: GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch 
 
 ```bash
 npm install
-npm run types
-
-# local D1 + queues (simulated)
-npm run dev
-
-# create resources (first deploy auto-provisions with these names)
-npx wrangler d1 create flare-actions
-npx wrangler queues create flare-actions-runs
-npx wrangler queues create flare-actions-dlq
-npx wrangler d1 migrations apply flare-actions --remote
-
-# secrets (never commit values)
-wrangler secret put GITHUB_WEBHOOK_SECRET --config apps/worker/wrangler.jsonc
-wrangler secret put RUNNER_TOKEN --config apps/worker/wrangler.jsonc
-# optional for commit-status callbacks:
-wrangler secret put GITHUB_APP_ID --config apps/worker/wrangler.jsonc
-wrangler secret put GITHUB_PRIVATE_KEY --config apps/worker/wrangler.jsonc
-
-npm run deploy
+npm run setup   # provisions D1 + queues, deploys, writes gitignored .env
 ```
+
+`setup` prints your Worker URL and webhook secret. Then create the GitHub App
+below, and run with zero config:
+
+```bash
+npm run runner            # external pull-runner (reads .env automatically)
+npm run cli -- runs       # list runs
+npm run cli -- logs <id>  # run logs
+```
+
+Manual fallback (if you prefer each step by hand): `wrangler d1 create`,
+`wrangler queues create` × 2, `wrangler d1 migrations apply --remote`,
+`wrangler secret put` for `GITHUB_WEBHOOK_SECRET` / `RUNNER_TOKEN`
+(plus `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY` for commit statuses), then
+`npm run deploy`. Local dev: `npm run dev`.
 
 ## GitHub App setup
 
@@ -52,20 +49,18 @@ npm run deploy
 ## Runner
 
 ```bash
-export FLARE_ACTIONS_URL=https://<worker>
-export RUNNER_TOKEN=[redacted]
-npm --workspace apps/runner start
+npm run runner
 ```
 
-MVP runner executes a safe echo step. Bring your own executor next.
+No env setup needed — `.env` from `setup` is loaded automatically
+(explicit env vars still win). MVP runner executes a safe echo step.
+Bring your own executor next.
 
 ## CLI
 
 ```bash
-export FLARE_ACTIONS_URL=https://<worker>
-export RUNNER_TOKEN=[redacted]
-npm --workspace apps/cli start -- runs
-npm --workspace apps/cli start -- logs <runId>
+npm run cli -- runs
+npm run cli -- logs <runId>
 ```
 
 ## API
