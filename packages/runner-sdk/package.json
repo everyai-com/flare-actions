@@ -1,0 +1,9 @@
+{
+  "name": "@flare-actions/runner-sdk",
+  "version": "0.1.0",
+  "description": "Shared client for Flare Actions runners",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts"
+}

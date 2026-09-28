@@ -1,0 +1,29 @@
+{
+  "name": "flare-actions",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source GitHub Actions alternative you host on your Cloudflare",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "wrangler dev --config apps/worker/wrangler.jsonc",
+    "deploy": "wrangler deploy --config apps/worker/wrangler.jsonc",
+    "deploy:dry": "wrangler deploy --dry-run --config apps/worker/wrangler.jsonc",
+    "types": "wrangler types --config apps/worker/wrangler.jsonc apps/worker/src/worker-configuration.d.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260926.1",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "wrangler": "^4.120.0"
+  }
+}
