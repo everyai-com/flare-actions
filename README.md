@@ -2,7 +2,7 @@
 
 Open-source GitHub Actions alternative you host on your own Cloudflare account.
 
-MVP A: GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → external pull-runner → status callback. API + CLI, no dashboard yet.
+GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → external pull-runner → status callback. Dashboard + API + CLI.
 
 ## Why
 
@@ -12,7 +12,7 @@ MVP A: GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch 
 
 ## Layout
 
-- `apps/worker` — Cloudflare Worker: webhook verify, dispatch API, queue consumer, D1 state
+- `apps/worker` — Cloudflare Worker: webhook verify, dispatch API, dashboard + admin API, queue consumer, D1 state
 - `packages/runner-sdk` — shared types + pull/status client for runners
 - `apps/runner` — minimal external pull-runner (polls jobs, runs, posts status)
 - `apps/cli` — minimal CLI for runs and logs
@@ -35,9 +35,9 @@ npm run cli -- logs <id>  # run logs
 
 Manual fallback (if you prefer each step by hand): `wrangler d1 create`,
 `wrangler queues create` × 2, `wrangler d1 migrations apply --remote`,
-`wrangler secret put` for `GITHUB_WEBHOOK_SECRET` / `RUNNER_TOKEN`
-(plus `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY` for commit statuses), then
-`npm run deploy`. Local dev: `npm run dev`.
+`wrangler secret put` for `GITHUB_WEBHOOK_SECRET` / `RUNNER_TOKEN` /
+`ADMIN_TOKEN` (plus `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY` for commit
+statuses), then `npm run deploy`. Local dev: `npm run dev`.
 
 ## GitHub App setup
 
@@ -76,11 +76,24 @@ npm run cli -- logs <runId>
 
 ## API
 
+- `GET /dashboard` — dashboard UI (`/` redirects here)
 - `POST /webhooks/github` — GitHub App webhook (HMAC verified)
-- `GET /v1/runs` — list runs (runner token)
-- `GET /v1/runs/:id` — run + jobs (runner token)
-- `GET /v1/jobs/next` — pull next queued job (runner token)
-- `POST /v1/runs/:id/status` — runner status callback (runner token)
+- `GET /v1/runs` — list runs (admin, runner, or readonly token)
+- `GET /v1/runs/:id` — run + jobs (admin, runner, or readonly token)
+- `GET /v1/jobs/next` — pull next queued job (admin or runner token)
+- `POST /v1/runs/:id/status` — runner status callback (admin or runner token)
+- `GET /v1/admin/tokens` — list access tokens (admin only)
+- `POST /v1/admin/tokens` — issue a token, shown once (admin only)
+- `POST /v1/admin/tokens/:id/revoke` — revoke a token (admin only)
+
+## Cost
+
+Runs entirely on Cloudflare's free tier at small-to-medium scale:
+Workers (100k requests/day), Queues (10k operations/day ≈ 3,300
+dispatches/day), D1 (5M rows read + 100k rows written/day, 5 GB storage).
+See [Workers](https://developers.cloudflare.com/workers/platform/pricing/),
+[Queues](https://developers.cloudflare.com/queues/platform/pricing/), and
+[D1](https://developers.cloudflare.com/d1/platform/pricing/) pricing.
 
 ## License
 

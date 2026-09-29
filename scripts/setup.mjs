@@ -69,7 +69,10 @@ if (!dryRun && databaseId) {
 for (const q of ["flare-actions-runs", "flare-actions-dlq"]) {
   const r = run("npx", ["wrangler", "queues", "create", q]);
   const out = r.stdout + r.stderr;
-  if (r.status !== 0 && !/already exists/i.test(out) && !dryRun) fail(`queue create ${q} failed:\n${out}`);
+  if (r.status !== 0 && !/already (exists|taken)/i.test(out) && !dryRun) {
+    fail(`queue create ${q} failed:\n${out}`);
+  }
+  if (/already (exists|taken)/i.test(out)) console.log(`queue ${q} already exists, reusing`);
 }
 
 // 5. Migrations
