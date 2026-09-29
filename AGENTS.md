@@ -74,4 +74,31 @@ gaps so one-click deploys need zero `wrangler secret` commands.
 - After behavior changes: drive the real flow with `wrangler dev` (fresh
   `--persist-to` dir for first-run paths) or the deployed worker; keep
   throwaway probe scripts in `/tmp`, out of the repo.
-- CI (`.github/workflows/ci.yml`) runs types + typecheck + test on push/PR.
+- CI (`.github/workflows/ci.yml`) runs types + typecheck + test on push/PR,
+  plus a branch Preview deploy on PRs when `CLOUDFLARE_API_TOKEN` repo
+  secrets exist (skips otherwise).
+
+## Preview environments
+
+- `wrangler.jsonc` has a `previews` block: staging D1
+  (`flare-actions-staging`, bound by id) + staging queues (bound by name),
+  shared by all previews and isolated from prod. Only Durable Objects and
+  Containers auto-isolate per preview; D1/queues do not.
+- Branch flow: `git checkout -b feat && npx wrangler preview --config
+  apps/worker/wrangler.jsonc` → `https://<branch>-flare-actions.<sub>.workers.dev`.
+  Delete with `wrangler preview delete --name <branch>`.
+- Preview base secrets (values distinct from prod) are set once via
+  `wrangler preview base-config secret put NAME`; new previews inherit them.
+- Never point a preview at production resources, and never reuse prod
+  secret values for previews.
+
+## Tooling notes
+
+- Wrangler (pinned in devDependencies, needs ≥4.135 for previews) is the
+  supported CLI. Cloudflare's new `cf` CLI + `cloudflare.config.ts`
+  (open beta since 2026-09-28) was evaluated: promising for agent
+  workflows (JSON-first, `cf cli search`) but requires interactive login
+  and is too new to be the primary path. Revisit after GA.
+- For Cloudflare API access, agents/CI should use a least-privilege token:
+  per-Worker Editor role on the Worker plus D1/Queues edit — never
+  account-wide credentials.

@@ -69,6 +69,28 @@ Open `https://<worker>/dashboard` and log in with your `ADMIN_TOKEN`
   tokens can only view runs. Each token is shown once at creation;
   revoke any token and it stops working immediately.
 
+## Preview environments
+
+Every branch gets an isolated staging environment — separate D1 database
+and queues from production — via Cloudflare Worker Previews:
+
+```bash
+git checkout -b my-feature
+npx wrangler preview --config apps/worker/wrangler.jsonc
+# → https://my-feature-flare-actions.<you>.workers.dev
+```
+
+All previews share one staging database (isolated from prod, not from each
+other). Preview secrets live in the shared base config, distinct from prod
+values — set once with `wrangler preview base-config secret put NAME`.
+Delete a preview with `wrangler preview delete --name my-feature`.
+
+On pull requests, CI deploys a preview automatically once you add
+`CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` repo secrets. Mint that
+token with the per-Worker **Editor** role scoped to your Worker plus D1 and
+Queues edit access — least privilege for CI and agents, per [Cloudflare's
+granular authorization launch](https://blog.cloudflare.com/workers-granular-authorization/).
+
 ## Runner
 
 ```bash
@@ -113,7 +135,11 @@ Clone the repo and point any coding agent at it — [AGENTS.md](AGENTS.md)
 teaches it the stack, commands, architecture, and conventions.
 `npm run setup` is fully non-interactive (preview with
 `npm run setup -- --dry-run`), and `npm test` / `npm run typecheck`
-verify every change.
+verify every change. For Cloudflare access, mint the agent a per-Worker
+**Editor** token (plus D1/Queues edit) as described above — never your
+account-wide credentials. (Cloudflare's new `cf` CLI, open beta since
+2026-09-28, looks promising for agent-driven Cloudflare work; until it
+stabilizes, wrangler remains this repo's supported path.)
 
 ## License
 

@@ -18,3 +18,27 @@ jobs:
       - run: npm run types
       - run: npm run typecheck
       - run: npm test
+
+  preview:
+    runs-on: ubuntu-latest
+    needs: verify
+    if: github.event_name == 'pull_request' && secrets.CLOUDFLARE_API_TOKEN != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Deploy branch preview
+        id: preview
+        run: |
+          NAME=$(echo "${{ github.head_ref }}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | sed 's/^-//;s/-$//' | head -c 60)
+          OUT=$(npx wrangler preview --name "$NAME" --config apps/worker/wrangler.jsonc 2>&1)
+          echo "$OUT"
+          URL=$(echo "$OUT" | grep -oE 'https://[^ ]*\.workers\.dev' | head -n 1)
+          echo "preview_url=$URL" >> "$GITHUB_OUTPUT"
+          echo "### Preview ready: $URL" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
