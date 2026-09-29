@@ -25,6 +25,7 @@ import {
 import { DASHBOARD_HTML } from "./dashboard";
 import { ensureSchema } from "./schema";
 import { SETTING_KEYS, validateNewPassword, validateWebhookSecret } from "./settings";
+import { defaultPipeline, fetchPipeline, parsePipeline, type PipelineJob } from "./pipeline";
 import { hashToken, newTokenValue, normalizeScopes, parseScopes, scopesAllow } from "./tokens";
 
 // Secrets are set via `wrangler secret put` / `.dev.vars`, never in
@@ -157,6 +158,36 @@ interface GitHubWebhookPayload {
   pull_request?: { head?: { sha?: string } };
 }
 
+async function loadPipelineJobs(
+  env: WorkerEnv,
+  repo: string,
+  sha: string,
+  installationId: number | null,
+): Promise<PipelineJob[]> {
+  try {
+    // Public fast path first (no token minted); fall back to the
+    // authenticated API for private repos when App creds exist.
+    const direct = await fetchPipeline(repo, sha, null);
+    if (direct) return parsePipeline(direct) ?? defaultPipeline();
+    if (installationId && env.GITHUB_APP_ID && env.GITHUB_PRIVATE_KEY) {
+      try {
+        const jwt = await mintAppJwt(env.GITHUB_APP_ID, env.GITHUB_PRIVATE_KEY);
+        const token = await getInstallationToken(jwt, installationId);
+        if (token) {
+          const text = await fetchPipeline(repo, sha, token);
+          if (text) return parsePipeline(text) ?? defaultPipeline();
+        }
+      } catch (err) {
+        log("warn", "private pipeline fetch failed, using default", { error: String(err) });
+      }
+    }
+    return defaultPipeline();
+  } catch (err) {
+    log("warn", "pipeline load failed, using default", { error: String(err) });
+    return defaultPipeline();
+  }
+}
+
 async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
   try {
     const secret = await getWebhookSecret(env);
@@ -182,15 +213,23 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     if (!repo || !sha) return json({ error: "missing repo or sha" }, 400);
 
     const runId = crypto.randomUUID();
-    const jobId = crypto.randomUUID();
     const installationId = payload.installation?.id ?? null;
     await createRun(env.DB, { id: runId, repo, sha, event, installationId });
-    await createJob(env.DB, jobId, runId);
-    await env.RUN_QUEUE.send({ runId, jobId, repo, sha } satisfies QueueJobMessage);
+    const jobs = await loadPipelineJobs(env, repo, sha, installationId);
+    const jobIds: string[] = [];
+    for (const job of jobs) {
+      const jobId = crypto.randomUUID();
+      jobIds.push(jobId);
+      await createJob(env.DB, jobId, runId, {
+        name: job.name,
+        definition: JSON.stringify({ steps: job.steps }),
+      });
+      await env.RUN_QUEUE.send({ runId, jobId, repo, sha } satisfies QueueJobMessage);
+    }
 
-    log("info", "run queued", { runId, jobId, repo, sha, event });
+    log("info", "run queued", { runId, jobCount: jobIds.length, repo, sha, event });
     ctx.waitUntil(reportGitHubStatus(env, { installationId, repo, sha, state: "pending" }));
-    return json({ runId, jobId }, 202);
+    return json({ runId, jobId: jobIds[0], jobIds }, 202);
   } catch (err) {
     log("error", "webhook failed", { error: String(err) });
     return json({ error: "webhook failed" }, 500);
@@ -205,14 +244,16 @@ async function handleStatusCallback(
 ): Promise<Response> {
   try {
     if (!(await requireScope(request, env, "run"))) return json({ error: "unauthorized" }, 401);
-    const body = (await request.json()) as { status?: string; jobId?: string; log?: string };
+    const body = (await request.json()) as { status?: string; jobId?: string; log?: string; result?: unknown };
     if (!body.status || !body.jobId) return json({ error: "missing status or jobId" }, 400);
     if (!["running", "success", "failure", "error"].includes(body.status)) {
       return json({ error: "invalid status" }, 400);
     }
     const run = await getRun(env.DB, runId);
     if (!run) return json({ error: "run not found" }, 404);
-    await updateJob(env.DB, body.jobId, { status: body.status, log: body.log });
+    const result = typeof body.result === "string" ? body.result.slice(0, 65536) : undefined;
+    const cappedLog = typeof body.log === "string" ? body.log.slice(0, 262144) : undefined;
+    await updateJob(env.DB, body.jobId, { status: body.status, log: cappedLog, result });
     await updateRunStatus(env.DB, runId, body.status);
     log("info", "status updated", { runId, jobId: body.jobId, status: body.status });
     if (body.status === "success" || body.status === "failure" || body.status === "error") {

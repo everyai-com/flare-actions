@@ -1,4 +1,7 @@
-import { FlareClient, loadEnv } from "@flare-actions/runner-sdk";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { executeSteps, FlareClient, loadEnv, parseDefinition } from "@flare-actions/runner-sdk";
 
 loadEnv();
 const baseUrl = process.env["FLARE_ACTIONS_URL"];
@@ -13,16 +16,34 @@ const client = new FlareClient(baseUrl, token);
 async function pollOnce(): Promise<boolean> {
   const job = await client.nextJob();
   if (!job) return false;
-  console.log(JSON.stringify({ msg: "picked up job", jobId: job.id, repo: job.repo, sha: job.sha }));
+  console.log(JSON.stringify({ msg: "picked up job", jobId: job.id, name: job.name, repo: job.repo, sha: job.sha }));
   const started = Date.now();
+  const workdir = mkdtempSync(join(tmpdir(), "flare-job-"));
   try {
-    // MVP executor: safe echo step. Bring your own executor next.
-    const log = [`repo: ${job.repo}`, `sha: ${job.sha}`, `step: echo hello`, `hello from flare-actions`].join("\n");
-    await client.reportStatus(job.run_id, job.id, "success", log);
-    console.log(JSON.stringify({ msg: "job done", jobId: job.id, ms: Date.now() - started }));
+    const steps = parseDefinition(job.definition ?? "") ?? [{ run: "echo hello from flare-actions" }];
+    const outcome = await executeSteps(steps, {
+      cwd: workdir,
+      env: {
+        ...process.env,
+        FLARE_REPO: job.repo,
+        FLARE_SHA: job.sha,
+        FLARE_RUN_ID: job.run_id,
+        FLARE_JOB_ID: job.id,
+      },
+    });
+    await client.reportStatus(
+      job.run_id,
+      job.id,
+      outcome.success ? "success" : "failure",
+      outcome.log,
+      JSON.stringify({ steps: outcome.results }),
+    );
+    console.log(JSON.stringify({ msg: "job done", jobId: job.id, ms: Date.now() - started, success: outcome.success }));
   } catch (err) {
     await client.reportStatus(job.run_id, job.id, "failure", String(err)).catch(() => undefined);
     console.error(JSON.stringify({ msg: "job failed", jobId: job.id, error: String(err) }));
+  } finally {
+    rmSync(workdir, { recursive: true, force: true });
   }
   return true;
 }

@@ -91,6 +91,32 @@ token with the per-Worker **Editor** role scoped to your Worker plus D1 and
 Queues edit access — least privilege for CI and agents, per [Cloudflare's
 granular authorization launch](https://blog.cloudflare.com/workers-granular-authorization/).
 
+## Pipelines (`flare.yml`)
+
+Put a `flare.yml` in your repo root. On every push, Flare fetches it at
+that exact commit, fans out one job per entry, and runners execute the
+steps:
+
+```yaml
+jobs:
+  test:
+    steps:
+      - run: node --version
+      - run: npm ci && npm test
+```
+
+- Lookup: `flare.yml` at the push SHA (public fast path, no auth;
+  private repos via the GitHub App installation token). Missing or
+  invalid files fall back to one default echo job — pushes never fail
+  to dispatch.
+- Each step runs as `sh -c` in a fresh temp dir with `FLARE_REPO`,
+  `FLARE_SHA`, `FLARE_RUN_ID`, `FLARE_JOB_ID` in the environment.
+- Steps stop at the first non-zero exit; 10 min timeout and 32 KB of
+  captured output per step. Limits: 32 jobs, 100 steps/job, 64 KB file.
+- Every job records machine-readable results (`result` JSON: per-step
+  command, exit code, duration, output) alongside the human log — this
+  is what agents consume to triage failures.
+
 ## Runner
 
 ```bash

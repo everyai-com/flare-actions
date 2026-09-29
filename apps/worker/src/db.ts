@@ -14,6 +14,9 @@ export interface JobRow {
   run_id: string;
   status: string;
   log: string;
+  name: string;
+  definition: string;
+  result: string;
   created_at: string;
   updated_at: string;
 }
@@ -64,13 +67,18 @@ export async function updateRunStatus(db: Db, id: string, status: string): Promi
     .run();
 }
 
-export async function createJob(db: Db, id: string, runId: string): Promise<void> {
+export async function createJob(
+  db: Db,
+  id: string,
+  runId: string,
+  opts?: { name?: string; definition?: string },
+): Promise<void> {
   const now = nowIso();
   await db
     .prepare(
-      "INSERT INTO jobs (id, run_id, status, log, created_at, updated_at) VALUES (?, ?, 'queued', '', ?, ?)",
+      "INSERT INTO jobs (id, run_id, status, log, name, definition, result, created_at, updated_at) VALUES (?, ?, 'queued', '', ?, ?, '', ?, ?)",
     )
-    .bind(id, runId, now, now)
+    .bind(id, runId, opts?.name ?? "", opts?.definition ?? "", now, now)
     .run();
 }
 
@@ -80,6 +88,8 @@ export async function getJobsForRun(db: Db, runId: string): Promise<JobRow[]> {
 }
 
 export async function nextQueuedJob(db: Db): Promise<(JobRow & { repo: string; sha: string }) | null> {
+  // NOTE: SELECT * relies on the jobs columns existing — ensureSchema /
+  // migrations guarantee name/definition/result on every database.
   const row = await db
     .prepare(
       `SELECT j.*, r.repo, r.sha FROM jobs j JOIN runs r ON r.id = j.run_id
@@ -164,14 +174,15 @@ export async function setSetting(db: Db, key: string, value: string): Promise<vo
 export async function updateJob(
   db: Db,
   id: string,
-  patch: { status?: string; log?: string },
+  patch: { status?: string; log?: string; result?: string },
 ): Promise<void> {
   const current = await db.prepare("SELECT * FROM jobs WHERE id = ?").bind(id).first<JobRow>();
   if (!current) return;
   const status = patch.status ?? current.status;
   const log = patch.log ?? current.log;
+  const result = patch.result ?? current.result;
   await db
-    .prepare("UPDATE jobs SET status = ?, log = ?, updated_at = ? WHERE id = ?")
-    .bind(status, log, nowIso(), id)
+    .prepare("UPDATE jobs SET status = ?, log = ?, result = ?, updated_at = ? WHERE id = ?")
+    .bind(status, log, result, nowIso(), id)
     .run();
 }

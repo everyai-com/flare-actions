@@ -21,6 +21,9 @@ export const SCHEMA_STATEMENTS = [
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'queued',
     log TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    definition TEXT NOT NULL DEFAULT '',
+    result TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,

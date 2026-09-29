@@ -1,0 +1,9 @@
+# Flare Actions dogfood pipeline: this repo runs on Flare itself.
+jobs:
+  hello:
+    steps:
+      - run: echo hello from $FLARE_REPO
+      - run: node --version
+  env:
+    steps:
+      - run: echo sha=$FLARE_SHA run=$FLARE_RUN_ID

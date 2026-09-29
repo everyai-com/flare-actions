@@ -1,6 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+export { executeSteps, parseDefinition } from "./execute";
+export type { ExecStep, ExecuteOptions, StepResult, StepsOutcome } from "./execute";
+
 // Loads repo-root `.env` (written by `npm run setup`) into process.env.
 // Explicit environment variables always win. No dependencies, no-op if absent.
 export function loadEnv(): void {
@@ -31,6 +34,23 @@ export interface FlareJob {
   status: string;
   repo: string;
   sha: string;
+  name: string;
+  definition: string;
+}
+
+export interface FlareStepResult {
+  command: string;
+  exitCode: number;
+  durationMs: number;
+  output: string;
+}
+
+export interface FlareJobDetail {
+  id: string;
+  status: string;
+  log: string;
+  name: string;
+  result: string;
 }
 
 export interface FlareRun {
@@ -63,11 +83,17 @@ export class FlareClient {
     return data.job;
   }
 
-  async reportStatus(runId: string, jobId: string, status: string, log?: string): Promise<void> {
+  async reportStatus(
+    runId: string,
+    jobId: string,
+    status: string,
+    log?: string,
+    result?: string,
+  ): Promise<void> {
     const res = await fetch(`${this.baseUrl}/v1/runs/${runId}/status`, {
       method: "POST",
       headers: { ...this.headers(), "Content-Type": "application/json" },
-      body: JSON.stringify({ jobId, status, log }),
+      body: JSON.stringify({ jobId, status, log, result }),
     });
     if (!res.ok) throw new Error(`reportStatus failed: ${res.status}`);
   }
@@ -79,9 +105,9 @@ export class FlareClient {
     return data.runs;
   }
 
-  async getRun(runId: string): Promise<{ run: FlareRun; jobs: { id: string; status: string; log: string }[] }> {
+  async getRun(runId: string): Promise<{ run: FlareRun; jobs: FlareJobDetail[] }> {
     const res = await fetch(`${this.baseUrl}/v1/runs/${runId}`, { headers: this.headers() });
     if (!res.ok) throw new Error(`getRun failed: ${res.status}`);
-    return (await res.json()) as { run: FlareRun; jobs: { id: string; status: string; log: string }[] };
+    return (await res.json()) as { run: FlareRun; jobs: FlareJobDetail[] };
   }
 }

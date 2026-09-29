@@ -17,7 +17,24 @@ if (cmd === "runs") {
 } else if (cmd === "logs" && arg) {
   const { run, jobs } = await client.getRun(arg);
   console.log(`run ${run.id} ${run.status} ${run.repo}@${run.sha}`);
-  for (const j of jobs) console.log(`--- job ${j.id} ${j.status} ---\n${j.log}`);
+  for (const j of jobs) {
+    const label = j.name ? `${j.name} ${j.id.slice(0, 8)}` : j.id;
+    console.log(`--- job ${label} ${j.status} ---`);
+    try {
+      const parsed = JSON.parse(j.result || "") as {
+        steps?: { command?: string; exitCode?: number; durationMs?: number }[];
+      };
+      if (parsed && Array.isArray(parsed.steps)) {
+        for (const s of parsed.steps) {
+          const mark = s.exitCode === 0 ? "ok" : "FAIL";
+          console.log(`  [${mark}] ${s.command} (exit ${s.exitCode}, ${s.durationMs}ms)`);
+        }
+      }
+    } catch {
+      // legacy jobs without structured results
+    }
+    console.log(j.log);
+  }
 } else {
   console.log("usage: cli runs | logs <runId>");
   process.exit(2);

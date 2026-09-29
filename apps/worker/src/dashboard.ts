@@ -198,8 +198,17 @@ form.inline input { flex: 1; min-width: 180px; }
       var head = el("h2", data.run.repo + " @ " + String(data.run.sha).slice(0, 7) + " — " + data.run.status);
       box.appendChild(head);
       (data.jobs || []).forEach(function (j) {
-        var h = el("h3", "Job " + j.id.slice(0, 8) + " — " + j.status);
-        box.appendChild(h);
+        var title = "Job " + (j.name ? j.name + " " : "") + j.id.slice(0, 8) + " — " + j.status;
+        box.appendChild(el("h3", title));
+        try {
+          var parsed = j.result ? JSON.parse(j.result) : null;
+          if (parsed && Array.isArray(parsed.steps)) {
+            parsed.steps.forEach(function (s) {
+              var mark = s.exitCode === 0 ? "ok" : "FAIL";
+              box.appendChild(el("p", "[" + mark + "] " + s.command + " (exit " + s.exitCode + ", " + s.durationMs + "ms)"));
+            });
+          }
+        } catch (e) { /* legacy jobs without structured results */ }
         var pre = el("pre", j.log || "(no log output)");
         pre.className = "log";
         box.appendChild(pre);
