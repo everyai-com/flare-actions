@@ -52,6 +52,8 @@ describe("dashboard", () => {
   it("serves a page wired to the admin and runs APIs", () => {
     expect(DASHBOARD_HTML).toContain("<title>Flare Actions</title>");
     expect(DASHBOARD_HTML).toContain("/v1/admin/tokens");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/setup");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/settings");
     expect(DASHBOARD_HTML).toContain("/v1/runs");
     expect(DASHBOARD_HTML).not.toContain("${");
   });

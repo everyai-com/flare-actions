@@ -5,10 +5,12 @@ import {
   findLiveToken,
   getJobsForRun,
   getRun,
+  getSetting,
   listRuns,
   listTokens,
   nextQueuedJob,
   revokeToken,
+  setSetting,
   updateJob,
   updateRunStatus,
 } from "./db";
@@ -17,9 +19,12 @@ import {
   getInstallationToken,
   mintAppJwt,
   postCommitStatus,
+  timingSafeEqualHex,
   verifyGitHubSignature,
 } from "./github";
 import { DASHBOARD_HTML } from "./dashboard";
+import { ensureSchema } from "./schema";
+import { SETTING_KEYS, validateNewPassword, validateWebhookSecret } from "./settings";
 import { hashToken, newTokenValue, normalizeScopes, parseScopes, scopesAllow } from "./tokens";
 
 // Secrets are set via `wrangler secret put` / `.dev.vars`, never in
@@ -76,8 +81,24 @@ function getBearer(request: Request): string | null {
 
 async function isAdminRequest(request: Request, env: WorkerEnv): Promise<boolean> {
   const bearer = getBearer(request);
-  if (!bearer || !env.ADMIN_TOKEN) return false;
-  return timingSafeEqualStr(bearer, env.ADMIN_TOKEN);
+  if (!bearer) return false;
+  if (env.ADMIN_TOKEN && (await timingSafeEqualStr(bearer, env.ADMIN_TOKEN))) return true;
+  // Dashboard-managed password (first-run setup), stored as a hash.
+  const hash = await getSetting(env.DB, SETTING_KEYS.adminPasswordHash);
+  if (!hash) return false;
+  return timingSafeEqualHex(await hashToken(bearer), hash);
+}
+
+async function isAdminConfigured(env: WorkerEnv): Promise<boolean> {
+  if (env.ADMIN_TOKEN) return true;
+  return (await getSetting(env.DB, SETTING_KEYS.adminPasswordHash)) !== null;
+}
+
+// Env secrets take precedence; dashboard-managed values fill the gaps
+// so one-click deploys work with zero wrangler secret commands.
+async function getWebhookSecret(env: WorkerEnv): Promise<string | null> {
+  if (env.GITHUB_WEBHOOK_SECRET) return env.GITHUB_WEBHOOK_SECRET;
+  return getSetting(env.DB, SETTING_KEYS.webhookSecret);
 }
 
 // Admin password plus the legacy env runner token plus D1-issued
@@ -138,9 +159,10 @@ interface GitHubWebhookPayload {
 
 async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
   try {
-    if (!env.GITHUB_WEBHOOK_SECRET) {
-      log("error", "GITHUB_WEBHOOK_SECRET not configured");
-      return json({ error: "server misconfigured" }, 500);
+    const secret = await getWebhookSecret(env);
+    if (!secret) {
+      log("error", "webhook secret not configured");
+      return json({ error: "webhook secret not configured — set it in the dashboard" }, 500);
     }
     const raw = await request.arrayBuffer();
     if (raw.byteLength > MAX_WEBHOOK_BYTES) {
@@ -149,7 +171,7 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     const valid = await verifyGitHubSignature(
       raw,
       request.headers.get("x-hub-signature-256"),
-      env.GITHUB_WEBHOOK_SECRET,
+      secret,
     );
     if (!valid) return json({ error: "invalid signature" }, 401);
 
@@ -226,6 +248,43 @@ async function handleCreateToken(request: Request, env: WorkerEnv): Promise<Resp
   }
 }
 
+async function handleSetup(request: Request, env: WorkerEnv): Promise<Response> {
+  try {
+    // First-run only: refused the moment any admin credential exists.
+    if (env.ADMIN_TOKEN) return json({ error: "admin managed via environment" }, 403);
+    if (await getSetting(env.DB, SETTING_KEYS.adminPasswordHash)) {
+      return json({ error: "already configured" }, 403);
+    }
+    const body = (await request.json()) as { password?: unknown };
+    const err = validateNewPassword(body.password);
+    if (err) return json({ error: err }, 400);
+    await setSetting(env.DB, SETTING_KEYS.adminPasswordHash, await hashToken(body.password as string));
+    log("info", "admin password set via first-run setup");
+    return json({ ok: true });
+  } catch (e) {
+    log("error", "setup failed", { error: String(e) });
+    return json({ error: "setup failed" }, 500);
+  }
+}
+
+async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<Response> {
+  try {
+    if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
+    if (env.GITHUB_WEBHOOK_SECRET) {
+      return json({ error: "webhook secret managed via environment" }, 409);
+    }
+    const body = (await request.json()) as { webhookSecret?: unknown };
+    const err = validateWebhookSecret(body.webhookSecret);
+    if (err) return json({ error: err }, 400);
+    await setSetting(env.DB, SETTING_KEYS.webhookSecret, body.webhookSecret as string);
+    log("info", "webhook secret set via dashboard");
+    return json({ ok: true });
+  } catch (e) {
+    log("error", "settings update failed", { error: String(e) });
+    return json({ error: "settings update failed" }, 500);
+  }
+}
+
 function dashboardResponse(): Response {
   return new Response(DASHBOARD_HTML, {
     headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
@@ -236,6 +295,7 @@ export default {
   async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     try {
+      await ensureSchema(env.DB);
       if (request.method === "GET" && url.pathname === "/") {
         return Response.redirect(new URL("/dashboard", url).toString(), 302);
       }
@@ -281,6 +341,27 @@ export default {
         if (!ok) return json({ error: "token not found" }, 404);
         return json({ ok: true });
       }
+      if (request.method === "GET" && url.pathname === "/v1/admin/status") {
+        return json({ configured: await isAdminConfigured(env) });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/setup") {
+        return await handleSetup(request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/v1/admin/settings") {
+        if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
+        const webhookSecretSource = env.GITHUB_WEBHOOK_SECRET
+          ? "env"
+          : (await getSetting(env.DB, SETTING_KEYS.webhookSecret)) !== null
+            ? "d1"
+            : "none";
+        return json({
+          adminSource: env.ADMIN_TOKEN ? "env" : "d1",
+          webhookSecretSource,
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/settings") {
+        return await handleSettingsUpdate(request, env);
+      }
       return json({ error: "not found" }, 404);
     } catch (err) {
       log("error", "request failed", { path: url.pathname, error: String(err) });
@@ -289,6 +370,7 @@ export default {
   },
 
   async queue(batch: MessageBatch<QueueJobMessage>, env: WorkerEnv): Promise<void> {
+    await ensureSchema(env.DB);
     for (const msg of batch.messages) {
       try {
         const run = await getRun(env.DB, msg.body.runId);

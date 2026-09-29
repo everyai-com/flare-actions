@@ -44,6 +44,16 @@ form.inline input { flex: 1; min-width: 180px; }
 <button id="logoutBtn" class="ghost" hidden>Log out</button>
 </header>
 <main>
+<section id="setupPane" class="card" hidden>
+<h2>First-run setup</h2>
+<p class="muted">Create your admin password (12+ characters). This screen disappears forever once set.</p>
+<form id="setupForm" class="inline">
+<input id="setupPw1" type="password" placeholder="New admin password" autocomplete="new-password">
+<input id="setupPw2" type="password" placeholder="Confirm password" autocomplete="new-password">
+<button type="submit">Create password</button>
+</form>
+<p id="setupErr" class="err"></p>
+</section>
 <section id="loginPane" class="card">
 <h2>Log in</h2>
 <p class="muted">Use your admin password (ADMIN_TOKEN).</p>
@@ -57,6 +67,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <nav class="tabs">
 <button id="tabRuns" class="active">Runs</button>
 <button id="tabAccess">Access</button>
+<button id="tabSettings">Settings</button>
 </nav>
 <section id="runsPane" class="card">
 <h2>Runs</h2>
@@ -78,6 +89,16 @@ form.inline input { flex: 1; min-width: 180px; }
 </div>
 <table><thead><tr><th>Name</th><th>Scopes</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody id="tokensBody"></tbody></table>
 </section>
+<section id="settingsPane" class="card" hidden>
+<h2>Settings</h2>
+<p class="muted" id="settingsInfo"></p>
+<form id="webhookForm" class="inline">
+<input id="webhookInput" placeholder="GitHub webhook secret (16+ characters)">
+<button type="submit">Save webhook secret</button>
+</form>
+<p id="settingsErr" class="err"></p>
+<p id="settingsOk"></p>
+</section>
 </section>
 </main>
 <script>
@@ -89,14 +110,18 @@ form.inline input { flex: 1; min-width: 180px; }
   function pill(status) { var s = el("span", status); s.className = "pill " + status; return s; }
 
   var loginPane = document.getElementById("loginPane");
+  var setupPane = document.getElementById("setupPane");
   var appPane = document.getElementById("appPane");
   var logoutBtn = document.getElementById("logoutBtn");
 
+  function showSetup() {
+    setupPane.hidden = false; loginPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true;
+  }
   function showLogin() {
-    loginPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true;
+    setupPane.hidden = true; loginPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true;
   }
   function showApp() {
-    loginPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false;
+    setupPane.hidden = true; loginPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false;
   }
   function api(path, opts) {
     opts = opts || {};
@@ -128,16 +153,21 @@ form.inline input { flex: 1; min-width: 180px; }
 
   var tabRuns = document.getElementById("tabRuns");
   var tabAccess = document.getElementById("tabAccess");
+  var tabSettings = document.getElementById("tabSettings");
   var runsPane = document.getElementById("runsPane");
   var accessPane = document.getElementById("accessPane");
-  tabRuns.addEventListener("click", function () {
-    tabRuns.className = "active"; tabAccess.className = "";
-    runsPane.hidden = false; accessPane.hidden = true; loadRuns();
-  });
-  tabAccess.addEventListener("click", function () {
-    tabAccess.className = "active"; tabRuns.className = "";
-    accessPane.hidden = false; runsPane.hidden = true; loadTokens();
-  });
+  var settingsPane = document.getElementById("settingsPane");
+  function selectTab(name) {
+    tabRuns.className = name === "runs" ? "active" : "";
+    tabAccess.className = name === "access" ? "active" : "";
+    tabSettings.className = name === "settings" ? "active" : "";
+    runsPane.hidden = name !== "runs";
+    accessPane.hidden = name !== "access";
+    settingsPane.hidden = name !== "settings";
+  }
+  tabRuns.addEventListener("click", function () { selectTab("runs"); loadRuns(); });
+  tabAccess.addEventListener("click", function () { selectTab("access"); loadTokens(); });
+  tabSettings.addEventListener("click", function () { selectTab("settings"); loadSettings(); });
 
   function loadRuns() {
     api("/v1/runs").then(function (data) {
@@ -225,7 +255,55 @@ form.inline input { flex: 1; min-width: 180px; }
       .catch(function () { err.textContent = "Could not create token. Name is required."; });
   });
 
-  if (token()) { showApp(); loadRuns(); loadTokens(); } else { showLogin(); }
+  document.getElementById("setupForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("setupErr");
+    err.textContent = "";
+    var a = document.getElementById("setupPw1").value;
+    var b = document.getElementById("setupPw2").value;
+    if (a !== b) { err.textContent = "Passwords do not match."; return; }
+    fetch("/v1/admin/setup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: a }) })
+      .then(function (res) {
+        if (!res.ok) throw new Error("setup failed: " + res.status);
+        sessionStorage.setItem(KEY, a);
+        document.getElementById("setupPw1").value = "";
+        document.getElementById("setupPw2").value = "";
+        showApp(); loadRuns(); loadTokens();
+      })
+      .catch(function () { err.textContent = "Could not create password (12+ characters)."; });
+  });
+
+  function loadSettings() {
+    api("/v1/admin/settings").then(function (s) {
+      var info = document.getElementById("settingsInfo");
+      info.textContent = "";
+      info.appendChild(el("span", "Admin password: managed via " + s.adminSource + ". "));
+      info.appendChild(el("span", "Webhook secret: " + (s.webhookSecretSource === "none" ? "not set." : "managed via " + s.webhookSecretSource + ".")));
+      document.getElementById("webhookForm").style.display = s.webhookSecretSource === "env" ? "none" : "flex";
+      document.getElementById("settingsOk").textContent = "";
+    }).catch(function () {});
+  }
+
+  document.getElementById("webhookForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("settingsErr");
+    var ok = document.getElementById("settingsOk");
+    err.textContent = ""; ok.textContent = "";
+    var v = document.getElementById("webhookInput").value;
+    api("/v1/admin/settings", { method: "POST", body: JSON.stringify({ webhookSecret: v }) })
+      .then(function () {
+        document.getElementById("webhookInput").value = "";
+        ok.textContent = "Saved.";
+        loadSettings();
+      })
+      .catch(function () { err.textContent = "Could not save (16+ characters)."; });
+  });
+
+  fetch("/v1/admin/status").then(function (res) { return res.json(); }).then(function (st) {
+    if (!st.configured && !token()) { showSetup(); }
+    else if (token()) { showApp(); loadRuns(); loadTokens(); }
+    else { showLogin(); }
+  }).catch(function () { showLogin(); });
 })();
 </script>
 </body>

@@ -31,41 +31,17 @@ function fail(msg) {
   if (r.status !== 0) fail("wrangler is not logged in. Run `npx wrangler login` first.");
 }
 
-// 2. D1 database (idempotent)
-let databaseId = null;
+// 2. D1 database (idempotent; deploys also auto-provision by name)
 {
   const r = run("npx", ["wrangler", "d1", "create", "flare-actions"]);
-  const m = /"database_id"\s*:\s*"([^"]+)"/.exec(r.stdout + r.stderr);
-  if (m) {
-    databaseId = m[1];
-  } else if (/already exists/i.test(r.stdout + r.stderr)) {
-    const cfg = readFileSync(join(root, config), "utf8");
-    const existing = /"database_id"\s*:\s*"([^"]+)"/.exec(cfg);
-    if (!existing) fail("D1 exists but no database_id in wrangler.jsonc");
-    databaseId = existing[1];
-    console.log(`reusing database_id ${databaseId}`);
-  } else if (!dryRun) {
-    fail(`d1 create failed:\n${r.stdout}\n${r.stderr}`);
+  const out = r.stdout + r.stderr;
+  if (r.status !== 0 && !/already (exists|taken)/i.test(out) && !dryRun) {
+    fail(`d1 create failed:\n${out}`);
   }
+  if (/already (exists|taken)/i.test(out)) console.log("D1 flare-actions already exists, reusing");
 }
 
-// 3. Patch database_id into wrangler.jsonc
-if (!dryRun && databaseId) {
-  const path = join(root, config);
-  let cfg = readFileSync(path, "utf8");
-  if (/"database_id"\s*:/.test(cfg)) {
-    cfg = cfg.replace(/("database_id"\s*:\s*")[^"]+"/, `$1${databaseId}"`);
-  } else {
-    cfg = cfg.replace(
-      /("database_name"\s*:\s*"flare-actions")/,
-      `$1,"database_id": "${databaseId}"`,
-    );
-  }
-  writeFileSync(path, cfg);
-  console.log("wrangler.jsonc database_id set");
-}
-
-// 4. Queues (idempotent)
+// 3. Queues (idempotent)
 for (const q of ["flare-actions-runs", "flare-actions-dlq"]) {
   const r = run("npx", ["wrangler", "queues", "create", q]);
   const out = r.stdout + r.stderr;
@@ -75,13 +51,13 @@ for (const q of ["flare-actions-runs", "flare-actions-dlq"]) {
   if (/already (exists|taken)/i.test(out)) console.log(`queue ${q} already exists, reusing`);
 }
 
-// 5. Migrations
+// 4. Migrations
 {
   const r = run("npx", ["wrangler", "d1", "migrations", "apply", "flare-actions", "--remote", "--config", config]);
   if (r.status !== 0 && !dryRun) fail(`migrations failed:\n${r.stdout}\n${r.stderr}`);
 }
 
-// 6. Secrets (piped via stdin; values never appear in commands)
+// 5. Secrets (piped via stdin; values never appear in commands)
 const webhookSecret = randomBytes(32).toString("hex");
 const runnerToken = randomBytes(32).toString("hex");
 const adminToken = randomBytes(32).toString("hex");
@@ -94,7 +70,7 @@ for (const [name, value] of [
   if (r.status !== 0 && !dryRun) fail(`secret put ${name} failed:\n${r.stdout}\n${r.stderr}`);
 }
 
-// 7. Deploy
+// 6. Deploy
 let workerUrl = null;
 {
   const r = run("npx", ["wrangler", "deploy", "--config", config]);
@@ -103,7 +79,7 @@ let workerUrl = null;
   else if (!dryRun) fail(`deploy failed:\n${r.stdout}\n${r.stderr}`);
 }
 
-// 8. Write .env (merge, preserve unknown lines)
+// 7. Write .env (merge, preserve unknown lines)
 if (!dryRun) {
   const path = join(root, ".env");
   const wanted = {

@@ -1,6 +1,9 @@
 # Flare Actions
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/everyai-com/flare-actions)
+
 Open-source GitHub Actions alternative you host on your own Cloudflare account.
+One click deploys the Worker and auto-provisions its D1 database and queues.
 
 GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → external pull-runner → status callback. Dashboard + API + CLI.
 
@@ -18,6 +21,15 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
 - `apps/cli` — minimal CLI for runs and logs
 
 ## Quickstart
+
+**One click (no terminal):** hit **Deploy to Cloudflare** above, then open
+`https://&lt;your-worker&gt;/dashboard`:
+
+1. Create your admin password (first-run setup, shown once ever).
+2. Save your GitHub webhook secret in the Settings tab.
+3. Issue runner tokens in the Access tab and create the GitHub App below.
+
+**From source:**
 
 ```bash
 npm install
@@ -94,6 +106,14 @@ dispatches/day), D1 (5M rows read + 100k rows written/day, 5 GB storage).
 See [Workers](https://developers.cloudflare.com/workers/platform/pricing/),
 [Queues](https://developers.cloudflare.com/queues/platform/pricing/), and
 [D1](https://developers.cloudflare.com/d1/platform/pricing/) pricing.
+
+## Give it to your agent
+
+Clone the repo and point any coding agent at it — [AGENTS.md](AGENTS.md)
+teaches it the stack, commands, architecture, and conventions.
+`npm run setup` is fully non-interactive (preview with
+`npm run setup -- --dry-run`), and `npm test` / `npm run typecheck`
+verify every change.
 
 ## License
 
