@@ -57,10 +57,11 @@ npm run cli -- logs <id>  # run logs
 Manual fallback (if you prefer each step by hand): `wrangler d1 create`,
 `wrangler queues create` × 3 (`-runs`, `-dlq`, `-seats`),
 `wrangler r2 bucket create flare-actions-cache`,
-`wrangler d1 migrations apply --remote`,
-`wrangler secret put` for `GITHUB_WEBHOOK_SECRET` / `RUNNER_TOKEN` /
-`ADMIN_TOKEN` (plus `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY` for commit
-statuses), then `npm run deploy`. Local dev: `npm run dev`.
+`wrangler d1 migrations apply --remote`, `wrangler secret put` for
+`RUNNER_TOKEN`, then `npm run deploy` — the admin password is created
+on first dashboard open, and Connect GitHub manages the webhook
+secret + App credentials (only set those as env secrets if you want
+the manual GitHub App flow instead). Local dev: `npm run dev`.
 
 ## GitHub App setup
 
@@ -79,8 +80,9 @@ Install the App on your repo either way.
 
 ## Dashboard
 
-Open `https://<worker>/dashboard` and log in with your `ADMIN_TOKEN`
-(shown once by `npm run setup`, kept in gitignored `.env`).
+Open `https://<worker>/dashboard` and log in with the admin password
+you created on first open. (For CLI admin commands, set
+`ADMIN_TOKEN` to that same password in your gitignored `.env`.)
 
 - **Runs** — see every run and drill into job logs.
 - **Access** — issue named tokens to hand out: `runner` tokens can pull

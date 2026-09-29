@@ -59,7 +59,7 @@ form.inline input { flex: 1; min-width: 180px; }
 </section>
 <section id="loginPane" class="card">
 <h2>Log in</h2>
-<p class="muted">Use your admin password (ADMIN_TOKEN).</p>
+<p class="muted">Enter your admin password.</p>
 <form id="loginForm" class="inline">
 <input id="pwInput" type="password" placeholder="Admin password" autocomplete="current-password">
 <button type="submit">Log in</button>

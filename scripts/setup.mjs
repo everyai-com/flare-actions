@@ -68,15 +68,12 @@ for (const q of ["flare-actions-runs", "flare-actions-dlq", "flare-actions-seats
   if (r.status !== 0 && !dryRun) fail(`migrations failed:\n${r.stdout}\n${r.stderr}`);
 }
 
-// 6. Secrets (piped via stdin; values never appear in commands)
-const webhookSecret = randomBytes(32).toString("hex");
+// 6. Secrets (piped via stdin; values never appear in commands). Only the
+// runner token: the admin password is created on first dashboard open
+// (normal login, no token paste), and Connect GitHub manages the
+// webhook secret + App credentials in D1 — env values would block it.
 const runnerToken = randomBytes(32).toString("hex");
-const adminToken = randomBytes(32).toString("hex");
-for (const [name, value] of [
-  ["GITHUB_WEBHOOK_SECRET", webhookSecret],
-  ["RUNNER_TOKEN", runnerToken],
-  ["ADMIN_TOKEN", adminToken],
-]) {
+for (const [name, value] of [["RUNNER_TOKEN", runnerToken]]) {
   const r = run("npx", ["wrangler", "secret", "put", name, "--config", config], { input: value });
   if (r.status !== 0 && !dryRun) fail(`secret put ${name} failed:\n${r.stdout}\n${r.stderr}`);
 }
@@ -134,8 +131,6 @@ if (!dryRun) {
   const wanted = {
     FLARE_ACTIONS_URL: workerUrl,
     RUNNER_TOKEN: runnerToken,
-    GITHUB_WEBHOOK_SECRET: webhookSecret,
-    ADMIN_TOKEN: adminToken,
     ...(seatsToken ? { SEATS_TOKEN: seatsToken } : {}),
   };
   const lines = existsSync(path) ? readFileSync(path, "utf8").split("\n") : [];
@@ -159,8 +154,8 @@ console.log("\nDone.");
 if (!dryRun) {
   console.log(`Worker:  ${workerUrl}`);
   console.log(`Webhook: ${workerUrl}/webhooks/github`);
-  console.log(`Webhook secret (paste once into your GitHub App): ${webhookSecret}`);
-  console.log(`Dashboard: ${workerUrl}/dashboard (password = ADMIN_TOKEN in .env)`);
+  console.log(`Dashboard: ${workerUrl}/dashboard (create your admin password on first open)`);
   console.log(seatsUrl ? `Seats:    ${seatsUrl} (managed executor live)` : "Seats:    skipped (no docker — BYO runners cover execution)");
-  console.log("Next: create the GitHub App (see README), then `npm run runner` and `npm run cli -- runs`.");
+  console.log("Next: Connect GitHub in the dashboard Settings tab, then `npm run runner` and `npm run cli -- runs`.");
+  console.log("Note: for CLI admin commands, add ADMIN_TOKEN=<your dashboard password> to .env yourself.");
 }
