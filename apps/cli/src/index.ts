@@ -33,6 +33,7 @@ if (cmd === "runs") {
     } catch {
       // legacy jobs without structured results
     }
+    if (j.triage) console.log(`AI triage:\n${j.triage}`);
     console.log(j.log);
   }
 } else {

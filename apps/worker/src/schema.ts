@@ -24,6 +24,7 @@ export const SCHEMA_STATEMENTS = [
     name TEXT NOT NULL DEFAULT '',
     definition TEXT NOT NULL DEFAULT '',
     result TEXT NOT NULL DEFAULT '',
+    triage TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,

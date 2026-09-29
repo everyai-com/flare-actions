@@ -54,6 +54,7 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("/v1/admin/tokens");
     expect(DASHBOARD_HTML).toContain("/v1/admin/setup");
     expect(DASHBOARD_HTML).toContain("/v1/admin/settings");
+    expect(DASHBOARD_HTML).toContain("AI triage");
     expect(DASHBOARD_HTML).toContain("/v1/runs");
     expect(DASHBOARD_HTML).not.toContain("${");
   });

@@ -124,8 +124,17 @@ npm run runner
 ```
 
 No env setup needed — `.env` from `setup` is loaded automatically
-(explicit env vars still win). MVP runner executes a safe echo step.
-Bring your own executor next.
+(explicit env vars still win). The runner shallow-checkouts the repo at
+the push SHA into a temp dir (needs `git`; set `GITHUB_TOKEN` for
+private repos) and executes each step there.
+
+## AI failure triage
+
+Every failed job is triaged automatically by Workers AI
+(`@cf/meta/llama-3.1-8b-instruct-fp8-fast`, inside the 10k-neurons/day
+free tier): likely cause, culprit file/command, and one concrete fix.
+It appears on the job in the dashboard and CLI. Forks without the AI
+binding simply skip triage — nothing breaks.
 
 ## CLI
 

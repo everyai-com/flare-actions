@@ -10,6 +10,7 @@ import {
   listTokens,
   nextQueuedJob,
   revokeToken,
+  setJobTriage,
   setSetting,
   updateJob,
   updateRunStatus,
@@ -26,6 +27,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 import { ensureSchema } from "./schema";
 import { SETTING_KEYS, validateNewPassword, validateWebhookSecret } from "./settings";
 import { defaultPipeline, fetchPipeline, parsePipeline, type PipelineJob } from "./pipeline";
+import { runTriage, type TriageStep } from "./triage";
 import { hashToken, newTokenValue, normalizeScopes, parseScopes, scopesAllow } from "./tokens";
 
 // Secrets are set via `wrangler secret put` / `.dev.vars`, never in
@@ -236,6 +238,54 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
   }
 }
 
+function parseReportedSteps(result: unknown): TriageStep[] {
+  if (typeof result !== "string" || !result) return [];
+  try {
+    const parsed = JSON.parse(result) as { steps?: unknown };
+    if (!parsed || !Array.isArray(parsed.steps)) return [];
+    const out: TriageStep[] = [];
+    for (const s of parsed.steps) {
+      if (typeof s !== "object" || s === null) continue;
+      const rec = s as Record<string, unknown>;
+      if (typeof rec.command !== "string" || typeof rec.exitCode !== "number") continue;
+      out.push({
+        command: rec.command.slice(0, 500),
+        exitCode: rec.exitCode,
+        output: typeof rec.output === "string" ? rec.output : "",
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+async function triageAndStore(
+  env: WorkerEnv,
+  run: { repo: string; sha: string },
+  jobId: string,
+  jobName: string,
+  log: string | undefined,
+  result: string | undefined,
+): Promise<void> {
+  try {
+    // Forks without the AI binding simply skip triage.
+    if (!env.AI) return;
+    const text = await runTriage(env.AI, {
+      repo: run.repo,
+      sha: run.sha,
+      jobName,
+      steps: parseReportedSteps(result),
+      logTail: (log ?? "").slice(-4000),
+    });
+    if (!text) return;
+    await setJobTriage(env.DB, jobId, text);
+  } catch (err) {
+    // Triage must never fail a status update; it runs in waitUntil.
+    console.log(JSON.stringify({ level: "warn", msg: "triage failed", error: String(err) }));
+  }
+}
+
 async function handleStatusCallback(
   request: Request,
   env: WorkerEnv,
@@ -261,6 +311,11 @@ async function handleStatusCallback(
       ctx.waitUntil(
         reportGitHubStatus(env, { installationId: run.installation_id, repo: run.repo, sha: run.sha, state: ghState }),
       );
+    }
+    if (body.status === "failure" || body.status === "error") {
+      const jobs = await getJobsForRun(env.DB, runId);
+      const jobName = jobs.find((j) => j.id === body.jobId)?.name ?? "";
+      ctx.waitUntil(triageAndStore(env, run, body.jobId, jobName, cappedLog, result));
     }
     return json({ ok: true });
   } catch (err) {

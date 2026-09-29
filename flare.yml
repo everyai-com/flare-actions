@@ -4,6 +4,7 @@ jobs:
     steps:
       - run: echo hello from $FLARE_REPO
       - run: node --version
+      - run: test -f flare.yml && echo checkout-ok
   env:
     steps:
       - run: echo sha=$FLARE_SHA run=$FLARE_RUN_ID

@@ -3,6 +3,8 @@ import { dirname, join } from "node:path";
 
 export { executeSteps, parseDefinition } from "./execute.ts";
 export type { ExecStep, ExecuteOptions, StepResult, StepsOutcome } from "./execute.ts";
+export { checkoutRepo, gitAvailable } from "./checkout.ts";
+export type { CheckoutOptions } from "./checkout.ts";
 
 // Loads repo-root `.env` (written by `npm run setup`) into process.env.
 // Explicit environment variables always win. No dependencies, no-op if absent.
@@ -51,6 +53,7 @@ export interface FlareJobDetail {
   log: string;
   name: string;
   result: string;
+  triage: string;
 }
 
 export interface FlareRun {

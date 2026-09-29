@@ -17,8 +17,16 @@ export interface JobRow {
   name: string;
   definition: string;
   result: string;
+  triage: string;
   created_at: string;
   updated_at: string;
+}
+
+export async function setJobTriage(db: Db, id: string, triage: string): Promise<void> {
+  await db
+    .prepare("UPDATE jobs SET triage = ?, updated_at = ? WHERE id = ?")
+    .bind(triage, nowIso(), id)
+    .run();
 }
 
 export type Db = {

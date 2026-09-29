@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { executeSteps, FlareClient, loadEnv, parseDefinition } from "@flare-actions/runner-sdk";
+import { checkoutRepo, executeSteps, FlareClient, loadEnv, parseDefinition } from "@flare-actions/runner-sdk";
 
 loadEnv();
 const baseUrl = process.env["FLARE_ACTIONS_URL"];
@@ -20,9 +20,16 @@ async function pollOnce(): Promise<boolean> {
   const started = Date.now();
   const workdir = mkdtempSync(join(tmpdir(), "flare-job-"));
   try {
+    const srcdir = join(workdir, "src");
+    await checkoutRepo({
+      repo: job.repo,
+      sha: job.sha,
+      dir: srcdir,
+      token: process.env["GITHUB_TOKEN"],
+    });
     const steps = parseDefinition(job.definition ?? "") ?? [{ run: "echo hello from flare-actions" }];
     const outcome = await executeSteps(steps, {
-      cwd: workdir,
+      cwd: srcdir,
       env: {
         ...process.env,
         FLARE_REPO: job.repo,

@@ -33,7 +33,13 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   Relative imports in runner/CLI/SDK must include the `.ts` extension
   (extensionless resolution doesn't apply under strip mode; vitest won't
   catch this — always smoke-run the CLI after touching imports).
-- `apps/runner`, `apps/cli` — thin SDK consumers.
+- `apps/runner`, `apps/cli` — thin SDK consumers. Runner checkouts
+  (`checkout.ts`, shallow per-job temp dir, token scrubbed from errors)
+  then executes steps (`execute.ts`).
+- Failure triage (`triage.ts`): on job failure/failure-callback, a
+  `waitUntil` (never blocking) calls Workers AI (`ai` binding) and stores
+  ≤4KB text in `jobs.triage`, surfaced in dashboard + CLI. Missing AI
+  binding or model errors must degrade to skip, never to 500.
 
 Data flow: GitHub webhook → HMAC verify → D1 run+job rows → Queue (DLQ on
 exhaustion) → runner polls `GET /v1/jobs/next` → executes → `POST /status`.

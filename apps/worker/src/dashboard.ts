@@ -33,6 +33,7 @@ tbody tr.clickable:hover { background: #f0f3f8; }
 .pill.success { background: #dcfce7; color: var(--ok); }
 .pill.failure, .pill.error { background: #fee2e2; color: var(--danger); }
 pre.log { background: #0f1520; color: #d7e0ee; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 12.5px; }
+div.triage { border-left: 3px solid var(--accent); background: #eff6ff; padding: 10px 12px; border-radius: 0 8px 8px 0; margin: 8px 0; white-space: pre-wrap; font-size: 13px; }
 code.token { display: block; background: #0f1520; color: #d7e0ee; padding: 12px; border-radius: 8px; word-break: break-all; font-size: 12.5px; }
 form.inline { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 form.inline input { flex: 1; min-width: 180px; }
@@ -209,6 +210,13 @@ form.inline input { flex: 1; min-width: 180px; }
             });
           }
         } catch (e) { /* legacy jobs without structured results */ }
+        if (j.triage) {
+          var tri = el("div");
+          tri.className = "triage";
+          tri.appendChild(el("strong", "AI triage"));
+          tri.appendChild(document.createTextNode("\n" + j.triage));
+          box.appendChild(tri);
+        }
         var pre = el("pre", j.log || "(no log output)");
         pre.className = "log";
         box.appendChild(pre);

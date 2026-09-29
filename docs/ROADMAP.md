@@ -15,7 +15,7 @@ Speed wins trials; price wins migrations; agents win the next decade.
 
 - [x] `flare.yml` pipelines: jobs + steps fetched at dispatch, fanned out
 - [x] Runner executes real shell steps with per-step results
-- [ ] Repo checkout in runner (sparse, cached, installation-token auth)
+- [x] Repo checkout in runner (shallow, per-job temp dir; `GITHUB_TOKEN` for private)
 - [ ] Docker executor option (BYO box or laptop)
 - [ ] Cloudflare Containers managed executor (scale-to-zero)
 - [ ] R2 build cache (zero egress) + artifact store
@@ -24,7 +24,7 @@ Speed wins trials; price wins migrations; agents win the next decade.
 ## Phase 3 — Agentic layer (the moat)
 
 - [ ] Machine-readable run results (shipped: per-step exit/duration/output)
-- [ ] Failure triage: failing step → culprit file/commit, fix suggestions
+- [x] Failure triage: failing step → culprit file/command, fix suggestions (Workers AI, stored per job)
 - [ ] MCP server: agents query runs, re-run jobs, read logs natively
 - [ ] Natural-language pipelines ("test PRs, deploy main") compiled to `flare.yml`
 - [ ] Flaky-test detection with evidence, smart retries
