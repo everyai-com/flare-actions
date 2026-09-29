@@ -30,6 +30,15 @@ describe("checkoutRepo", () => {
     expect(readFileSync(join(dst, "hello.txt"), "utf8")).toBe("hi");
   });
 
+  it("creates a missing destination dir", async () => {
+    const src = fixtureRepo();
+    const base = mkdtempSync(join(tmpdir(), "flare-nest-"));
+    dirs.push(base);
+    const dst = join(base, "nested", "src");
+    await checkoutRepo({ repo: "local/fixture", sha: src.sha, dir: dst }, src.dir);
+    expect(readFileSync(join(dst, "hello.txt"), "utf8")).toBe("hi");
+  });
+
   it("rejects bad repo/sha without touching the network", async () => {
     await expect(checkoutRepo({ repo: "nope", sha: "abc", dir: "/tmp/x" })).rejects.toThrow("invalid repo");
     await expect(checkoutRepo({ repo: "a/b", sha: "not a sha!", dir: "/tmp/x" })).rejects.toThrow("invalid sha");

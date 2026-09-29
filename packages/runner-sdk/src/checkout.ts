@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { mkdirSync } from "node:fs";
 
 export interface CheckoutOptions {
   repo: string;
@@ -48,6 +49,7 @@ export async function checkoutRepo(opts: CheckoutOptions, urlOverride?: string):
   if (!/^[\w.-]+\/[\w.-]+$/.test(opts.repo)) throw new Error(`invalid repo: ${opts.repo}`);
   if (!/^[\w.-]+$/.test(opts.sha)) throw new Error(`invalid sha: ${opts.sha}`);
   if (!(await gitAvailable())) throw new Error("git is not installed");
+  mkdirSync(opts.dir, { recursive: true });
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const url = urlOverride ?? (opts.token
     ? `https://x-access-token:${opts.token}@github.com/${opts.repo}.git`
