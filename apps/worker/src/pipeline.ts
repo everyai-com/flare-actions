@@ -4,9 +4,40 @@ export interface PipelineStep {
   run: string;
 }
 
+export interface PipelineService {
+  image: string;
+  ports?: string[];
+  env?: Record<string, string>;
+}
+
+export interface PipelineCache {
+  key: string;
+  paths: string[];
+}
+
+export interface PipelineArtifacts {
+  name?: string;
+  paths: string[];
+}
+
+// Extended keys are optional and only set when the document defines
+// them, so minimal pipelines still parse to exactly { name, steps }.
 export interface PipelineJob {
   name: string;
   steps: PipelineStep[];
+  // Pre-matrix job name; only set on expanded matrix cells.
+  base?: string;
+  labels?: string[];
+  matrix?: Record<string, string>;
+  env?: Record<string, string>;
+  container?: string;
+  services?: Record<string, PipelineService>;
+  cache?: PipelineCache;
+  artifacts?: PipelineArtifacts;
+  needs?: string[];
+  group?: string;
+  cancelInProgress?: boolean;
+  timeoutMinutes?: number;
 }
 
 export const MAX_JOBS = 32;
@@ -15,6 +46,225 @@ export const MAX_RUN_LENGTH = 8000;
 export const MAX_DEFINITION_BYTES = 64 * 1024;
 export const FETCH_TIMEOUT_MS = 5000;
 export const FLARE_YML_PATH = "flare.yml";
+export const MAX_MATRIX_KEYS = 8;
+export const MAX_MATRIX_VALUES = 16;
+export const MAX_LABELS = 8;
+export const MAX_ENV_VARS = 32;
+export const MAX_SERVICES = 8;
+export const MAX_CACHE_PATHS = 16;
+export const MAX_ARTIFACT_PATHS = 32;
+export const MAX_GROUP_LENGTH = 128;
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function asStringArray(v: unknown, max: number, itemMax: number): string[] | null {
+  const list = typeof v === "string" ? [v] : v;
+  if (!Array.isArray(list) || list.length === 0 || list.length > max) return null;
+  const out: string[] = [];
+  for (const item of list) {
+    if (typeof item !== "string" || !item.trim() || item.length > itemMax) return null;
+    out.push(item.trim());
+  }
+  return out;
+}
+
+function asStringMap(v: unknown, max: number, keyRe: RegExp, keyMax: number, valMax: number): Record<string, string> | null {
+  if (!isRecord(v)) return null;
+  const entries = Object.entries(v);
+  if (entries.length > max) return null;
+  const out: Record<string, string> = {};
+  for (const [k, val] of entries) {
+    if (!keyRe.test(k) || k.length > keyMax || typeof val !== "string" || val.length > valMax) return null;
+    out[k] = val;
+  }
+  return out;
+}
+
+function parseMatrix(v: unknown): Record<string, string[]> | null {
+  if (!isRecord(v)) return null;
+  const entries = Object.entries(v);
+  if (entries.length === 0 || entries.length > MAX_MATRIX_KEYS) return null;
+  const out: Record<string, string[]> = {};
+  for (const [k, vals] of entries) {
+    if (!/^[A-Za-z_][\w-]*$/.test(k) || k.length > 32) return null;
+    if (!Array.isArray(vals) || vals.length === 0 || vals.length > MAX_MATRIX_VALUES) return null;
+    const list: string[] = [];
+    for (const val of vals) {
+      if (typeof val !== "string" && typeof val !== "number" && typeof val !== "boolean") return null;
+      const s = String(val);
+      if (!s || s.length > 128) return null;
+      list.push(s);
+    }
+    out[k] = list;
+  }
+  return out;
+}
+
+// Cartesian product of matrix axes: [{node:'18',os:'linux'}, ...].
+export function expandMatrixAxes(axes: Record<string, string[]>): Record<string, string>[] {
+  let combos: Record<string, string>[] = [{}];
+  for (const [key, values] of Object.entries(axes)) {
+    const next: Record<string, string>[] = [];
+    for (const combo of combos) {
+      for (const value of values) next.push({ ...combo, [key]: value });
+    }
+    combos = next;
+  }
+  return combos;
+}
+
+// Minimal `${{ matrix.key }}` / `${{ env.KEY }}` interpolation. Unknown
+// expressions pass through untouched so shell syntax never breaks.
+export function interpolateRun(run: string, matrix: Record<string, string>, env: Record<string, string>): string {
+  return run.replace(/\$\{\{\s*([^}]+?)\s*\}\}/g, (match, expr: string) => {
+    const m = /^matrix\.([A-Za-z_][\w-]*)$/.exec(expr.trim());
+    if (m && matrix[m[1]] !== undefined) return matrix[m[1]];
+    const e = /^env\.([A-Za-z_]\w*)$/.exec(expr.trim());
+    if (e && env[e[1]] !== undefined) return env[e[1]];
+    return match;
+  });
+}
+
+interface RawJob {
+  name: string;
+  steps: PipelineStep[];
+  labels?: string[];
+  matrix?: Record<string, string>;
+  env: Record<string, string>;
+  container?: string;
+  services?: Record<string, PipelineService>;
+  cache?: PipelineCache;
+  artifacts?: PipelineArtifacts;
+  needs: string[];
+  group?: string;
+  cancelInProgress: boolean;
+  timeoutMinutes?: number;
+}
+
+function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<string, string[]> }) | null {
+  if (!name || name.length > 64 || !isRecord(def)) return null;
+  const stepsRaw = def.steps;
+  if (!Array.isArray(stepsRaw) || stepsRaw.length === 0 || stepsRaw.length > MAX_STEPS_PER_JOB) return null;
+  const steps: PipelineStep[] = [];
+  for (const s of stepsRaw) {
+    if (!isRecord(s)) return null;
+    const run = s.run;
+    if (typeof run !== "string" || !run.trim() || run.length > MAX_RUN_LENGTH) return null;
+    steps.push({ run: run.trim() });
+  }
+  const job: RawJob & { axes?: Record<string, string[]> } = { name, steps, env: {}, needs: [], cancelInProgress: false };
+  if (def["runs-on"] !== undefined) {
+    const labels = asStringArray(def["runs-on"], MAX_LABELS, 64);
+    if (!labels) return null;
+    job.labels = labels;
+  }
+  if (def.env !== undefined) {
+    const env = asStringMap(def.env, MAX_ENV_VARS, /^[A-Za-z_]\w*$/, 64, 4096);
+    if (!env) return null;
+    job.env = env;
+  }
+  if (def.container !== undefined) {
+    if (typeof def.container !== "string" || !def.container.trim() || def.container.length > 256) return null;
+    job.container = def.container.trim();
+  }
+  if (def.services !== undefined) {
+    if (!isRecord(def.services)) return null;
+    const entries = Object.entries(def.services);
+    if (entries.length > MAX_SERVICES) return null;
+    const services: Record<string, PipelineService> = {};
+    for (const [svcName, svcDef] of entries) {
+      if (!/^[\w.-]{1,64}$/.test(svcName) || !isRecord(svcDef)) return null;
+      const image = svcDef.image;
+      if (typeof image !== "string" || !image.trim() || image.length > 256) return null;
+      const svc: PipelineService = { image: image.trim() };
+      if (svcDef.ports !== undefined) {
+        const ports = asStringArray(svcDef.ports, 16, 32);
+        if (!ports) return null;
+        svc.ports = ports;
+      }
+      if (svcDef.env !== undefined) {
+        const svcEnv = asStringMap(svcDef.env, MAX_ENV_VARS, /^[A-Za-z_]\w*$/, 64, 4096);
+        if (!svcEnv) return null;
+        svc.env = svcEnv;
+      }
+      services[svcName] = svc;
+    }
+    job.services = services;
+  }
+  if (def.cache !== undefined) {
+    if (!isRecord(def.cache)) return null;
+    const key = def.cache.key;
+    if (typeof key !== "string" || !/^[\w][\w.\-/]{0,199}$/.test(key)) return null;
+    const paths = asStringArray(def.cache.paths, MAX_CACHE_PATHS, 256);
+    if (!paths) return null;
+    job.cache = { key, paths };
+  }
+  if (def.artifacts !== undefined) {
+    if (!isRecord(def.artifacts)) return null;
+    const paths = asStringArray(def.artifacts.paths, MAX_ARTIFACT_PATHS, 256);
+    if (!paths) return null;
+    const artifacts: PipelineArtifacts = { paths };
+    if (def.artifacts.name !== undefined) {
+      if (typeof def.artifacts.name !== "string" || !def.artifacts.name.trim() || def.artifacts.name.length > 128) {
+        return null;
+      }
+      artifacts.name = def.artifacts.name.trim();
+    }
+    job.artifacts = artifacts;
+  }
+  if (def.needs !== undefined) {
+    const needs = asStringArray(def.needs, MAX_JOBS, 64);
+    if (!needs) return null;
+    job.needs = [...new Set(needs)];
+  }
+  if (def.concurrency !== undefined) {
+    const c = def.concurrency;
+    if (typeof c === "string") {
+      if (!c.trim() || c.length > MAX_GROUP_LENGTH) return null;
+      job.group = c.trim();
+    } else if (isRecord(c)) {
+      if (typeof c.group !== "string" || !c.group.trim() || c.group.length > MAX_GROUP_LENGTH) return null;
+      job.group = c.group.trim();
+      if (c["cancel-in-progress"] !== undefined) {
+        if (typeof c["cancel-in-progress"] !== "boolean") return null;
+        job.cancelInProgress = c["cancel-in-progress"];
+      }
+    } else {
+      return null;
+    }
+  }
+  if (def["timeout-minutes"] !== undefined) {
+    const t = def["timeout-minutes"];
+    if (typeof t !== "number" || !Number.isInteger(t) || t < 1 || t > 1440) return null;
+    job.timeoutMinutes = t;
+  }
+  if (def.strategy !== undefined) {
+    if (!isRecord(def.strategy) || def.strategy.matrix === undefined) return null;
+    const axes = parseMatrix(def.strategy.matrix);
+    if (!axes) return null;
+    job.axes = axes;
+  }
+  return job;
+}
+
+function hasCycle(names: string[], needsOf: Map<string, string[]>): boolean {
+  const visiting = new Set<string>();
+  const done = new Set<string>();
+  const visit = (n: string): boolean => {
+    if (done.has(n)) return false;
+    if (visiting.has(n)) return true;
+    visiting.add(n);
+    for (const dep of needsOf.get(n) ?? []) {
+      if (visit(dep)) return true;
+    }
+    visiting.delete(n);
+    done.add(n);
+    return false;
+  };
+  return names.some(visit);
+}
 
 // Pure: parse + validate a flare.yml document. Returns null on any
 // problem — the caller falls back to the default pipeline.
@@ -26,27 +276,98 @@ export function parsePipeline(text: string): PipelineJob[] | null {
   } catch {
     return null;
   }
-  if (typeof doc !== "object" || doc === null) return null;
-  const jobs = (doc as Record<string, unknown>).jobs;
-  if (typeof jobs !== "object" || jobs === null || Array.isArray(jobs)) return null;
+  if (!isRecord(doc)) return null;
+  const jobs = doc.jobs;
+  if (!isRecord(jobs)) return null;
   const entries = Object.entries(jobs);
   if (entries.length === 0 || entries.length > MAX_JOBS) return null;
-  const out: PipelineJob[] = [];
+  const raws: (RawJob & { axes?: Record<string, string[]> })[] = [];
   for (const [name, def] of entries) {
-    if (!name || name.length > 64) return null;
-    if (typeof def !== "object" || def === null || Array.isArray(def)) return null;
-    const steps = (def as Record<string, unknown>).steps;
-    if (!Array.isArray(steps) || steps.length === 0 || steps.length > MAX_STEPS_PER_JOB) return null;
-    const parsed: PipelineStep[] = [];
-    for (const s of steps) {
-      if (typeof s !== "object" || s === null || Array.isArray(s)) return null;
-      const run = (s as Record<string, unknown>).run;
-      if (typeof run !== "string" || !run.trim() || run.length > MAX_RUN_LENGTH) return null;
-      parsed.push({ run: run.trim() });
-    }
-    out.push({ name, steps: parsed });
+    const parsed = parseOneJob(name, def);
+    if (!parsed) return null;
+    raws.push(parsed);
   }
+  // needs must reference other jobs in this document, acyclically.
+  const names = new Set(raws.map((r) => r.name));
+  const needsOf = new Map<string, string[]>();
+  for (const r of raws) {
+    for (const dep of r.needs) {
+      if (dep === r.name || !names.has(dep)) return null;
+    }
+    needsOf.set(r.name, r.needs);
+  }
+  if (hasCycle([...names], needsOf)) return null;
+  // Expand matrices; the expanded total obeys the job cap.
+  const out: PipelineJob[] = [];
+  for (const r of raws) {
+    const combos = r.axes ? expandMatrixAxes(r.axes) : [null];
+    for (const combo of combos) {
+      const matrix = combo ?? undefined;
+      const suffix = combo ? ` (${Object.entries(combo).map(([k, v]) => `${k}=${v}`).join(", ")})` : "";
+      const name = `${r.name}${suffix}`;
+      if (name.length > 128) return null;
+      const steps = r.steps.map((s) => ({ run: interpolateRun(s.run, matrix ?? {}, r.env) }));
+      const job: PipelineJob = { name, steps };
+      if (combo) job.base = r.name;
+      if (r.labels) job.labels = r.labels;
+      if (matrix) job.matrix = matrix;
+      if (Object.keys(r.env).length > 0) job.env = r.env;
+      if (r.container) job.container = r.container;
+      if (r.services) job.services = r.services;
+      if (r.cache) job.cache = r.cache;
+      if (r.artifacts) job.artifacts = r.artifacts;
+      if (r.needs.length > 0) job.needs = r.needs;
+      if (r.group) job.group = r.group;
+      if (r.cancelInProgress) job.cancelInProgress = true;
+      if (r.timeoutMinutes !== undefined) job.timeoutMinutes = r.timeoutMinutes;
+      out.push(job);
+    }
+  }
+  if (out.length > MAX_JOBS) return null;
   return out;
+}
+
+// The JSON stored in jobs.definition: everything the runner and the
+// scheduler need. `base` is the pre-matrix job name for needs matching.
+export function serializeDefinition(job: PipelineJob, baseName: string): string {
+  return JSON.stringify({
+    steps: job.steps,
+    base: baseName,
+    labels: job.labels,
+    matrix: job.matrix,
+    env: job.env,
+    container: job.container,
+    services: job.services,
+    cache: job.cache,
+    artifacts: job.artifacts,
+    needs: job.needs,
+    group: job.group,
+    timeoutMinutes: job.timeoutMinutes,
+  });
+}
+
+export interface JobSpecSchedule {
+  base: string;
+  needs: string[];
+  group?: string;
+}
+
+// Tolerant reader for scheduling: legacy `{ steps }` definitions yield
+// empty needs and no group instead of failing.
+export function readJobSpec(definition: string, fallbackName: string): JobSpecSchedule {
+  const fallback: JobSpecSchedule = { base: fallbackName, needs: [] };
+  try {
+    const parsed = JSON.parse(definition) as Record<string, unknown>;
+    if (!isRecord(parsed)) return fallback;
+    const needs = Array.isArray(parsed.needs)
+      ? parsed.needs.filter((n): n is string => typeof n === "string")
+      : [];
+    const group = typeof parsed.group === "string" && parsed.group ? parsed.group : undefined;
+    const base = typeof parsed.base === "string" && parsed.base ? parsed.base : fallbackName;
+    return { base, needs, group };
+  } catch {
+    return fallback;
+  }
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit, ms: number): Promise<Response> {

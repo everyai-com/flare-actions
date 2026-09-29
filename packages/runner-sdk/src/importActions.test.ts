@@ -1,0 +1,85 @@
+import { describe, expect, it } from "vitest";
+import { convertActionsWorkflow, isImportSuccess, mapRunsOn, sanitizeCacheKey } from "./importActions";
+
+const SAMPLE = `
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: actions/cache@v4
+        with: { path: node_modules, key: "node-\${{ runner.os }}" }
+      - run: npm ci
+      - run: npm test
+      - uses: actions/upload-artifact@v4
+        with: { name: cov, path: coverage }
+`;
+
+describe("convertActionsWorkflow", () => {
+  it("converts a node workflow", () => {
+    const res = convertActionsWorkflow(SAMPLE);
+    expect(isImportSuccess(res)).toBe(true);
+    if (!isImportSuccess(res)) return;
+    expect(res.yaml).toContain("runs-on: linux");
+    expect(res.yaml).toContain("npm ci");
+    expect(res.yaml).toContain("node --version");
+    expect(res.yaml).toContain("key: node-expr");
+    expect(res.yaml).toContain("name: cov");
+    expect(res.warnings.join("\n")).toContain("checkout");
+    expect(res.warnings.join("\n")).toContain("on:");
+  });
+
+  it("passes through matrix, needs, services, container", () => {
+    const res = convertActionsWorkflow(`
+jobs:
+  a:
+    runs-on: [self-hosted, gpu]
+    container: node:20
+    services:
+      db: { image: postgres:16, ports: [5432] }
+    strategy: { matrix: { node: [18, 20] } }
+    steps: [{ run: echo }]
+  b:
+    needs: a
+    concurrency: { group: main, cancel-in-progress: true }
+    steps: [{ run: echo }]
+`);
+    expect(isImportSuccess(res)).toBe(true);
+    if (!isImportSuccess(res)) return;
+    expect(res.yaml).toContain("self-hosted");
+    expect(res.yaml).toContain("container: node:20");
+    expect(res.yaml).toContain("needs: a");
+    expect(res.yaml).toContain("cancel-in-progress: true");
+  });
+
+  it("drops unsupported actions with warnings, errors when empty", () => {
+    const res = convertActionsWorkflow(
+      "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: docker/build-push-action@v5\n      - run: echo kept\n",
+    );
+    expect(isImportSuccess(res)).toBe(true);
+    if (!isImportSuccess(res)) return;
+    expect(res.warnings.join("\n")).toContain("docker/build-push-action");
+    const dropped = convertActionsWorkflow("jobs:\n  a:\n    steps:\n      - uses: docker/build-push-action@v5\n");
+    expect(dropped).toEqual({ error: "no convertible jobs (see warnings)" });
+    expect(convertActionsWorkflow("")).toEqual({ error: "empty workflow" });
+    expect(convertActionsWorkflow("{{{")).toMatchObject({ error: expect.stringContaining("invalid YAML") });
+    expect(convertActionsWorkflow("on: push")).toEqual({ error: "no jobs map found" });
+  });
+});
+
+describe("import helpers", () => {
+  it("maps hosted labels", () => {
+    expect(mapRunsOn("ubuntu-latest")).toEqual(["linux"]);
+    expect(mapRunsOn("macos-14")).toEqual(["macos"]);
+    expect(mapRunsOn(["windows-2022", "gpu"])).toEqual(["windows", "gpu"]);
+    expect(mapRunsOn(42)).toBeNull();
+  });
+
+  it("staticizes expression keys", () => {
+    expect(sanitizeCacheKey("node-${{ runner.os }}-${{ hashFiles('x') }}")).toBe("node-expr-expr");
+    expect(sanitizeCacheKey("plain/key.1")).toBe("plain/key.1");
+  });
+});

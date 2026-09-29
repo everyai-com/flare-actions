@@ -32,6 +32,8 @@ tbody tr.clickable:hover { background: #f0f3f8; }
 .pill.running { background: #dbeafe; color: #1d4ed8; }
 .pill.success { background: #dcfce7; color: var(--ok); }
 .pill.failure, .pill.error { background: #fee2e2; color: var(--danger); }
+.pill.blocked { background: #fef3c7; color: #92400e; }
+.pill.cancelled, .pill.skipped { background: #eef1f5; color: var(--muted); text-decoration: line-through; }
 pre.log { background: #0f1520; color: #d7e0ee; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 12.5px; }
 div.triage { border-left: 3px solid var(--accent); background: #eff6ff; padding: 10px 12px; border-radius: 0 8px 8px 0; margin: 8px 0; white-space: pre-wrap; font-size: 13px; }
 code.token { display: block; background: #0f1520; color: #d7e0ee; padding: 12px; border-radius: 8px; word-break: break-all; font-size: 12.5px; }
@@ -198,9 +200,26 @@ form.inline input { flex: 1; min-width: 180px; }
       box.hidden = false;
       var head = el("h2", data.run.repo + " @ " + String(data.run.sha).slice(0, 7) + " — " + data.run.status);
       box.appendChild(head);
+      if (data.summary) {
+        box.appendChild(el("p", data.summary.finishedJobs + "/" + data.summary.jobs + " jobs finished, " +
+          data.summary.computeMinutes + " compute-min (~$" + data.summary.actionsListUsd + " at Actions list price)"));
+      }
       (data.jobs || []).forEach(function (j) {
         var title = "Job " + (j.name ? j.name + " " : "") + j.id.slice(0, 8) + " — " + j.status;
+        if (j.labels) title += " [" + j.labels + "]";
+        if (j.durationMs !== null && j.durationMs !== undefined) title += " (" + (j.durationMs / 1000) + "s)";
         box.appendChild(el("h3", title));
+        if (j.status === "failure" || j.status === "error" || j.status === "cancelled" || j.status === "success") {
+          var rerun = el("button", "Re-run job");
+          rerun.className = "ghost";
+          (function (jobId) {
+            rerun.addEventListener("click", function () {
+              api("/v1/runs/" + encodeURIComponent(data.run.id) + "/jobs/" + encodeURIComponent(jobId) + "/rerun", { method: "POST" })
+                .then(function () { loadRun(data.run.id); loadRuns(); }).catch(function () {});
+            });
+          })(j.id);
+          box.appendChild(rerun);
+        }
         try {
           var parsed = j.result ? JSON.parse(j.result) : null;
           if (parsed && Array.isArray(parsed.steps)) {

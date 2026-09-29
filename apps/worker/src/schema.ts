@@ -11,11 +11,13 @@ export const SCHEMA_STATEMENTS = [
     sha TEXT NOT NULL,
     event TEXT NOT NULL,
     installation_id INTEGER,
+    branch TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'queued',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_runs_status_created ON runs(status, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_runs_repo_branch ON runs(repo, branch)`,
   `CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -25,6 +27,9 @@ export const SCHEMA_STATEMENTS = [
     definition TEXT NOT NULL DEFAULT '',
     result TEXT NOT NULL DEFAULT '',
     triage TEXT NOT NULL DEFAULT '',
+    labels TEXT NOT NULL DEFAULT '',
+    started_at TEXT,
+    finished_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
@@ -43,6 +48,24 @@ export const SCHEMA_STATEMENTS = [
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS audit_log (
+    id TEXT PRIMARY KEY,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)`,
+];
+
+// Additive columns for databases created before the matching migration.
+// Each runs best-effort: "duplicate column" on an already-migrated
+// database is the expected outcome, not an error.
+export const ALTER_STATEMENTS = [
+  `ALTER TABLE runs ADD COLUMN branch TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE jobs ADD COLUMN labels TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE jobs ADD COLUMN started_at TEXT`,
+  `ALTER TABLE jobs ADD COLUMN finished_at TEXT`,
 ];
 
 let schemaPromise: Promise<void> | null = null;
@@ -50,6 +73,13 @@ let schemaPromise: Promise<void> | null = null;
 async function applySchema(db: Db): Promise<void> {
   for (const sql of SCHEMA_STATEMENTS) {
     await db.prepare(sql).bind().run();
+  }
+  for (const sql of ALTER_STATEMENTS) {
+    try {
+      await db.prepare(sql).bind().run();
+    } catch {
+      // Column already exists on migrated databases.
+    }
   }
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // One-command provisioner for Flare Actions.
-// Creates D1 + queues, applies migrations, generates secrets, deploys,
-// and writes a gitignored `.env` so runner/CLI work with zero config.
+// Creates D1 + queues + R2, applies migrations, generates secrets,
+// deploys, and writes a gitignored `.env` so runner/CLI work with zero config.
 // Usage: npm run setup [-- --dry-run]
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -51,13 +51,23 @@ for (const q of ["flare-actions-runs", "flare-actions-dlq"]) {
   if (/already (exists|taken)/i.test(out)) console.log(`queue ${q} already exists, reusing`);
 }
 
-// 4. Migrations
+// 4. R2 bucket for build cache + artifacts (idempotent)
+{
+  const r = run("npx", ["wrangler", "r2", "bucket", "create", "flare-actions-cache"]);
+  const out = r.stdout + r.stderr;
+  if (r.status !== 0 && !/already (exists|taken)/i.test(out) && !dryRun) {
+    fail(`r2 bucket create failed:\n${out}`);
+  }
+  if (/already (exists|taken)/i.test(out)) console.log("R2 flare-actions-cache already exists, reusing");
+}
+
+// 5. Migrations
 {
   const r = run("npx", ["wrangler", "d1", "migrations", "apply", "flare-actions", "--remote", "--config", config]);
   if (r.status !== 0 && !dryRun) fail(`migrations failed:\n${r.stdout}\n${r.stderr}`);
 }
 
-// 5. Secrets (piped via stdin; values never appear in commands)
+// 6. Secrets (piped via stdin; values never appear in commands)
 const webhookSecret = randomBytes(32).toString("hex");
 const runnerToken = randomBytes(32).toString("hex");
 const adminToken = randomBytes(32).toString("hex");
@@ -70,7 +80,7 @@ for (const [name, value] of [
   if (r.status !== 0 && !dryRun) fail(`secret put ${name} failed:\n${r.stdout}\n${r.stderr}`);
 }
 
-// 6. Deploy
+// 7. Deploy
 let workerUrl = null;
 {
   const r = run("npx", ["wrangler", "deploy", "--config", config]);
@@ -79,7 +89,7 @@ let workerUrl = null;
   else if (!dryRun) fail(`deploy failed:\n${r.stdout}\n${r.stderr}`);
 }
 
-// 7. Write .env (merge, preserve unknown lines)
+// 8. Write .env (merge, preserve unknown lines)
 if (!dryRun) {
   const path = join(root, ".env");
   const wanted = {

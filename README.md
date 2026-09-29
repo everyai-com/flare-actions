@@ -15,10 +15,16 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
 
 ## Layout
 
-- `apps/worker` — Cloudflare Worker: webhook verify, dispatch API, dashboard + admin API, queue consumer, D1 state
-- `packages/runner-sdk` — shared types + pull/status client for runners
-- `apps/runner` — minimal external pull-runner (polls jobs, runs, posts status)
-- `apps/cli` — minimal CLI for runs and logs
+- `apps/worker` — Cloudflare Worker: webhook verify, dispatch API, MCP
+  server, dashboard + admin API, queue consumer, D1 state, R2 cache/artifacts
+- `packages/runner-sdk` — shared client (pull/status/cache/artifacts),
+  job orchestrator, Actions importer
+- `apps/runner` — external pull-runner: labels, checkout, containers,
+  services, cache, artifacts
+- `apps/cli` — CLI: runs, logs, dispatch, rerun, flaky, import, badges, MCP config
+- `docs/` — [pipeline reference](docs/PIPELINES.md),
+  [runners](docs/RUNNERS.md), [MCP](docs/MCP.md),
+  [roadmap](docs/ROADMAP.md), [economics](docs/ECONOMICS.md)
 
 ## Quickstart
 
@@ -33,7 +39,7 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
 
 ```bash
 npm install
-npm run setup   # provisions D1 + queues, deploys, writes gitignored .env
+npm run setup   # provisions D1 + queues + R2, deploys, writes gitignored .env
 ```
 
 `setup` prints your Worker URL and webhook secret. Then create the GitHub App
@@ -46,7 +52,8 @@ npm run cli -- logs <id>  # run logs
 ```
 
 Manual fallback (if you prefer each step by hand): `wrangler d1 create`,
-`wrangler queues create` × 2, `wrangler d1 migrations apply --remote`,
+`wrangler queues create` × 2, `wrangler r2 bucket create flare-actions-cache`,
+`wrangler d1 migrations apply --remote`,
 `wrangler secret put` for `GITHUB_WEBHOOK_SECRET` / `RUNNER_TOKEN` /
 `ADMIN_TOKEN` (plus `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY` for commit
 statuses), then `npm run deploy`. Local dev: `npm run dev`.
@@ -117,6 +124,9 @@ jobs:
   command, exit code, duration, output) alongside the human log — this
   is what agents consume to triage failures.
 
+Full reference (matrix, `needs`, concurrency, containers, services,
+cache, artifacts, labels, timeouts): [docs/PIPELINES.md](docs/PIPELINES.md).
+
 ## Runner
 
 ```bash
@@ -127,6 +137,41 @@ No env setup needed — `.env` from `setup` is loaded automatically
 (explicit env vars still win). The runner shallow-checkouts the repo at
 the push SHA into a temp dir (needs `git`; set `GITHUB_TOKEN` for
 private repos) and executes each step there.
+
+Runners advertise `[os, arch, ...FLARE_LABELS]` and only take jobs whose
+`runs-on` labels they all carry — this is how macOS, Windows, GPU, and
+docker boxes coexist. Any OS runs the same protocol; see
+[docs/RUNNERS.md](docs/RUNNERS.md). Job caches and artifacts live in
+your deployment's R2 bucket (created by `npm run setup`).
+
+## MCP server (agents)
+
+Every deployment is an MCP server at `/mcp`: list runs, read logs and
+triage, dispatch runs, re-run jobs, check flakes, generate pipelines.
+`npm run cli -- mcp-config` prints a paste-ready client config; details
+in [docs/MCP.md](docs/MCP.md).
+
+## Importing from GitHub Actions
+
+```bash
+npm run cli -- import .github/workflows/ci.yml > flare.yml
+```
+
+Translates `runs-on`, steps, matrices, needs, concurrency, containers,
+services, caches, and artifacts; everything unmappable becomes a warning
+on stderr (exit stays 0) so you see exactly what needs a human eye.
+
+## Status badges
+
+Public, embeddable, no token needed:
+
+```markdown
+[![flare](https://<worker>/v1/badge.svg?repo=owner/name&branch=main)](https://<worker>/dashboard)
+```
+
+`npm run cli -- badge owner/name main` prints the snippet. For
+required-checks UX, the GitHub App already posts commit statuses on
+every run — mark them required in repo Settings → Branches.
 
 ## AI failure triage
 
@@ -139,30 +184,50 @@ binding simply skip triage — nothing breaks.
 ## CLI
 
 ```bash
-npm run cli -- runs
-npm run cli -- logs <runId>
+npm run cli -- runs                    # list runs
+npm run cli -- logs <runId>            # jobs, steps, triage, logs
+npm run cli -- dispatch <repo> <sha>   # trigger a run
+npm run cli -- rerun <runId> <jobId>   # reset a finished job
+npm run cli -- flaky <repo>            # per-job failure rates
+npm run cli -- artifacts <runId>       # list artifacts
+npm run cli -- badge <repo> [branch]   # badge snippet
+npm run cli -- import <workflow.yml>   # Actions -> flare.yml
+npm run cli -- mcp-config              # MCP client config
 ```
 
 ## API
 
 - `GET /dashboard` — dashboard UI (`/` redirects here)
 - `POST /webhooks/github` — GitHub App webhook (HMAC verified)
+- `GET /mcp` — MCP server metadata (public); `POST /mcp` — MCP JSON-RPC
+- `POST /v1/runs/dispatch` — trigger a run, optional inline `pipeline`
 - `GET /v1/runs` — list runs (admin, runner, or readonly token)
-- `GET /v1/runs/:id` — run + jobs (admin, runner, or readonly token)
-- `GET /v1/jobs/next` — pull next queued job (admin or runner token)
+- `GET /v1/runs/:id` — run + jobs + cost summary (admin, runner, readonly)
+- `GET /v1/runs/:id/artifacts` — list a run's artifacts (read scope)
+- `GET /v1/jobs/next?labels=` — pull next matching queued job (run scope)
 - `POST /v1/runs/:id/status` — runner status callback (admin or runner token)
+- `POST /v1/runs/:id/jobs/:jobId/rerun` — reset a finished job (run scope)
+- `PUT|GET /v1/cache/:key` — build cache blobs (run scope)
+- `PUT|GET /v1/jobs/:jobId/artifacts/:name` — artifacts (run to write, read to fetch)
+- `GET /v1/badge.svg?repo=&branch=` — status badge (public)
+- `GET /v1/flaky?repo=&days=` — per-job failure rates (read scope)
 - `GET /v1/admin/tokens` — list access tokens (admin only)
 - `POST /v1/admin/tokens` — issue a token, shown once (admin only)
 - `POST /v1/admin/tokens/:id/revoke` — revoke a token (admin only)
+- `GET /v1/admin/audit` — audit log (admin only)
+- `POST /v1/admin/generate` — natural language → `flare.yml` (admin only)
 
 ## Cost
 
 Runs entirely on Cloudflare's free tier at small-to-medium scale:
 Workers (100k requests/day), Queues (10k operations/day ≈ 3,300
-dispatches/day), D1 (5M rows read + 100k rows written/day, 5 GB storage).
+dispatches/day), D1 (5M rows read + 100k rows written/day, 5 GB storage),
+R2 (10 GB storage, zero egress). Every run reports its compute minutes
+plus the Actions list-price equivalent, so the gap is a number, not a claim.
 See [Workers](https://developers.cloudflare.com/workers/platform/pricing/),
-[Queues](https://developers.cloudflare.com/queues/platform/pricing/), and
-[D1](https://developers.cloudflare.com/d1/platform/pricing/) pricing.
+[Queues](https://developers.cloudflare.com/queues/platform/pricing/),
+[D1](https://developers.cloudflare.com/d1/platform/pricing/), and
+[R2](https://developers.cloudflare.com/r2/pricing/) pricing.
 
 ## Give it to your agent
 

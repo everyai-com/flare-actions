@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { arch, platform, tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkoutRepo, executeSteps, FlareClient, loadEnv, parseDefinition } from "@flare-actions/runner-sdk";
+import { checkoutRepo, FlareClient, loadEnv, parseJobSpec, runJob } from "@flare-actions/runner-sdk";
 
 loadEnv();
 const baseUrl = process.env["FLARE_ACTIONS_URL"];
@@ -11,10 +11,16 @@ if (!baseUrl || !token) {
   process.exit(1);
 }
 
+// Labels this runner accepts jobs for: os + arch plus FLARE_LABELS
+// extras (e.g. "gpu,docker"). Label-less jobs match every runner.
+const OS_LABEL = platform() === "darwin" ? "macos" : platform() === "win32" ? "windows" : "linux";
+const LABELS = [OS_LABEL, arch(), ...(process.env["FLARE_LABELS"] ?? "").split(",").map((l) => l.trim()).filter(Boolean)];
+console.log(JSON.stringify({ msg: "runner labels", labels: LABELS }));
+
 const client = new FlareClient(baseUrl, token);
 
 async function pollOnce(): Promise<boolean> {
-  const job = await client.nextJob();
+  const job = await client.nextJob(LABELS);
   if (!job) return false;
   console.log(JSON.stringify({ msg: "picked up job", jobId: job.id, name: job.name, repo: job.repo, sha: job.sha }));
   const started = Date.now();
@@ -27,8 +33,10 @@ async function pollOnce(): Promise<boolean> {
       dir: srcdir,
       token: process.env["GITHUB_TOKEN"],
     });
-    const steps = parseDefinition(job.definition ?? "") ?? [{ run: "echo hello from flare-actions" }];
-    const outcome = await executeSteps(steps, {
+    const spec = parseJobSpec(job.definition ?? "") ?? {
+      steps: [{ run: "echo hello from flare-actions" }],
+    };
+    const outcome = await runJob(spec, {
       cwd: srcdir,
       env: {
         ...process.env,
@@ -37,13 +45,15 @@ async function pollOnce(): Promise<boolean> {
         FLARE_RUN_ID: job.run_id,
         FLARE_JOB_ID: job.id,
       },
+      client,
+      jobId: job.id,
     });
     await client.reportStatus(
       job.run_id,
       job.id,
       outcome.success ? "success" : "failure",
       outcome.log,
-      JSON.stringify({ steps: outcome.results }),
+      outcome.resultJson,
     );
     console.log(JSON.stringify({ msg: "job done", jobId: job.id, ms: Date.now() - started, success: outcome.success }));
   } catch (err) {

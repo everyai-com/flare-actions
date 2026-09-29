@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { dockerArgsForStep } from "./services.ts";
 
 export interface ExecStep {
   run: string;
@@ -22,6 +23,9 @@ export interface ExecuteOptions {
   env: NodeJS.ProcessEnv;
   timeoutMs?: number;
   outputLimitPerStep?: number;
+  // Run every step inside this image; only containerEnv keys cross over.
+  container?: string;
+  containerEnv?: string[];
 }
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -32,16 +36,20 @@ function truncate(s: string, limit: number): string {
   return s.slice(0, limit) + `\n... (truncated, ${s.length - limit} more chars)`;
 }
 
-function runOne(
-  command: string,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  timeoutMs: number,
-  outputLimit: number,
-): Promise<StepResult> {
+interface RunOneOptions {
+  command: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  outputLimit: number;
+  container?: string;
+  containerEnv?: string[];
+}
+
+function runOne(o: RunOneOptions): Promise<StepResult> {
   const started = Date.now();
   return new Promise((resolve) => {
-    execFile("sh", ["-c", command], { cwd, env, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+    const finish = (error: unknown, stdout: unknown, stderr: unknown) => {
       const durationMs = Date.now() - started;
       let exitCode = 0;
       if (error) {
@@ -50,9 +58,20 @@ function runOne(
       }
       const out = String(stdout ?? "");
       const err = String(stderr ?? "");
-      const combined = err ? `${out}\n[stderr]\n${err}` : out;
-      resolve({ command, exitCode, durationMs, output: truncate(combined.trimEnd(), outputLimit) });
-    });
+      let combined = err ? `${out}\n[stderr]\n${err}` : out;
+      if (error && !combined.trim()) combined = (error as Error).message;
+      resolve({ command: o.command, exitCode, durationMs, output: truncate(combined.trimEnd(), o.outputLimit) });
+    };
+    if (o.container) {
+      execFile(
+        "docker",
+        dockerArgsForStep(o.container, o.cwd, o.env, o.containerEnv ?? [], o.command),
+        { timeout: o.timeoutMs, maxBuffer: 4 * 1024 * 1024 },
+        finish,
+      );
+      return;
+    }
+    execFile("sh", ["-c", o.command], { cwd: o.cwd, env: o.env, timeout: o.timeoutMs, maxBuffer: 4 * 1024 * 1024 }, finish);
   });
 }
 
@@ -63,7 +82,15 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
   const logParts: string[] = [];
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
-    const r = await runOne(step.run, opts.cwd, opts.env, timeoutMs, outputLimit);
+    const r = await runOne({
+      command: step.run,
+      cwd: opts.cwd,
+      env: opts.env,
+      timeoutMs,
+      outputLimit,
+      container: opts.container,
+      containerEnv: opts.containerEnv,
+    });
     results.push(r);
     logParts.push(`--- step ${i + 1}: ${step.run} ---\n${r.output}\n(exit ${r.exitCode}, ${r.durationMs}ms)`);
     if (r.exitCode !== 0) break;

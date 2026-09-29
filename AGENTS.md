@@ -6,8 +6,9 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 ## Commands (repo root)
 
 - `npm install` / `npm ci` — install (workspaces: `apps/*`, `packages/*`)
-- `npm run setup [-- --dry-run]` — provision D1 + queues, migrate, set secrets,
-  deploy, write gitignored `.env`. Fully non-interactive; idempotent, safe to re-run.
+- `npm run setup [-- --dry-run]` — provision D1 + queues + R2, migrate, set
+  secrets, deploy, write gitignored `.env`. Fully non-interactive;
+  idempotent, safe to re-run.
 - `npm run dev` — local Worker (`wrangler dev`, simulated D1 + queues)
 - `npm run types` — regenerate `apps/worker/src/worker-configuration.d.ts`.
   Run after any `wrangler.jsonc` change. NOTE: output varies with `.dev.vars`
@@ -17,7 +18,8 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `npm test` — vitest, colocated `*.test.ts`, must pass
 - `npm run deploy` / `npm run deploy:dry` — deploy / validate only
 - `npm run runner` — external pull-runner (reads `.env` automatically)
-- `npm run cli -- runs|logs <id>` — CLI (reads `.env` automatically)
+- `npm run cli -- <runs|logs|dispatch|rerun|flaky|artifacts|badge|import|mcp-config>`
+  — CLI (reads `.env` automatically)
 
 ## Architecture
 
@@ -25,24 +27,37 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   `ensureSchema()` (self-migrates a fresh D1; isolate-cached promise).
 - `apps/worker/src/{db,github,tokens,settings,schema,dashboard}.ts` — D1 access,
   GitHub App auth, API-token issue/verify, validators, schema, dashboard HTML.
+- `apps/worker/src/{pipeline,mcp,cache,artifacts,badge,cost,generate}.ts` —
+  `flare.yml` parse/expand/serialize, MCP server, R2 cache/artifacts, badges,
+  cost attribution, NL pipeline generation.
 - `apps/worker/migrations/*.sql` — tracked history; `schema.ts` mirrors it for
   one-click forks that skip manual migration. Update BOTH when changing schema.
-- `packages/runner-sdk` — `FlareClient` + `loadEnv()` (walks up to repo `.env`).
+  `ensureSchema` also runs best-effort `ALTER`s so existing DBs self-heal.
+- `packages/runner-sdk` — `FlareClient` + `loadEnv()` (walks up to repo `.env`),
+  job orchestrator (`job.ts`), spec reader (`spec.ts`), tar cache (`cache.ts`),
+  docker (`services.ts`), Actions importer (`importActions.ts`).
   Must stay Node type-stripping compatible: NO parameter properties, enums, or
   namespaces — plain types only (runner/CLI run via `--experimental-strip-types`).
   Relative imports in runner/CLI/SDK must include the `.ts` extension
   (extensionless resolution doesn't apply under strip mode; vitest won't
   catch this — always smoke-run the CLI after touching imports).
-- `apps/runner`, `apps/cli` — thin SDK consumers. Runner checkouts
-  (`checkout.ts`, shallow per-job temp dir, token scrubbed from errors)
-  then executes steps (`execute.ts`).
+- `apps/runner`, `apps/cli` — thin SDK consumers. Runner advertises
+  `[os, arch, ...FLARE_LABELS]`, checkouts (`checkout.ts`, shallow per-job
+  temp dir, token scrubbed from errors) then `runJob`: services → cache →
+  steps → cache save → artifacts → teardown, inside a job timeout.
 - Failure triage (`triage.ts`): on job failure/failure-callback, a
   `waitUntil` (never blocking) calls Workers AI (`ai` binding) and stores
   ≤4KB text in `jobs.triage`, surfaced in dashboard + CLI. Missing AI
   binding or model errors must degrade to skip, never to 500.
+- Scheduling: `needs`/`concurrency` park jobs as `blocked` at fan-out;
+  terminal callbacks `rollupRunStatus` then `promoteBlockedJobs` (oldest
+  first, so groups serialize). `cancel-in-progress` cancels other runs'
+  same-group jobs at fan-out. Run/job statuses: queued, running, blocked,
+  success, failure, error, cancelled, skipped.
 
 Data flow: GitHub webhook → HMAC verify → D1 run+job rows → Queue (DLQ on
-exhaustion) → runner polls `GET /v1/jobs/next` → executes → `POST /status`.
+exhaustion) → runner polls `GET /v1/jobs/next?labels=` → executes →
+`POST /status` → rollup + promote + triage + commit status.
 
 Auth model: env secrets take precedence; dashboard-managed D1 settings fill
 gaps so one-click deploys need zero `wrangler secret` commands.
