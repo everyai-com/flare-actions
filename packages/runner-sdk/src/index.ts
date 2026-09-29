@@ -66,18 +66,30 @@ export interface FlareRun {
 export class FlareClient {
   private baseUrl: string;
   private token: string;
+  private timeoutMs: number;
 
-  constructor(baseUrl: string, token: string) {
+  constructor(baseUrl: string, token: string, timeoutMs = 30000) {
     this.baseUrl = baseUrl;
     this.token = token;
+    this.timeoutMs = timeoutMs;
   }
 
   private headers(): Record<string, string> {
     return { Authorization: `Bearer ${this.token}` };
   }
 
+  // Every call is bounded: a runner that polls forever must never hang
+  // forever on one stalled connection.
+  private async call(path: string, init?: RequestInit): Promise<Response> {
+    return fetch(`${this.baseUrl}${path}`, {
+      ...init,
+      headers: { ...this.headers(), ...(init?.headers ?? {}) },
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+  }
+
   async nextJob(): Promise<FlareJob | null> {
-    const res = await fetch(`${this.baseUrl}/v1/jobs/next`, { headers: this.headers() });
+    const res = await this.call("/v1/jobs/next");
     if (!res.ok) throw new Error(`nextJob failed: ${res.status}`);
     const data = (await res.json()) as { job: FlareJob | null };
     return data.job;
@@ -90,23 +102,23 @@ export class FlareClient {
     log?: string,
     result?: string,
   ): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/v1/runs/${runId}/status`, {
+    const res = await this.call(`/v1/runs/${runId}/status`, {
       method: "POST",
-      headers: { ...this.headers(), "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jobId, status, log, result }),
     });
     if (!res.ok) throw new Error(`reportStatus failed: ${res.status}`);
   }
 
   async listRuns(): Promise<FlareRun[]> {
-    const res = await fetch(`${this.baseUrl}/v1/runs`, { headers: this.headers() });
+    const res = await this.call("/v1/runs");
     if (!res.ok) throw new Error(`listRuns failed: ${res.status}`);
     const data = (await res.json()) as { runs: FlareRun[] };
     return data.runs;
   }
 
   async getRun(runId: string): Promise<{ run: FlareRun; jobs: FlareJobDetail[] }> {
-    const res = await fetch(`${this.baseUrl}/v1/runs/${runId}`, { headers: this.headers() });
+    const res = await this.call(`/v1/runs/${runId}`);
     if (!res.ok) throw new Error(`getRun failed: ${res.status}`);
     return (await res.json()) as { run: FlareRun; jobs: FlareJobDetail[] };
   }
