@@ -7,7 +7,8 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 
 - `npm install` / `npm ci` — install (workspaces: `apps/*`, `packages/*`)
 - `npm run setup [-- --dry-run]` — provision D1 + queues + R2, migrate, set
-  secrets, deploy, write gitignored `.env`. Fully non-interactive;
+  secrets, deploy, write gitignored `.env`, and (docker available)
+  provision the managed seats worker. Fully non-interactive;
   idempotent, safe to re-run.
 - `npm run dev` — local Worker (`wrangler dev`, simulated D1 + queues)
 - `npm run types` — regenerate `apps/worker/src/worker-configuration.d.ts`.
@@ -58,6 +59,22 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 Data flow: GitHub webhook → HMAC verify → D1 run+job rows → Queue (DLQ on
 exhaustion) → runner polls `GET /v1/jobs/next?labels=` → executes →
 `POST /status` → rollup + promote + triage + commit status.
+
+- `apps/seats` — managed executor. `ContainerSeat` DO (one container per
+  job) orchestrates via `exec` (`seat.ts`, testable with fakes;
+  `seat-do.ts` holds the `cloudflare:workers` import so vitest never
+  touches it). Shares worker modules (`db`, `finish`, `pipeline`,
+  `github`, `triage`) by relative import — bundled by wrangler.
+- Wakes travel the `flare-actions-seats` queue (main produces, seats
+  consumes). Never worker→workers.dev HTTPS (edge error 1042) and never
+  a service binding in the committed config (deploy-time validation
+  would couple one-click deploys to the seats worker).
+- Seats claim atomically (`claimJob`) and release what they can't do;
+  `/run` executes inline and answers with the outcome (an open request
+  keeps the seat alive; detached `waitUntil` hibernates mid-job).
+  Progress mirrors to the job log live; release reasons included.
+  Image tags must be immutable (`:latest` rejected); build
+  `--platform linux/amd64`.
 
 Auth model: env secrets take precedence; dashboard-managed D1 settings fill
 gaps so one-click deploys need zero `wrangler secret` commands.

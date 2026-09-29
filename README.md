@@ -22,6 +22,7 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
 - `apps/runner` — external pull-runner: labels, checkout, containers,
   services, cache, artifacts
 - `apps/cli` — CLI: runs, logs, dispatch, rerun, flaky, import, badges, MCP config
+- `apps/seats` — managed executor worker (seat DO + container image)
 - `docs/` — [pipeline reference](docs/PIPELINES.md),
   [runners](docs/RUNNERS.md), [MCP](docs/MCP.md),
   [roadmap](docs/ROADMAP.md), [economics](docs/ECONOMICS.md)
@@ -52,7 +53,8 @@ npm run cli -- logs <id>  # run logs
 ```
 
 Manual fallback (if you prefer each step by hand): `wrangler d1 create`,
-`wrangler queues create` × 2, `wrangler r2 bucket create flare-actions-cache`,
+`wrangler queues create` × 3 (`-runs`, `-dlq`, `-seats`),
+`wrangler r2 bucket create flare-actions-cache`,
 `wrangler d1 migrations apply --remote`,
 `wrangler secret put` for `GITHUB_WEBHOOK_SECRET` / `RUNNER_TOKEN` /
 `ADMIN_TOKEN` (plus `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY` for commit
@@ -143,6 +145,11 @@ Runners advertise `[os, arch, ...FLARE_LABELS]` and only take jobs whose
 docker boxes coexist. Any OS runs the same protocol; see
 [docs/RUNNERS.md](docs/RUNNERS.md). Job caches and artifacts live in
 your deployment's R2 bucket (created by `npm run setup`).
+
+Prefer zero boxes? `npm run setup` also provisions the **managed
+executor**: scale-to-zero seat containers on Cloudflare that pick up
+eligible Linux jobs automatically, with BYO runners as the backstop.
+See [docs/CONTAINERS.md](docs/CONTAINERS.md).
 
 ## MCP server (agents)
 

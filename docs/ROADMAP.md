@@ -19,7 +19,7 @@ Speed wins trials; price wins migrations; agents win the next decade.
 - [x] Docker executor: `container:` steps + `services:` on any docker runner
 - [x] R2 build cache (zero egress) + artifact store
 - [x] Matrix builds, service containers, concurrency groups, `needs:`, `runs-on:` labels
-- [ ] Cloudflare Containers managed executor (scale-to-zero) — scaffolded, see `docs/CONTAINERS.md`
+- [x] Cloudflare Containers managed executor (scale-to-zero seats, see `docs/CONTAINERS.md`)
 
 ## Phase 3 — Agentic layer (the moat, shipped)
 

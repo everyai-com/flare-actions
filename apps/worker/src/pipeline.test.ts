@@ -6,6 +6,7 @@ import {
   MAX_DEFINITION_BYTES,
   parsePipeline,
   readJobSpec,
+  seatEligible,
   serializeDefinition,
 } from "./pipeline";
 
@@ -139,5 +140,23 @@ describe("job definition serialization", () => {
   it("tolerates legacy definitions", () => {
     expect(readJobSpec(JSON.stringify({ steps: [{ run: "echo" }] }), "main")).toEqual({ base: "main", needs: [] });
     expect(readJobSpec("bogus", "main")).toEqual({ base: "main", needs: [] });
+  });
+});
+
+describe("seatEligible", () => {
+  const def = (extra = {}) => JSON.stringify({ steps: [{ run: "echo" }], base: "a", ...extra });
+  it("accepts plain and linux-labeled jobs", () => {
+    expect(seatEligible(def())).toBe(true);
+    expect(seatEligible(def({ labels: ["linux"] }))).toBe(true);
+    expect(seatEligible(JSON.stringify({ steps: [{ run: "echo" }] }))).toBe(true);
+    expect(seatEligible("bogus")).toBe(true);
+  });
+
+  it("rejects docker and special-label jobs", () => {
+    expect(seatEligible(def({ container: "node:20" }))).toBe(false);
+    expect(seatEligible(def({ services: { db: { image: "pg" } } }))).toBe(false);
+    expect(seatEligible(def({ labels: ["macos"] }))).toBe(false);
+    expect(seatEligible(def({ labels: ["linux", "gpu"] }))).toBe(false);
+    expect(seatEligible(def({ labels: "linux" }))).toBe(false);
   });
 });

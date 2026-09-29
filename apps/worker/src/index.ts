@@ -1,10 +1,10 @@
 import {
   audit,
   cancelGroupJobs,
+  claimNextJob,
   createJob,
   createRun,
   createToken,
-  FAILED_STATUSES,
   findLiveToken,
   flakyStats,
   getJob,
@@ -15,26 +15,15 @@ import {
   isTerminal,
   latestRunStatus,
   listAudit,
-  listBlockedJobsInRepo,
   listRuns,
   listTokens,
-  nextQueuedJob,
   rerunJob,
   revokeToken,
   rollupRunStatus,
-  setJobStatus,
-  setJobTriage,
   setSetting,
   updateJob,
 } from "./db";
-import {
-  bytesEqual,
-  getInstallationToken,
-  mintAppJwt,
-  postCommitStatus,
-  timingSafeEqualHex,
-  verifyGitHubSignature,
-} from "./github";
+import { bytesEqual, getInstallationToken, mintAppJwt, timingSafeEqualHex, verifyGitHubSignature } from "./github";
 import { DASHBOARD_HTML } from "./dashboard";
 import { ensureSchema } from "./schema";
 import { SETTING_KEYS, validateNewPassword, validateWebhookSecret } from "./settings";
@@ -42,11 +31,11 @@ import {
   defaultPipeline,
   fetchPipeline,
   parsePipeline,
-  readJobSpec as readPipelineJobSpec,
+  seatEligible,
   serializeDefinition,
   type PipelineJob,
 } from "./pipeline";
-import { runTriage, type TriageStep } from "./triage";
+import { promoteBlockedJobs, reportGitHubStatus, triageAndStore } from "./finish";
 import { hashToken, newTokenValue, normalizeScopes, parseScopes, scopesAllow } from "./tokens";
 import { badgeSvg } from "./badge";
 import { jobDurationMs, summarizeRunCost } from "./cost";
@@ -68,6 +57,9 @@ interface WorkerSecrets {
   GITHUB_PRIVATE_KEY?: string;
   // R2 bucket for cache + artifacts; absent on forks that skipped it.
   CACHE?: R2Bucket;
+  // No seats binding here by design: wakes travel over the SEAT_QUEUE
+  // producer (a plain queue binding like RUN_QUEUE), so the main worker
+  // never couples — at deploy or runtime — to the seats worker.
 }
 
 type WorkerEnv = Env & WorkerSecrets;
@@ -165,28 +157,6 @@ async function requireScope(
   return need === "read" ? ident : null;
 }
 
-async function reportGitHubStatus(
-  env: WorkerEnv,
-  opts: { installationId: number | null; repo: string; sha: string; state: "pending" | "success" | "failure" | "error" },
-): Promise<void> {
-  try {
-    if (!opts.installationId || !env.GITHUB_APP_ID || !env.GITHUB_PRIVATE_KEY) {
-      log("info", "github status skipped: app credentials not configured");
-      return;
-    }
-    const jwt = await mintAppJwt(env.GITHUB_APP_ID, env.GITHUB_PRIVATE_KEY);
-    const token = await getInstallationToken(jwt, opts.installationId);
-    if (!token) {
-      log("warn", "github installation token mint failed");
-      return;
-    }
-    const ok = await postCommitStatus(token, opts.repo, opts.sha, opts.state);
-    log("info", "github status posted", { ok, repo: opts.repo, sha: opts.sha, state: opts.state });
-  } catch (err) {
-    log("error", "github status failed", { error: String(err) });
-  }
-}
-
 interface GitHubWebhookPayload {
   ref?: string;
   repository?: { full_name?: string };
@@ -242,7 +212,7 @@ async function createRunAndFanOut(
     installationId: number | null;
     jobs: PipelineJob[];
   },
-): Promise<{ runId: string; jobIds: string[]; blocked: number }> {
+): Promise<{ runId: string; jobIds: string[]; queuedIds: string[]; blocked: number }> {
   const runId = crypto.randomUUID();
   await createRun(env.DB, {
     id: runId,
@@ -253,6 +223,7 @@ async function createRunAndFanOut(
     branch: input.branch,
   });
   const jobIds: string[] = [];
+  const queuedIds: string[] = [];
   let blocked = 0;
   for (const job of input.jobs) {
     const jobId = crypto.randomUUID();
@@ -274,49 +245,33 @@ async function createRunAndFanOut(
     });
     jobIds.push(jobId);
     if (status === "queued") {
+      queuedIds.push(jobId);
       await env.RUN_QUEUE.send({ runId, jobId, repo: input.repo, sha: input.sha } satisfies QueueJobMessage);
     }
   }
   await rollupRunStatus(env.DB, runId);
-  return { runId, jobIds, blocked };
+  return { runId, jobIds, queuedIds, blocked };
 }
 
-// After any terminal transition: unblock needs-satisfied jobs (oldest
-// first so concurrency groups serialize), skip jobs whose needs failed.
-async function promoteBlockedJobs(env: WorkerEnv, repo: string): Promise<string[]> {
-  const blocked = await listBlockedJobsInRepo(env.DB, repo);
-  const promoted: string[] = [];
-  const runJobsCache = new Map<string, { base: string; status: string }[]>();
-  for (const job of blocked) {
-    const spec = readPipelineJobSpec(job.definition, job.name);
-    if (spec.needs.length > 0) {
-      let siblings = runJobsCache.get(job.run_id);
-      if (!siblings) {
-        const rows = await getJobsForRun(env.DB, job.run_id);
-        siblings = rows.map((r) => ({ base: readPipelineJobSpec(r.definition, r.name).base, status: r.status }));
-        runJobsCache.set(job.run_id, siblings);
-      }
-      const byBase = new Map<string, string[]>();
-      for (const s of siblings) byBase.set(s.base, [...(byBase.get(s.base) ?? []), s.status]);
-      if (spec.needs.some((n) => (byBase.get(n) ?? []).some((st) => FAILED_STATUSES.includes(st)))) {
-        await setJobStatus(env.DB, job.id, "skipped");
-        await rollupRunStatus(env.DB, job.run_id);
-        runJobsCache.delete(job.run_id);
-        continue;
-      }
-      const satisfied = spec.needs.every((n) => {
-        const statuses = byBase.get(n) ?? [];
-        return statuses.length > 0 && statuses.every((st) => st === "success");
-      });
-      if (!satisfied) continue;
-    }
-    if (spec.group && (await hasActiveGroupJob(env.DB, repo, spec.group))) continue;
-    await setJobStatus(env.DB, job.id, "queued");
-    await rollupRunStatus(env.DB, job.run_id);
-    await env.RUN_QUEUE.send({ runId: job.run_id, jobId: job.id, repo: job.repo, sha: job.sha } satisfies QueueJobMessage);
-    promoted.push(job.id);
+// Best-effort wake of a managed seat for a queued job: drop a message on
+// the seats queue and let the seats worker claim it. Seats are an
+// enhancement, never a dependency: missing queue, undeployed seats,
+// ineligible jobs, and previews all degrade to "BYO runners take it".
+// A queue — not HTTPS (worker-to-workers.dev subrequests are edge
+// rejected, error 1042) and not a service binding (deploy-time target
+// validation would couple one-click deploys to the seats worker).
+async function wakeSeat(env: WorkerEnv, jobId: string): Promise<void> {
+  try {
+    if (env.ENVIRONMENT !== "production") return;
+    const job = await getJob(env.DB, jobId);
+    if (!job || job.status !== "queued" || !seatEligible(job.definition)) return;
+    await env.SEAT_QUEUE.send({ jobId });
+    log("info", "seat wake enqueued", { jobId });
+    await audit(env.DB, "seat-wake", "wake.enqueued", jobId);
+  } catch (err) {
+    log("info", "seat wake skipped", { jobId, error: String(err) });
+    await audit(env.DB, "seat-wake", "wake.failed", `${jobId}:threw`).catch(() => undefined);
   }
-  return promoted;
 }
 
 async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
@@ -346,62 +301,17 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
 
     const installationId = payload.installation?.id ?? null;
     const jobs = await loadPipelineJobs(env, repo, sha, installationId);
-    const { runId, jobIds, blocked } = await createRunAndFanOut(env, { repo, sha, branch, event, installationId, jobs });
+    const { runId, jobIds, queuedIds, blocked } = await createRunAndFanOut(env, { repo, sha, branch, event, installationId, jobs });
 
     log("info", "run queued", { runId, jobCount: jobIds.length, blocked, repo, sha, event });
-    ctx.waitUntil(reportGitHubStatus(env, { installationId, repo, sha, state: "pending" }));
+    for (const jobId of queuedIds) await wakeSeat(env, jobId);
+    ctx.waitUntil(
+      reportGitHubStatus({ appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY, installationId, repo, sha, state: "pending" }),
+    );
     return json({ runId, jobId: jobIds[0], jobIds }, 202);
   } catch (err) {
     log("error", "webhook failed", { error: String(err) });
     return json({ error: "webhook failed" }, 500);
-  }
-}
-
-function parseReportedSteps(result: unknown): TriageStep[] {
-  if (typeof result !== "string" || !result) return [];
-  try {
-    const parsed = JSON.parse(result) as { steps?: unknown };
-    if (!parsed || !Array.isArray(parsed.steps)) return [];
-    const out: TriageStep[] = [];
-    for (const s of parsed.steps) {
-      if (typeof s !== "object" || s === null) continue;
-      const rec = s as Record<string, unknown>;
-      if (typeof rec.command !== "string" || typeof rec.exitCode !== "number") continue;
-      out.push({
-        command: rec.command.slice(0, 500),
-        exitCode: rec.exitCode,
-        output: typeof rec.output === "string" ? rec.output : "",
-      });
-    }
-    return out;
-  } catch {
-    return [];
-  }
-}
-
-async function triageAndStore(
-  env: WorkerEnv,
-  run: { repo: string; sha: string },
-  jobId: string,
-  jobName: string,
-  log: string | undefined,
-  result: string | undefined,
-): Promise<void> {
-  try {
-    // Forks without the AI binding simply skip triage.
-    if (!env.AI) return;
-    const text = await runTriage(env.AI, {
-      repo: run.repo,
-      sha: run.sha,
-      jobName,
-      steps: parseReportedSteps(result),
-      logTail: (log ?? "").slice(-4000),
-    });
-    if (!text) return;
-    await setJobTriage(env.DB, jobId, text);
-  } catch (err) {
-    // Triage must never fail a status update; it runs in waitUntil.
-    console.log(JSON.stringify({ level: "warn", msg: "triage failed", error: String(err) }));
   }
 }
 
@@ -426,19 +336,26 @@ async function handleStatusCallback(
     await rollupRunStatus(env.DB, runId);
     log("info", "status updated", { runId, jobId: body.jobId, status: body.status });
     if (isTerminal(body.status)) {
-      const promoted = await promoteBlockedJobs(env, run.repo);
+      const promoted = await promoteBlockedJobs(env.DB, env.RUN_QUEUE, run.repo, (job) => wakeSeat(env, job.jobId));
       if (promoted.length > 0) log("info", "blocked jobs promoted", { runId, promoted });
     }
     if (body.status === "success" || body.status === "failure" || body.status === "error") {
       const ghState = body.status === "success" ? "success" : "failure";
       ctx.waitUntil(
-        reportGitHubStatus(env, { installationId: run.installation_id, repo: run.repo, sha: run.sha, state: ghState }),
+        reportGitHubStatus({
+          appId: env.GITHUB_APP_ID,
+          privateKey: env.GITHUB_PRIVATE_KEY,
+          installationId: run.installation_id,
+          repo: run.repo,
+          sha: run.sha,
+          state: ghState,
+        }),
       );
     }
     if (body.status === "failure" || body.status === "error") {
       const jobs = await getJobsForRun(env.DB, runId);
       const jobName = jobs.find((j) => j.id === body.jobId)?.name ?? "";
-      ctx.waitUntil(triageAndStore(env, run, body.jobId, jobName, cappedLog, result));
+      ctx.waitUntil(triageAndStore(env.DB, env.AI, run, body.jobId, jobName, cappedLog, result));
     }
     return json({ ok: true });
   } catch (err) {
@@ -461,7 +378,7 @@ function validateDispatch(body: Record<string, unknown>): { repo: string; sha: s
 async function dispatchRun(
   env: WorkerEnv,
   input: { repo: string; sha: string; ref: string; pipeline?: string },
-): Promise<{ runId: string; jobIds: string[] }> {
+): Promise<{ runId: string; jobIds: string[]; queuedIds: string[] }> {
   let jobs: PipelineJob[] | null = null;
   if (input.pipeline) {
     jobs = parsePipeline(input.pipeline);
@@ -470,7 +387,7 @@ async function dispatchRun(
     jobs = await loadPipelineJobs(env, input.repo, input.sha, null);
   }
   const branch = branchFromRef(input.ref) || input.ref;
-  const { runId, jobIds } = await createRunAndFanOut(env, {
+  const { runId, jobIds, queuedIds } = await createRunAndFanOut(env, {
     repo: input.repo,
     sha: input.sha,
     branch,
@@ -479,7 +396,7 @@ async function dispatchRun(
     jobs,
   });
   log("info", "run dispatched", { runId, repo: input.repo, sha: input.sha });
-  return { runId, jobIds };
+  return { runId, jobIds, queuedIds };
 }
 
 async function rerunJobAndQueue(
@@ -597,11 +514,15 @@ export default {
           dispatchRun: async (input) => {
             const out = await dispatchRun(env, { repo: input.repo, sha: input.sha, ref: input.ref ?? "", pipeline: input.pipeline });
             await audit(env.DB, ident.actor, "run.dispatch", out.runId);
-            return out;
+            for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
+            return { runId: out.runId, jobIds: out.jobIds };
           },
           rerunJob: async (runId, jobId) => {
             const out = await rerunJobAndQueue(env, runId, jobId);
-            if (out.ok) await audit(env.DB, ident.actor, "job.rerun", jobId);
+            if (out.ok) {
+              await audit(env.DB, ident.actor, "job.rerun", jobId);
+              await wakeSeat(env, jobId);
+            }
             return out;
           },
         });
@@ -617,7 +538,8 @@ export default {
         try {
           const out = await dispatchRun(env, valid);
           await audit(env.DB, ident.actor, "run.dispatch", out.runId);
-          return json(out, 202);
+          for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
+          return json({ runId: out.runId, jobIds: out.jobIds }, 202);
         } catch (err) {
           return json({ error: String(err instanceof Error ? err.message : err) }, 400);
         }
@@ -653,9 +575,8 @@ export default {
           .split(",")
           .map((l) => l.trim())
           .filter(Boolean);
-        const job = await nextQueuedJob(env.DB, labels);
+        const job = await claimNextJob(env.DB, labels);
         if (!job) return json({ job: null }, 200);
-        await updateJob(env.DB, job.id, { status: "running" });
         await rollupRunStatus(env.DB, job.run_id);
         return json({ job });
       }
@@ -670,6 +591,7 @@ export default {
         const out = await rerunJobAndQueue(env, rerunMatch[1], rerunMatch[2]);
         if (!out.ok) return json({ error: out.error ?? "rerun failed" }, 404);
         await audit(env.DB, ident.actor, "job.rerun", rerunMatch[2]);
+        await wakeSeat(env, rerunMatch[2]);
         return json({ ok: true });
       }
       const cacheMatch = /^\/v1\/cache\/(.+)$/.exec(url.pathname);

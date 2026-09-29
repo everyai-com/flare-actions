@@ -352,6 +352,28 @@ export interface JobSpecSchedule {
   group?: string;
 }
 
+// Seats are Linux containers without docker: eligible jobs need no
+// special labels, no nested container, and no services. Everything else
+// stays on BYO runners. Unknown/legacy definitions are eligible — they
+// predate all three features.
+export function seatEligible(definition: string): boolean {
+  try {
+    const parsed = JSON.parse(definition) as Record<string, unknown>;
+    if (!isRecord(parsed)) return true;
+    if (typeof parsed.container === "string" && parsed.container) return false;
+    if (isRecord(parsed.services) && Object.keys(parsed.services).length > 0) return false;
+    if (parsed.labels !== undefined) {
+      if (!Array.isArray(parsed.labels)) return false;
+      for (const label of parsed.labels) {
+        if (label !== "linux") return false;
+      }
+    }
+    return true;
+  } catch {
+    return true;
+  }
+}
+
 // Tolerant reader for scheduling: legacy `{ steps }` definitions yield
 // empty needs and no group instead of failing.
 export function readJobSpec(definition: string, fallbackName: string): JobSpecSchedule {

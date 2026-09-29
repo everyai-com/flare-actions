@@ -18,6 +18,8 @@ jobs:
       - run: npm run types
       - run: npm run typecheck
       - run: npm test
+      - run: npm run deploy:dry
+      - run: npx wrangler deploy --dry-run --config apps/seats/wrangler.jsonc
 
   preview:
     runs-on: ubuntu-latest

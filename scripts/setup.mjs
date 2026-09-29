@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // One-command provisioner for Flare Actions.
 // Creates D1 + queues + R2, applies migrations, generates secrets,
-// deploys, and writes a gitignored `.env` so runner/CLI work with zero config.
+// deploys the main worker (and the managed seats worker when docker is
+// available), and writes a gitignored `.env` so runner/CLI work with zero config.
 // Usage: npm run setup [-- --dry-run]
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -42,7 +43,7 @@ function fail(msg) {
 }
 
 // 3. Queues (idempotent)
-for (const q of ["flare-actions-runs", "flare-actions-dlq"]) {
+for (const q of ["flare-actions-runs", "flare-actions-dlq", "flare-actions-seats"]) {
   const r = run("npx", ["wrangler", "queues", "create", q]);
   const out = r.stdout + r.stderr;
   if (r.status !== 0 && !/already (exists|taken)/i.test(out) && !dryRun) {
@@ -89,7 +90,45 @@ let workerUrl = null;
   else if (!dryRun) fail(`deploy failed:\n${r.stdout}\n${r.stderr}`);
 }
 
-// 8. Write .env (merge, preserve unknown lines)
+// 8. Managed seats worker (needs local docker; cleanly skipped otherwise —
+// BYO runners cover everything seats do, minus the zero-box experience).
+const seatsConfig = "apps/seats/wrangler.jsonc";
+let seatsUrl = null;
+let seatsToken = null;
+{
+  const docker = run("docker", ["info", "--format", "{{.ServerVersion}}"]);
+  if (docker.status !== 0 && !dryRun) {
+    console.log("docker not available — skipping managed seats (see docs/CONTAINERS.md to add later)");
+  } else if (dryRun) {
+    console.log("(dry-run) would build/push the seat image and deploy the seats worker");
+  } else {
+    // Content tag: the image rebuilds only when the Dockerfile changes,
+    // so re-runs reuse the registry image and just redeploy workers.
+    const dockerfile = readFileSync(join(root, "apps/seats/Dockerfile"), "utf8");
+    const tag = `flare-actions-seat:${createHash("sha1").update(dockerfile).digest("hex").slice(0, 12)}`;
+    let r = run("docker", ["build", "--platform", "linux/amd64", "-t", tag, "apps/seats"]);
+    if (r.status !== 0) fail(`seat image build failed:\n${r.stdout}\n${r.stderr}`);
+    r = run("npx", ["wrangler", "containers", "push", tag]);
+    const pushed = /Pushed image: (\S+)/.exec(r.stdout + r.stderr);
+    if (!pushed) fail(`seat image push failed:\n${r.stdout}\n${r.stderr}`);
+    const seatsPath = join(root, seatsConfig);
+    const seatsCfg = JSON.parse(readFileSync(seatsPath, "utf8"));
+    seatsCfg.containers[0].image = pushed[1];
+    writeFileSync(seatsPath, JSON.stringify(seatsCfg));
+    // Token gates the seats public URL for direct debugging; the main
+    // worker needs nothing — wakes travel over the seats queue.
+    seatsToken = randomBytes(32).toString("hex");
+    const s = run("npx", ["wrangler", "secret", "put", "SEATS_TOKEN", "--config", seatsConfig], { input: seatsToken });
+    if (s.status !== 0) fail(`secret put SEATS_TOKEN failed:\n${s.stdout}\n${s.stderr}`);
+    const d = run("npx", ["wrangler", "deploy", "--config", seatsConfig]);
+    const m = /(https:\/\/[^\s]+\.workers\.dev)/.exec(d.stdout + d.stderr);
+    if (!m) fail(`seats deploy failed:\n${d.stdout}\n${d.stderr}`);
+    seatsUrl = m[1];
+    console.log(`seats live at ${seatsUrl}`);
+  }
+}
+
+// 9. Write .env (merge, preserve unknown lines)
 if (!dryRun) {
   const path = join(root, ".env");
   const wanted = {
@@ -97,6 +136,7 @@ if (!dryRun) {
     RUNNER_TOKEN: runnerToken,
     GITHUB_WEBHOOK_SECRET: webhookSecret,
     ADMIN_TOKEN: adminToken,
+    ...(seatsToken ? { SEATS_TOKEN: seatsToken } : {}),
   };
   const lines = existsSync(path) ? readFileSync(path, "utf8").split("\n") : [];
   const seen = new Set();
@@ -121,5 +161,6 @@ if (!dryRun) {
   console.log(`Webhook: ${workerUrl}/webhooks/github`);
   console.log(`Webhook secret (paste once into your GitHub App): ${webhookSecret}`);
   console.log(`Dashboard: ${workerUrl}/dashboard (password = ADMIN_TOKEN in .env)`);
+  console.log(seatsUrl ? `Seats:    ${seatsUrl} (managed executor live)` : "Seats:    skipped (no docker — BYO runners cover execution)");
   console.log("Next: create the GitHub App (see README), then `npm run runner` and `npm run cli -- runs`.");
 }

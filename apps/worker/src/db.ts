@@ -156,22 +156,54 @@ function labelsMatch(jobLabels: string, runnerLabels: string[]): boolean {
   return need.every((l) => runnerLabels.includes(l));
 }
 
-// Oldest queued job this runner is eligible for: label-less jobs match
-// any runner, labeled jobs need every label present on the runner.
-export async function nextQueuedJob(
+// Atomic claim: exactly one executor (runner or seat) wins a job. The
+// conditional UPDATE plus the changed-row check close the read-then-act
+// race between concurrent pollers.
+export async function claimJob(db: Db, id: string): Promise<boolean> {
+  const res = (await db
+    .prepare("UPDATE jobs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ? AND status = 'queued'")
+    .bind(nowIso(), nowIso(), id)
+    .run()) as { meta?: { changes?: number } };
+  return (res?.meta?.changes ?? 0) > 0;
+}
+
+// Append one line to a job's log without touching its status.
+// Seats mirror progress here so a crash or release never leaves a
+// blank log: the row always shows how far execution got.
+export async function appendJobLog(db: Db, id: string, text: string): Promise<void> {
+  await db
+    .prepare("UPDATE jobs SET log = COALESCE(log, '') || ?, updated_at = ? WHERE id = ?")
+    .bind(text, nowIso(), id)
+    .run();
+}
+
+// Release a job back to the queue (seat fallback: something this
+// executor can't do — a BYO runner may still take it).
+export async function releaseJob(db: Db, id: string): Promise<void> {
+  await db
+    .prepare("UPDATE jobs SET status = 'queued', started_at = NULL, updated_at = ? WHERE id = ? AND status = 'running'")
+    .bind(nowIso(), id)
+    .run();
+}
+
+// Poll-and-claim loop: walk matching queued jobs oldest-first until one
+// claim wins or candidates run out.
+export async function claimNextJob(
   db: Db,
   runnerLabels: string[] = [],
 ): Promise<(JobRow & { repo: string; sha: string }) | null> {
-  // NOTE: SELECT * relies on the jobs columns existing — ensureSchema /
-  // migrations guarantee name/definition/result on every database.
   const res = await db
     .prepare(
       `SELECT j.*, r.repo, r.sha FROM jobs j JOIN runs r ON r.id = j.run_id
-       WHERE j.status = 'queued' ORDER BY j.created_at ASC LIMIT 50`,
+       WHERE j.status = 'queued' ORDER BY j.created_at ASC LIMIT 10`,
     )
     .bind()
     .all<JobRow & { repo: string; sha: string }>();
-  return res.results.find((j) => labelsMatch(j.labels ?? "", runnerLabels)) ?? null;
+  for (const job of res.results) {
+    if (!labelsMatch(job.labels ?? "", runnerLabels)) continue;
+    if (await claimJob(db, job.id)) return { ...job, status: "running" };
+  }
+  return null;
 }
 
 export async function updateJob(
