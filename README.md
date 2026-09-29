@@ -33,8 +33,10 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
 `https://&lt;your-worker&gt;/dashboard`:
 
 1. Create your admin password (first-run setup, shown once ever).
-2. Save your GitHub webhook secret in the Settings tab.
-3. Issue runner tokens in the Access tab and create the GitHub App below.
+2. **Connect GitHub** in the Settings tab — one click creates the GitHub
+   App (webhook + secret + private key, no terminal), then install it on
+   your repos. Managed seats need nothing else; issue runner tokens in
+   the Access tab only for BYO machines.
 
 **From source:**
 
@@ -43,8 +45,8 @@ npm install
 npm run setup   # provisions D1 + queues + R2, deploys, writes gitignored .env
 ```
 
-`setup` prints your Worker URL and webhook secret. Then create the GitHub App
-below, and run with zero config:
+`setup` prints your Worker URL. Then Connect GitHub in the dashboard
+(Settings tab, one click), and run with zero config:
 
 ```bash
 npm run runner            # external pull-runner (reads .env automatically)
@@ -62,10 +64,18 @@ statuses), then `npm run deploy`. Local dev: `npm run dev`.
 
 ## GitHub App setup
 
-1. Create a GitHub App: webhook URL `https://<worker>/webhooks/github`, permissions: Contents read, Commit statuses write, Checks write (optional).
-2. Subscribe to `push`, `pull_request`, `workflow_dispatch`.
-3. Set webhook secret → `GITHUB_WEBHOOK_SECRET`. App ID + PEM → `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`.
-4. Install the App on your repo.
+**One click:** dashboard → Settings → **Connect GitHub**. GitHub shows a
+pre-filled App (Contents read, Commit statuses write, `push` +
+`pull_request` events, webhook URL wired) — click Create, then install
+it on your repos. App ID, private key, and webhook secret land in D1,
+so the main worker and managed seats both pick them up.
+
+**Manual fallback** (env-managed instead): create the App yourself with
+the same permissions/events and webhook URL
+`https://<worker>/webhooks/github`, then set `GITHUB_WEBHOOK_SECRET`,
+`GITHUB_APP_ID`, and `GITHUB_PRIVATE_KEY` via `wrangler secret put`
+(env takes precedence; Connect refuses while any of them is set).
+Install the App on your repo either way.
 
 ## Dashboard
 

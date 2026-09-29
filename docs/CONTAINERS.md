@@ -103,7 +103,8 @@ Notes:
 ## Private repos
 
 Seats check out with a GitHub App installation token when the run has an
-`installation_id` and the seats worker has `GITHUB_APP_ID` /
-`GITHUB_PRIVATE_KEY` secrets (same values as the main worker; set
-manually — setup never sees them). Without either, private checkouts
-fail and the job releases to BYO runners with `GITHUB_TOKEN`.
+`installation_id` and App credentials exist — from the dashboard
+Connect flow (stored in the shared D1, picked up automatically) or
+from `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY` secrets (env wins).
+Without either, private checkouts fail and the job releases to BYO
+runners with `GITHUB_TOKEN`.

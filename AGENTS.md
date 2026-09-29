@@ -82,6 +82,10 @@ gaps so one-click deploys need zero `wrangler secret` commands.
 - Admin: `ADMIN_TOKEN` env or D1 `admin_password_hash` (first-run setup UI).
   `POST /v1/admin/setup` only works when NEITHER exists — never weaken this.
 - Webhooks: `GITHUB_WEBHOOK_SECRET` env or D1 `webhook_secret` (Settings tab).
+- GitHub App: Connect flow (`connect.ts` manifest + callback; creds in
+  D1 under `github_app_*`) or env `GITHUB_APP_ID`/`GITHUB_PRIVATE_KEY`
+  (env wins; Connect 409s while env manages any of them). Both workers
+  resolve via `resolveAppCreds`.
 - API: legacy `RUNNER_TOKEN` env plus D1 `api_tokens` (`runner` = run+read,
   `readonly` = read). Hashes only in D1; plaintext shown once at creation.
 

@@ -43,6 +43,18 @@ import { runGenerate } from "./generate";
 import { handleCacheGet, handleCachePut } from "./cache";
 import { handleArtifactGet, handleArtifactPut, listRunArtifacts } from "./artifacts";
 import { handleMcpMessage, mcpDiscovery } from "./mcp";
+import {
+  beginConnect,
+  buildManifest,
+  consumeConnectState,
+  exchangeManifestCode,
+  GITHUB_MANIFEST_URL,
+  installUrl,
+  resolveAppCreds,
+  storeAppCredentials,
+  suggestAppName,
+  validateAppName,
+} from "./connect";
 
 // Secrets are set via `wrangler secret put` / `.dev.vars`, never in
 // wrangler.jsonc. `wrangler types` may or may not include them in the
@@ -146,6 +158,10 @@ async function getWebhookSecret(env: WorkerEnv): Promise<string | null> {
   return getSetting(env.DB, SETTING_KEYS.webhookSecret);
 }
 
+async function getAppCreds(env: WorkerEnv): Promise<{ appId: string; privateKey: string } | null> {
+  return resolveAppCreds(env.DB, { appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY });
+}
+
 async function requireScope(
   request: Request,
   env: WorkerEnv,
@@ -181,9 +197,10 @@ async function loadPipelineJobs(
     // authenticated API for private repos when App creds exist.
     const direct = await fetchPipeline(repo, sha, null);
     if (direct) return parsePipeline(direct) ?? defaultPipeline();
-    if (installationId && env.GITHUB_APP_ID && env.GITHUB_PRIVATE_KEY) {
+    const creds = await getAppCreds(env);
+    if (installationId && creds) {
       try {
-        const jwt = await mintAppJwt(env.GITHUB_APP_ID, env.GITHUB_PRIVATE_KEY);
+        const jwt = await mintAppJwt(creds.appId, creds.privateKey);
         const token = await getInstallationToken(jwt, installationId);
         if (token) {
           const text = await fetchPipeline(repo, sha, token);
@@ -305,8 +322,9 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
 
     log("info", "run queued", { runId, jobCount: jobIds.length, blocked, repo, sha, event });
     for (const jobId of queuedIds) await wakeSeat(env, jobId);
+    const creds = await getAppCreds(env);
     ctx.waitUntil(
-      reportGitHubStatus({ appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY, installationId, repo, sha, state: "pending" }),
+      reportGitHubStatus({ appId: creds?.appId, privateKey: creds?.privateKey, installationId, repo, sha, state: "pending" }),
     );
     return json({ runId, jobId: jobIds[0], jobIds }, 202);
   } catch (err) {
@@ -341,10 +359,11 @@ async function handleStatusCallback(
     }
     if (body.status === "success" || body.status === "failure" || body.status === "error") {
       const ghState = body.status === "success" ? "success" : "failure";
+      const creds = await getAppCreds(env);
       ctx.waitUntil(
         reportGitHubStatus({
-          appId: env.GITHUB_APP_ID,
-          privateKey: env.GITHUB_PRIVATE_KEY,
+          appId: creds?.appId,
+          privateKey: creds?.privateKey,
           installationId: run.installation_id,
           repo: run.repo,
           sha: run.sha,
@@ -655,11 +674,51 @@ export default {
           : (await getSetting(env.DB, SETTING_KEYS.webhookSecret)) !== null
             ? "d1"
             : "none";
+        const githubSource = env.GITHUB_APP_ID ? "env" : ((await getSetting(env.DB, SETTING_KEYS.githubAppId)) !== null ? "d1" : "none");
+        const githubSlug = githubSource === "d1" ? await getSetting(env.DB, SETTING_KEYS.githubAppSlug) : null;
         return json({
           adminSource: env.ADMIN_TOKEN ? "env" : "d1",
           webhookSecretSource,
           cache: env.CACHE ? "r2" : "none",
+          githubApp: { source: githubSource, installUrl: githubSlug ? installUrl(githubSlug) : null },
         });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/github/connect") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        if (env.GITHUB_WEBHOOK_SECRET || env.GITHUB_APP_ID || env.GITHUB_PRIVATE_KEY) {
+          return json({ error: "github already managed via environment" }, 409);
+        }
+        const body = (await request.json().catch(() => ({}))) as { name?: unknown };
+        const name =
+          typeof body.name === "string" && body.name.trim()
+            ? body.name.trim()
+            : suggestAppName(crypto.randomUUID().replace(/-/g, ""));
+        const err = validateAppName(name);
+        if (err) return json({ error: err }, 400);
+        const state = await beginConnect(env.DB);
+        await audit(env.DB, ident.actor, "github.connect.begin", name);
+        log("info", "github connect started", { name });
+        return json({ postUrl: `${GITHUB_MANIFEST_URL}?state=${encodeURIComponent(state)}`, manifest: buildManifest(name, url.origin) });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/admin/github/callback") {
+        // Unauthenticated by design (GitHub redirects the browser here);
+        // the single-use state is the capability.
+        const fail = (reason: string): Response =>
+          Response.redirect(new URL(`/dashboard?github=error&reason=${reason}`, url).toString(), 302);
+        const state = url.searchParams.get("state") ?? "";
+        const code = url.searchParams.get("code") ?? "";
+        if (!state || !code) return fail("missing");
+        if (!(await consumeConnectState(env.DB, state))) return fail("expired");
+        const app = await exchangeManifestCode(code);
+        if (!app) {
+          log("warn", "github connect exchange failed");
+          return fail("exchange");
+        }
+        await storeAppCredentials(env.DB, app);
+        await audit(env.DB, "github-connect", "github.connect.done", app.slug);
+        log("info", "github app connected", { slug: app.slug, appId: app.appId });
+        return Response.redirect(new URL("/dashboard?github=connected", url).toString(), 302);
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/settings") {
         return await handleSettingsUpdate(request, env);

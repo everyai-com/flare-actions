@@ -1,6 +1,9 @@
 export const SETTING_KEYS = {
   adminPasswordHash: "admin_password_hash",
   webhookSecret: "webhook_secret",
+  githubAppId: "github_app_id",
+  githubPrivateKey: "github_private_key",
+  githubAppSlug: "github_app_slug",
 } as const;
 
 export function validateNewPassword(pw: unknown): string | null {

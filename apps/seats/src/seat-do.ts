@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { runSeatJob, type ContainerCtl, type ContainerStartOptions } from "./seat";
+import { resolveAppCreds } from "../../worker/src/connect";
 
 export interface SeatsEnv {
   DB: D1Database;
@@ -71,6 +72,10 @@ export class ContainerSeat extends DurableObject<SeatsEnv> {
     const jobId = body.jobId;
     const env = this.env;
     try {
+      // Same D1 the main worker stores Connect-flow credentials in, so
+      // connecting once on the dashboard lights up private checkouts
+      // on seats with no extra secrets.
+      const creds = await resolveAppCreds(env.DB, { appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY });
       const outcome = await runSeatJob(
         {
           db: env.DB,
@@ -78,8 +83,8 @@ export class ContainerSeat extends DurableObject<SeatsEnv> {
           queue: env.RUN_QUEUE,
           seatQueue: env.SEAT_QUEUE,
           ai: env.AI,
-          appId: env.GITHUB_APP_ID,
-          appKey: env.GITHUB_PRIVATE_KEY,
+          appId: creds?.appId,
+          appKey: creds?.privateKey,
           container: adapt(container),
           spawn: async (id: string) => {
             const stub = env.SEATS.get(env.SEATS.idFromName(`job-${id}`));

@@ -101,6 +101,18 @@ form.inline input { flex: 1; min-width: 180px; }
 </form>
 <p id="settingsErr" class="err"></p>
 <p id="settingsOk"></p>
+<h2>GitHub App</h2>
+<p class="muted" id="githubInfo"></p>
+<form id="githubForm" class="inline">
+<input id="githubName" placeholder="App name, e.g. flare-actions-a1b2 (blank = random)" maxlength="34">
+<button type="submit">Connect GitHub</button>
+</form>
+<p id="githubErr" class="err"></p>
+<p id="githubOk"></p>
+<div id="githubInstallBox" hidden>
+<p><strong>App connected — install it on your repos to run pushes.</strong></p>
+<p><a id="githubInstallLink" href="#" target="_blank" rel="noopener">Install the GitHub App</a></p>
+</div>
 </section>
 </section>
 </main>
@@ -146,7 +158,7 @@ form.inline input { flex: 1; min-width: 180px; }
     sessionStorage.setItem(KEY, pw);
     api("/v1/admin/tokens").then(function () {
       document.getElementById("pwInput").value = "";
-      showApp(); loadRuns(); loadTokens();
+      showApp(); loadRuns(); loadTokens(); handleGithubQuery();
     }).catch(function () {
       sessionStorage.removeItem(KEY);
       err.textContent = "Wrong password.";
@@ -304,7 +316,7 @@ form.inline input { flex: 1; min-width: 180px; }
         sessionStorage.setItem(KEY, a);
         document.getElementById("setupPw1").value = "";
         document.getElementById("setupPw2").value = "";
-        showApp(); loadRuns(); loadTokens();
+        showApp(); loadRuns(); loadTokens(); handleGithubQuery();
       })
       .catch(function () { err.textContent = "Could not create password (12+ characters)."; });
   });
@@ -317,7 +329,58 @@ form.inline input { flex: 1; min-width: 180px; }
       info.appendChild(el("span", "Webhook secret: " + (s.webhookSecretSource === "none" ? "not set." : "managed via " + s.webhookSecretSource + ".")));
       document.getElementById("webhookForm").style.display = s.webhookSecretSource === "env" ? "none" : "flex";
       document.getElementById("settingsOk").textContent = "";
+      var g = s.githubApp || { source: "none", installUrl: null };
+      document.getElementById("githubInfo").textContent =
+        "GitHub App: " + (g.source === "none" ? "not connected." : "connected via " + g.source + ".");
+      document.getElementById("githubForm").style.display = g.source === "none" ? "flex" : "none";
+      var box = document.getElementById("githubInstallBox");
+      if (g.installUrl) {
+        box.hidden = false;
+        document.getElementById("githubInstallLink").href = g.installUrl;
+      } else {
+        box.hidden = true;
+      }
     }).catch(function () {});
+  }
+
+  document.getElementById("githubForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("githubErr");
+    var ok = document.getElementById("githubOk");
+    err.textContent = ""; ok.textContent = "";
+    var v = document.getElementById("githubName").value.trim();
+    api("/v1/admin/github/connect", { method: "POST", body: JSON.stringify({ name: v }) })
+      .then(function (data) {
+        var form = document.createElement("form");
+        form.method = "POST";
+        form.action = data.postUrl;
+        var input = document.createElement("input");
+        input.type = "hidden";
+        input.name = "manifest";
+        input.value = JSON.stringify(data.manifest);
+        form.appendChild(input);
+        document.body.appendChild(form);
+        form.submit();
+      })
+      .catch(function () { err.textContent = "Could not start connect (env-managed, or invalid name)."; });
+  });
+
+  function handleGithubQuery() {
+    var q = new URLSearchParams(window.location.search);
+    var status = q.get("github");
+    if (!status) return;
+    if (window.history && window.history.replaceState) window.history.replaceState({}, "", "/dashboard");
+    selectTab("settings");
+    loadSettings();
+    if (status === "connected") {
+      document.getElementById("githubOk").textContent = "App created and connected. Install it on your repos.";
+    } else {
+      var reason = q.get("reason") || "unknown";
+      var msg = reason === "expired" ? "Connect expired — try again."
+        : reason === "exchange" ? "GitHub refused the exchange — try again."
+        : "Connect failed — try again.";
+      document.getElementById("githubErr").textContent = msg;
+    }
   }
 
   document.getElementById("webhookForm").addEventListener("submit", function (ev) {
@@ -337,7 +400,7 @@ form.inline input { flex: 1; min-width: 180px; }
 
   fetch("/v1/admin/status").then(function (res) { return res.json(); }).then(function (st) {
     if (!st.configured && !token()) { showSetup(); }
-    else if (token()) { showApp(); loadRuns(); loadTokens(); }
+    else if (token()) { showApp(); loadRuns(); loadTokens(); handleGithubQuery(); }
     else { showLogin(); }
   }).catch(function () { showLogin(); });
 })();
