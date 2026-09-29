@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-export { executeSteps, parseDefinition } from "./execute";
-export type { ExecStep, ExecuteOptions, StepResult, StepsOutcome } from "./execute";
+export { executeSteps, parseDefinition } from "./execute.ts";
+export type { ExecStep, ExecuteOptions, StepResult, StepsOutcome } from "./execute.ts";
 
 // Loads repo-root `.env` (written by `npm run setup`) into process.env.
 // Explicit environment variables always win. No dependencies, no-op if absent.

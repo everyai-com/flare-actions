@@ -30,6 +30,9 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `packages/runner-sdk` — `FlareClient` + `loadEnv()` (walks up to repo `.env`).
   Must stay Node type-stripping compatible: NO parameter properties, enums, or
   namespaces — plain types only (runner/CLI run via `--experimental-strip-types`).
+  Relative imports in runner/CLI/SDK must include the `.ts` extension
+  (extensionless resolution doesn't apply under strip mode; vitest won't
+  catch this — always smoke-run the CLI after touching imports).
 - `apps/runner`, `apps/cli` — thin SDK consumers.
 
 Data flow: GitHub webhook → HMAC verify → D1 run+job rows → Queue (DLQ on
