@@ -39,6 +39,24 @@ div.triage { border-left: 3px solid var(--accent); background: #eff6ff; padding:
 code.token { display: block; background: #0f1520; color: #d7e0ee; padding: 12px; border-radius: 8px; word-break: break-all; font-size: 12.5px; }
 form.inline { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 form.inline input { flex: 1; min-width: 180px; }
+.auth-card { padding: 28px; }
+.auth-narrow { max-width: 420px; margin: 0 auto; }
+.brand { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.brand-mark { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; background: var(--ink); color: #fff; font-weight: 800; font-size: 17px; }
+.brand-name { font-weight: 700; font-size: 16px; }
+.step-head { display: flex; align-items: center; gap: 10px; margin: 18px 0 6px; }
+.step-head h2 { margin: 0; font-size: 16px; }
+.step-num { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 999px; background: #eef1f5; font-size: 13px; font-weight: 700; flex: none; }
+#loginBox { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+.auth-form { display: flex; flex-direction: column; gap: 12px; margin: 12px 0 4px; }
+.field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; }
+.field input { width: 100%; }
+.btn-block { width: 100%; padding: 10px; font-weight: 600; }
+.btn-github { background: #111418; color: #fff; border: none; cursor: pointer; border-radius: 8px; font: inherit; padding: 10px; }
+.btn-github:hover { background: #000; }
+.divider { display: flex; align-items: center; gap: 10px; margin: 16px 0 4px; color: var(--muted); font-size: 13px; }
+.divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.fine-print { font-size: 12.5px; margin-top: 14px; }
 </style>
 </head>
 <body>
@@ -47,49 +65,56 @@ form.inline input { flex: 1; min-width: 180px; }
 <div><span id="userLabel" class="muted"></span> <button id="logoutBtn" class="ghost" hidden>Log out</button></div>
 </header>
 <main>
-<section id="authPane" class="card" hidden>
+<section id="authPane" class="card auth-card" hidden>
+<div class="auth-narrow">
+<div class="brand"><span class="brand-mark">F</span><span class="brand-name">Flare Actions</span></div>
 <div id="connectBox">
-<h2>Step 1: Connect GitHub</h2>
-<p class="muted">One click creates the GitHub App (webhooks + login).</p>
-<form id="connectForm" class="inline">
-<input id="connectName" placeholder="App name (blank = random)" maxlength="34">
-<button type="submit">Connect GitHub</button>
+<div class="step-head"><span class="step-num">1</span><h2>Connect GitHub</h2></div>
+<p class="muted">One click creates the GitHub App: webhooks, commit statuses, and login.</p>
+<form id="connectForm" class="auth-form">
+<label class="field"><span>App name</span><input id="connectName" placeholder="Blank = random" maxlength="34"></label>
+<button type="submit" class="btn-block">Connect GitHub</button>
 </form>
 <p id="connectErr" class="err"></p>
 </div>
 <div id="loginBox">
-<h2>Step 2: Log in</h2>
+<div class="step-head"><span class="step-num" id="loginStepNum">2</span><h2>Log in</h2></div>
 <p id="authInstallBox" hidden><a id="authInstallLink" href="#" target="_blank" rel="noopener">Install the App on your repos first</a></p>
-<p><button id="githubLoginBtn">Login with GitHub</button></p>
-<p class="muted">First login claims admin. Or use email:</p>
-<form id="emailForm" class="inline">
-<input id="emailInput" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254">
-<input id="emailPw" type="password" placeholder="Password" autocomplete="current-password">
-<input id="emailPw2" type="password" placeholder="Confirm password" autocomplete="new-password" hidden>
-<button type="submit" id="emailBtn">Log in</button>
+<button id="githubLoginBtn" class="btn-github btn-block">Login with GitHub</button>
+<div class="divider"><span>or with email</span></div>
+<form id="emailForm" class="auth-form">
+<label class="field"><span>Email</span><input id="emailInput" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254"></label>
+<label class="field"><span>Password</span><input id="emailPw" type="password" placeholder="Password" autocomplete="current-password"></label>
+<label class="field" id="emailPw2Wrap" hidden><span>Confirm password</span><input id="emailPw2" type="password" placeholder="Confirm password" autocomplete="new-password"></label>
+<button type="submit" id="emailBtn" class="btn-block">Log in</button>
 </form>
 <p id="emailErr" class="err"></p>
 <p id="loginMsg"></p>
 <div id="breakGlassBox" hidden>
 <p class="muted">Or use the recovery password.</p>
-<form id="recoveryForm" class="inline">
-<input id="recoveryInput" type="password" placeholder="Recovery password" autocomplete="current-password">
-<button type="submit">Log in</button>
+<form id="recoveryForm" class="auth-form">
+<label class="field"><span>Recovery password</span><input id="recoveryInput" type="password" placeholder="Recovery password" autocomplete="current-password"></label>
+<button type="submit" class="btn-block ghost">Log in</button>
 </form>
 <p id="recoveryErr" class="err"></p>
 </div>
 <p id="loginErr" class="err"></p>
+<p class="muted fine-print">First login claims admin.</p>
+</div>
 </div>
 </section>
-<section id="invitePane" class="card" hidden>
-<h2>Accept invite</h2>
+<section id="invitePane" class="card auth-card" hidden>
+<div class="auth-narrow">
+<div class="brand"><span class="brand-mark">F</span><span class="brand-name">Flare Actions</span></div>
+<h2>You've been invited</h2>
 <p class="muted" id="inviteInfo"></p>
-<form id="inviteForm" class="inline">
-<input id="invitePw1" type="password" placeholder="New password (8+ characters)" autocomplete="new-password">
-<input id="invitePw2" type="password" placeholder="Confirm password" autocomplete="new-password">
-<button type="submit">Create account</button>
+<form id="inviteForm" class="auth-form">
+<label class="field"><span>New password</span><input id="invitePw1" type="password" placeholder="8+ characters" autocomplete="new-password"></label>
+<label class="field"><span>Confirm password</span><input id="invitePw2" type="password" placeholder="Confirm password" autocomplete="new-password"></label>
+<button type="submit" class="btn-block">Create account</button>
 </form>
 <p id="inviteErr" class="err"></p>
+</div>
 </section>
 <section id="appPane" hidden>
 <nav class="tabs">
@@ -187,8 +212,9 @@ form.inline input { flex: 1; min-width: 180px; }
     lastStatus = st;
     invitePane.hidden = true;
     authPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
-    document.getElementById("emailPw2").hidden = st.claimed;
+    document.getElementById("emailPw2Wrap").hidden = st.claimed;
     document.getElementById("emailBtn").textContent = st.claimed ? "Log in" : "Create admin account";
+    document.getElementById("loginStepNum").hidden = st.githubConnected;
     document.getElementById("connectBox").hidden = st.githubConnected;
     document.getElementById("breakGlassBox").hidden = !st.breakGlass;
     var installBox = document.getElementById("authInstallBox");
