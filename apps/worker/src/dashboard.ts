@@ -44,19 +44,14 @@ form.inline input { flex: 1; min-width: 180px; }
 .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .brand-mark { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; background: var(--ink); color: #fff; font-weight: 800; font-size: 17px; }
 .brand-name { font-weight: 700; font-size: 16px; }
-.step-head { display: flex; align-items: center; gap: 10px; margin: 18px 0 6px; }
-.step-head h2 { margin: 0; font-size: 16px; }
-.step-num { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 999px; background: #eef1f5; font-size: 13px; font-weight: 700; flex: none; }
-#loginBox { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+#connectBox, #githubBox { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 12px; }
+#emailBox h2, #connectBox h2 { margin: 0 0 4px; font-size: 16px; }
 .auth-form { display: flex; flex-direction: column; gap: 12px; margin: 12px 0 4px; }
 .field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; }
 .field input { width: 100%; }
 .btn-block { width: 100%; padding: 10px; font-weight: 600; }
 .btn-github { background: #111418; color: #fff; border: none; cursor: pointer; border-radius: 8px; font: inherit; padding: 10px; }
 .btn-github:hover { background: #000; }
-.divider { display: flex; align-items: center; gap: 10px; margin: 16px 0 4px; color: var(--muted); font-size: 13px; }
-.divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
-.fine-print { font-size: 12.5px; margin-top: 14px; }
 </style>
 </head>
 <body>
@@ -68,20 +63,9 @@ form.inline input { flex: 1; min-width: 180px; }
 <section id="authPane" class="card auth-card" hidden>
 <div class="auth-narrow">
 <div class="brand"><span class="brand-mark">F</span><span class="brand-name">Flare Actions</span></div>
-<div id="connectBox">
-<div class="step-head"><span class="step-num">1</span><h2>Connect GitHub</h2></div>
-<p class="muted">One click creates the GitHub App: webhooks, commit statuses, and login.</p>
-<form id="connectForm" class="auth-form">
-<label class="field"><span>App name</span><input id="connectName" placeholder="Blank = random" maxlength="34"></label>
-<button type="submit" class="btn-block">Connect GitHub</button>
-</form>
-<p id="connectErr" class="err"></p>
-</div>
-<div id="loginBox">
-<div class="step-head"><span class="step-num" id="loginStepNum">2</span><h2>Log in</h2></div>
-<p id="authInstallBox" hidden><a id="authInstallLink" href="#" target="_blank" rel="noopener">Install the App on your repos first</a></p>
-<button id="githubLoginBtn" class="btn-github btn-block">Login with GitHub</button>
-<div class="divider"><span>or with email</span></div>
+<div id="emailBox">
+<h2 id="emailTitle">Log in with email</h2>
+<p class="muted" id="emailDesc">Welcome back.</p>
 <form id="emailForm" class="auth-form">
 <label class="field"><span>Email</span><input id="emailInput" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254"></label>
 <label class="field"><span>Password</span><input id="emailPw" type="password" placeholder="Password" autocomplete="current-password"></label>
@@ -89,6 +73,18 @@ form.inline input { flex: 1; min-width: 180px; }
 <button type="submit" id="emailBtn" class="btn-block">Log in</button>
 </form>
 <p id="emailErr" class="err"></p>
+</div>
+<div id="connectBox">
+<h2>Connect GitHub</h2>
+<p class="muted">One click creates the GitHub App: webhooks, commit statuses, and login.</p>
+<form id="connectForm" class="auth-form">
+<button type="submit" class="btn-block">Connect GitHub</button>
+</form>
+<p id="connectErr" class="err"></p>
+</div>
+<div id="githubBox">
+<button id="githubLoginBtn" class="btn-github btn-block">Login with GitHub</button>
+<p id="authInstallBox" hidden><a id="authInstallLink" href="#" target="_blank" rel="noopener">Install the App on your repos first</a></p>
 <p id="loginMsg"></p>
 <div id="breakGlassBox" hidden>
 <p class="muted">Or use the recovery password.</p>
@@ -99,7 +95,6 @@ form.inline input { flex: 1; min-width: 180px; }
 <p id="recoveryErr" class="err"></p>
 </div>
 <p id="loginErr" class="err"></p>
-<p class="muted fine-print">First login claims admin.</p>
 </div>
 </div>
 </section>
@@ -123,6 +118,12 @@ form.inline input { flex: 1; min-width: 180px; }
 <button id="tabSettings">Settings</button>
 </nav>
 <section id="runsPane" class="card">
+<div id="connectBanner" hidden>
+<h2>Finish setup</h2>
+<p class="muted">Connect GitHub to run pushes from your repos — one click, then install the App.</p>
+<p><button id="connectBannerBtn">Connect GitHub</button></p>
+<p id="connectBannerErr" class="err"></p>
+</div>
 <h2>Runs</h2>
 <table><thead><tr><th>Status</th><th>Repo</th><th>Commit</th><th>Event</th><th>Updated</th></tr></thead><tbody id="runsBody"></tbody></table>
 <div id="runDetail" hidden></div>
@@ -176,7 +177,6 @@ form.inline input { flex: 1; min-width: 180px; }
 <h2>GitHub App</h2>
 <p class="muted" id="githubInfo"></p>
 <form id="githubForm" class="inline">
-<input id="githubName" placeholder="App name, e.g. flare-actions-a1b2 (blank = random)" maxlength="34">
 <button type="submit">Connect GitHub</button>
 </form>
 <p id="githubErr" class="err"></p>
@@ -214,7 +214,8 @@ form.inline input { flex: 1; min-width: 180px; }
     authPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
     document.getElementById("emailPw2Wrap").hidden = st.claimed;
     document.getElementById("emailBtn").textContent = st.claimed ? "Log in" : "Create admin account";
-    document.getElementById("loginStepNum").hidden = st.githubConnected;
+    document.getElementById("emailTitle").textContent = st.claimed ? "Log in with email" : "Create admin account";
+    document.getElementById("emailDesc").textContent = st.claimed ? "Welcome back." : "First account claims admin.";
     document.getElementById("connectBox").hidden = st.githubConnected;
     document.getElementById("breakGlassBox").hidden = !st.breakGlass;
     var installBox = document.getElementById("authInstallBox");
@@ -225,9 +226,10 @@ form.inline input { flex: 1; min-width: 180px; }
       installBox.hidden = true;
     }
   }
-  function showApp(actor, admin) {
+  function showApp(actor, admin, githubConnected) {
     invitePane.hidden = true;
     authPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false;
+    document.getElementById("connectBanner").hidden = !(admin && !githubConnected);
     userLabel.textContent = actor ? actor + " " : "";
     tabAccess.hidden = !admin;
     tabSettings.hidden = !admin;
@@ -253,7 +255,7 @@ form.inline input { flex: 1; min-width: 180px; }
 
   function route(st) {
     if (st.user) {
-      showApp(st.user.actor, st.user.admin);
+      showApp(st.user.actor, st.user.admin, st.githubConnected);
       loadRuns();
       if (st.user.admin) { loadTokens(); loadUsers(); }
     } else {
@@ -367,14 +369,18 @@ form.inline input { flex: 1; min-width: 180px; }
     document.body.appendChild(form);
     form.submit();
   }
+  function startConnect(errEl) {
+    errEl.textContent = "";
+    api("/v1/admin/github/connect", { method: "POST", body: JSON.stringify({}) })
+      .then(function (data) { submitManifest(data.postUrl, data.manifest); })
+      .catch(function () { errEl.textContent = "Could not start connect (already managed via environment)."; });
+  }
   document.getElementById("connectForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
-    var err = document.getElementById("connectErr");
-    err.textContent = "";
-    var v = document.getElementById("connectName").value.trim();
-    api("/v1/admin/github/connect", { method: "POST", body: JSON.stringify({ name: v }) })
-      .then(function (data) { submitManifest(data.postUrl, data.manifest); })
-      .catch(function () { err.textContent = "Could not start connect (env-managed, or invalid name)."; });
+    startConnect(document.getElementById("connectErr"));
+  });
+  document.getElementById("connectBannerBtn").addEventListener("click", function () {
+    startConnect(document.getElementById("connectBannerErr"));
   });
   logoutBtn.addEventListener("click", function () {
     sessionStorage.removeItem(KEY);
@@ -630,10 +636,9 @@ form.inline input { flex: 1; min-width: 180px; }
     var err = document.getElementById("githubErr");
     var ok = document.getElementById("githubOk");
     err.textContent = ""; ok.textContent = "";
-    var v = document.getElementById("githubName").value.trim();
-    api("/v1/admin/github/connect", { method: "POST", body: JSON.stringify({ name: v }) })
+    api("/v1/admin/github/connect", { method: "POST", body: JSON.stringify({}) })
       .then(function (data) { submitManifest(data.postUrl, data.manifest); })
-      .catch(function () { err.textContent = "Could not start connect (env-managed, or invalid name)."; });
+      .catch(function () { err.textContent = "Could not start connect (already managed via environment)."; });
   });
 
   function handleGithubQuery(st, status, reason) {

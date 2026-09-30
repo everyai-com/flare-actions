@@ -32,12 +32,13 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
 **One click (no terminal):** hit **Deploy to Cloudflare** above, then open
 `https://&lt;your-worker&gt;/dashboard`:
 
-1. **Connect GitHub** — one click creates the GitHub App (webhook +
-   secret + private key, no terminal), then install it on your repos.
-2. **Log in** — with GitHub, or create an email + password account
-   (first signup claims admin). Invite teammates by email from the
-   Access tab; they get a single-use link. Managed seats need nothing
-   else; issue runner tokens in the Access tab only for BYO machines.
+1. Open the dashboard and **create your admin account** (email +
+   password) — first signup claims admin.
+2. Hit **Connect GitHub** (one click, no naming — the App name is
+   automatic), install the App on your repos, and push. Prefer GitHub
+   login? Connect first, then Login with GitHub instead. Invite
+   teammates by email from the Access tab; managed seats need nothing
+   else, and runner tokens are only for BYO machines.
 
 **From source:**
 

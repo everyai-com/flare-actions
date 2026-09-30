@@ -47,7 +47,7 @@ export function buildManifest(name: string, origin: string): AppManifest {
 }
 
 export function suggestAppName(randomHex: string): string {
-  return `flare-actions-${randomHex.slice(0, 4).toLowerCase()}`;
+  return `flare-actions-${randomHex.slice(0, 6).toLowerCase()}`;
 }
 
 function stateKey(state: string): string {

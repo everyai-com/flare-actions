@@ -64,7 +64,7 @@ describe("connect", () => {
     expect(validateAppName("has space")).toContain("1-34");
     expect(validateAppName("x".repeat(35))).toContain("1-34");
     expect(validateAppName("has/slash")).toContain("1-34");
-    expect(suggestAppName("abcdef123456")).toBe("flare-actions-abcd");
+    expect(suggestAppName("abcdef123456")).toBe("flare-actions-abcdef");
   });
 
   it("issues single-use states with a 15-minute horizon", async () => {
