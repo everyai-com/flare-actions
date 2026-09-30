@@ -69,4 +69,12 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("/v1/runs");
     expect(DASHBOARD_HTML).not.toContain("${");
   });
+
+  it("ships a syntactically valid inline script", () => {
+    // A latent syntax error here blanks the whole dashboard (every pane
+    // needs JS to appear), so the served script must always parse.
+    const m = /<script>([\s\S]*)<\/script>/.exec(DASHBOARD_HTML);
+    if (!m) throw new Error("dashboard has no inline script");
+    expect(() => new Function(m[1])).not.toThrow();
+  });
 });

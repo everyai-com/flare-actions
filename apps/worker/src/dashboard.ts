@@ -434,7 +434,7 @@ form.inline input { flex: 1; min-width: 180px; }
           var tri = el("div");
           tri.className = "triage";
           tri.appendChild(el("strong", "AI triage"));
-          tri.appendChild(document.createTextNode("\n" + j.triage));
+          tri.appendChild(document.createTextNode("\\n" + j.triage));
           box.appendChild(tri);
         }
         var pre = el("pre", j.log || "(no log output)");
