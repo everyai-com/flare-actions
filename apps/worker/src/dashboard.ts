@@ -47,18 +47,21 @@ form.inline input { flex: 1; min-width: 180px; }
 <div><span id="userLabel" class="muted"></span> <button id="logoutBtn" class="ghost" hidden>Log out</button></div>
 </header>
 <main>
-<section id="connectPane" class="card" hidden>
-<h2>Connect GitHub</h2>
-<p class="muted">One click creates the GitHub App (webhooks + login), then you log in with GitHub. First login claims admin.</p>
+<section id="authPane" class="card" hidden>
+<div id="connectBox">
+<h2>Step 1: Connect GitHub</h2>
+<p class="muted">One click creates the GitHub App (webhooks + login).</p>
 <form id="connectForm" class="inline">
 <input id="connectName" placeholder="App name (blank = random)" maxlength="34">
 <button type="submit">Connect GitHub</button>
 </form>
 <p id="connectErr" class="err"></p>
-</section>
-<section id="loginPane" class="card" hidden>
-<h2>Log in</h2>
+</div>
+<div id="loginBox">
+<h2>Step 2: Log in</h2>
+<p id="authInstallBox" hidden><a id="authInstallLink" href="#" target="_blank" rel="noopener">Install the App on your repos first</a></p>
 <p><button id="githubLoginBtn">Login with GitHub</button></p>
+<p class="muted">First login claims admin.</p>
 <p id="loginMsg"></p>
 <div id="breakGlassBox" hidden>
 <p class="muted">Or use the recovery password.</p>
@@ -69,6 +72,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <p id="recoveryErr" class="err"></p>
 </div>
 <p id="loginErr" class="err"></p>
+</div>
 </section>
 <section id="appPane" hidden>
 <nav class="tabs">
@@ -136,21 +140,27 @@ form.inline input { flex: 1; min-width: 180px; }
   function fmtTime(iso) { try { return new Date(iso).toLocaleString(); } catch (e) { return iso; } }
   function pill(status) { var s = el("span", status); s.className = "pill " + status; return s; }
 
-  var loginPane = document.getElementById("loginPane");
-  var connectPane = document.getElementById("connectPane");
+  var authPane = document.getElementById("authPane");
   var appPane = document.getElementById("appPane");
   var logoutBtn = document.getElementById("logoutBtn");
   var userLabel = document.getElementById("userLabel");
+  var lastStatus = null;
 
-  function showConnect() {
-    connectPane.hidden = false; loginPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
-  }
-  function showLogin(breakGlass) {
-    connectPane.hidden = true; loginPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
-    document.getElementById("breakGlassBox").hidden = !breakGlass;
+  function showAuth(st) {
+    lastStatus = st;
+    authPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
+    document.getElementById("connectBox").hidden = st.githubConnected;
+    document.getElementById("breakGlassBox").hidden = !st.breakGlass;
+    var installBox = document.getElementById("authInstallBox");
+    if (st.githubConnected && st.installUrl) {
+      installBox.hidden = false;
+      document.getElementById("authInstallLink").href = st.installUrl;
+    } else {
+      installBox.hidden = true;
+    }
   }
   function showApp(actor, admin) {
-    connectPane.hidden = true; loginPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false;
+    authPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false;
     userLabel.textContent = actor ? actor + " " : "";
     tabAccess.hidden = !admin;
     tabSettings.hidden = !admin;
@@ -179,10 +189,8 @@ form.inline input { flex: 1; min-width: 180px; }
       showApp(st.user.actor, st.user.admin);
       loadRuns();
       if (st.user.admin) { loadTokens(); loadUsers(); }
-    } else if (!st.githubConnected && !st.breakGlass) {
-      showConnect();
     } else {
-      showLogin(st.breakGlass);
+      showAuth(st);
     }
   }
 
@@ -193,10 +201,14 @@ form.inline input { flex: 1; min-width: 180px; }
       if (g && window.history && window.history.replaceState) window.history.replaceState({}, "", "/dashboard");
       route(st);
       handleGithubQuery(st, g, q.get("reason"));
-    }).catch(function () { showLogin(false); });
+    }).catch(function () { showAuth({ githubConnected: false, breakGlass: false, installUrl: null }); });
   }
 
   document.getElementById("githubLoginBtn").addEventListener("click", function () {
+    if (lastStatus && !lastStatus.githubConnected) {
+      document.getElementById("loginMsg").textContent = "Connect GitHub first (step 1 above).";
+      return;
+    }
     window.location.href = "/v1/admin/github/login";
   });
   document.getElementById("recoveryForm").addEventListener("submit", function (ev) {
@@ -460,10 +472,9 @@ form.inline input { flex: 1; min-width: 180px; }
     } else if (status === "error") {
       var msg = reason === "expired" ? "Login expired — try again."
         : reason === "exchange" ? "GitHub refused the exchange — try again."
-        : reason === "noapp" ? "Connect GitHub first."
+        : reason === "noapp" ? "Connect GitHub first (step 1 above)."
         : "Something failed — try again.";
-      if (!st.githubConnected && !st.breakGlass) document.getElementById("connectErr").textContent = msg;
-      else document.getElementById("loginErr").textContent = msg;
+      document.getElementById("loginErr").textContent = msg;
     }
   }
 

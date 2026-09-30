@@ -678,10 +678,13 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/status") {
         const ident = await authIdentity(request, env);
+        const connected = (await getOAuthCreds(env)) !== null;
+        const slug = connected ? await getSetting(env.DB, SETTING_KEYS.githubAppSlug) : null;
         return json({
           claimed: await isClaimed(env),
           breakGlass: !!env.ADMIN_TOKEN,
-          githubConnected: (await getOAuthCreds(env)) !== null,
+          githubConnected: connected,
+          installUrl: slug ? installUrl(slug) : null,
           user: ident ? { actor: ident.actor, admin: ident.scope === "admin" } : null,
         });
       }
