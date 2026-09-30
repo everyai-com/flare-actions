@@ -1,4 +1,4 @@
-import { getSetting, setSetting, type Db } from "./db";
+import { createSession, getSetting, setSetting, type Db } from "./db";
 import { SETTING_KEYS } from "./settings";
 
 // Login with GitHub, using the connected App's OAuth credentials.
@@ -90,14 +90,34 @@ export interface LoginDecision {
 }
 
 export async function decideLogin(db: Db, login: string): Promise<LoginDecision> {
-  const admin = await getSetting(db, SETTING_KEYS.adminGithubUser);
-  if (!admin) return { allowed: true, isAdmin: true, claimed: false };
-  if (login.toLowerCase() === admin.toLowerCase()) return { allowed: true, isAdmin: true, claimed: true };
+  const [admin, adminEmail] = await Promise.all([
+    getSetting(db, SETTING_KEYS.adminGithubUser),
+    getSetting(db, SETTING_KEYS.adminEmail),
+  ]);
+  // First login of either kind claims admin; an email-claimed deploy
+  // treats GitHub strangers as strangers, not founders.
+  if (!admin && !adminEmail) return { allowed: true, isAdmin: true, claimed: false };
+  if (admin && login.toLowerCase() === admin.toLowerCase()) return { allowed: true, isAdmin: true, claimed: true };
   const allowed = await listAllowedUsers(db);
   if (allowed.map((u) => u.toLowerCase()).includes(login.toLowerCase())) {
     return { allowed: true, isAdmin: false, claimed: true };
   }
   return { allowed: false, isAdmin: false, claimed: true };
+}
+
+export async function createLoginSession(
+  db: Db,
+  args: { kind: string; login: string; isAdmin: boolean },
+): Promise<string> {
+  const sessionId = crypto.randomUUID();
+  await createSession(db, {
+    id: sessionId,
+    githubUser: args.login,
+    kind: args.kind,
+    isAdmin: args.isAdmin,
+    expiresAt: new Date(Date.now() + SESSION_TTL_DAYS * 86400000).toISOString(),
+  });
+  return sessionId;
 }
 
 export async function claimAdmin(db: Db, login: string): Promise<void> {

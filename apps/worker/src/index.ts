@@ -4,9 +4,11 @@ import {
   claimNextJob,
   createJob,
   createRun,
-  createSession,
   createToken,
+  createUser,
   deleteSession,
+  deleteUser,
+  deleteUserSessions,
   findLiveToken,
   flakyStats,
   getJob,
@@ -14,12 +16,14 @@ import {
   getRun,
   getSession,
   getSetting,
+  getUser,
   hasActiveGroupJob,
   isTerminal,
   latestRunStatus,
   listAudit,
   listRuns,
   listTokens,
+  listUsers,
   rerunJob,
   revokeToken,
   rollupRunStatus,
@@ -36,17 +40,29 @@ import {
   buildAuthorizeUrl,
   claimAdmin,
   consumeOAuthState,
+  createLoginSession,
   decideLogin,
   exchangeOAuthCode,
   fetchGithubLogin,
   listAllowedUsers,
   parseSessionCookie,
   removeAllowedUser,
-  SESSION_TTL_DAYS,
   sessionClearCookie,
   sessionSetCookie,
   validateGithubLogin,
 } from "./oauth";
+import {
+  consumeInvite,
+  createInvite,
+  dummyPasswordHash,
+  hashPassword,
+  listInvites,
+  normalizeEmail,
+  peekInvite,
+  validateEmail,
+  validatePassword,
+  verifyPassword,
+} from "./email";
 import {
   defaultPipeline,
   fetchPipeline,
@@ -159,7 +175,8 @@ async function authIdentity(request: Request, env: WorkerEnv): Promise<{ scope: 
   if (!sessionId) return null;
   const session = await getSession(env.DB, sessionId);
   if (!session || Date.parse(session.expires_at) <= Date.now()) return null;
-  const actor = `github:${session.github_user}`;
+  const kind = session.kind === "email" ? "email" : "github";
+  const actor = `${kind}:${session.github_user}`;
   return session.is_admin ? { scope: "admin", actor } : { scope: "readonly", actor };
 }
 
@@ -171,10 +188,15 @@ async function isAdminRequest(request: Request, env: WorkerEnv): Promise<boolean
   return (await authScope(request, env)) === "admin";
 }
 
-// Claimed once the first GitHub user logs in; before that, Connect
-// is open so a fresh deploy can bootstrap with no credentials.
+// Claimed once the first admin of either kind exists; before that,
+// Connect and email bootstrap stay open so a fresh deploy can start
+// with no credentials.
 async function isClaimed(env: WorkerEnv): Promise<boolean> {
-  return (await getSetting(env.DB, SETTING_KEYS.adminGithubUser)) !== null;
+  const [github, email] = await Promise.all([
+    getSetting(env.DB, SETTING_KEYS.adminGithubUser),
+    getSetting(env.DB, SETTING_KEYS.adminEmail),
+  ]);
+  return github !== null || email !== null;
 }
 
 async function getOAuthCreds(env: WorkerEnv): Promise<{ clientId: string; clientSecret: string } | null> {
@@ -732,13 +754,7 @@ export default {
           await audit(env.DB, `github:${login}`, "admin.claim", "");
           log("info", "admin claimed", { login });
         }
-        const sessionId = crypto.randomUUID();
-        await createSession(env.DB, {
-          id: sessionId,
-          githubUser: login,
-          isAdmin: decision.isAdmin,
-          expiresAt: new Date(Date.now() + SESSION_TTL_DAYS * 86400000).toISOString(),
-        });
+        const sessionId = await createLoginSession(env.DB, { kind: "github", login, isAdmin: decision.isAdmin });
         await audit(env.DB, `github:${login}`, "session.login", "");
         return new Response(null, {
           status: 302,
@@ -751,9 +767,13 @@ export default {
       if (request.method === "GET" && url.pathname === "/v1/admin/users") {
         const ident = await authIdentity(request, env);
         if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const emailUsers = await listUsers(env.DB);
         return json({
           admin: await getSetting(env.DB, SETTING_KEYS.adminGithubUser),
+          adminEmail: await getSetting(env.DB, SETTING_KEYS.adminEmail),
           users: await listAllowedUsers(env.DB),
+          emailUsers: emailUsers.map((u) => ({ email: u.email, isAdmin: u.is_admin === 1, createdAt: u.created_at })),
+          invites: await listInvites(env.DB),
         });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/users") {
@@ -763,12 +783,105 @@ export default {
         const err = validateGithubLogin(body.login);
         if (err) return json({ error: err }, 400);
         if (body.action !== "add" && body.action !== "remove") return json({ error: "action must be add|remove" }, 400);
-        const users =
-          body.action === "add"
-            ? await addAllowedUser(env.DB, body.login as string)
-            : await removeAllowedUser(env.DB, body.login as string);
-        await audit(env.DB, ident.actor, `users.${body.action as string}`, body.login as string);
+        const login = body.login as string;
+        const users = body.action === "add" ? await addAllowedUser(env.DB, login) : await removeAllowedUser(env.DB, login);
+        if (body.action === "remove") await deleteUserSessions(env.DB, "github", login);
+        await audit(env.DB, ident.actor, `users.${body.action as string}`, login);
         return json({ users });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/users/email") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const body = (await request.json().catch(() => ({}))) as { email?: unknown; action?: unknown };
+        const err = validateEmail(body.email);
+        if (err) return json({ error: err }, 400);
+        if (body.action !== "remove") return json({ error: "action must be remove" }, 400);
+        const email = normalizeEmail(body.email as string);
+        const adminEmail = await getSetting(env.DB, SETTING_KEYS.adminEmail);
+        if (adminEmail && email === adminEmail) return json({ error: "cannot remove the admin account" }, 403);
+        if (ident.actor === `email:${email}`) return json({ error: "cannot remove yourself" }, 403);
+        await deleteUser(env.DB, email);
+        await deleteUserSessions(env.DB, "email", email);
+        await audit(env.DB, ident.actor, "users.email.remove", email);
+        return json({ ok: true });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/users/invite") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const body = (await request.json().catch(() => ({}))) as { email?: unknown };
+        const err = validateEmail(body.email);
+        if (err) return json({ error: err }, 400);
+        const email = normalizeEmail(body.email as string);
+        if (await getUser(env.DB, email)) return json({ error: "that email already has an account" }, 409);
+        const { token, invite } = await createInvite(env.DB, email);
+        await audit(env.DB, ident.actor, "users.invite", email);
+        const inviteUrl = new URL(`/dashboard?invite=${encodeURIComponent(token)}`, url).toString();
+        return json({ inviteUrl, email: invite.email, expiresAt: invite.expiresAt });
+      }
+      const inviteMatch = /^\/v1\/admin\/invite\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "GET" && inviteMatch) {
+        const invite = await peekInvite(env.DB, decodeURIComponent(inviteMatch[1]));
+        if (!invite) return json({ error: "invite invalid or expired" }, 404);
+        return json({ email: invite.email });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/register") {
+        const body = (await request.json().catch(() => ({}))) as { token?: unknown; password?: unknown };
+        if (typeof body.token !== "string" || !body.token) return json({ error: "invite required" }, 400);
+        const pwErr = validatePassword(body.password);
+        if (pwErr) return json({ error: pwErr }, 400);
+        const invite = await consumeInvite(env.DB, body.token);
+        if (!invite) return json({ error: "invite invalid or expired" }, 404);
+        if (await getUser(env.DB, invite.email)) return json({ error: "that email already has an account" }, 409);
+        await createUser(env.DB, { email: invite.email, passwordHash: await hashPassword(body.password as string), isAdmin: false });
+        const sessionId = await createLoginSession(env.DB, { kind: "email", login: invite.email, isAdmin: false });
+        await audit(env.DB, `email:${invite.email}`, "session.register", "");
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Set-Cookie": sessionSetCookie(sessionId, url.protocol === "https:"),
+          },
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/bootstrap") {
+        if (await isClaimed(env)) return json({ error: "already claimed" }, 403);
+        const body = (await request.json().catch(() => ({}))) as { email?: unknown; password?: unknown };
+        const emailErr = validateEmail(body.email);
+        if (emailErr) return json({ error: emailErr }, 400);
+        const pwErr = validatePassword(body.password);
+        if (pwErr) return json({ error: pwErr }, 400);
+        const email = normalizeEmail(body.email as string);
+        await createUser(env.DB, { email, passwordHash: await hashPassword(body.password as string), isAdmin: true });
+        await setSetting(env.DB, SETTING_KEYS.adminEmail, email);
+        const sessionId = await createLoginSession(env.DB, { kind: "email", login: email, isAdmin: true });
+        await audit(env.DB, `email:${email}`, "admin.claim", "");
+        log("info", "admin claimed", { email });
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Set-Cookie": sessionSetCookie(sessionId, url.protocol === "https:"),
+          },
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/login") {
+        const body = (await request.json().catch(() => ({}))) as { email?: unknown; password?: unknown };
+        if (validateEmail(body.email) || typeof body.password !== "string") {
+          return json({ error: "invalid email or password" }, 401);
+        }
+        const email = normalizeEmail(body.email as string);
+        const user = await getUser(env.DB, email);
+        const ok = await verifyPassword(body.password, user?.password_hash ?? dummyPasswordHash());
+        if (!user || !ok) return json({ error: "invalid email or password" }, 401);
+        const sessionId = await createLoginSession(env.DB, { kind: "email", login: email, isAdmin: user.is_admin === 1 });
+        await audit(env.DB, `email:${email}`, "session.login", "");
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Set-Cookie": sessionSetCookie(sessionId, url.protocol === "https:"),
+          },
+        });
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/settings") {
         if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
@@ -781,6 +894,7 @@ export default {
         const githubSlug = githubSource === "d1" ? await getSetting(env.DB, SETTING_KEYS.githubAppSlug) : null;
         return json({
           adminGithubUser: await getSetting(env.DB, SETTING_KEYS.adminGithubUser),
+          adminEmail: await getSetting(env.DB, SETTING_KEYS.adminEmail),
           webhookSecretSource,
           cache: env.CACHE ? "r2" : "none",
           githubApp: { source: githubSource, installUrl: githubSlug ? installUrl(githubSlug) : null },

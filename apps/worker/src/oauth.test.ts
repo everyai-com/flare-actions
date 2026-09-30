@@ -49,9 +49,10 @@ class MemAuth implements Db {
             this.sessions.set(values[0] as string, {
               id: values[0],
               github_user: values[1],
-              is_admin: values[2],
-              created_at: values[3],
-              expires_at: values[4],
+              kind: values[2],
+              is_admin: values[3],
+              created_at: values[4],
+              expires_at: values[5],
             });
             return {};
           }
@@ -140,6 +141,14 @@ describe("oauth", () => {
     await expect(decideLogin(db, "TeamMate")).resolves.toEqual({ allowed: true, isAdmin: false, claimed: true });
     await removeAllowedUser(db, "TEAMMATE");
     await expect(decideLogin(db, "teammate")).resolves.toEqual({ allowed: false, isAdmin: false, claimed: true });
+  });
+
+  it("an email-claimed deploy does not let GitHub strangers claim", async () => {
+    const db = new MemAuth();
+    db.settings.set("admin_email", "boss@example.com");
+    await expect(decideLogin(db, "octocat")).resolves.toEqual({ allowed: false, isAdmin: false, claimed: true });
+    await addAllowedUser(db, "octocat");
+    await expect(decideLogin(db, "octocat")).resolves.toEqual({ allowed: true, isAdmin: false, claimed: true });
   });
 
   it("manages the allow-list without duplicates", async () => {

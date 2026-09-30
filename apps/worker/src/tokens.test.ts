@@ -61,6 +61,10 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("/v1/admin/settings");
     expect(DASHBOARD_HTML).toContain("/v1/admin/github/login");
     expect(DASHBOARD_HTML).toContain("Login with GitHub");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/login");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/bootstrap");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/register");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/users/invite");
     expect(DASHBOARD_HTML).toContain("AI triage");
     expect(DASHBOARD_HTML).toContain("/v1/runs");
     expect(DASHBOARD_HTML).not.toContain("${");

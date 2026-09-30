@@ -61,7 +61,14 @@ form.inline input { flex: 1; min-width: 180px; }
 <h2>Step 2: Log in</h2>
 <p id="authInstallBox" hidden><a id="authInstallLink" href="#" target="_blank" rel="noopener">Install the App on your repos first</a></p>
 <p><button id="githubLoginBtn">Login with GitHub</button></p>
-<p class="muted">First login claims admin.</p>
+<p class="muted">First login claims admin. Or use email:</p>
+<form id="emailForm" class="inline">
+<input id="emailInput" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254">
+<input id="emailPw" type="password" placeholder="Password" autocomplete="current-password">
+<input id="emailPw2" type="password" placeholder="Confirm password" autocomplete="new-password" hidden>
+<button type="submit" id="emailBtn">Log in</button>
+</form>
+<p id="emailErr" class="err"></p>
 <p id="loginMsg"></p>
 <div id="breakGlassBox" hidden>
 <p class="muted">Or use the recovery password.</p>
@@ -73,6 +80,16 @@ form.inline input { flex: 1; min-width: 180px; }
 </div>
 <p id="loginErr" class="err"></p>
 </div>
+</section>
+<section id="invitePane" class="card" hidden>
+<h2>Accept invite</h2>
+<p class="muted" id="inviteInfo"></p>
+<form id="inviteForm" class="inline">
+<input id="invitePw1" type="password" placeholder="New password (8+ characters)" autocomplete="new-password">
+<input id="invitePw2" type="password" placeholder="Confirm password" autocomplete="new-password">
+<button type="submit">Create account</button>
+</form>
+<p id="inviteErr" class="err"></p>
 </section>
 <section id="appPane" hidden>
 <nav class="tabs">
@@ -107,6 +124,20 @@ form.inline input { flex: 1; min-width: 180px; }
 </form>
 <p id="userErr" class="err"></p>
 <table><thead><tr><th>Username</th><th></th></tr></thead><tbody id="usersBody"></tbody></table>
+<h2>Email users</h2>
+<p class="muted" id="emailUsersInfo"></p>
+<form id="inviteFormBtn" class="inline">
+<input id="inviteEmail" type="email" placeholder="teammate@example.com" maxlength="254">
+<button type="submit">Invite by email</button>
+</form>
+<p id="inviteUserErr" class="err"></p>
+<div id="inviteLinkBox" hidden>
+<p><strong>Send this invite link — it works once and expires in 24h.</strong></p>
+<code class="token" id="inviteLinkVal"></code>
+</div>
+<table><thead><tr><th>Email</th><th>Role</th><th></th></tr></thead><tbody id="emailUsersBody"></tbody></table>
+<h2>Pending invites</h2>
+<table><thead><tr><th>Email</th><th>Expires</th></tr></thead><tbody id="invitesBody"></tbody></table>
 </section>
 <section id="settingsPane" class="card" hidden>
 <h2>Settings</h2>
@@ -141,14 +172,23 @@ form.inline input { flex: 1; min-width: 180px; }
   function pill(status) { var s = el("span", status); s.className = "pill " + status; return s; }
 
   var authPane = document.getElementById("authPane");
+  var invitePane = document.getElementById("invitePane");
   var appPane = document.getElementById("appPane");
   var logoutBtn = document.getElementById("logoutBtn");
   var userLabel = document.getElementById("userLabel");
   var lastStatus = null;
+  var inviteToken = null;
+
+  function showInvite() {
+    invitePane.hidden = false; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
+  }
 
   function showAuth(st) {
     lastStatus = st;
+    invitePane.hidden = true;
     authPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
+    document.getElementById("emailPw2").hidden = st.claimed;
+    document.getElementById("emailBtn").textContent = st.claimed ? "Log in" : "Create admin account";
     document.getElementById("connectBox").hidden = st.githubConnected;
     document.getElementById("breakGlassBox").hidden = !st.breakGlass;
     var installBox = document.getElementById("authInstallBox");
@@ -160,6 +200,7 @@ form.inline input { flex: 1; min-width: 180px; }
     }
   }
   function showApp(actor, admin) {
+    invitePane.hidden = true;
     authPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false;
     userLabel.textContent = actor ? actor + " " : "";
     tabAccess.hidden = !admin;
@@ -198,11 +239,73 @@ form.inline input { flex: 1; min-width: 180px; }
     fetch("/v1/admin/status").then(function (res) { return res.json(); }).then(function (st) {
       var q = new URLSearchParams(window.location.search);
       var g = q.get("github");
-      if (g && window.history && window.history.replaceState) window.history.replaceState({}, "", "/dashboard");
+      var inv = q.get("invite");
+      if ((g || inv) && window.history && window.history.replaceState) window.history.replaceState({}, "", "/dashboard");
+      if (inv && !st.user) {
+        inviteToken = inv;
+        fetch("/v1/admin/invite/" + encodeURIComponent(inv)).then(function (res) {
+          if (!res.ok) throw new Error("bad");
+          return res.json();
+        }).then(function (data) {
+          document.getElementById("inviteInfo").textContent = "Create a password for " + data.email + ".";
+          showInvite();
+        }).catch(function () {
+          route(st);
+          document.getElementById("loginErr").textContent = "Invite invalid or expired.";
+        });
+        return;
+      }
       route(st);
       handleGithubQuery(st, g, q.get("reason"));
-    }).catch(function () { showAuth({ githubConnected: false, breakGlass: false, installUrl: null }); });
+    }).catch(function () { showAuth({ claimed: true, githubConnected: false, breakGlass: false, installUrl: null }); });
   }
+
+  document.getElementById("emailForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("emailErr");
+    err.textContent = "";
+    var email = document.getElementById("emailInput").value.trim();
+    var pw = document.getElementById("emailPw").value;
+    var bootstrap = lastStatus && !lastStatus.claimed;
+    if (bootstrap) {
+      var pw2 = document.getElementById("emailPw2").value;
+      if (pw !== pw2) { err.textContent = "Passwords do not match."; return; }
+      fetch("/v1/admin/bootstrap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email, password: pw }) })
+        .then(function (res) {
+          if (!res.ok) throw new Error("bad");
+          document.getElementById("emailInput").value = "";
+          document.getElementById("emailPw").value = "";
+          document.getElementById("emailPw2").value = "";
+          boot();
+        })
+        .catch(function () { err.textContent = "Could not create account (valid email, 8+ char password)."; });
+      return;
+    }
+    fetch("/v1/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email, password: pw }) })
+      .then(function (res) {
+        if (!res.ok) throw new Error("bad");
+        document.getElementById("emailPw").value = "";
+        boot();
+      })
+      .catch(function () { err.textContent = "Invalid email or password."; });
+  });
+
+  document.getElementById("inviteForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("inviteErr");
+    err.textContent = "";
+    var a = document.getElementById("invitePw1").value;
+    var b = document.getElementById("invitePw2").value;
+    if (a !== b) { err.textContent = "Passwords do not match."; return; }
+    fetch("/v1/admin/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: inviteToken, password: a }) })
+      .then(function (res) {
+        if (!res.ok) throw new Error("bad");
+        document.getElementById("invitePw1").value = "";
+        document.getElementById("invitePw2").value = "";
+        boot();
+      })
+      .catch(function () { err.textContent = "Could not create account (invite expired, or 8+ char password needed)."; });
+  });
 
   document.getElementById("githubLoginBtn").addEventListener("click", function () {
     if (lastStatus && !lastStatus.githubConnected) {
@@ -391,8 +494,9 @@ form.inline input { flex: 1; min-width: 180px; }
 
   function loadUsers() {
     api("/v1/admin/users").then(function (data) {
+      var adminLabel = data.admin ? "@" + data.admin : (data.adminEmail ? data.adminEmail : "—");
       document.getElementById("usersInfo").textContent =
-        "Admin: " + (data.admin ? "@" + data.admin : "—") + ". Allowed users can view runs.";
+        "Admin: " + adminLabel + ". Allowed users can view runs.";
       var body = document.getElementById("usersBody");
       body.textContent = "";
       (data.users || []).forEach(function (u) {
@@ -409,8 +513,58 @@ form.inline input { flex: 1; min-width: 180px; }
         tr.appendChild(tdBtn);
         body.appendChild(tr);
       });
+      document.getElementById("emailUsersInfo").textContent =
+        (data.emailUsers || []).length ? "" : "No email accounts yet — invite teammates below.";
+      var ebody = document.getElementById("emailUsersBody");
+      ebody.textContent = "";
+      (data.emailUsers || []).forEach(function (u) {
+        var tr = el("tr");
+        tr.appendChild(el("td", u.email));
+        tr.appendChild(el("td", u.isAdmin ? "admin" : "viewer"));
+        var tdBtn = el("td");
+        if (!u.isAdmin) {
+          var btn = el("button", "Remove");
+          btn.className = "danger";
+          (function (email) {
+            btn.addEventListener("click", function () {
+              api("/v1/admin/users/email", { method: "POST", body: JSON.stringify({ email: email, action: "remove" }) })
+                .then(loadUsers).catch(function () {});
+            });
+          })(u.email);
+          tdBtn.appendChild(btn);
+        }
+        tr.appendChild(tdBtn);
+        ebody.appendChild(tr);
+      });
+      var ibody = document.getElementById("invitesBody");
+      ibody.textContent = "";
+      (data.invites || []).forEach(function (inv) {
+        var tr = el("tr");
+        tr.appendChild(el("td", inv.email));
+        tr.appendChild(el("td", fmtTime(inv.expiresAt)));
+        ibody.appendChild(tr);
+      });
+      if (!ibody.children.length) {
+        var tr = el("tr"); var td = el("td", "No pending invites."); td.colSpan = 2; tr.appendChild(td); ibody.appendChild(tr);
+      }
     }).catch(function () {});
   }
+
+  document.getElementById("inviteFormBtn").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("inviteUserErr");
+    err.textContent = "";
+    document.getElementById("inviteLinkBox").hidden = true;
+    var v = document.getElementById("inviteEmail").value.trim();
+    api("/v1/admin/users/invite", { method: "POST", body: JSON.stringify({ email: v }) })
+      .then(function (data) {
+        document.getElementById("inviteLinkVal").textContent = data.inviteUrl;
+        document.getElementById("inviteLinkBox").hidden = false;
+        document.getElementById("inviteEmail").value = "";
+        loadUsers();
+      })
+      .catch(function () { err.textContent = "Could not invite (valid email, not already registered)."; });
+  });
 
   document.getElementById("userForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
@@ -426,7 +580,8 @@ form.inline input { flex: 1; min-width: 180px; }
     api("/v1/admin/settings").then(function (s) {
       var info = document.getElementById("settingsInfo");
       info.textContent = "";
-      info.appendChild(el("span", "Admin: " + (s.adminGithubUser ? "@" + s.adminGithubUser + " (GitHub). " : "not claimed. ")));
+      var adminLabel = s.adminGithubUser ? "@" + s.adminGithubUser + " (GitHub)" : (s.adminEmail ? s.adminEmail + " (email)" : null);
+      info.appendChild(el("span", "Admin: " + (adminLabel ? adminLabel + ". " : "not claimed. ")));
       info.appendChild(el("span", "Webhook secret: " + (s.webhookSecretSource === "none" ? "not set." : "managed via " + s.webhookSecretSource + ".")));
       document.getElementById("webhookForm").style.display = s.webhookSecretSource === "env" ? "none" : "flex";
       document.getElementById("settingsOk").textContent = "";

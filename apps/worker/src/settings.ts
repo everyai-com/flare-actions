@@ -7,6 +7,7 @@ export const SETTING_KEYS = {
   githubClientSecret: "github_client_secret",
   adminGithubUser: "admin_github_user",
   githubUsers: "github_users",
+  adminEmail: "admin_email",
 } as const;
 
 export function validateWebhookSecret(secret: unknown): string | null {

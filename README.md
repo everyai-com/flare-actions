@@ -34,9 +34,10 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
 
 1. **Connect GitHub** — one click creates the GitHub App (webhook +
    secret + private key, no terminal), then install it on your repos.
-2. **Login with GitHub** — first login claims admin. No passwords
-   anywhere. Managed seats need nothing else; issue runner tokens in
-   the Access tab only for BYO machines.
+2. **Log in** — with GitHub, or create an email + password account
+   (first signup claims admin). Invite teammates by email from the
+   Access tab; they get a single-use link. Managed seats need nothing
+   else; issue runner tokens in the Access tab only for BYO machines.
 
 **From source:**
 
@@ -82,13 +83,15 @@ Install the App on your repo either way.
 
 ## Dashboard
 
-Open `https://<worker>/dashboard` and Login with GitHub (first login
-claims admin; allow more users in the Access tab). For CLI admin
-commands, issue an `admin` token in the Access tab instead.
+Open `https://<worker>/dashboard` and log in with GitHub or email
+(first login of either kind claims admin). Allow more GitHub users or
+invite teammates by email in the Access tab. For CLI admin commands,
+issue an `admin` token in the Access tab instead.
 
 - **Runs** — see every run and drill into job logs.
-- **Access** — allow GitHub users (view runs) and issue named tokens:
-  `runner` tokens pull jobs and report status (CI machines, teammates),
+- **Access** — allow GitHub users (view runs), invite teammates by
+  email (single-use links, 24h), and issue named tokens: `runner`
+  tokens pull jobs and report status (CI machines, teammates),
   `readonly` tokens only view runs, `admin` tokens do everything (CLI
   admin commands). Each token is shown once at creation;
   revoke any token and it stops working immediately.

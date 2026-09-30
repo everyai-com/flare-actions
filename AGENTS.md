@@ -79,12 +79,15 @@ exhaustion) → runner polls `GET /v1/jobs/next?labels=` → executes →
 Auth model: env secrets take precedence; dashboard-managed D1 settings fill
 gaps so one-click deploys need zero `wrangler secret` commands.
 
-- Auth: Login with GitHub (`oauth.ts`; sessions in D1 `sessions`,
-  cookie `flare_session`). First login claims admin
-  (`admin_github_user`); admin + allow-listed `github_users` may log
-  in (non-admin reads). Connect is open pre-claim, admin-only after.
-  `ADMIN_TOKEN` env is break-glass recovery only (recovery field
-  appears iff set); setup never mints it.
+- Auth: Login with GitHub (`oauth.ts`) or email + password
+  (`email.ts`, PBKDF2, D1 `users`); sessions in D1 `sessions` (kind
+  github|email), cookie `flare_session`. First login of either kind
+  claims admin (`admin_github_user`/`admin_email`); admin + allow-listed
+  GitHub users + registered emails may log in (non-admin reads).
+  Connect and email bootstrap are open pre-claim, then locked.
+  Teammates join via single-use 24h invite links (no email delivery
+  needed). `ADMIN_TOKEN` env is break-glass recovery only; setup
+  never mints it.
 - Webhooks: `GITHUB_WEBHOOK_SECRET` env or D1 `webhook_secret` (Settings tab).
 - GitHub App: Connect flow (`connect.ts` manifest + callback; creds in
   D1 under `github_app_*`, incl. OAuth client id/secret) or env

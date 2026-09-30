@@ -342,7 +342,9 @@ export async function findLiveToken(db: Db, tokenHash: string): Promise<TokenRow
 
 export interface SessionRow {
   id: string;
+  // The login: a GitHub username or an email address depending on kind.
   github_user: string;
+  kind: string;
   is_admin: number;
   created_at: string;
   expires_at: string;
@@ -350,11 +352,11 @@ export interface SessionRow {
 
 export async function createSession(
   db: Db,
-  session: { id: string; githubUser: string; isAdmin: boolean; expiresAt: string },
+  session: { id: string; githubUser: string; kind?: string; isAdmin: boolean; expiresAt: string },
 ): Promise<void> {
   await db
-    .prepare("INSERT INTO sessions (id, github_user, is_admin, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
-    .bind(session.id, session.githubUser, session.isAdmin ? 1 : 0, nowIso(), session.expiresAt)
+    .prepare("INSERT INTO sessions (id, github_user, kind, is_admin, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(session.id, session.githubUser, session.kind ?? "github", session.isAdmin ? 1 : 0, nowIso(), session.expiresAt)
     .run();
 }
 
@@ -364,6 +366,37 @@ export async function getSession(db: Db, id: string): Promise<SessionRow | null>
 
 export async function deleteSession(db: Db, id: string): Promise<void> {
   await db.prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
+}
+
+export async function deleteUserSessions(db: Db, kind: string, login: string): Promise<void> {
+  await db.prepare("DELETE FROM sessions WHERE kind = ? AND github_user = ?").bind(kind, login).run();
+}
+
+export interface UserRow {
+  email: string;
+  password_hash: string;
+  is_admin: number;
+  created_at: string;
+}
+
+export async function createUser(db: Db, user: { email: string; passwordHash: string; isAdmin: boolean }): Promise<void> {
+  await db
+    .prepare("INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?)")
+    .bind(user.email, user.passwordHash, user.isAdmin ? 1 : 0, nowIso())
+    .run();
+}
+
+export async function getUser(db: Db, email: string): Promise<UserRow | null> {
+  return db.prepare("SELECT * FROM users WHERE email = ?").bind(email).first<UserRow>();
+}
+
+export async function deleteUser(db: Db, email: string): Promise<void> {
+  await db.prepare("DELETE FROM users WHERE email = ?").bind(email).run();
+}
+
+export async function listUsers(db: Db): Promise<UserRow[]> {
+  const res = await db.prepare("SELECT * FROM users ORDER BY created_at ASC").bind().all<UserRow>();
+  return res.results;
 }
 
 export async function revokeToken(db: Db, id: string): Promise<boolean> {
