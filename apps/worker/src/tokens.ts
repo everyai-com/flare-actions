@@ -1,4 +1,4 @@
-export const TOKEN_SCOPES = ["runner", "readonly"] as const;
+export const TOKEN_SCOPES = ["runner", "readonly", "admin"] as const;
 export type TokenScope = (typeof TOKEN_SCOPES)[number];
 
 export async function hashToken(token: string): Promise<string> {
@@ -19,8 +19,9 @@ export function parseScopes(raw: string): TokenScope[] {
     .filter((s): s is TokenScope => (TOKEN_SCOPES as readonly string[]).includes(s));
 }
 
-export function scopesAllow(scopes: TokenScope[], need: "run" | "read"): boolean {
-  if (scopes.includes("runner")) return true;
+export function scopesAllow(scopes: TokenScope[], need: "run" | "read" | "admin"): boolean {
+  if (scopes.includes("admin")) return true;
+  if (scopes.includes("runner")) return need === "run" || need === "read";
   return need === "read" && scopes.includes("readonly");
 }
 

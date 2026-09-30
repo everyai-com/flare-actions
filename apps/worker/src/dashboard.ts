@@ -44,26 +44,30 @@ form.inline input { flex: 1; min-width: 180px; }
 <body>
 <header>
 <h1>Flare Actions</h1>
-<button id="logoutBtn" class="ghost" hidden>Log out</button>
+<div><span id="userLabel" class="muted"></span> <button id="logoutBtn" class="ghost" hidden>Log out</button></div>
 </header>
 <main>
-<section id="setupPane" class="card" hidden>
-<h2>First-run setup</h2>
-<p class="muted">Create your admin password (12+ characters). This screen disappears forever once set.</p>
-<form id="setupForm" class="inline">
-<input id="setupPw1" type="password" placeholder="New admin password" autocomplete="new-password">
-<input id="setupPw2" type="password" placeholder="Confirm password" autocomplete="new-password">
-<button type="submit">Create password</button>
+<section id="connectPane" class="card" hidden>
+<h2>Connect GitHub</h2>
+<p class="muted">One click creates the GitHub App (webhooks + login), then you log in with GitHub. First login claims admin.</p>
+<form id="connectForm" class="inline">
+<input id="connectName" placeholder="App name (blank = random)" maxlength="34">
+<button type="submit">Connect GitHub</button>
 </form>
-<p id="setupErr" class="err"></p>
+<p id="connectErr" class="err"></p>
 </section>
-<section id="loginPane" class="card">
+<section id="loginPane" class="card" hidden>
 <h2>Log in</h2>
-<p class="muted">Enter your admin password.</p>
-<form id="loginForm" class="inline">
-<input id="pwInput" type="password" placeholder="Admin password" autocomplete="current-password">
+<p><button id="githubLoginBtn">Login with GitHub</button></p>
+<p id="loginMsg"></p>
+<div id="breakGlassBox" hidden>
+<p class="muted">Or use the recovery password.</p>
+<form id="recoveryForm" class="inline">
+<input id="recoveryInput" type="password" placeholder="Recovery password" autocomplete="current-password">
 <button type="submit">Log in</button>
 </form>
+<p id="recoveryErr" class="err"></p>
+</div>
 <p id="loginErr" class="err"></p>
 </section>
 <section id="appPane" hidden>
@@ -82,7 +86,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <p class="muted">Issue tokens for runners and teammates. Runner tokens can pull jobs and update status; readonly tokens can only view runs. Revoked tokens stop working immediately.</p>
 <form id="tokenForm" class="inline">
 <input id="tokenName" placeholder="Token name, e.g. ci-laptop" maxlength="64">
-<select id="tokenScope"><option value="runner">runner</option><option value="readonly">readonly</option></select>
+<select id="tokenScope"><option value="runner">runner</option><option value="readonly">readonly</option><option value="admin">admin</option></select>
 <button type="submit">Create token</button>
 </form>
 <p id="tokenErr" class="err"></p>
@@ -91,6 +95,14 @@ form.inline input { flex: 1; min-width: 180px; }
 <code class="token" id="newTokenVal"></code>
 </div>
 <table><thead><tr><th>Name</th><th>Scopes</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody id="tokensBody"></tbody></table>
+<h2>GitHub users</h2>
+<p class="muted" id="usersInfo"></p>
+<form id="userForm" class="inline">
+<input id="userLogin" placeholder="GitHub username" maxlength="39">
+<button type="submit">Allow user</button>
+</form>
+<p id="userErr" class="err"></p>
+<table><thead><tr><th>Username</th><th></th></tr></thead><tbody id="usersBody"></tbody></table>
 </section>
 <section id="settingsPane" class="card" hidden>
 <h2>Settings</h2>
@@ -125,46 +137,108 @@ form.inline input { flex: 1; min-width: 180px; }
   function pill(status) { var s = el("span", status); s.className = "pill " + status; return s; }
 
   var loginPane = document.getElementById("loginPane");
-  var setupPane = document.getElementById("setupPane");
+  var connectPane = document.getElementById("connectPane");
   var appPane = document.getElementById("appPane");
   var logoutBtn = document.getElementById("logoutBtn");
+  var userLabel = document.getElementById("userLabel");
 
-  function showSetup() {
-    setupPane.hidden = false; loginPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true;
+  function showConnect() {
+    connectPane.hidden = false; loginPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
   }
-  function showLogin() {
-    setupPane.hidden = true; loginPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true;
+  function showLogin(breakGlass) {
+    connectPane.hidden = true; loginPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
+    document.getElementById("breakGlassBox").hidden = !breakGlass;
   }
-  function showApp() {
-    setupPane.hidden = true; loginPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false;
+  function showApp(actor, admin) {
+    connectPane.hidden = true; loginPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false;
+    userLabel.textContent = actor ? actor + " " : "";
+    tabAccess.hidden = !admin;
+    tabSettings.hidden = !admin;
+    if (!admin) selectTab("runs");
   }
   function api(path, opts) {
     opts = opts || {};
-    var headers = { "Content-Type": "application/json", "Authorization": "Bearer " + token() };
+    var headers = { "Content-Type": "application/json" };
+    if (token()) headers["Authorization"] = "Bearer " + token();
     if (opts.headers) { for (var k in opts.headers) headers[k] = opts.headers[k]; }
     opts.headers = headers;
     return fetch(path, opts).then(function (res) {
-      if (res.status === 401) { sessionStorage.removeItem(KEY); showLogin(); throw new Error("unauthorized"); }
+      if (res.status === 401) {
+        return fetch("/v1/admin/status").then(function (s) { return s.json(); }).then(function (st) {
+          if (!st.user) { sessionStorage.removeItem(KEY); route(st); }
+          throw new Error("unauthorized");
+        });
+      }
       if (!res.ok) throw new Error("request failed: " + res.status);
       return res.json();
     });
   }
 
-  document.getElementById("loginForm").addEventListener("submit", function (ev) {
+  function route(st) {
+    if (st.user) {
+      showApp(st.user.actor, st.user.admin);
+      loadRuns();
+      if (st.user.admin) { loadTokens(); loadUsers(); }
+    } else if (!st.githubConnected && !st.breakGlass) {
+      showConnect();
+    } else {
+      showLogin(st.breakGlass);
+    }
+  }
+
+  function boot() {
+    fetch("/v1/admin/status").then(function (res) { return res.json(); }).then(function (st) {
+      var q = new URLSearchParams(window.location.search);
+      var g = q.get("github");
+      if (g && window.history && window.history.replaceState) window.history.replaceState({}, "", "/dashboard");
+      route(st);
+      handleGithubQuery(st, g, q.get("reason"));
+    }).catch(function () { showLogin(false); });
+  }
+
+  document.getElementById("githubLoginBtn").addEventListener("click", function () {
+    window.location.href = "/v1/admin/github/login";
+  });
+  document.getElementById("recoveryForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
-    var pw = document.getElementById("pwInput").value;
-    var err = document.getElementById("loginErr");
+    var pw = document.getElementById("recoveryInput").value;
+    var err = document.getElementById("recoveryErr");
     err.textContent = "";
     sessionStorage.setItem(KEY, pw);
-    api("/v1/admin/tokens").then(function () {
-      document.getElementById("pwInput").value = "";
-      showApp(); loadRuns(); loadTokens(); handleGithubQuery();
+    fetch("/v1/admin/status", { headers: { "Authorization": "Bearer " + pw } }).then(function (res) { return res.json(); }).then(function (st) {
+      if (!st.user) throw new Error("bad");
+      document.getElementById("recoveryInput").value = "";
+      route(st);
     }).catch(function () {
       sessionStorage.removeItem(KEY);
       err.textContent = "Wrong password.";
     });
   });
-  logoutBtn.addEventListener("click", function () { sessionStorage.removeItem(KEY); showLogin(); });
+  function submitManifest(postUrl, manifest) {
+    var form = document.createElement("form");
+    form.method = "POST";
+    form.action = postUrl;
+    var input = document.createElement("input");
+    input.type = "hidden";
+    input.name = "manifest";
+    input.value = JSON.stringify(manifest);
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+  }
+  document.getElementById("connectForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("connectErr");
+    err.textContent = "";
+    var v = document.getElementById("connectName").value.trim();
+    api("/v1/admin/github/connect", { method: "POST", body: JSON.stringify({ name: v }) })
+      .then(function (data) { submitManifest(data.postUrl, data.manifest); })
+      .catch(function () { err.textContent = "Could not start connect (env-managed, or invalid name)."; });
+  });
+  logoutBtn.addEventListener("click", function () {
+    sessionStorage.removeItem(KEY);
+    fetch("/v1/admin/logout", { method: "POST" }).then(boot, boot);
+  });
 
   var tabRuns = document.getElementById("tabRuns");
   var tabAccess = document.getElementById("tabAccess");
@@ -181,7 +255,7 @@ form.inline input { flex: 1; min-width: 180px; }
     settingsPane.hidden = name !== "settings";
   }
   tabRuns.addEventListener("click", function () { selectTab("runs"); loadRuns(); });
-  tabAccess.addEventListener("click", function () { selectTab("access"); loadTokens(); });
+  tabAccess.addEventListener("click", function () { selectTab("access"); loadTokens(); loadUsers(); });
   tabSettings.addEventListener("click", function () { selectTab("settings"); loadSettings(); });
 
   function loadRuns() {
@@ -303,29 +377,44 @@ form.inline input { flex: 1; min-width: 180px; }
       .catch(function () { err.textContent = "Could not create token. Name is required."; });
   });
 
-  document.getElementById("setupForm").addEventListener("submit", function (ev) {
+  function loadUsers() {
+    api("/v1/admin/users").then(function (data) {
+      document.getElementById("usersInfo").textContent =
+        "Admin: " + (data.admin ? "@" + data.admin : "—") + ". Allowed users can view runs.";
+      var body = document.getElementById("usersBody");
+      body.textContent = "";
+      (data.users || []).forEach(function (u) {
+        var tr = el("tr");
+        tr.appendChild(el("td", "@" + u));
+        var tdBtn = el("td");
+        var btn = el("button", "Remove");
+        btn.className = "danger";
+        btn.addEventListener("click", function () {
+          api("/v1/admin/users", { method: "POST", body: JSON.stringify({ login: u, action: "remove" }) })
+            .then(loadUsers).catch(function () {});
+        });
+        tdBtn.appendChild(btn);
+        tr.appendChild(tdBtn);
+        body.appendChild(tr);
+      });
+    }).catch(function () {});
+  }
+
+  document.getElementById("userForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
-    var err = document.getElementById("setupErr");
+    var err = document.getElementById("userErr");
     err.textContent = "";
-    var a = document.getElementById("setupPw1").value;
-    var b = document.getElementById("setupPw2").value;
-    if (a !== b) { err.textContent = "Passwords do not match."; return; }
-    fetch("/v1/admin/setup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: a }) })
-      .then(function (res) {
-        if (!res.ok) throw new Error("setup failed: " + res.status);
-        sessionStorage.setItem(KEY, a);
-        document.getElementById("setupPw1").value = "";
-        document.getElementById("setupPw2").value = "";
-        showApp(); loadRuns(); loadTokens(); handleGithubQuery();
-      })
-      .catch(function () { err.textContent = "Could not create password (12+ characters)."; });
+    var v = document.getElementById("userLogin").value.trim();
+    api("/v1/admin/users", { method: "POST", body: JSON.stringify({ login: v, action: "add" }) })
+      .then(function () { document.getElementById("userLogin").value = ""; loadUsers(); })
+      .catch(function () { err.textContent = "Could not add user (valid GitHub username required)."; });
   });
 
   function loadSettings() {
     api("/v1/admin/settings").then(function (s) {
       var info = document.getElementById("settingsInfo");
       info.textContent = "";
-      info.appendChild(el("span", "Admin password: managed via " + s.adminSource + ". "));
+      info.appendChild(el("span", "Admin: " + (s.adminGithubUser ? "@" + s.adminGithubUser + " (GitHub). " : "not claimed. ")));
       info.appendChild(el("span", "Webhook secret: " + (s.webhookSecretSource === "none" ? "not set." : "managed via " + s.webhookSecretSource + ".")));
       document.getElementById("webhookForm").style.display = s.webhookSecretSource === "env" ? "none" : "flex";
       document.getElementById("settingsOk").textContent = "";
@@ -350,36 +439,31 @@ form.inline input { flex: 1; min-width: 180px; }
     err.textContent = ""; ok.textContent = "";
     var v = document.getElementById("githubName").value.trim();
     api("/v1/admin/github/connect", { method: "POST", body: JSON.stringify({ name: v }) })
-      .then(function (data) {
-        var form = document.createElement("form");
-        form.method = "POST";
-        form.action = data.postUrl;
-        var input = document.createElement("input");
-        input.type = "hidden";
-        input.name = "manifest";
-        input.value = JSON.stringify(data.manifest);
-        form.appendChild(input);
-        document.body.appendChild(form);
-        form.submit();
-      })
+      .then(function (data) { submitManifest(data.postUrl, data.manifest); })
       .catch(function () { err.textContent = "Could not start connect (env-managed, or invalid name)."; });
   });
 
-  function handleGithubQuery() {
-    var q = new URLSearchParams(window.location.search);
-    var status = q.get("github");
+  function handleGithubQuery(st, status, reason) {
     if (!status) return;
-    if (window.history && window.history.replaceState) window.history.replaceState({}, "", "/dashboard");
-    selectTab("settings");
-    loadSettings();
+    if (st.user) {
+      if (status === "connected") {
+        selectTab("settings");
+        loadSettings();
+        document.getElementById("githubOk").textContent = "App created and connected. Install it on your repos.";
+      }
+      return;
+    }
     if (status === "connected") {
-      document.getElementById("githubOk").textContent = "App created and connected. Install it on your repos.";
-    } else {
-      var reason = q.get("reason") || "unknown";
-      var msg = reason === "expired" ? "Connect expired — try again."
+      document.getElementById("loginMsg").textContent = "App connected — log in with GitHub to claim admin.";
+    } else if (status === "forbidden") {
+      document.getElementById("loginErr").textContent = "That GitHub user is not allowed. Ask the admin.";
+    } else if (status === "error") {
+      var msg = reason === "expired" ? "Login expired — try again."
         : reason === "exchange" ? "GitHub refused the exchange — try again."
-        : "Connect failed — try again.";
-      document.getElementById("githubErr").textContent = msg;
+        : reason === "noapp" ? "Connect GitHub first."
+        : "Something failed — try again.";
+      if (!st.githubConnected && !st.breakGlass) document.getElementById("connectErr").textContent = msg;
+      else document.getElementById("loginErr").textContent = msg;
     }
   }
 
@@ -398,11 +482,7 @@ form.inline input { flex: 1; min-width: 180px; }
       .catch(function () { err.textContent = "Could not save (16+ characters)."; });
   });
 
-  fetch("/v1/admin/status").then(function (res) { return res.json(); }).then(function (st) {
-    if (!st.configured && !token()) { showSetup(); }
-    else if (token()) { showApp(); loadRuns(); loadTokens(); handleGithubQuery(); }
-    else { showLogin(); }
-  }).catch(function () { showLogin(); });
+  boot();
 })();
 </script>
 </body>

@@ -340,6 +340,32 @@ export async function findLiveToken(db: Db, tokenHash: string): Promise<TokenRow
     .first<TokenRow>();
 }
 
+export interface SessionRow {
+  id: string;
+  github_user: string;
+  is_admin: number;
+  created_at: string;
+  expires_at: string;
+}
+
+export async function createSession(
+  db: Db,
+  session: { id: string; githubUser: string; isAdmin: boolean; expiresAt: string },
+): Promise<void> {
+  await db
+    .prepare("INSERT INTO sessions (id, github_user, is_admin, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(session.id, session.githubUser, session.isAdmin ? 1 : 0, nowIso(), session.expiresAt)
+    .run();
+}
+
+export async function getSession(db: Db, id: string): Promise<SessionRow | null> {
+  return db.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+}
+
+export async function deleteSession(db: Db, id: string): Promise<void> {
+  await db.prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
+}
+
 export async function revokeToken(db: Db, id: string): Promise<boolean> {
   const current = await db.prepare("SELECT id FROM api_tokens WHERE id = ?").bind(id).first<{ id: string }>();
   if (!current) return false;

@@ -24,6 +24,7 @@ export interface AppManifest {
   url: string;
   setup_url: string;
   redirect_url: string;
+  callback_urls: string[];
   public: boolean;
   default_permissions: Record<string, string>;
   default_events: string[];
@@ -37,6 +38,7 @@ export function buildManifest(name: string, origin: string): AppManifest {
     url: base,
     setup_url: `${base}/dashboard`,
     redirect_url: `${base}/v1/admin/github/callback`,
+    callback_urls: [`${base}/v1/admin/github/oauth/callback`],
     public: false,
     default_permissions: { contents: "read", statuses: "write" },
     default_events: ["push", "pull_request"],
@@ -80,6 +82,8 @@ export interface ConvertedApp {
   slug: string;
   webhookSecret: string;
   privateKey: string;
+  clientId: string;
+  clientSecret: string;
 }
 
 type FetchLike = (url: string, init?: { method?: string; headers?: Record<string, string> }) => Promise<Response>;
@@ -91,11 +95,28 @@ export async function exchangeManifestCode(code: string, fetchImpl: FetchLike = 
       headers: { Accept: "application/vnd.github+json", "User-Agent": "flare-actions" },
     });
     if (!res.ok) return null;
-    const data = (await res.json()) as { id?: unknown; slug?: unknown; webhook_secret?: unknown; pem?: unknown };
+    const data = (await res.json()) as {
+      id?: unknown;
+      slug?: unknown;
+      webhook_secret?: unknown;
+      pem?: unknown;
+      client_id?: unknown;
+      client_secret?: unknown;
+    };
     if (typeof data.id !== "number" || typeof data.slug !== "string") return null;
     if (typeof data.webhook_secret !== "string" || !data.webhook_secret) return null;
     if (typeof data.pem !== "string" || !data.pem.includes("PRIVATE KEY")) return null;
-    return { appId: String(data.id), slug: data.slug, webhookSecret: data.webhook_secret, privateKey: data.pem };
+    // OAuth login needs these; without them the App is half-connected.
+    if (typeof data.client_id !== "string" || !data.client_id) return null;
+    if (typeof data.client_secret !== "string" || !data.client_secret) return null;
+    return {
+      appId: String(data.id),
+      slug: data.slug,
+      webhookSecret: data.webhook_secret,
+      privateKey: data.pem,
+      clientId: data.client_id,
+      clientSecret: data.client_secret,
+    };
   } catch {
     return null;
   }
@@ -109,6 +130,8 @@ export async function storeAppCredentials(db: Db, app: ConvertedApp): Promise<vo
   await setSetting(db, SETTING_KEYS.githubAppId, app.appId);
   await setSetting(db, SETTING_KEYS.githubPrivateKey, app.privateKey);
   await setSetting(db, SETTING_KEYS.githubAppSlug, app.slug);
+  await setSetting(db, SETTING_KEYS.githubClientId, app.clientId);
+  await setSetting(db, SETTING_KEYS.githubClientSecret, app.clientSecret);
   await setSetting(db, SETTING_KEYS.webhookSecret, app.webhookSecret);
 }
 

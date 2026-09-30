@@ -1,19 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateNewPassword, validateWebhookSecret } from "./settings";
-
-describe("validateNewPassword", () => {
-  it("accepts 12-256 char passwords", () => {
-    expect(validateNewPassword("a".repeat(12))).toBeNull();
-    expect(validateNewPassword("a".repeat(256))).toBeNull();
-  });
-
-  it("rejects short, long, and non-string input", () => {
-    expect(validateNewPassword("short")).not.toBeNull();
-    expect(validateNewPassword("a".repeat(257))).not.toBeNull();
-    expect(validateNewPassword(42)).not.toBeNull();
-    expect(validateNewPassword(undefined)).not.toBeNull();
-  });
-});
+import { validateWebhookSecret } from "./settings";
 
 describe("validateWebhookSecret", () => {
   it("accepts 16-512 char secrets", () => {

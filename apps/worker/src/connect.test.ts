@@ -52,6 +52,7 @@ describe("connect", () => {
     expect(m.url).toBe("https://ci.example.com");
     expect(m.setup_url).toBe("https://ci.example.com/dashboard");
     expect(m.redirect_url).toBe("https://ci.example.com/v1/admin/github/callback");
+    expect(m.callback_urls).toEqual(["https://ci.example.com/v1/admin/github/oauth/callback"]);
     expect(m.default_permissions).toEqual({ contents: "read", statuses: "write" });
     expect(m.default_events).toEqual(["push", "pull_request"]);
     expect(m.hook_attributes).toEqual({ url: "https://ci.example.com/webhooks/github", active: true });
@@ -85,16 +86,21 @@ describe("connect", () => {
       slug: "flare-actions-a1b2",
       webhook_secret: "whsec_abc",
       pem: "-----BEGIN RSA PRIVATE KEY-----\nxyz\n-----END RSA PRIVATE KEY-----\n",
+      client_id: "Iv1.abc",
+      client_secret: "csecret",
     };
     await expect(exchangeManifestCode("code", async () => resp(true, good))).resolves.toEqual({
       appId: "123456",
       slug: "flare-actions-a1b2",
       webhookSecret: "whsec_abc",
       privateKey: good.pem,
+      clientId: "Iv1.abc",
+      clientSecret: "csecret",
     });
     await expect(exchangeManifestCode("code", async () => resp(false, {}))).resolves.toBeNull();
     await expect(exchangeManifestCode("code", async () => resp(true, { ...good, pem: "junk" }))).resolves.toBeNull();
     await expect(exchangeManifestCode("code", async () => resp(true, { ...good, id: "123" }))).resolves.toBeNull();
+    await expect(exchangeManifestCode("code", async () => resp(true, { ...good, client_secret: "" }))).resolves.toBeNull();
     await expect(
       exchangeManifestCode("code", async () => {
         throw new Error("down");
@@ -105,10 +111,12 @@ describe("connect", () => {
 
   it("stores credentials and resolves env-first, D1-second", async () => {
     const db = new MemSettings();
-    await storeAppCredentials(db, { appId: "42", slug: "s", webhookSecret: "w", privateKey: "k" });
+    await storeAppCredentials(db, { appId: "42", slug: "s", webhookSecret: "w", privateKey: "k", clientId: "c", clientSecret: "cs" });
     expect(db.store.get("github_app_id")).toBe("42");
     expect(db.store.get("github_private_key")).toBe("k");
     expect(db.store.get("github_app_slug")).toBe("s");
+    expect(db.store.get("github_client_id")).toBe("c");
+    expect(db.store.get("github_client_secret")).toBe("cs");
     expect(db.store.get("webhook_secret")).toBe("w");
 
     await expect(resolveAppCreds(db, { appId: "env", privateKey: "envkey" })).resolves.toEqual({

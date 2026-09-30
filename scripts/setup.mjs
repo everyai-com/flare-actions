@@ -157,5 +157,5 @@ if (!dryRun) {
   console.log(`Dashboard: ${workerUrl}/dashboard (create your admin password on first open)`);
   console.log(seatsUrl ? `Seats:    ${seatsUrl} (managed executor live)` : "Seats:    skipped (no docker — BYO runners cover execution)");
   console.log("Next: Connect GitHub in the dashboard Settings tab, then `npm run runner` and `npm run cli -- runs`.");
-  console.log("Note: for CLI admin commands, add ADMIN_TOKEN=<your dashboard password> to .env yourself.");
+  console.log("Note: for CLI admin commands, issue an admin token in the dashboard Access tab.");
 }

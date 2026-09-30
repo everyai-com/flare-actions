@@ -32,10 +32,10 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
 **One click (no terminal):** hit **Deploy to Cloudflare** above, then open
 `https://&lt;your-worker&gt;/dashboard`:
 
-1. Create your admin password (first-run setup, shown once ever).
-2. **Connect GitHub** in the Settings tab — one click creates the GitHub
-   App (webhook + secret + private key, no terminal), then install it on
-   your repos. Managed seats need nothing else; issue runner tokens in
+1. **Connect GitHub** — one click creates the GitHub App (webhook +
+   secret + private key, no terminal), then install it on your repos.
+2. **Login with GitHub** — first login claims admin. No passwords
+   anywhere. Managed seats need nothing else; issue runner tokens in
    the Access tab only for BYO machines.
 
 **From source:**
@@ -45,8 +45,8 @@ npm install
 npm run setup   # provisions D1 + queues + R2, deploys, writes gitignored .env
 ```
 
-`setup` prints your Worker URL. Then Connect GitHub in the dashboard
-(Settings tab, one click), and run with zero config:
+`setup` prints your Worker URL. Open the dashboard, Connect GitHub,
+install the App, Login with GitHub — then run with zero config:
 
 ```bash
 npm run runner            # external pull-runner (reads .env automatically)
@@ -58,10 +58,12 @@ Manual fallback (if you prefer each step by hand): `wrangler d1 create`,
 `wrangler queues create` × 3 (`-runs`, `-dlq`, `-seats`),
 `wrangler r2 bucket create flare-actions-cache`,
 `wrangler d1 migrations apply --remote`, `wrangler secret put` for
-`RUNNER_TOKEN`, then `npm run deploy` — the admin password is created
-on first dashboard open, and Connect GitHub manages the webhook
-secret + App credentials (only set those as env secrets if you want
-the manual GitHub App flow instead). Local dev: `npm run dev`.
+`RUNNER_TOKEN`, then `npm run deploy` — Connect GitHub in the
+dashboard manages the webhook secret + App credentials, and the first
+GitHub login claims admin. Only set GitHub values as env secrets if
+you want the manual App flow instead (then also set `ADMIN_TOKEN`,
+which becomes the dashboard recovery password). Local dev:
+`npm run dev`.
 
 ## GitHub App setup
 
@@ -80,14 +82,15 @@ Install the App on your repo either way.
 
 ## Dashboard
 
-Open `https://<worker>/dashboard` and log in with the admin password
-you created on first open. (For CLI admin commands, set
-`ADMIN_TOKEN` to that same password in your gitignored `.env`.)
+Open `https://<worker>/dashboard` and Login with GitHub (first login
+claims admin; allow more users in the Access tab). For CLI admin
+commands, issue an `admin` token in the Access tab instead.
 
 - **Runs** — see every run and drill into job logs.
-- **Access** — issue named tokens to hand out: `runner` tokens can pull
-  jobs and report status (for CI machines and teammates), `readonly`
-  tokens can only view runs. Each token is shown once at creation;
+- **Access** — allow GitHub users (view runs) and issue named tokens:
+  `runner` tokens pull jobs and report status (CI machines, teammates),
+  `readonly` tokens only view runs, `admin` tokens do everything (CLI
+  admin commands). Each token is shown once at creation;
   revoke any token and it stops working immediately.
 
 ## Preview environments

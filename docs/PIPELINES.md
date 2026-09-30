@@ -67,9 +67,10 @@ Describe what you want and get YAML back (admin only):
 
 ```bash
 curl -X POST $WORKER/v1/admin/generate \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Authorization: Bearer $FLARE_ADMIN_TOKEN" \
   -d '{"prompt":"node CI: install, lint, test on 18 and 20"}'
 ```
+(`$FLARE_ADMIN_TOKEN` is an `admin` token issued in the dashboard Access tab.)
 
 Agents can do the same through the MCP `generate_pipeline` tool.
 Validate output with `cli import`-style roundtrips or just dispatch it:

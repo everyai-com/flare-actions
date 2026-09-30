@@ -26,11 +26,15 @@ describe("scopes", () => {
   it("parses and filters stored scope strings", () => {
     expect(parseScopes("runner")).toEqual(["runner"]);
     expect(parseScopes("runner, readonly")).toEqual(["runner", "readonly"]);
-    expect(parseScopes("admin,runner")).toEqual(["runner"]);
+    expect(parseScopes("admin,runner")).toEqual(["admin", "runner"]);
     expect(parseScopes("")).toEqual([]);
   });
 
-  it("runner implies run and read; readonly implies read only", () => {
+  it("admin implies everything; runner implies run and read; readonly implies read only", () => {
+    expect(scopesAllow(["admin"], "admin")).toBe(true);
+    expect(scopesAllow(["admin"], "run")).toBe(true);
+    expect(scopesAllow(["admin"], "read")).toBe(true);
+    expect(scopesAllow(["runner"], "admin")).toBe(false);
     expect(scopesAllow(["runner"], "run")).toBe(true);
     expect(scopesAllow(["runner"], "read")).toBe(true);
     expect(scopesAllow(["readonly"], "run")).toBe(false);
@@ -41,8 +45,9 @@ describe("scopes", () => {
   it("normalizes create input strictly", () => {
     expect(normalizeScopes(["runner"])).toEqual(["runner"]);
     expect(normalizeScopes(["readonly", "runner", "runner"])).toEqual(["readonly", "runner"]);
+    expect(normalizeScopes(["admin"])).toEqual(["admin"]);
     expect(normalizeScopes([])).toBeNull();
-    expect(normalizeScopes(["admin"])).toBeNull();
+    expect(normalizeScopes(["superuser"])).toBeNull();
     expect(normalizeScopes("runner")).toBeNull();
     expect(normalizeScopes([42])).toBeNull();
   });
@@ -52,8 +57,10 @@ describe("dashboard", () => {
   it("serves a page wired to the admin and runs APIs", () => {
     expect(DASHBOARD_HTML).toContain("<title>Flare Actions</title>");
     expect(DASHBOARD_HTML).toContain("/v1/admin/tokens");
-    expect(DASHBOARD_HTML).toContain("/v1/admin/setup");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/users");
     expect(DASHBOARD_HTML).toContain("/v1/admin/settings");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/github/login");
+    expect(DASHBOARD_HTML).toContain("Login with GitHub");
     expect(DASHBOARD_HTML).toContain("AI triage");
     expect(DASHBOARD_HTML).toContain("/v1/runs");
     expect(DASHBOARD_HTML).not.toContain("${");

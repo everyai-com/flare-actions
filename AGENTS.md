@@ -79,15 +79,22 @@ exhaustion) → runner polls `GET /v1/jobs/next?labels=` → executes →
 Auth model: env secrets take precedence; dashboard-managed D1 settings fill
 gaps so one-click deploys need zero `wrangler secret` commands.
 
-- Admin: `ADMIN_TOKEN` env or D1 `admin_password_hash` (first-run setup UI).
-  `POST /v1/admin/setup` only works when NEITHER exists — never weaken this.
+- Auth: Login with GitHub (`oauth.ts`; sessions in D1 `sessions`,
+  cookie `flare_session`). First login claims admin
+  (`admin_github_user`); admin + allow-listed `github_users` may log
+  in (non-admin reads). Connect is open pre-claim, admin-only after.
+  `ADMIN_TOKEN` env is break-glass recovery only (recovery field
+  appears iff set); setup never mints it.
 - Webhooks: `GITHUB_WEBHOOK_SECRET` env or D1 `webhook_secret` (Settings tab).
 - GitHub App: Connect flow (`connect.ts` manifest + callback; creds in
-  D1 under `github_app_*`) or env `GITHUB_APP_ID`/`GITHUB_PRIVATE_KEY`
-  (env wins; Connect 409s while env manages any of them). Both workers
-  resolve via `resolveAppCreds`.
-- API: legacy `RUNNER_TOKEN` env plus D1 `api_tokens` (`runner` = run+read,
-  `readonly` = read). Hashes only in D1; plaintext shown once at creation.
+  D1 under `github_app_*`, incl. OAuth client id/secret) or env
+  `GITHUB_APP_ID`/`GITHUB_PRIVATE_KEY` (env wins; Connect 409s while
+  env manages any of them; manual flow needs `ADMIN_TOKEN` for
+  dashboard access since OAuth is impossible). Both workers resolve
+  via `resolveAppCreds`.
+- API: legacy `RUNNER_TOKEN` env plus D1 `api_tokens` (`admin` =
+  everything, `runner` = run+read, `readonly` = read). Hashes only in
+  D1; plaintext shown once at creation.
 
 ## Conventions
 

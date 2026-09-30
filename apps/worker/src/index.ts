@@ -4,12 +4,15 @@ import {
   claimNextJob,
   createJob,
   createRun,
+  createSession,
   createToken,
+  deleteSession,
   findLiveToken,
   flakyStats,
   getJob,
   getJobsForRun,
   getRun,
+  getSession,
   getSetting,
   hasActiveGroupJob,
   isTerminal,
@@ -23,10 +26,27 @@ import {
   setSetting,
   updateJob,
 } from "./db";
-import { bytesEqual, getInstallationToken, mintAppJwt, timingSafeEqualHex, verifyGitHubSignature } from "./github";
+import { bytesEqual, getInstallationToken, mintAppJwt, verifyGitHubSignature } from "./github";
 import { DASHBOARD_HTML } from "./dashboard";
 import { ensureSchema } from "./schema";
-import { SETTING_KEYS, validateNewPassword, validateWebhookSecret } from "./settings";
+import { SETTING_KEYS, validateWebhookSecret } from "./settings";
+import {
+  addAllowedUser,
+  beginOAuth,
+  buildAuthorizeUrl,
+  claimAdmin,
+  consumeOAuthState,
+  decideLogin,
+  exchangeOAuthCode,
+  fetchGithubLogin,
+  listAllowedUsers,
+  parseSessionCookie,
+  removeAllowedUser,
+  SESSION_TTL_DAYS,
+  sessionClearCookie,
+  sessionSetCookie,
+  validateGithubLogin,
+} from "./oauth";
 import {
   defaultPipeline,
   fetchPipeline,
@@ -114,28 +134,33 @@ function getBearer(request: Request): string | null {
   return header.slice("Bearer ".length);
 }
 
-// Admin password plus the legacy env runner token plus D1-issued
-// dashboard tokens. Admin does everything; runner runs + reads;
-// readonly only reads runs.
+// Tokens plus GitHub sessions. Bearer: break-glass env admin, env
+// runner, D1-issued tokens (admin/runner/readonly). Cookie: GitHub
+// login sessions (admin, everyone else reads). Admin does everything;
+// runner runs + reads; readonly only reads runs.
 async function authIdentity(request: Request, env: WorkerEnv): Promise<{ scope: AuthScope; actor: string } | null> {
   const bearer = getBearer(request);
-  if (!bearer) return null;
-  if (env.ADMIN_TOKEN && (await timingSafeEqualStr(bearer, env.ADMIN_TOKEN))) {
-    return { scope: "admin", actor: "admin" };
+  if (bearer) {
+    if (env.ADMIN_TOKEN && (await timingSafeEqualStr(bearer, env.ADMIN_TOKEN))) {
+      return { scope: "admin", actor: "break-glass" };
+    }
+    if (env.RUNNER_TOKEN && (await timingSafeEqualStr(bearer, env.RUNNER_TOKEN))) {
+      return { scope: "runner", actor: "env:runner" };
+    }
+    const row = await findLiveToken(env.DB, await hashToken(bearer));
+    if (!row) return null;
+    const scopes = parseScopes(row.scopes);
+    if (scopesAllow(scopes, "admin")) return { scope: "admin", actor: `token:${row.id}` };
+    if (scopesAllow(scopes, "run")) return { scope: "runner", actor: `token:${row.id}` };
+    if (scopesAllow(scopes, "read")) return { scope: "readonly", actor: `token:${row.id}` };
+    return null;
   }
-  const hash = await getSetting(env.DB, SETTING_KEYS.adminPasswordHash);
-  if (hash && timingSafeEqualHex(await hashToken(bearer), hash)) {
-    return { scope: "admin", actor: "admin" };
-  }
-  if (env.RUNNER_TOKEN && (await timingSafeEqualStr(bearer, env.RUNNER_TOKEN))) {
-    return { scope: "runner", actor: "env:runner" };
-  }
-  const row = await findLiveToken(env.DB, await hashToken(bearer));
-  if (!row) return null;
-  const scopes = parseScopes(row.scopes);
-  if (scopesAllow(scopes, "run")) return { scope: "runner", actor: `token:${row.id}` };
-  if (scopesAllow(scopes, "read")) return { scope: "readonly", actor: `token:${row.id}` };
-  return null;
+  const sessionId = parseSessionCookie(request);
+  if (!sessionId) return null;
+  const session = await getSession(env.DB, sessionId);
+  if (!session || Date.parse(session.expires_at) <= Date.now()) return null;
+  const actor = `github:${session.github_user}`;
+  return session.is_admin ? { scope: "admin", actor } : { scope: "readonly", actor };
 }
 
 async function authScope(request: Request, env: WorkerEnv): Promise<AuthScope | null> {
@@ -146,9 +171,19 @@ async function isAdminRequest(request: Request, env: WorkerEnv): Promise<boolean
   return (await authScope(request, env)) === "admin";
 }
 
-async function isAdminConfigured(env: WorkerEnv): Promise<boolean> {
-  if (env.ADMIN_TOKEN) return true;
-  return (await getSetting(env.DB, SETTING_KEYS.adminPasswordHash)) !== null;
+// Claimed once the first GitHub user logs in; before that, Connect
+// is open so a fresh deploy can bootstrap with no credentials.
+async function isClaimed(env: WorkerEnv): Promise<boolean> {
+  return (await getSetting(env.DB, SETTING_KEYS.adminGithubUser)) !== null;
+}
+
+async function getOAuthCreds(env: WorkerEnv): Promise<{ clientId: string; clientSecret: string } | null> {
+  const [clientId, clientSecret] = await Promise.all([
+    getSetting(env.DB, SETTING_KEYS.githubClientId),
+    getSetting(env.DB, SETTING_KEYS.githubClientSecret),
+  ]);
+  if (clientId && clientSecret) return { clientId, clientSecret };
+  return null;
 }
 
 // Env secrets take precedence; dashboard-managed values fill the gaps
@@ -441,7 +476,7 @@ async function handleCreateToken(request: Request, env: WorkerEnv): Promise<Resp
       return json({ error: "name is required (1-64 chars)" }, 400);
     }
     const scopes = body.scopes === undefined ? ["runner"] : normalizeScopes(body.scopes);
-    if (!scopes) return json({ error: "scopes must be a non-empty array of runner|readonly" }, 400);
+    if (!scopes) return json({ error: "scopes must be a non-empty array of runner|readonly|admin" }, 400);
     const id = crypto.randomUUID();
     const value = newTokenValue();
     await createToken(env.DB, { id, name: body.name.trim(), tokenHash: await hashToken(value), scopes: scopes.join(",") });
@@ -451,26 +486,6 @@ async function handleCreateToken(request: Request, env: WorkerEnv): Promise<Resp
   } catch (err) {
     log("error", "create token failed", { error: String(err) });
     return json({ error: "create token failed" }, 500);
-  }
-}
-
-async function handleSetup(request: Request, env: WorkerEnv): Promise<Response> {
-  try {
-    // First-run only: refused the moment any admin credential exists.
-    if (env.ADMIN_TOKEN) return json({ error: "admin managed via environment" }, 403);
-    if (await getSetting(env.DB, SETTING_KEYS.adminPasswordHash)) {
-      return json({ error: "already configured" }, 403);
-    }
-    const body = (await request.json()) as { password?: unknown };
-    const err = validateNewPassword(body.password);
-    if (err) return json({ error: err }, 400);
-    await setSetting(env.DB, SETTING_KEYS.adminPasswordHash, await hashToken(body.password as string));
-    await audit(env.DB, "setup", "admin.setup", "");
-    log("info", "admin password set via first-run setup");
-    return json({ ok: true });
-  } catch (e) {
-    log("error", "setup failed", { error: String(e) });
-    return json({ error: "setup failed" }, 500);
   }
 }
 
@@ -662,10 +677,95 @@ export default {
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/status") {
-        return json({ configured: await isAdminConfigured(env) });
+        const ident = await authIdentity(request, env);
+        return json({
+          claimed: await isClaimed(env),
+          breakGlass: !!env.ADMIN_TOKEN,
+          githubConnected: (await getOAuthCreds(env)) !== null,
+          user: ident ? { actor: ident.actor, admin: ident.scope === "admin" } : null,
+        });
       }
-      if (request.method === "POST" && url.pathname === "/v1/admin/setup") {
-        return await handleSetup(request, env);
+      if (request.method === "POST" && url.pathname === "/v1/admin/logout") {
+        const sessionId = parseSessionCookie(request);
+        if (sessionId) await deleteSession(env.DB, sessionId).catch(() => undefined);
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Set-Cookie": sessionClearCookie(url.protocol === "https:"),
+          },
+        });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/admin/github/login") {
+        const creds = await getOAuthCreds(env);
+        if (!creds) {
+          return Response.redirect(new URL("/dashboard?github=error&reason=noapp", url).toString(), 302);
+        }
+        const state = await beginOAuth(env.DB);
+        const redirectUri = new URL("/v1/admin/github/oauth/callback", url).toString();
+        return Response.redirect(buildAuthorizeUrl(creds.clientId, redirectUri, state), 302);
+      }
+      if (request.method === "GET" && url.pathname === "/v1/admin/github/oauth/callback") {
+        const fail = (reason: string): Response =>
+          Response.redirect(new URL(`/dashboard?github=error&reason=${reason}`, url).toString(), 302);
+        const state = url.searchParams.get("state") ?? "";
+        const code = url.searchParams.get("code") ?? "";
+        if (!state || !code) return fail("missing");
+        if (!(await consumeOAuthState(env.DB, state))) return fail("expired");
+        const creds = await getOAuthCreds(env);
+        if (!creds) return fail("noapp");
+        const redirectUri = new URL("/v1/admin/github/oauth/callback", url).toString();
+        const accessToken = await exchangeOAuthCode({ ...creds, code, redirectUri });
+        if (!accessToken) return fail("exchange");
+        const login = await fetchGithubLogin(accessToken);
+        if (!login) return fail("exchange");
+        const decision = await decideLogin(env.DB, login);
+        if (!decision.allowed) {
+          log("info", "github login denied", { login });
+          return Response.redirect(new URL("/dashboard?github=forbidden", url).toString(), 302);
+        }
+        if (!decision.claimed) {
+          await claimAdmin(env.DB, login);
+          await audit(env.DB, `github:${login}`, "admin.claim", "");
+          log("info", "admin claimed", { login });
+        }
+        const sessionId = crypto.randomUUID();
+        await createSession(env.DB, {
+          id: sessionId,
+          githubUser: login,
+          isAdmin: decision.isAdmin,
+          expiresAt: new Date(Date.now() + SESSION_TTL_DAYS * 86400000).toISOString(),
+        });
+        await audit(env.DB, `github:${login}`, "session.login", "");
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: new URL("/dashboard", url).toString(),
+            "Set-Cookie": sessionSetCookie(sessionId, url.protocol === "https:"),
+          },
+        });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/admin/users") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        return json({
+          admin: await getSetting(env.DB, SETTING_KEYS.adminGithubUser),
+          users: await listAllowedUsers(env.DB),
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/users") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const body = (await request.json().catch(() => ({}))) as { login?: unknown; action?: unknown };
+        const err = validateGithubLogin(body.login);
+        if (err) return json({ error: err }, 400);
+        if (body.action !== "add" && body.action !== "remove") return json({ error: "action must be add|remove" }, 400);
+        const users =
+          body.action === "add"
+            ? await addAllowedUser(env.DB, body.login as string)
+            : await removeAllowedUser(env.DB, body.login as string);
+        await audit(env.DB, ident.actor, `users.${body.action as string}`, body.login as string);
+        return json({ users });
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/settings") {
         if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
@@ -677,15 +777,17 @@ export default {
         const githubSource = env.GITHUB_APP_ID ? "env" : ((await getSetting(env.DB, SETTING_KEYS.githubAppId)) !== null ? "d1" : "none");
         const githubSlug = githubSource === "d1" ? await getSetting(env.DB, SETTING_KEYS.githubAppSlug) : null;
         return json({
-          adminSource: env.ADMIN_TOKEN ? "env" : "d1",
+          adminGithubUser: await getSetting(env.DB, SETTING_KEYS.adminGithubUser),
           webhookSecretSource,
           cache: env.CACHE ? "r2" : "none",
           githubApp: { source: githubSource, installUrl: githubSlug ? installUrl(githubSlug) : null },
         });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/github/connect") {
+        // Open before claim (fresh-deploy bootstrap), admin-only after.
+        const claimed = await isClaimed(env);
         const ident = await authIdentity(request, env);
-        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        if (claimed && (!ident || ident.scope !== "admin")) return json({ error: "unauthorized" }, 401);
         if (env.GITHUB_WEBHOOK_SECRET || env.GITHUB_APP_ID || env.GITHUB_PRIVATE_KEY) {
           return json({ error: "github already managed via environment" }, 409);
         }
@@ -697,7 +799,7 @@ export default {
         const err = validateAppName(name);
         if (err) return json({ error: err }, 400);
         const state = await beginConnect(env.DB);
-        await audit(env.DB, ident.actor, "github.connect.begin", name);
+        await audit(env.DB, ident?.actor ?? "setup", "github.connect.begin", name);
         log("info", "github connect started", { name });
         return json({ postUrl: `${GITHUB_MANIFEST_URL}?state=${encodeURIComponent(state)}`, manifest: buildManifest(name, url.origin) });
       }
