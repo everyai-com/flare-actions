@@ -67,6 +67,23 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("/v1/admin/users/invite");
     expect(DASHBOARD_HTML).toContain("AI triage");
     expect(DASHBOARD_HTML).toContain("/v1/runs");
+    expect(DASHBOARD_HTML).toContain('rel="icon"');
+    expect(DASHBOARD_HTML).toContain("theme-color");
+    expect(DASHBOARD_HTML).toContain("prefers-color-scheme");
+    expect(DASHBOARD_HTML).toContain("table-scroll");
+    expect(DASHBOARD_HTML).toContain('id="runsList"');
+    expect(DASHBOARD_HTML).toContain("run-row");
+    expect(DASHBOARD_HTML).toContain("installation_id");
+    expect(DASHBOARD_HTML).toContain("setup_action");
+    expect(DASHBOARD_HTML).toContain("setInterval");
+    expect(DASHBOARD_HTML).toContain("details.step");
+    expect(DASHBOARD_HTML).toContain('id="runsFilter"');
+    expect(DASHBOARD_HTML).toContain('id="runsCount"');
+    expect(DASHBOARD_HTML).toContain('id="copyTokenBtn"');
+    expect(DASHBOARD_HTML).toContain('id="copyInviteBtn"');
+    expect(DASHBOARD_HTML).toContain('"Escape"');
+    expect(DASHBOARD_HTML).toContain("prefers-reduced-motion");
+    expect(DASHBOARD_HTML).toContain("just now");
     expect(DASHBOARD_HTML).not.toContain("${");
   });
 
