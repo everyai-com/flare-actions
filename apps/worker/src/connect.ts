@@ -40,7 +40,10 @@ export function buildManifest(name: string, origin: string): AppManifest {
     redirect_url: `${base}/v1/admin/github/callback`,
     callback_urls: [`${base}/v1/admin/github/oauth/callback`],
     public: false,
-    default_permissions: { contents: "read", statuses: "write" },
+    // Every default event needs a backing permission or GitHub rejects the
+    // manifest ("Default events are not supported by permissions"): push is
+    // covered by contents, pull_request requires pull_requests.
+    default_permissions: { contents: "read", statuses: "write", pull_requests: "read" },
     default_events: ["push", "pull_request"],
     hook_attributes: { url: `${base}/webhooks/github`, active: true },
   };

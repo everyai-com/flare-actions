@@ -70,7 +70,7 @@ which becomes the dashboard recovery password). Local dev:
 ## GitHub App setup
 
 **One click:** dashboard → Settings → **Connect GitHub**. GitHub shows a
-pre-filled App (Contents read, Commit statuses write, `push` +
+pre-filled App (Contents read, Pull requests read, Commit statuses write, `push` +
 `pull_request` events, webhook URL wired) — click Create, then install
 it on your repos. App ID, private key, and webhook secret land in D1,
 so the main worker and managed seats both pick them up.
