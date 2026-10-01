@@ -9,6 +9,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { applyMigrationsWithReconcile } from "./migrate-reconcile.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const config = "apps/worker/wrangler.jsonc";
@@ -62,10 +63,18 @@ for (const q of ["flare-actions-runs", "flare-actions-dlq", "flare-actions-seats
   if (/already (exists|taken)/i.test(out)) console.log("R2 flare-actions-cache already exists, reusing");
 }
 
-// 5. Migrations
+// 5. Migrations (reconciles databases the worker already self-healed)
 {
-  const r = run("npx", ["wrangler", "d1", "migrations", "apply", "flare-actions", "--remote", "--config", config]);
-  if (r.status !== 0 && !dryRun) fail(`migrations failed:\n${r.stdout}\n${r.stderr}`);
+  try {
+    applyMigrationsWithReconcile({
+      run,
+      dbName: "flare-actions",
+      config,
+      migrationsDir: join(root, "apps/worker/migrations"),
+    });
+  } catch (err) {
+    if (!dryRun) fail(err instanceof Error ? err.message : String(err));
+  }
 }
 
 // 6. Secrets (piped via stdin; values never appear in commands). Only the
