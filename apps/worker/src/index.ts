@@ -6,6 +6,7 @@ import {
   createRun,
   createToken,
   createUser,
+  deleteRepoSecret,
   deleteSession,
   deleteUser,
   deleteUserSessions,
@@ -19,21 +20,39 @@ import {
   getUser,
   hasActiveGroupJob,
   isTerminal,
+  latestInstallationId,
   latestRunStatus,
   listAudit,
+  listRepoSecretNames,
   listRuns,
   listTokens,
   listUsers,
+  pruneOldRuns,
   rerunJob,
   revokeToken,
   rollupRunStatus,
+  setRepoSecret,
   setSetting,
+  touchJob,
   updateJob,
 } from "./db";
-import { bytesEqual, getInstallationToken, mintAppJwt, verifyGitHubSignature } from "./github";
+import {
+  bytesEqual,
+  getInstallationToken,
+  mintAppJwt,
+  resolveRefToSha,
+  verifyGitHubSignature,
+} from "./github";
 import { DASHBOARD_HTML } from "./dashboard";
 import { ensureSchema } from "./schema";
-import { SETTING_KEYS, validateWebhookSecret } from "./settings";
+import {
+  encryptSecretValue,
+  getDecryptedRepoSecrets,
+  resolveSecretsKey,
+  validateSecretName,
+  validateSecretValue,
+} from "./secrets";
+import { SETTING_KEYS, validateNotifyFromEmail, validateNotifyMode, validateWebhookSecret } from "./settings";
 import {
   addAllowedUser,
   beginOAuth,
@@ -71,7 +90,8 @@ import {
   serializeDefinition,
   type PipelineJob,
 } from "./pipeline";
-import { promoteBlockedJobs, reportGitHubStatus, triageAndStore } from "./finish";
+import { promoteBlockedJobs, reportGitHubStatus, requeueStaleJobs, triageAndStore } from "./finish";
+import { notifyRunCompleted } from "./notify";
 import { hashToken, newTokenValue, normalizeScopes, parseScopes, scopesAllow } from "./tokens";
 import { badgeSvg } from "./badge";
 import { jobDurationMs, summarizeRunCost } from "./cost";
@@ -103,6 +123,12 @@ interface WorkerSecrets {
   ADMIN_TOKEN?: string;
   GITHUB_APP_ID?: string;
   GITHUB_PRIVATE_KEY?: string;
+  // Optional sender override for run emails; D1 notify_from_email fills
+  // the gap (env wins, like every other credential).
+  NOTIFY_FROM_EMAIL?: string;
+  // Base64 32-byte data key for repo secrets; when absent a D1-held
+  // key is auto-generated (works out of the box, weaker at-rest story).
+  SECRETS_KEY?: string;
   // R2 bucket for cache + artifacts; absent on forks that skipped it.
   CACHE?: R2Bucket;
   // No seats binding here by design: wakes travel over the SEAT_QUEUE
@@ -230,12 +256,30 @@ async function requireScope(
   return need === "read" ? ident : null;
 }
 
-interface GitHubWebhookPayload {
+export interface GitHubWebhookPayload {
   ref?: string;
+  deleted?: boolean;
   repository?: { full_name?: string };
   after?: string;
   installation?: { id?: number };
   pull_request?: { head?: { sha?: string; ref?: string } };
+}
+
+const ZERO_SHA = "0000000000000000000000000000000000000000";
+
+// Events that create runs. Everything else (ping, installation, star, …)
+// is acknowledged without a run — GitHub treats non-2xx as failed delivery.
+const RUN_EVENTS = ["push", "pull_request"];
+
+// Pure gate for webhook fan-out: returns a skip reason, or null to proceed.
+// Branch/tag deletions carry deleted:true with a zero SHA; fanning those
+// out would create runs that can never check out (and mail failure noise).
+export function webhookSkipReason(event: string, payload: GitHubWebhookPayload): string | null {
+  if (!RUN_EVENTS.includes(event)) return `unsupported event: ${event}`;
+  if (event === "push" && payload.deleted === true) return "ref deleted";
+  const sha = payload.after ?? payload.pull_request?.head?.sha;
+  if (typeof sha === "string" && sha === ZERO_SHA) return "zero sha (deleted ref)";
+  return null;
 }
 
 function branchFromRef(ref: string | undefined): string {
@@ -368,6 +412,11 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
 
     const event = request.headers.get("x-github-event") ?? "unknown";
     const payload = JSON.parse(new TextDecoder().decode(raw)) as GitHubWebhookPayload;
+    const skip = webhookSkipReason(event, payload);
+    if (skip) {
+      log("info", "webhook skipped", { event, reason: skip });
+      return json({ skipped: skip }, 200);
+    }
     const repo = payload.repository?.full_name;
     const sha = payload.after ?? payload.pull_request?.head?.sha;
     if (!repo || !sha) return json({ error: "missing repo or sha" }, 400);
@@ -377,6 +426,27 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     const jobs = await loadPipelineJobs(env, repo, sha, installationId);
     const { runId, jobIds, queuedIds, blocked } = await createRunAndFanOut(env, { repo, sha, branch, event, installationId, jobs });
 
+    // Post-response maintenance never blocks the webhook: bounded
+    // retention prune plus the stuck-claim sweep (dead executors get
+    // their jobs requeued for a live taker).
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const pruned = await pruneOldRuns(env.DB);
+          if (pruned > 0) log("info", "pruned old runs", { pruned });
+        } catch (err: unknown) {
+          log("warn", "run prune failed", { error: String(err) });
+        }
+        try {
+          const requeued = await requeueStaleJobs(env.DB, env.RUN_QUEUE, 20, (job) =>
+            wakeSeat(env, job.jobId),
+          );
+          if (requeued.length > 0) log("info", "requeued stale jobs", { requeued });
+        } catch (err: unknown) {
+          log("warn", "stale sweep failed", { error: String(err) });
+        }
+      })(),
+    );
     log("info", "run queued", { runId, jobCount: jobIds.length, blocked, repo, sha, event });
     for (const jobId of queuedIds) await wakeSeat(env, jobId);
     const creds = await getAppCreds(env);
@@ -409,10 +479,34 @@ async function handleStatusCallback(
     const cappedLog = typeof body.log === "string" ? body.log.slice(0, 262144) : undefined;
     await updateJob(env.DB, body.jobId, { status: body.status, log: cappedLog, result });
     await rollupRunStatus(env.DB, runId);
+    // Same post-response maintenance as webhooks: dispatch-driven
+    // instances with no push traffic still sweep stuck claims.
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const requeued = await requeueStaleJobs(env.DB, env.RUN_QUEUE, 20, (job) =>
+            wakeSeat(env, job.jobId),
+          );
+          if (requeued.length > 0) log("info", "requeued stale jobs", { requeued });
+        } catch (err: unknown) {
+          log("warn", "stale sweep failed", { error: String(err) });
+        }
+      })(),
+    );
     log("info", "status updated", { runId, jobId: body.jobId, status: body.status });
     if (isTerminal(body.status)) {
       const promoted = await promoteBlockedJobs(env.DB, env.RUN_QUEUE, run.repo, (job) => wakeSeat(env, job.jobId));
       if (promoted.length > 0) log("info", "blocked jobs promoted", { runId, promoted });
+    }
+    // Notify on the transition into terminal (re-checked after promote, so
+    // skip-terminalized runs mail too). A callback on an already-terminal
+    // run is a duplicate delivery, not a new completion.
+    if (!isTerminal(run.status)) {
+      const finalRun = await getRun(env.DB, runId);
+      if (finalRun && isTerminal(finalRun.status)) {
+        const origin = new URL(request.url).origin;
+        ctx.waitUntil(notifyRunCompleted(env.DB, env, { run: finalRun, origin }));
+      }
     }
     if (body.status === "success" || body.status === "failure" || body.status === "error") {
       const ghState = body.status === "success" ? "success" : "failure";
@@ -440,10 +534,16 @@ async function handleStatusCallback(
   }
 }
 
+export function isHexSha(s: string): boolean {
+  return /^[0-9a-f]{4,64}$/i.test(s);
+}
+
 function validateDispatch(body: Record<string, unknown>): { repo: string; sha: string; ref: string; pipeline?: string } | { error: string } {
   const { repo, sha, ref, pipeline } = body;
   if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return { error: "repo must be owner/name" };
-  if (typeof sha !== "string" || !/^[\w.-]+$/.test(sha) || sha.length > 128) return { error: "invalid sha" };
+  if (typeof sha !== "string" || !/^[\w./-]+$/.test(sha) || sha.length > 128 || sha.includes("..")) {
+    return { error: "sha must be a commit SHA, branch, or tag" };
+  }
   if (ref !== undefined && (typeof ref !== "string" || ref.length > 128)) return { error: "invalid ref" };
   if (pipeline !== undefined && (typeof pipeline !== "string" || !pipeline.trim() || pipeline.length > 65536)) {
     return { error: "invalid pipeline" };
@@ -455,23 +555,43 @@ async function dispatchRun(
   env: WorkerEnv,
   input: { repo: string; sha: string; ref: string; pipeline?: string },
 ): Promise<{ runId: string; jobIds: string[]; queuedIds: string[] }> {
+  // Dispatch accepts a SHA, branch, or tag: non-SHA refs resolve to the
+  // head commit (installation token when the repo has App history, else
+  // the public API), so the stored run always pins a real commit.
+  let sha = input.sha;
+  if (!isHexSha(sha)) {
+    let token: string | null = null;
+    const installationId = await latestInstallationId(env.DB, input.repo);
+    const creds = await getAppCreds(env);
+    if (installationId && creds) {
+      try {
+        const jwt = await mintAppJwt(creds.appId, creds.privateKey);
+        token = await getInstallationToken(jwt, installationId);
+      } catch {
+        token = null;
+      }
+    }
+    const resolved = await resolveRefToSha(token, input.repo, sha);
+    if (!resolved) throw new Error(`could not resolve ref "${sha}" — paste a full commit SHA`);
+    sha = resolved;
+  }
   let jobs: PipelineJob[] | null = null;
   if (input.pipeline) {
     jobs = parsePipeline(input.pipeline);
     if (!jobs) throw new Error("pipeline parse failed");
   } else {
-    jobs = await loadPipelineJobs(env, input.repo, input.sha, null);
+    jobs = await loadPipelineJobs(env, input.repo, sha, null);
   }
-  const branch = branchFromRef(input.ref) || input.ref;
+  const branch = branchFromRef(input.ref) || input.ref || (!isHexSha(input.sha) ? input.sha : "");
   const { runId, jobIds, queuedIds } = await createRunAndFanOut(env, {
     repo: input.repo,
-    sha: input.sha,
+    sha,
     branch,
     event: "dispatch",
     installationId: null,
     jobs,
   });
-  log("info", "run dispatched", { runId, repo: input.repo, sha: input.sha });
+  log("info", "run dispatched", { runId, repo: input.repo, sha });
   return { runId, jobIds, queuedIds };
 }
 
@@ -487,6 +607,43 @@ async function rerunJobAndQueue(
   await rollupRunStatus(env.DB, runId);
   await env.RUN_QUEUE.send({ runId, jobId, repo: reset.repo, sha: reset.sha } satisfies QueueJobMessage);
   return { ok: true };
+}
+
+// Admin-only repo secret management. Values are write-only: GET lists
+// names, never values; values decrypt only inside job claims.
+async function handleRepoSecrets(request: Request, env: WorkerEnv): Promise<Response> {
+  const ident = await authIdentity(request, env);
+  if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+  const url = new URL(request.url);
+  if (request.method === "GET") {
+    const repo = url.searchParams.get("repo") ?? "";
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
+    return json({ secrets: await listRepoSecretNames(env.DB, repo) });
+  }
+  if (request.method === "DELETE") {
+    const repo = url.searchParams.get("repo") ?? "";
+    const name = url.searchParams.get("name") ?? "";
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
+    const nameErr = validateSecretName(name);
+    if (nameErr) return json({ error: nameErr }, 400);
+    const deleted = await deleteRepoSecret(env.DB, repo, name);
+    if (!deleted) return json({ error: "secret not found" }, 404);
+    await audit(env.DB, ident.actor, "secret.delete", `${repo}:${name}`);
+    return json({ ok: true });
+  }
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  if (typeof body.repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(body.repo)) {
+    return json({ error: "repo must be owner/name" }, 400);
+  }
+  const nameErr = validateSecretName(body.name);
+  if (nameErr) return json({ error: nameErr }, 400);
+  const valueErr = validateSecretValue(body.value);
+  if (valueErr) return json({ error: valueErr }, 400);
+  const key = await resolveSecretsKey(env.DB, env.SECRETS_KEY);
+  const enc = await encryptSecretValue(key, body.value as string);
+  await setRepoSecret(env.DB, body.repo, body.name as string, enc.iv, enc.data);
+  await audit(env.DB, ident.actor, "secret.set", `${body.repo}:${body.name as string}`);
+  return json({ ok: true });
 }
 
 async function handleCreateToken(request: Request, env: WorkerEnv): Promise<Response> {
@@ -515,15 +672,37 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
   try {
     const ident = await authIdentity(request, env);
     if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
-    if (env.GITHUB_WEBHOOK_SECRET) {
-      return json({ error: "webhook secret managed via environment" }, 409);
+    const body = (await request.json()) as { webhookSecret?: unknown; notifyFromEmail?: unknown; notifyMode?: unknown };
+    const hasWebhook = body.webhookSecret !== undefined;
+    const hasNotifyFrom = body.notifyFromEmail !== undefined;
+    const hasNotifyMode = body.notifyMode !== undefined;
+    if (!hasWebhook && !hasNotifyFrom && !hasNotifyMode) return json({ error: "no settings provided" }, 400);
+    if (hasWebhook) {
+      if (env.GITHUB_WEBHOOK_SECRET) {
+        return json({ error: "webhook secret managed via environment" }, 409);
+      }
+      const err = validateWebhookSecret(body.webhookSecret);
+      if (err) return json({ error: err }, 400);
+      await setSetting(env.DB, SETTING_KEYS.webhookSecret, body.webhookSecret as string);
+      await audit(env.DB, ident.actor, "settings.webhook", "");
+      log("info", "webhook secret set via dashboard");
     }
-    const body = (await request.json()) as { webhookSecret?: unknown };
-    const err = validateWebhookSecret(body.webhookSecret);
-    if (err) return json({ error: err }, 400);
-    await setSetting(env.DB, SETTING_KEYS.webhookSecret, body.webhookSecret as string);
-    await audit(env.DB, ident.actor, "settings.webhook", "");
-    log("info", "webhook secret set via dashboard");
+    if (hasNotifyFrom) {
+      if (env.NOTIFY_FROM_EMAIL) {
+        return json({ error: "notify sender managed via environment" }, 409);
+      }
+      const err = validateNotifyFromEmail(body.notifyFromEmail);
+      if (err) return json({ error: err }, 400);
+      await setSetting(env.DB, SETTING_KEYS.notifyFromEmail, (body.notifyFromEmail as string).trim());
+      await audit(env.DB, ident.actor, "settings.notify_from", "");
+      log("info", "notify sender set via dashboard");
+    }
+    if (hasNotifyMode) {
+      const err = validateNotifyMode(body.notifyMode);
+      if (err) return json({ error: err }, 400);
+      await setSetting(env.DB, SETTING_KEYS.notifyMode, body.notifyMode as string);
+      await audit(env.DB, ident.actor, "settings.notify_mode", body.notifyMode as string);
+    }
     return json({ ok: true });
   } catch (e) {
     log("error", "settings update failed", { error: String(e) });
@@ -634,11 +813,31 @@ export default {
         const job = await claimNextJob(env.DB, labels);
         if (!job) return json({ job: null }, 200);
         await rollupRunStatus(env.DB, job.run_id);
-        return json({ job });
+        // Secrets ride the authenticated claim only — never any read API.
+        // Undecryptable rows fail open to empty (flagged) rather than
+        // stranding the job in a claim loop.
+        let secrets: Record<string, string> = {};
+        let secretsError = false;
+        try {
+          secrets = await getDecryptedRepoSecrets(env.DB, env.SECRETS_KEY, job.repo);
+        } catch (err) {
+          secretsError = true;
+          log("warn", "repo secrets undecryptable", { repo: job.repo, error: String(err) });
+          await audit(env.DB, "system", "secrets.decrypt_failed", job.repo).catch(() => undefined);
+        }
+        return json({ job, secrets, secretsError });
       }
       const statusMatch = /^\/v1\/runs\/([^/]+)\/status$/.exec(url.pathname);
       if (request.method === "POST" && statusMatch) {
         return await handleStatusCallback(request, env, ctx, statusMatch[1]);
+      }
+      const heartbeatMatch = /^\/v1\/runs\/([^/]+)\/jobs\/([^/]+)\/heartbeat$/.exec(url.pathname);
+      if (request.method === "POST" && heartbeatMatch) {
+        if (!(await requireScope(request, env, "run"))) return json({ error: "unauthorized" }, 401);
+        const job = await getJob(env.DB, heartbeatMatch[2]);
+        if (!job || job.run_id !== heartbeatMatch[1]) return json({ error: "job not found" }, 404);
+        await touchJob(env.DB, job.id);
+        return json({ ok: true });
       }
       const rerunMatch = /^\/v1\/runs\/([^/]+)\/jobs\/([^/]+)\/rerun$/.exec(url.pathname);
       if (request.method === "POST" && rerunMatch) {
@@ -892,12 +1091,20 @@ export default {
             : "none";
         const githubSource = env.GITHUB_APP_ID ? "env" : ((await getSetting(env.DB, SETTING_KEYS.githubAppId)) !== null ? "d1" : "none");
         const githubSlug = githubSource === "d1" ? await getSetting(env.DB, SETTING_KEYS.githubAppSlug) : null;
+        const notifyFromSource = env.NOTIFY_FROM_EMAIL
+          ? "env"
+          : (await getSetting(env.DB, SETTING_KEYS.notifyFromEmail)) !== null
+            ? "d1"
+            : "none";
         return json({
           adminGithubUser: await getSetting(env.DB, SETTING_KEYS.adminGithubUser),
           adminEmail: await getSetting(env.DB, SETTING_KEYS.adminEmail),
           webhookSecretSource,
           cache: env.CACHE ? "r2" : "none",
           githubApp: { source: githubSource, installUrl: githubSlug ? installUrl(githubSlug) : null },
+          notifyFrom: env.NOTIFY_FROM_EMAIL ?? (await getSetting(env.DB, SETTING_KEYS.notifyFromEmail)),
+          notifyFromSource,
+          notifyMode: (await getSetting(env.DB, SETTING_KEYS.notifyMode)) ?? "all",
         });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/github/connect") {
@@ -938,6 +1145,12 @@ export default {
         await audit(env.DB, "github-connect", "github.connect.done", app.slug);
         log("info", "github app connected", { slug: app.slug, appId: app.appId });
         return Response.redirect(new URL("/dashboard?github=connected", url).toString(), 302);
+      }
+      if (
+        (request.method === "GET" || request.method === "POST" || request.method === "DELETE") &&
+        url.pathname === "/v1/admin/secrets"
+      ) {
+        return await handleRepoSecrets(request, env);
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/settings") {
         return await handleSettingsUpdate(request, env);

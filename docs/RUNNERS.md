@@ -27,8 +27,22 @@ export GITHUB_TOKEN=<optional, for private repos>
 npm run runner
 ```
 
-Keep it alive with a service manager: `launchd` on macOS, Task Scheduler
-or NSSM on Windows, `systemd --user` on Linux.
+Keep it alive with a service manager — a bare terminal dies with your
+session and queued jobs just sit there. Copy-paste examples:
+
+```bash
+# macOS (launchd): ~/Library/LaunchAgents/com.flare.runner.plist
+# RunAtLoad + KeepAlive, FLARE_* vars in EnvironmentVariables, then:
+launchctl load ~/Library/LaunchAgents/com.flare.runner.plist
+
+# Linux (systemd user unit): ~/.config/systemd/user/flare-runner.service
+# [Service] ExecStart=/usr/bin/npm run runner, WorkingDirectory=<repo>,
+# Environment=FLARE_ACTIONS_URL=… RUNNER_TOKEN=…, Restart=always, then:
+systemctl --user enable --now flare-runner
+
+# Windows: Task Scheduler "at startup" trigger, or NSSM service wrapper.
+# Anywhere else: tmux new -d -s flare 'npm run runner' survives SSH drops.
+```
 
 ## macOS (Apple Silicon builds)
 

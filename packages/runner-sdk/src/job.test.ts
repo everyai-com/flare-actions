@@ -138,6 +138,48 @@ describe("runJob", () => {
   });
 });
 
+describe("runJob secrets", () => {
+  it("interpolates secrets into steps and env, then masks them", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-secrets-"));
+    try {
+      const res = await runJob(
+        {
+          steps: [{ run: "echo ${{ secrets.TOKEN }}-$FROM_ENV" }],
+          env: { FROM_ENV: "${{ secrets.SUFFIX }}" },
+        },
+        {
+          cwd: dir,
+          env: { ...process.env },
+          client: fakeClient(),
+          jobId: "j1",
+          secrets: { TOKEN: "s3cret-value", SUFFIX: "sfx" },
+        },
+      );
+      expect(res.success).toBe(true);
+      expect(res.log).toContain("***-***");
+      expect(res.log).not.toContain("s3cret-value");
+      expect(res.log).not.toContain("sfx");
+      expect(res.resultJson).not.toContain("s3cret-value");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("warns when secrets failed to decrypt", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-secerr-"));
+    try {
+      const res = await runJob(
+        { steps: [{ run: "echo hi" }] },
+        { cwd: dir, env: { ...process.env }, client: fakeClient(), jobId: "j1", secretsError: true },
+      );
+      expect(res.success).toBe(true);
+      expect(res.log).toContain("secrets unavailable");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("artifact helpers", () => {
   it("sanitizes names to the server alphabet", () => {
     expect(sanitizeArtifactName("a/b c")).toBe("a-b-c");

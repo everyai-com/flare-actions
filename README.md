@@ -89,7 +89,8 @@ Open `https://<worker>/dashboard` and log in with GitHub or email
 invite teammates by email in the Access tab. For CLI admin commands,
 issue an `admin` token in the Access tab instead.
 
-- **Runs** — see every run and drill into job logs.
+- **Runs** — see every run and drill into job logs; admins can dispatch
+  runs by branch, tag, or SHA, and re-run finished jobs from the detail view.
 - **Access** — allow GitHub users (view runs), invite teammates by
   email (single-use links, 24h), and issue named tokens: `runner`
   tokens pull jobs and report status (CI machines, teammates),
@@ -144,6 +145,8 @@ jobs:
 - Every job records machine-readable results (`result` JSON: per-step
   command, exit code, duration, output) alongside the human log — this
   is what agents consume to triage failures.
+- `${{ secrets.NAME }}` in steps and `env` reads per-repo secrets
+  (Settings tab, write-only), encrypted at rest and masked in logs.
 
 Full reference (matrix, `needs`, concurrency, containers, services,
 cache, artifacts, labels, timeouts): [docs/PIPELINES.md](docs/PIPELINES.md).
@@ -207,6 +210,16 @@ free tier): likely cause, culprit file/command, and one concrete fix.
 It appears on the job in the dashboard and CLI. Forks without the AI
 binding simply skip triage — nothing breaks.
 
+## Email notifications
+
+Every finished run emails all registered email users: status, branch,
+jobs, cost, and the AI triage excerpt on failures. Set the sender in
+dashboard Settings → Run notifications (the domain must be enabled for
+[Email Sending](https://developers.cloudflare.com/email-service/) first);
+pick all completions, failures only, or off. Env `NOTIFY_FROM_EMAIL`
+overrides the dashboard value. Deployments without a sender simply
+skip — nothing breaks.
+
 ## CLI
 
 ```bash
@@ -226,13 +239,15 @@ npm run cli -- mcp-config              # MCP client config
 - `GET /dashboard` — dashboard UI (`/` redirects here)
 - `POST /webhooks/github` — GitHub App webhook (HMAC verified)
 - `GET /mcp` — MCP server metadata (public); `POST /mcp` — MCP JSON-RPC
-- `POST /v1/runs/dispatch` — trigger a run, optional inline `pipeline`
+- `POST /v1/runs/dispatch` — trigger a run by SHA, branch, or tag, optional inline `pipeline`
+- `GET|POST|DELETE /v1/admin/secrets` — repo secrets, names listed, values write-only (admin only)
 - `GET /v1/runs` — list runs (admin, runner, or readonly token)
 - `GET /v1/runs/:id` — run + jobs + cost summary (admin, runner, readonly)
 - `GET /v1/runs/:id/artifacts` — list a run's artifacts (read scope)
 - `GET /v1/jobs/next?labels=` — pull next matching queued job (run scope)
 - `POST /v1/runs/:id/status` — runner status callback (admin or runner token)
 - `POST /v1/runs/:id/jobs/:jobId/rerun` — reset a finished job (run scope)
+- `POST /v1/runs/:id/jobs/:jobId/heartbeat` — executor liveness; running jobs quiet 20m+ are requeued (run scope)
 - `PUT|GET /v1/cache/:key` — build cache blobs (run scope)
 - `PUT|GET /v1/jobs/:jobId/artifacts/:name` — artifacts (run to write, read to fetch)
 - `GET /v1/badge.svg?repo=&branch=` — status badge (public)

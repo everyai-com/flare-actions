@@ -11,7 +11,7 @@ function usage(): never {
       "usage:",
       "  cli runs                                  list recent runs",
       "  cli logs <runId>                           show run jobs, steps, triage, logs",
-      "  cli dispatch <repo> <sha> [ref]            trigger a run (ref optional branch label)",
+      "  cli dispatch <repo> <sha|branch|tag> [ref]  trigger a run (ref optional branch label)",
       "  cli rerun <runId> <jobId>                   reset a finished job to queued",
       "  cli flaky <repo> [days]                     per-job failure rates, worst first",
       "  cli artifacts <runId>                       list a run's artifacts",

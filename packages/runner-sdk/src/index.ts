@@ -13,6 +13,7 @@ export { dockerArgsForService, dockerArgsForStep, dockerAvailable, dockerService
 export type { ServiceHandle, ServicesCtl } from "./services.ts";
 export { collectArtifactFiles, runJob, sanitizeArtifactName } from "./job.ts";
 export type { JobClient, RunJobOptions, RunJobResult } from "./job.ts";
+export { hasSecretPlaceholders, interpolateSecrets, maskSecrets } from "./secrets.ts";
 export { convertActionsWorkflow, isImportSuccess, mapRunsOn, sanitizeCacheKey } from "./importActions.ts";
 export type { ImportFailure, ImportResult, ImportSuccess } from "./importActions.ts";
 
@@ -118,11 +119,32 @@ export class FlareClient {
   }
 
   async nextJob(labels: string[] = []): Promise<FlareJob | null> {
+    return (await this.nextClaim(labels)).job;
+  }
+
+  // Full claim: the job plus its repo secrets (decrypted server-side for
+  // this authenticated claim only) and a flag when stored secrets could
+  // not be decrypted.
+  async nextClaim(labels: string[] = []): Promise<{
+    job: FlareJob | null;
+    secrets: Record<string, string>;
+    secretsError: boolean;
+  }> {
     const qs = labels.length > 0 ? `?labels=${encodeURIComponent(labels.join(","))}` : "";
     const res = await this.call(`/v1/jobs/next${qs}`);
     if (!res.ok) throw new Error(`nextJob failed: ${res.status}`);
-    const data = (await res.json()) as { job: FlareJob | null };
-    return data.job;
+    const data = (await res.json()) as {
+      job: FlareJob | null;
+      secrets?: Record<string, string>;
+      secretsError?: boolean;
+    };
+    const secrets: Record<string, string> = {};
+    if (data.secrets && typeof data.secrets === "object") {
+      for (const [k, v] of Object.entries(data.secrets)) {
+        if (typeof v === "string") secrets[k] = v;
+      }
+    }
+    return { job: data.job, secrets, secretsError: data.secretsError === true };
   }
 
   private static encodeKey(key: string): string {
@@ -199,6 +221,16 @@ export class FlareClient {
       body: JSON.stringify({ jobId, status, log, result }),
     });
     if (!res.ok) throw new Error(`reportStatus failed: ${res.status}`);
+  }
+
+  // Liveness proof while a job runs: servers requeue running jobs that
+  // go quiet past the stale horizon, so call this about every minute.
+  async heartbeat(runId: string, jobId: string): Promise<void> {
+    const res = await this.call(
+      `/v1/runs/${encodeURIComponent(runId)}/jobs/${encodeURIComponent(jobId)}/heartbeat`,
+      { method: "POST" },
+    );
+    if (!res.ok) throw new Error(`heartbeat failed: ${res.status}`);
   }
 
   async listRuns(): Promise<FlareRun[]> {

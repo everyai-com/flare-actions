@@ -70,6 +70,15 @@ export const SCHEMA_STATEMENTS = [
     is_admin INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS repo_secrets (
+    repo TEXT NOT NULL,
+    name TEXT NOT NULL,
+    iv TEXT NOT NULL,
+    ciphertext TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (repo, name)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_repo_secrets_repo ON repo_secrets(repo)`,
 ];
 
 // Additive columns for databases created before the matching migration.

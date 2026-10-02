@@ -8,11 +8,14 @@ export interface SeatsEnv {
   RUN_QUEUE: Queue;
   SEAT_QUEUE: Queue;
   AI: Ai;
+  EMAIL?: SendEmail;
   SEATS: DurableObjectNamespace;
   ENVIRONMENT: string;
   GITHUB_APP_ID?: string;
   GITHUB_PRIVATE_KEY?: string;
   SEATS_TOKEN?: string;
+  NOTIFY_FROM_EMAIL?: string;
+  SECRETS_KEY?: string;
 }
 
 type BoundContainer = NonNullable<DurableObjectState["container"]>;
@@ -85,6 +88,8 @@ export class ContainerSeat extends DurableObject<SeatsEnv> {
           ai: env.AI,
           appId: creds?.appId,
           appKey: creds?.privateKey,
+          mail: { EMAIL: env.EMAIL, NOTIFY_FROM_EMAIL: env.NOTIFY_FROM_EMAIL },
+          secretsKey: env.SECRETS_KEY,
           container: adapt(container),
           spawn: async (id: string) => {
             const stub = env.SEATS.get(env.SEATS.idFromName(`job-${id}`));

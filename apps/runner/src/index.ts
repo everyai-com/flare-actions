@@ -20,9 +20,14 @@ console.log(JSON.stringify({ msg: "runner labels", labels: LABELS }));
 const client = new FlareClient(baseUrl, token);
 
 async function pollOnce(): Promise<boolean> {
-  const job = await client.nextJob(LABELS);
+  const { job, secrets, secretsError } = await client.nextClaim(LABELS);
   if (!job) return false;
   console.log(JSON.stringify({ msg: "picked up job", jobId: job.id, name: job.name, repo: job.repo, sha: job.sha }));
+  // Liveness proof: quiet jobs get requeued past the stale horizon, so
+  // long runs heartbeat until they report. Best effort, never fatal.
+  const heartbeat = setInterval(() => {
+    client.heartbeat(job.run_id, job.id).catch(() => undefined);
+  }, 60000);
   const started = Date.now();
   const workdir = mkdtempSync(join(tmpdir(), "flare-job-"));
   try {
@@ -47,6 +52,8 @@ async function pollOnce(): Promise<boolean> {
       },
       client,
       jobId: job.id,
+      secrets,
+      secretsError,
     });
     await client.reportStatus(
       job.run_id,
@@ -60,6 +67,7 @@ async function pollOnce(): Promise<boolean> {
     await client.reportStatus(job.run_id, job.id, "failure", String(err)).catch(() => undefined);
     console.error(JSON.stringify({ msg: "job failed", jobId: job.id, error: String(err) }));
   } finally {
+    clearInterval(heartbeat);
     rmSync(workdir, { recursive: true, force: true });
   }
   return true;

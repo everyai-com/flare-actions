@@ -1,8 +1,11 @@
 import {
+  appendJobLog,
   FAILED_STATUSES,
   getJobsForRun,
   hasActiveGroupJob,
   listBlockedJobsInRepo,
+  listStaleRunningJobs,
+  releaseJob,
   rollupRunStatus,
   setJobStatus,
   setJobTriage,
@@ -142,4 +145,28 @@ export async function promoteBlockedJobs(
     promoted.push(job.id);
   }
   return promoted;
+}
+
+// Stuck-claim sweeper: live executors heartbeat (BYO runners) or mirror
+// progress (seats), so a running job quiet longer than staleMinutes has
+// a dead executor — release it for another taker. The conditional
+// release wins the race against a just-finished executor: no double run.
+export async function requeueStaleJobs(
+  db: Db,
+  queue: QueueSender,
+  staleMinutes = 20,
+  onQueued?: (job: { runId: string; jobId: string }) => unknown,
+): Promise<string[]> {
+  const cutoff = new Date(Date.now() - staleMinutes * 60000).toISOString();
+  const stale = await listStaleRunningJobs(db, cutoff);
+  const requeued: string[] = [];
+  for (const job of stale) {
+    await appendJobLog(db, job.id, `[flare] requeued: no executor heartbeat for ${staleMinutes}m+\n`);
+    if (!(await releaseJob(db, job.id))) continue;
+    await rollupRunStatus(db, job.run_id);
+    await queue.send({ runId: job.run_id, jobId: job.id, repo: job.repo, sha: job.sha });
+    await onQueued?.({ runId: job.run_id, jobId: job.id });
+    requeued.push(job.id);
+  }
+  return requeued;
 }

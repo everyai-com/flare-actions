@@ -4,6 +4,7 @@ import {
   getJob,
   getJobsForRun,
   getRun,
+  isTerminal,
   releaseJob,
   rollupRunStatus,
   updateJob,
@@ -16,8 +17,11 @@ import {
   type QueueSender,
 } from "../../worker/src/finish";
 import { getInstallationToken, mintAppJwt } from "../../worker/src/github";
+import { notifyRunCompleted, type NotifyMailEnv } from "../../worker/src/notify";
 import { seatEligible } from "../../worker/src/pipeline";
+import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
 import type { AiBinding } from "../../worker/src/triage";
+import { interpolateSecrets, maskSecrets } from "../../../packages/runner-sdk/src/secrets";
 import { matrixEnv, parseJobSpec, type JobSpec } from "../../../packages/runner-sdk/src/spec";
 
 // Managed-seat job execution: the seat Durable Object drives a Linux
@@ -101,6 +105,10 @@ export interface SeatDeps {
   timing?: SeatTiming;
   sleep?: (ms: number) => Promise<void>;
   spawn?: (jobId: string) => Promise<void>;
+  // Run-email sender; absent in unit contexts that never notify.
+  mail?: NotifyMailEnv;
+  // Raw SECRETS_KEY env passthrough; absent means D1-held data key.
+  secretsKey?: string;
 }
 
 export type SeatOutcome =
@@ -155,18 +163,33 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
   if (!(await claimJob(deps.db, jobId))) {
     return { status: "skipped", jobId, detail: "claim lost" };
   }
+  // Repo secrets decrypt here (same key ladder as the main worker) and
+  // interpolate executor-side, exactly like BYO runners.
+  let secrets: Record<string, string> = {};
+  let secretsError = false;
+  try {
+    secrets = await getDecryptedRepoSecrets(deps.db, deps.secretsKey, run.repo);
+  } catch {
+    secretsError = true;
+  }
+  const mask = (s: string): string => maskSecrets(s, secrets);
   const deadline = Date.now() + (spec.timeoutMinutes ?? 30) * 60000;
   const logParts: string[] = [`[seat] claimed ${job.name || jobId} (${run.repo}@${run.sha.slice(0, 7)})`];
+  if (secretsError) {
+    logParts.push("[seat] warning: repo secrets unavailable (decrypt failed), placeholders render empty");
+  }
   const records: StepRecord[] = [];
 
   // Mirror a line to the job row immediately (terminal updateJob later
   // replaces the log with the full story, so nothing duplicates).
   // Progress logging never breaks execution: a seat that cannot write
-  // its log must still run the job.
+  // its log must still run the job. Every mirrored line is masked so
+  // the live log never carries a secret, even briefly.
   const note = async (line: string): Promise<void> => {
-    logParts.push(line);
+    const masked = mask(line);
+    logParts.push(masked);
     try {
-      await appendJobLog(deps.db, jobId, `${line}\n`);
+      await appendJobLog(deps.db, jobId, `${masked}\n`);
     } catch {
       // Best effort.
     }
@@ -323,12 +346,14 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     }
 
     // Steps (each writes to a file; only a bounded tail crosses).
+    const jobEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(spec.env ?? {})) jobEnv[k] = interpolateSecrets(v, secrets);
     const stepEnv: Record<string, string> = {
       FLARE_REPO: run.repo,
       FLARE_SHA: run.sha,
       FLARE_RUN_ID: run.id,
       FLARE_JOB_ID: job.id,
-      ...spec.env,
+      ...jobEnv,
       ...matrixEnv(spec.matrix),
     };
     let timedOutJob = false;
@@ -339,25 +364,26 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         break;
       }
       const step = spec.steps[i];
-      await note(`[seat] step ${i + 1} start: ${step.run}`);
+      const command = interpolateSecrets(step.run, secrets);
+      await note(`[seat] step ${i + 1} start: ${command}`);
       const startedAt = Date.now();
       const r = await execBounded(
         ["sh", "-c", `sh -s > /tmp/step.log 2>&1; printf 'EXIT:%d' $?`],
-        { stdin: step.run, env: stepEnv, cwd: WORKDIR },
+        { stdin: command, env: stepEnv, cwd: WORKDIR },
         timing.stepMs,
       );
       const durationMs = Date.now() - startedAt;
       if (r.timedOut) {
-        records.push({ command: step.run, exitCode: 124, durationMs, output: "[seat] step timed out after 10m" });
-        logParts.push(`--- step ${i + 1}: ${step.run} ---\n[seat] step timed out after 10m\n(exit 124, ${durationMs}ms)`);
+        records.push({ command: mask(command), exitCode: 124, durationMs, output: "[seat] step timed out after 10m" });
+        logParts.push(mask(`--- step ${i + 1}: ${command} ---\n[seat] step timed out after 10m\n(exit 124, ${durationMs}ms)`));
         break;
       }
       const m = /EXIT:(\d+)\s*$/.exec(decode(r.stdout));
       const exitCode = m ? Number(m[1]) : r.exitCode;
       const tail = await execBounded(["tail", "-c", String(STEP_OUTPUT_CAP), "/tmp/step.log"], {}, 30000);
-      const output = tail.timedOut ? "" : decode(tail.stdout).trimEnd();
-      records.push({ command: step.run, exitCode, durationMs, output });
-      logParts.push(`--- step ${i + 1}: ${step.run} ---\n${output}\n(exit ${exitCode}, ${durationMs}ms)`);
+      const output = tail.timedOut ? "" : mask(decode(tail.stdout).trimEnd());
+      records.push({ command: mask(command), exitCode, durationMs, output });
+      logParts.push(mask(`--- step ${i + 1}: ${command} ---\n${output}\n(exit ${exitCode}, ${durationMs}ms)`));
       if (exitCode !== 0) break;
     }
     const success = !timedOutJob && records.length > 0 && records.every((r) => r.exitCode === 0);
@@ -435,11 +461,18 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
 
     // Report terminal status like a runner would.
     const status = success ? "success" : "failure";
-    const resultJson = JSON.stringify({ steps: records, cacheHit, artifacts: uploaded, executor: "seat" });
-    await updateJob(deps.db, jobId, { status, log: logParts.join("\n"), result: resultJson });
+    const resultJson = mask(JSON.stringify({ steps: records, cacheHit, artifacts: uploaded, executor: "seat" }));
+    await updateJob(deps.db, jobId, { status, log: mask(logParts.join("\n")), result: resultJson });
     await rollupRunStatus(deps.db, job.run_id);
     const promoted = await promoteBlockedJobs(deps.db, deps.queue, run.repo, (p) => deps.spawn?.(p.jobId));
     if (promoted.length > 0) logParts.push(`[seat] promoted ${promoted.length} job(s)`);
+    if (deps.mail) {
+      const finalRun = await getRun(deps.db, job.run_id);
+      if (finalRun && isTerminal(finalRun.status)) {
+        const mailed = await notifyRunCompleted(deps.db, deps.mail, { run: finalRun, origin: "" });
+        if (mailed.sent > 0) logParts.push(`[seat] notified ${mailed.sent} recipient(s)`);
+      }
+    }
     const ghState = status === "success" ? "success" : "failure";
     await reportGitHubStatus({
       appId: deps.appId,
@@ -452,7 +485,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     if (status === "failure") {
       const jobs = await getJobsForRun(deps.db, job.run_id);
       const jobName = jobs.find((j) => j.id === job.id)?.name ?? "";
-      await triageAndStore(deps.db, deps.ai, run, job.id, jobName, logParts.join("\n"), resultJson);
+      await triageAndStore(deps.db, deps.ai, run, job.id, jobName, mask(logParts.join("\n")), resultJson);
     }
     try {
       deps.container.destroy();

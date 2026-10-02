@@ -42,6 +42,11 @@ button:disabled { opacity: 0.5; cursor: default; }
 button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { button { transition: none; } }
 #runsFilterForm { margin-bottom: 6px; }
+#dispatchBox { margin-bottom: 12px; }
+#dispatchBox summary { cursor: pointer; color: var(--accent-ink); font-weight: 600; margin-bottom: 8px; }
+#dispatchBox p { margin: 6px 0 0; }
+.secret-row { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
+#secretNames { margin: 4px 0 8px; }
 #runsCount { margin: 0 0 8px; font-size: 12.5px; }
 a { color: var(--accent); }
 nav.tabs { display: flex; gap: 8px; margin-bottom: 16px; }
@@ -178,6 +183,16 @@ form.inline input { flex: 1; min-width: 180px; }
 <p><button id="installNoticeBtn" class="ghost">Got it</button></p>
 </div>
 <h2>Runs</h2>
+<details id="dispatchBox">
+<summary>Dispatch a run…</summary>
+<form id="dispatchForm" class="inline">
+<input id="dispatchRepo" placeholder="owner/repo" maxlength="100" aria-label="Repository">
+<input id="dispatchRef" placeholder="branch, tag, or SHA" maxlength="128" aria-label="Branch, tag, or SHA">
+<button type="submit">Dispatch</button>
+</form>
+<p id="dispatchErr" class="err"></p>
+<p id="dispatchOk"></p>
+</details>
 <form id="runsFilterForm" class="inline"><input id="runsFilter" placeholder="Filter by repo, branch, commit, status…" maxlength="64" aria-label="Filter runs"></form>
 <p class="muted" id="runsCount"></p>
 <div id="runsList"></div>
@@ -231,6 +246,29 @@ form.inline input { flex: 1; min-width: 180px; }
 </form>
 <p id="settingsErr" class="err"></p>
 <p id="settingsOk"></p>
+<h2>Run notifications</h2>
+<p class="muted" id="notifyInfo"></p>
+<form id="notifyForm" class="inline">
+<input id="notifyFromInput" placeholder="Sender email, e.g. ci@example.com" maxlength="254">
+<select id="notifyModeSelect"><option value="all">all completions</option><option value="failures">failures only</option><option value="off">off</option></select>
+<button type="submit">Save notifications</button>
+</form>
+<p id="notifyErr" class="err"></p>
+<p id="notifyOk"></p>
+<h2>Repository secrets</h2>
+<p class="muted">Write-only values for &#36;{{ secrets.NAME }} in steps and env. Only names are ever listed back; values decrypt inside job claims only.</p>
+<form id="secretLoadForm" class="inline">
+<input id="secretRepoInput" placeholder="owner/repo" maxlength="100" aria-label="Repository">
+<button type="submit">Load secrets</button>
+</form>
+<div id="secretNames"></div>
+<form id="secretForm" class="inline">
+<input id="secretNameInput" placeholder="NAME" maxlength="64" aria-label="Secret name">
+<input id="secretValueInput" type="password" placeholder="value (never shown again)" maxlength="65536" aria-label="Secret value">
+<button type="submit">Save secret</button>
+</form>
+<p id="secretErr" class="err"></p>
+<p id="secretOk"></p>
 <h2>GitHub App</h2>
 <p class="muted" id="githubInfo"></p>
 <form id="githubForm" class="inline">
@@ -316,7 +354,10 @@ form.inline input { flex: 1; min-width: 180px; }
       installBox.hidden = true;
     }
   }
+  var isAdmin = false;
   function showApp(actor, admin, githubConnected) {
+    isAdmin = !!admin;
+    document.getElementById("dispatchBox").hidden = !admin;
     invitePane.hidden = true;
     authPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false;
     document.getElementById("connectBanner").hidden = !(admin && !githubConnected);
@@ -348,7 +389,11 @@ form.inline input { flex: 1; min-width: 180px; }
           throw new Error("unauthorized");
         });
       }
-      if (!res.ok) throw new Error("request failed: " + res.status);
+      if (!res.ok) {
+        return res.json().then(function (b) {
+          throw new Error((b && b.error) || ("request failed: " + res.status));
+        }, function () { throw new Error("request failed: " + res.status); });
+      }
       return res.json();
     });
   }
@@ -565,7 +610,7 @@ form.inline input { flex: 1; min-width: 180px; }
       var empty = el("div"); empty.className = "empty";
       if (!lastRuns.length) {
         empty.appendChild(el("h3", "No runs yet"));
-        empty.appendChild(el("p", "Push to a repo with the GitHub App installed, or dispatch one from the CLI."));
+        empty.appendChild(el("p", "Push to a repo with the GitHub App installed, or dispatch one from this page."));
       } else {
         empty.appendChild(el("h3", "No runs match"));
         empty.appendChild(el("p", "Try a different filter."));
@@ -700,6 +745,25 @@ form.inline input { flex: 1; min-width: 180px; }
       if (scroll) box.scrollIntoView();
     }).catch(function () {});
   }
+  document.getElementById("dispatchForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("dispatchErr");
+    var ok = document.getElementById("dispatchOk");
+    err.textContent = ""; ok.textContent = "";
+    var repo = document.getElementById("dispatchRepo").value.trim();
+    var ref = document.getElementById("dispatchRef").value.trim();
+    if (!repo || !ref) { err.textContent = "Repository and branch, tag, or SHA are required."; return; }
+    ok.textContent = "Dispatching…";
+    api("/v1/runs/dispatch", { method: "POST", body: JSON.stringify({ repo: repo, sha: ref }) })
+      .then(function (data) {
+        ok.textContent = "Run dispatched.";
+        document.getElementById("dispatchBox").open = false;
+        selectedRunId = data.runId;
+        loadRuns();
+        loadRun(data.runId, true);
+      })
+      .catch(function (e) { ok.textContent = ""; err.textContent = "Dispatch failed: " + (e.message || "error"); });
+  });
   var pollStarted = false;
   function startPoll() {
     if (pollStarted) return;
@@ -711,6 +775,62 @@ form.inline input { flex: 1; min-width: 180px; }
     }, 15000);
   }
 
+  function secretRepo() { return document.getElementById("secretRepoInput").value.trim(); }
+  function loadSecrets() {
+    var err = document.getElementById("secretErr");
+    var box = document.getElementById("secretNames");
+    err.textContent = "";
+    document.getElementById("secretOk").textContent = "";
+    var repo = secretRepo();
+    if (!repo) { err.textContent = "Enter a repository first."; return; }
+    box.textContent = "";
+    var loading = el("p", "Loading…"); loading.className = "muted"; box.appendChild(loading);
+    api("/v1/admin/secrets?repo=" + encodeURIComponent(repo)).then(function (data) {
+      box.textContent = "";
+      var names = data.secrets || [];
+      if (!names.length) {
+        var none = el("p", "No secrets for this repo yet.");
+        none.className = "muted";
+        box.appendChild(none);
+        return;
+      }
+      names.forEach(function (name) {
+        var row = el("div");
+        row.className = "secret-row";
+        var code = el("code", name); code.className = "mono"; row.appendChild(code);
+        var del = el("button", "Delete");
+        del.className = "danger";
+        del.addEventListener("click", function () {
+          api("/v1/admin/secrets?repo=" + encodeURIComponent(secretRepo()) + "&name=" + encodeURIComponent(name), { method: "DELETE" })
+            .then(loadSecrets)
+            .catch(function (e) { err.textContent = "Delete failed: " + (e.message || "error"); });
+        });
+        row.appendChild(del);
+        box.appendChild(row);
+      });
+    }).catch(function (e) { box.textContent = ""; err.textContent = "Could not load secrets: " + (e.message || "error"); });
+  }
+  document.getElementById("secretLoadForm").addEventListener("submit", function (ev) { ev.preventDefault(); loadSecrets(); });
+  document.getElementById("secretForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("secretErr");
+    var ok = document.getElementById("secretOk");
+    err.textContent = ""; ok.textContent = "";
+    var repo = secretRepo();
+    var name = document.getElementById("secretNameInput").value.trim();
+    var value = document.getElementById("secretValueInput").value;
+    if (!repo) { err.textContent = "Enter a repository first."; return; }
+    if (!name) { err.textContent = "Enter a secret name."; return; }
+    if (!value) { err.textContent = "Enter a secret value."; return; }
+    api("/v1/admin/secrets", { method: "POST", body: JSON.stringify({ repo: repo, name: name, value: value }) })
+      .then(function () {
+        ok.textContent = "Secret saved.";
+        document.getElementById("secretNameInput").value = "";
+        document.getElementById("secretValueInput").value = "";
+        loadSecrets();
+      })
+      .catch(function (e) { err.textContent = "Save failed: " + (e.message || "error"); });
+  });
   function loadTokens() {
     var body = document.getElementById("tokensBody");
     stateRow(body, 5, "Loading tokens…", "muted");
@@ -853,6 +973,13 @@ form.inline input { flex: 1; min-width: 180px; }
       info.appendChild(el("span", "Webhook secret: " + (s.webhookSecretSource === "none" ? "not set." : "managed via " + s.webhookSecretSource + ".")));
       document.getElementById("webhookForm").style.display = s.webhookSecretSource === "env" ? "none" : "flex";
       document.getElementById("settingsOk").textContent = "";
+      document.getElementById("notifyInfo").textContent =
+        "Emails go to all registered email users." +
+        (s.notifyFromSource === "env" ? " Sender managed via environment." : " Sender domain must be enabled for Email Sending.");
+      document.getElementById("notifyFromInput").value = s.notifyFrom || "";
+      document.getElementById("notifyModeSelect").value = s.notifyMode || "all";
+      document.getElementById("notifyForm").style.display = s.notifyFromSource === "env" ? "none" : "flex";
+      document.getElementById("notifyOk").textContent = "";
       var g = s.githubApp || { source: "none", installUrl: null };
       document.getElementById("githubInfo").textContent =
         "GitHub App: " + (g.source === "none" ? "not connected." : "connected via " + g.source + ".");
@@ -899,6 +1026,21 @@ form.inline input { flex: 1; min-width: 180px; }
       document.getElementById("loginErr").textContent = msg;
     }
   }
+
+  document.getElementById("notifyForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("notifyErr");
+    var ok = document.getElementById("notifyOk");
+    err.textContent = ""; ok.textContent = "";
+    var from = document.getElementById("notifyFromInput").value.trim();
+    var mode = document.getElementById("notifyModeSelect").value;
+    api("/v1/admin/settings", { method: "POST", body: JSON.stringify({ notifyFromEmail: from, notifyMode: mode }) })
+      .then(function () {
+        ok.textContent = "Saved.";
+        loadSettings();
+      })
+      .catch(function () { err.textContent = "Could not save (valid sender email required)."; });
+  });
 
   document.getElementById("webhookForm").addEventListener("submit", function (ev) {
     ev.preventDefault();

@@ -91,6 +91,36 @@ export async function getInstallationToken(
   return data.token ?? null;
 }
 
+// Resolve a branch or tag to its head SHA (heads first, then tags).
+// Ref segments are encoded individually so feature/foo style branches
+// survive; returns null when the ref does not exist or is unreadable.
+export async function resolveRefToSha(
+  token: string | null,
+  repo: string,
+  ref: string,
+): Promise<string | null> {
+  const encoded = ref
+    .split("/")
+    .map((seg) => encodeURIComponent(seg))
+    .join("/");
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "flare-actions",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  for (const ns of ["heads", "tags"]) {
+    const res = await fetch(`https://api.github.com/repos/${repo}/git/refs/${ns}/${encoded}`, {
+      headers,
+    });
+    if (!res.ok) continue;
+    const data = (await res.json().catch(() => null)) as { object?: { sha?: unknown } } | null;
+    if (data?.object && typeof data.object.sha === "string" && /^[0-9a-f]{4,64}$/i.test(data.object.sha)) {
+      return data.object.sha;
+    }
+  }
+  return null;
+}
+
 export async function postCommitStatus(
   token: string,
   repo: string,

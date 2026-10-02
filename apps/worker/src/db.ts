@@ -178,12 +178,44 @@ export async function appendJobLog(db: Db, id: string, text: string): Promise<vo
 }
 
 // Release a job back to the queue (seat fallback: something this
-// executor can't do — a BYO runner may still take it).
-export async function releaseJob(db: Db, id: string): Promise<void> {
-  await db
+// executor can't do — a BYO runner may still take it). True when the
+// job was actually running (a concurrent finish wins the race).
+export async function releaseJob(db: Db, id: string): Promise<boolean> {
+  const res = (await db
     .prepare("UPDATE jobs SET status = 'queued', started_at = NULL, updated_at = ? WHERE id = ? AND status = 'running'")
     .bind(nowIso(), id)
-    .run();
+    .run()) as { meta?: { changes?: number } };
+  return (res?.meta?.changes ?? 0) > 0;
+}
+
+// Executor heartbeat: proves a running job still has a live executor.
+export async function touchJob(db: Db, id: string): Promise<boolean> {
+  const res = (await db
+    .prepare("UPDATE jobs SET updated_at = ? WHERE id = ? AND status = 'running'")
+    .bind(nowIso(), id)
+    .run()) as { meta?: { changes?: number } };
+  return (res?.meta?.changes ?? 0) > 0;
+}
+
+export interface StaleJobRow {
+  id: string;
+  run_id: string;
+  name: string;
+  repo: string;
+  sha: string;
+}
+
+// Jobs claimed running but quiet past the cutoff: no heartbeat, no
+// progress log, no status. Bounded per pass.
+export async function listStaleRunningJobs(db: Db, cutoffIso: string, limit = 50): Promise<StaleJobRow[]> {
+  const res = await db
+    .prepare(
+      `SELECT j.id, j.run_id, j.name, r.repo, r.sha FROM jobs j JOIN runs r ON r.id = j.run_id
+       WHERE j.status = 'running' AND j.updated_at < ? ORDER BY j.updated_at ASC LIMIT ?`,
+    )
+    .bind(cutoffIso, limit)
+    .all<StaleJobRow>();
+  return res.results;
 }
 
 // Poll-and-claim loop: walk matching queued jobs oldest-first until one
@@ -424,6 +456,81 @@ export async function setSetting(db: Db, key: string, value: string): Promise<vo
     )
     .bind(key, value, nowIso())
     .run();
+}
+
+export interface RepoSecretRow {
+  repo: string;
+  name: string;
+  iv: string;
+  ciphertext: string;
+  updated_at: string;
+}
+
+export async function setRepoSecret(
+  db: Db,
+  repo: string,
+  name: string,
+  iv: string,
+  ciphertext: string,
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO repo_secrets (repo, name, iv, ciphertext, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(repo, name) DO UPDATE SET iv = excluded.iv, ciphertext = excluded.ciphertext, updated_at = excluded.updated_at",
+    )
+    .bind(repo, name, iv, ciphertext, nowIso())
+    .run();
+}
+
+export async function deleteRepoSecret(db: Db, repo: string, name: string): Promise<boolean> {
+  const res = (await db
+    .prepare("DELETE FROM repo_secrets WHERE repo = ? AND name = ?")
+    .bind(repo, name)
+    .run()) as { meta?: { changes?: number } };
+  return (res?.meta?.changes ?? 0) > 0;
+}
+
+// Most recent App installation seen for a repo (dispatch uses it to
+// resolve branches on private repos the App can read).
+export async function latestInstallationId(db: Db, repo: string): Promise<number | null> {
+  const row = await db
+    .prepare(
+      "SELECT installation_id FROM runs WHERE repo = ? AND installation_id IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(repo)
+    .first<{ installation_id: number | null }>();
+  return row?.installation_id ?? null;
+}
+
+export async function listRepoSecretNames(db: Db, repo: string): Promise<string[]> {
+  const res = await db
+    .prepare("SELECT name FROM repo_secrets WHERE repo = ? ORDER BY name ASC")
+    .bind(repo)
+    .all<{ name: string }>();
+  return res.results.map((r) => r.name);
+}
+
+export async function getRepoSecretRows(db: Db, repo: string): Promise<RepoSecretRow[]> {
+  const res = await db
+    .prepare("SELECT repo, name, iv, ciphertext, updated_at FROM repo_secrets WHERE repo = ?")
+    .bind(repo)
+    .all<RepoSecretRow>();
+  return res.results;
+}
+
+// Retention janitor: drop runs (and their jobs — D1 does not enforce
+// ON DELETE CASCADE without PRAGMA foreign_keys) older than maxAgeDays.
+// Bounded per pass so a huge backlog never blows a request budget.
+export async function pruneOldRuns(db: Db, maxAgeDays = 90, limit = 500): Promise<number> {
+  const cutoff = new Date(Date.now() - maxAgeDays * 86400000).toISOString();
+  const stale = await db
+    .prepare("SELECT id FROM runs WHERE created_at < ? AND status IN ('success','failure','error','cancelled','skipped') ORDER BY created_at ASC LIMIT ?")
+    .bind(cutoff, limit)
+    .all<{ id: string }>();
+  for (const row of stale.results) {
+    await db.prepare("DELETE FROM jobs WHERE run_id = ?").bind(row.id).run();
+    await db.prepare("DELETE FROM runs WHERE id = ?").bind(row.id).run();
+  }
+  return stale.results.length;
 }
 
 export async function audit(db: Db, actor: string, action: string, target = ""): Promise<void> {

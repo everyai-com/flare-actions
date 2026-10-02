@@ -46,7 +46,15 @@ jobs:
   first). With `cancel-in-progress: true`, a new run cancels
   queued/running/blocked same-group jobs from other runs.
 - **Interpolation**: `${{ matrix.key }}` and `${{ env.KEY }}` expand in
-  `run:` lines; unknown expressions (e.g. `${{ secrets.X }}`) pass through.
+  `run:` lines at dispatch; `${{ secrets.NAME }}` expands executor-side
+  from the repo's secrets (missing names render empty). Anything else
+  passes through untouched so shell syntax never breaks.
+- **Secrets** (`${{ secrets.NAME }}` in steps, job `env`, and service
+  `env`) are AES-GCM encrypted at rest, delivered only inside
+  authenticated job claims, and masked (`***`) in every log and result.
+  Manage them in the dashboard (Settings → Repository secrets). Set the
+  `SECRETS_KEY` secret (base64, 32 bytes) for a real at-rest story —
+  without it an auto-generated D1 key is used instead.
 - **Cache** restores before steps (miss = clean build, never an error) and
   saves after successful runs only. Keys are static — no expressions.
 - **Artifacts** upload after steps regardless of outcome (test reports on

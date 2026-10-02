@@ -50,13 +50,20 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   `waitUntil` (never blocking) calls Workers AI (`ai` binding) and stores
   ≤4KB text in `jobs.triage`, surfaced in dashboard + CLI. Missing AI
   binding or model errors must degrade to skip, never to 500.
+- Run notifications (`notify.ts`): on the transition into terminal rollup,
+  a `waitUntil` emails all registered email users via the `EMAIL`
+  send_email binding (sender = `NOTIFY_FROM_EMAIL` env or D1
+  `notify_from_email`, unset = off; mode = D1 `notify_mode`
+  all|failures|off). Unconfigured or failed sends degrade to skip +
+  audit, never to 500.
 - Scheduling: `needs`/`concurrency` park jobs as `blocked` at fan-out;
   terminal callbacks `rollupRunStatus` then `promoteBlockedJobs` (oldest
   first, so groups serialize). `cancel-in-progress` cancels other runs'
   same-group jobs at fan-out. Run/job statuses: queued, running, blocked,
   success, failure, error, cancelled, skipped.
 
-Data flow: GitHub webhook → HMAC verify → D1 run+job rows → Queue (DLQ on
+Data flow: GitHub webhook → HMAC verify → event gate (non push/PR events,
+branch/tag deletions, and zero SHAs ack 200 with no run) → D1 run+job rows → Queue (DLQ on
 exhaustion) → runner polls `GET /v1/jobs/next?labels=` → executes →
 `POST /status` → rollup + promote + triage + commit status.
 
@@ -98,6 +105,20 @@ gaps so one-click deploys need zero `wrangler secret` commands.
 - API: legacy `RUNNER_TOKEN` env plus D1 `api_tokens` (`admin` =
   everything, `runner` = run+read, `readonly` = read). Hashes only in
   D1; plaintext shown once at creation.
+- Repo secrets (`${{ secrets.NAME }}`): AES-GCM in D1 `repo_secrets`,
+  key from `SECRETS_KEY` env or auto-generated D1 `secrets_key` (env
+  wins; D1 fallback protects only against casual reads — say so in
+  docs). Values are write-only over the API (admin names-only
+  GET/POST/DELETE), decrypt only inside `/v1/jobs/next` claims and
+  seat execution, interpolate executor-side (`runner-sdk/secrets.ts`,
+  shared by runners and seats), and are masked in all logs/results.
+- Retention: webhooks `waitUntil`-prune terminal runs older than 90d
+  (`pruneOldRuns`, bounded 500/pass, jobs deleted explicitly — D1
+  ignores `ON DELETE CASCADE` without `PRAGMA foreign_keys`).
+- Liveness: runners heartbeat every 60s (`POST .../heartbeat`, best
+  effort), seats mirror progress; webhooks + status callbacks
+  `waitUntil`-sweep `running` jobs quiet 20m+ back to `queued`
+  (`requeueStaleJobs`, conditional release wins the finish race).
 
 ## Conventions
 

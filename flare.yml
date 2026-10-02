@@ -1,10 +1,13 @@
-# Flare Actions dogfood pipeline: this repo runs on Flare itself.
+# Flare Actions dogfoods itself: every push to this repo runs the same
+# gates as CI on Flare runners (GitHub Actions runs the same steps as
+# a backstop — see .github/workflows/ci.yml).
 jobs:
-  hello:
+  verify:
     steps:
-      - run: echo hello from $FLARE_REPO
-      - run: node --version
-      - run: test -f flare.yml && echo checkout-ok
-  env:
-    steps:
-      - run: echo sha=$FLARE_SHA run=$FLARE_RUN_ID
+      - run: node --version && npm --version
+      - run: npm ci
+      - run: npm run types
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run deploy:dry
+      - run: npx wrangler deploy --dry-run --config apps/seats/wrangler.jsonc

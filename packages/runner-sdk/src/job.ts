@@ -2,8 +2,9 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
 import { createTar, restoreCache, safeCachePaths, saveCache, type CacheClient } from "./cache.ts";
 import { executeSteps } from "./execute.ts";
+import { interpolateSecrets, maskSecrets } from "./secrets.ts";
 import { dockerServicesCtl, type ServiceHandle, type ServicesCtl } from "./services.ts";
-import { matrixEnv, type JobSpec } from "./spec.ts";
+import { matrixEnv, type JobServiceSpec, type JobSpec } from "./spec.ts";
 
 // Full per-job orchestration: services up -> cache restore -> steps ->
 // cache save -> artifacts upload -> services down, inside a job timeout.
@@ -20,6 +21,12 @@ export interface RunJobOptions {
   servicesCtl?: ServicesCtl;
   // Test hook; production uses spec.timeoutMinutes (default 30).
   timeoutMs?: number;
+  // Decrypted repo secrets for ${{ secrets.NAME }}. Interpolated into
+  // steps and env here, then masked out of every log and result.
+  secrets?: Record<string, string>;
+  // True when stored secrets failed to decrypt server-side: placeholders
+  // render empty and the job log carries a warning.
+  secretsError?: boolean;
 }
 
 export interface RunJobResult {
@@ -123,15 +130,20 @@ async function uploadArtifacts(
 
 export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJobResult> {
   const ctl = opts.servicesCtl ?? dockerServicesCtl;
+  const secrets = opts.secrets ?? {};
+  const mask = (s: string): string => maskSecrets(s, secrets);
   const logParts: string[] = [];
   let handles: ServiceHandle[] = [];
   const fail = (msg: string): RunJobResult => ({
     success: false,
-    log: [...logParts, msg].join("\n"),
-    resultJson: JSON.stringify({ steps: [], error: msg }),
+    log: mask([...logParts, msg].join("\n")),
+    resultJson: mask(JSON.stringify({ steps: [], error: msg })),
     cacheHit: false,
     artifacts: [],
   });
+  if (opts.secretsError) {
+    logParts.push("[setup] warning: repo secrets unavailable (decrypt failed), placeholders render empty");
+  }
 
   const serviceNames = Object.keys(spec.services ?? {});
   if (serviceNames.length > 0 || spec.container) {
@@ -140,8 +152,18 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
     }
   }
   if (serviceNames.length > 0) {
+    const services: Record<string, JobServiceSpec> = {};
+    for (const [name, svc] of Object.entries(spec.services ?? {})) {
+      const out: JobServiceSpec = { image: svc.image };
+      if (svc.ports) out.ports = svc.ports;
+      if (svc.env) {
+        out.env = {};
+        for (const [k, v] of Object.entries(svc.env)) out.env[k] = interpolateSecrets(v, secrets);
+      }
+      services[name] = out;
+    }
     try {
-      handles = await ctl.start(opts.jobId, spec.services ?? {});
+      handles = await ctl.start(opts.jobId, services);
       logParts.push(`[services] started: ${handles.map((h) => `${h.name} (${h.containerName})`).join(", ")}`);
     } catch (err) {
       return fail(`[services] ${String(err)}`);
@@ -161,11 +183,14 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
         logParts.push(r.hit ? `[cache] hit: ${spec.cache.key}` : `[cache] miss: ${spec.cache.key}${r.error ? ` (${r.error})` : ""}`);
       }
       const matrix = matrixEnv(spec.matrix);
-      const stepEnv = { ...opts.env, ...spec.env, ...matrix };
+      const jobEnv: Record<string, string> = {};
+      for (const [k, v] of Object.entries(spec.env ?? {})) jobEnv[k] = interpolateSecrets(v, secrets);
+      const stepEnv = { ...opts.env, ...jobEnv, ...matrix };
       const forwardKeys = spec.container
-        ? [...new Set([...Object.keys(spec.env ?? {}), ...Object.keys(matrix), ...Object.keys(opts.env).filter((k) => k.startsWith("FLARE_"))])]
+        ? [...new Set([...Object.keys(jobEnv), ...Object.keys(matrix), ...Object.keys(opts.env).filter((k) => k.startsWith("FLARE_"))])]
         : undefined;
-      const outcome = await executeSteps(spec.steps, {
+      const steps = spec.steps.map((s) => ({ run: interpolateSecrets(s.run, secrets) }));
+      const outcome = await executeSteps(steps, {
         cwd: opts.cwd,
         env: stepEnv,
         container: spec.container,
@@ -186,8 +211,8 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
       }
       return {
         success: outcome.success,
-        log: logParts.join("\n"),
-        resultJson: JSON.stringify({ steps: outcome.results, cacheHit, artifacts }),
+        log: mask(logParts.join("\n")),
+        resultJson: mask(JSON.stringify({ steps: outcome.results, cacheHit, artifacts })),
         cacheHit,
         artifacts,
       };
@@ -200,8 +225,8 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
       const msg = `[timeout] job exceeded ${Math.round(timeoutMs / 1000)}s`;
       return {
         success: false,
-        log: [...logParts, msg].join("\n"),
-        resultJson: JSON.stringify({ steps: [], timedOut: true }),
+        log: mask([...logParts, msg].join("\n")),
+        resultJson: mask(JSON.stringify({ steps: [], timedOut: true })),
         cacheHit: false,
         artifacts: [],
       };

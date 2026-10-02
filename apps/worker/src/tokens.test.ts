@@ -83,6 +83,9 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain('id="copyInviteBtn"');
     expect(DASHBOARD_HTML).toContain('"Escape"');
     expect(DASHBOARD_HTML).toContain("prefers-reduced-motion");
+    expect(DASHBOARD_HTML).toContain('id="notifyForm"');
+    expect(DASHBOARD_HTML).toContain('id="notifyFromInput"');
+    expect(DASHBOARD_HTML).toContain('id="notifyModeSelect"');
     expect(DASHBOARD_HTML).toContain("just now");
     expect(DASHBOARD_HTML).not.toContain("${");
   });
