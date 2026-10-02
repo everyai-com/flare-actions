@@ -185,7 +185,9 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
       const matrix = matrixEnv(spec.matrix);
       const jobEnv: Record<string, string> = {};
       for (const [k, v] of Object.entries(spec.env ?? {})) jobEnv[k] = interpolateSecrets(v, secrets);
-      const stepEnv = { ...opts.env, ...jobEnv, ...matrix };
+      // GitHub parity: CI=true for every step (enables tool retries and
+      // non-interactive modes); runner env or job env may override it.
+      const stepEnv = { CI: "true", ...opts.env, ...jobEnv, ...matrix };
       const forwardKeys = spec.container
         ? [...new Set([...Object.keys(jobEnv), ...Object.keys(matrix), ...Object.keys(opts.env).filter((k) => k.startsWith("FLARE_"))])]
         : undefined;

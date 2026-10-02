@@ -49,7 +49,11 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - Failure triage (`triage.ts`): on job failure/failure-callback, a
   `waitUntil` (never blocking) calls Workers AI (`ai` binding) and stores
   ≤4KB text in `jobs.triage`, surfaced in dashboard + CLI. Missing AI
-  binding or model errors must degrade to skip, never to 500.
+  binding or model errors must degrade to skip, never to 500. Prompts
+  lead with failing-step tails plus a one-line step map, and forbid
+  generic advice.
+- Step env always includes `CI=true` (GitHub parity: tool retries,
+  non-interactive modes); runner process env or job `env` may override.
 - Run notifications (`notify.ts`): on the transition into terminal rollup,
   a `waitUntil` emails all registered email users via the `EMAIL`
   send_email binding (sender = `NOTIFY_FROM_EMAIL` env or D1

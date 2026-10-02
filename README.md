@@ -139,7 +139,8 @@ jobs:
   invalid files fall back to one default echo job — pushes never fail
   to dispatch.
 - Each step runs as `sh -c` in a fresh temp dir with `FLARE_REPO`,
-  `FLARE_SHA`, `FLARE_RUN_ID`, `FLARE_JOB_ID` in the environment.
+  `FLARE_SHA`, `FLARE_RUN_ID`, `FLARE_JOB_ID`, and `CI=true` (GitHub
+  parity) in the environment.
 - Steps stop at the first non-zero exit; 10 min timeout and 32 KB of
   captured output per step. Limits: 32 jobs, 100 steps/job, 64 KB file.
 - Every job records machine-readable results (`result` JSON: per-step

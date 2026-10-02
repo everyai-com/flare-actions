@@ -138,6 +138,24 @@ describe("runJob", () => {
   });
 });
 
+describe("runJob CI env", () => {
+  it("sets CI=true for steps like GitHub Actions", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-ci-"));
+    const env = { ...process.env };
+    delete env.CI;
+    try {
+      const res = await runJob(
+        { steps: [{ run: "echo ci-is-$CI" }] },
+        { cwd: dir, env, client: fakeClient(), jobId: "j1" },
+      );
+      expect(res.success).toBe(true);
+      expect(res.log).toContain("ci-is-true");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("runJob secrets", () => {
   it("interpolates secrets into steps and env, then masks them", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flare-job-secrets-"));

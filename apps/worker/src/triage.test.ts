@@ -19,6 +19,22 @@ describe("buildTriageMessages", () => {
     const big = buildTriageMessages({ ...input, logTail: "x".repeat(100000) });
     expect(big[1].content.length).toBeLessThan(20000);
   });
+
+  it("leads with failing output and maps every step", () => {
+    const [, user] = buildTriageMessages({
+      ...input,
+      steps: [
+        { command: "npm ci", exitCode: 0, output: "added 90 packages" },
+        { command: "npm test", exitCode: 1, output: "FAIL src/a.test.ts: expected true to be false" },
+      ],
+    });
+    expect(user.content).toContain("Failing output (read first)");
+    expect(user.content).toContain("expected true to be false");
+    expect(user.content).toContain("ok $ npm ci");
+    expect(user.content).toContain("FAIL(1) $ npm test");
+    // Full passing output stays out; only the failure carries output.
+    expect(user.content).not.toContain("added 90 packages");
+  });
 });
 
 describe("runTriage", () => {

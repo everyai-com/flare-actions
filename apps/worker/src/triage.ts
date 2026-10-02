@@ -24,23 +24,30 @@ export interface TriageMessage {
 
 export function buildTriageMessages(input: TriageInput): TriageMessage[] {
   const failing = input.steps.filter((s) => s.exitCode !== 0);
-  const stepLines = input.steps
-    .map((s) => `$ ${s.command}\n(exit ${s.exitCode})\n${s.output.slice(0, 1500)}`)
+  // Failing output first (tails — tools summarize failures at the end),
+  // then a one-line-per-step map so the model sees order without noise.
+  const failLines = failing
+    .map((s) => `$ ${s.command}\n(exit ${s.exitCode})\n${s.output.slice(-3000)}`)
     .join("\n\n")
     .slice(0, TRIAGE_MAX_LOG_CHARS);
+  const summary = input.steps
+    .map((s) => `${s.exitCode === 0 ? "ok" : `FAIL(${s.exitCode})`} $ ${s.command}`.slice(0, 160))
+    .join("\n");
   return [
     {
       role: "system",
       content:
-        "You triage CI failures. Reply in ≤120 words with exactly these sections: " +
-        "Cause: one sentence on the most likely cause. Culprit: file/command or 'unknown'. " +
-        "Fix: one concrete next step. Be specific, no preamble.",
+        "You triage CI failures. Reply in ≤120 words with exactly these sections, no preamble: " +
+        "Cause: one sentence naming the failing test or assertion and its exact error. " +
+        "Culprit: file path with line when visible, else the failing command, else 'unknown'. " +
+        "Fix: one concrete next step — a command to reproduce or the precise change. " +
+        "Cite evidence from the output; generic advice like 'review the test' is a wrong answer.",
     },
     {
       role: "user",
       content:
         `Repo ${input.repo} @ ${input.sha.slice(0, 12)}, job "${input.jobName}", ` +
-        `${failing.length} failing step(s).\n\n${stepLines}\n\nLog tail:\n${input.logTail.slice(0, 2000)}`,
+        `${failing.length} failing step(s).\n\nFailing output (read first):\n${failLines}\n\nAll steps:\n${summary}\n\nLog tail:\n${input.logTail.slice(0, 2000)}`,
     },
   ];
 }
