@@ -1,5 +1,4 @@
 import { getSetting, setSetting, type Db } from "./db";
-import { SETTING_KEYS } from "./settings";
 import { timingSafeEqualHex } from "./github";
 
 // Email + password login alongside GitHub OAuth. No email delivery is
@@ -97,9 +96,7 @@ export async function createInvite(db: Db, email: string): Promise<{ token: stri
   return { token, invite };
 }
 
-async function readInvite(db: Db, token: string): Promise<Invite | null> {
-  if (!/^[A-Za-z0-9-]+$/.test(token)) return null;
-  const raw = await getSetting(db, inviteKey(token));
+function parseInvite(raw: string | null): Invite | null {
   if (!raw) return null;
   try {
     const invite = JSON.parse(raw) as Invite;
@@ -111,17 +108,26 @@ async function readInvite(db: Db, token: string): Promise<Invite | null> {
   }
 }
 
+async function readInvite(db: Db, token: string): Promise<Invite | null> {
+  if (!/^[A-Za-z0-9-]+$/.test(token)) return null;
+  return parseInvite(await getSetting(db, inviteKey(token)));
+}
+
 // Peek without consuming (powers the accept-invite screen).
 export async function peekInvite(db: Db, token: string): Promise<Invite | null> {
   return readInvite(db, token);
 }
 
-// Single-use: an accepted invite is deleted, so the link dies.
+// Single-use, atomically: DELETE ... RETURNING means two parallel
+// registers can never both redeem the same invite. Expired invites are
+// deleted too — they are garbage either way.
 export async function consumeInvite(db: Db, token: string): Promise<Invite | null> {
-  const invite = await readInvite(db, token);
-  if (!invite) return null;
-  await db.prepare("DELETE FROM app_settings WHERE key = ?").bind(inviteKey(token)).run();
-  return invite;
+  if (!/^[A-Za-z0-9-]+$/.test(token)) return null;
+  const row = await db
+    .prepare("DELETE FROM app_settings WHERE key = ? RETURNING value")
+    .bind(inviteKey(token))
+    .first<{ value: string }>();
+  return parseInvite(row?.value ?? null);
 }
 
 export async function listInvites(db: Db): Promise<Invite[]> {

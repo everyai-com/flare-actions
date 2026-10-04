@@ -39,6 +39,17 @@ describe("checkoutRepo", () => {
     expect(readFileSync(join(dst, "hello.txt"), "utf8")).toBe("hi");
   });
 
+  it("keeps the token out of argv and the remote URL", async () => {
+    const src = fixtureRepo();
+    const dst = mkdtempSync(join(tmpdir(), "flare-dst-"));
+    dirs.push(dst);
+    await checkoutRepo({ repo: "local/fixture", sha: src.sha, dir: dst, token: "sekrit-token" }, src.dir);
+    expect(readFileSync(join(dst, "hello.txt"), "utf8")).toBe("hi");
+    // The token rides env config; it must never be materialized in the
+    // repo's git config (or the remote URL).
+    expect(readFileSync(join(dst, ".git/config"), "utf8")).not.toContain("sekrit-token");
+  });
+
   it("rejects bad repo/sha without touching the network", async () => {
     await expect(checkoutRepo({ repo: "nope", sha: "abc", dir: "/tmp/x" })).rejects.toThrow("invalid repo");
     await expect(checkoutRepo({ repo: "a/b", sha: "not a sha!", dir: "/tmp/x" })).rejects.toThrow("invalid sha");

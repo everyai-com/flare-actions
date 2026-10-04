@@ -3,7 +3,7 @@ import { getJobsForRun, jobExists, type Db } from "./db";
 // R2-backed job artifacts: runners PUT files per job; anyone with read
 // scope can download them or list a run's artifacts.
 
-export const ARTIFACT_NAME_RE = /^[\w.\-]{1,128}$/;
+export const ARTIFACT_NAME_RE = /^[\w.-]{1,128}$/;
 export const MAX_ARTIFACT_BYTES = 512 * 1024 * 1024;
 
 export function artifactObjectKey(jobId: string, name: string): string {
@@ -84,4 +84,38 @@ export async function listRunArtifacts(
     }
   }
   return out;
+}
+
+// Delete every artifact under a (pruned) job's prefix. Best-effort by
+// contract: a storage hiccup must never fail the retention sweep.
+export async function deleteJobArtifacts(bucket: R2Bucket | undefined, jobId: string): Promise<number> {
+  if (!bucket) return 0;
+  try {
+    const listed = await bucket.list({ prefix: `artifacts/${jobId}/` });
+    if (listed.objects.length === 0) return 0;
+    await bucket.delete(listed.objects.map((o) => o.key));
+    return listed.objects.length;
+  } catch {
+    return 0;
+  }
+}
+
+// Cache retention: keys embed lockfile hashes, so old entries are dead
+// weight. Bounded per pass; entries younger than the cutoff stay.
+export async function pruneOldCache(
+  bucket: R2Bucket | undefined,
+  olderThanDays = 90,
+  limit = 1000,
+): Promise<number> {
+  if (!bucket) return 0;
+  try {
+    const cutoff = Date.now() - olderThanDays * 86400000;
+    const listed = await bucket.list({ prefix: "cache/", limit });
+    const stale = listed.objects.filter((o) => o.uploaded.getTime() < cutoff).map((o) => o.key);
+    if (stale.length === 0) return 0;
+    await bucket.delete(stale);
+    return stale.length;
+  } catch {
+    return 0;
+  }
 }

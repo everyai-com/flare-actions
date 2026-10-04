@@ -1,18 +1,7 @@
 import { ContainerSeat, type SeatsEnv } from "./seat-do";
-import { bytesEqual } from "../../worker/src/github";
+import { seatTokenAuthorized } from "./seat";
 
 export { ContainerSeat };
-
-async function authorized(request: Request, token: string | undefined): Promise<boolean> {
-  const header = request.headers.get("Authorization");
-  if (!header || !header.startsWith("Bearer ") || !token) return false;
-  const enc = new TextEncoder();
-  const [a, b] = await Promise.all([
-    crypto.subtle.digest("SHA-256", enc.encode(header.slice("Bearer ".length))),
-    crypto.subtle.digest("SHA-256", enc.encode(token)),
-  ]);
-  return bytesEqual(new Uint8Array(a), new Uint8Array(b));
-}
 
 export default {
   async fetch(request: Request, env: SeatsEnv): Promise<Response> {
@@ -25,7 +14,7 @@ export default {
         console.log(JSON.stringify({ level: "warn", msg: "seat run rejected: token not configured" }));
         return Response.json({ error: "seats token not configured" }, { status: 500 });
       }
-      if (!(await authorized(request, env.SEATS_TOKEN))) {
+      if (!(await seatTokenAuthorized(request, env.SEATS_TOKEN))) {
         console.log(JSON.stringify({ level: "warn", msg: "seat run rejected: unauthorized" }));
         return Response.json({ error: "unauthorized" }, { status: 401 });
       }

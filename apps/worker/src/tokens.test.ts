@@ -86,6 +86,13 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain('id="notifyForm"');
     expect(DASHBOARD_HTML).toContain('id="notifyFromInput"');
     expect(DASHBOARD_HTML).toContain('id="notifyModeSelect"');
+    expect(DASHBOARD_HTML).toContain('id="notifyWebhookForm"');
+    expect(DASHBOARD_HTML).toContain('id="notifyWebhookInput"');
+    expect(DASHBOARD_HTML).toContain('id="badgeHiddenForm"');
+    expect(DASHBOARD_HTML).toContain('id="badgeHiddenInput"');
+    expect(DASHBOARD_HTML).toContain('id="scheduleForm"');
+    expect(DASHBOARD_HTML).toContain('id="scheduleList"');
+    expect(DASHBOARD_HTML).toContain("/v1/admin/schedules");
     expect(DASHBOARD_HTML).toContain("just now");
     expect(DASHBOARD_HTML).not.toContain("${");
   });

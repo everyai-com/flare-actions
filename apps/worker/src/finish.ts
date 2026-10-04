@@ -1,7 +1,9 @@
 import {
   appendJobLog,
+  bumpJobAttempt,
   FAILED_STATUSES,
   getJobsForRun,
+  getJobWithRun,
   hasActiveGroupJob,
   listBlockedJobsInRepo,
   listStaleRunningJobs,
@@ -12,7 +14,7 @@ import {
   type Db,
 } from "./db";
 import { getInstallationToken, mintAppJwt, postCommitStatus } from "./github";
-import { readJobSpec } from "./pipeline";
+import { readJobSpec, readRetryPolicy } from "./pipeline";
 import { runTriage, type AiBinding, type TriageStep } from "./triage";
 
 // Shared post-execution flow for both executors (BYO runners via the
@@ -169,4 +171,28 @@ export async function requeueStaleJobs(
     requeued.push(job.id);
   }
   return requeued;
+}
+
+// Per-job retry policy (`retry: N` in flare.yml): while attempts remain,
+// a failed job is requeued for another try instead of going terminal —
+// flaky suites stop paging humans. The conditional release means a
+// concurrent finish always wins; the attempt stamp is bounded by the
+// policy so this can never loop forever.
+export async function maybeRetryJob(
+  db: Db,
+  queue: QueueSender,
+  jobId: string,
+  onQueued?: (job: { runId: string; jobId: string }) => unknown,
+): Promise<boolean> {
+  const job = await getJobWithRun(db, jobId);
+  if (!job) return false;
+  const retryMax = readRetryPolicy(job.definition);
+  if (retryMax <= 0 || (job.attempts ?? 0) >= retryMax) return false;
+  if (!(await releaseJob(db, jobId))) return false;
+  await bumpJobAttempt(db, jobId);
+  await appendJobLog(db, jobId, `[flare] retrying after failure (attempt ${(job.attempts ?? 0) + 2}/${retryMax + 1})\n`);
+  await rollupRunStatus(db, job.run_id);
+  await queue.send({ runId: job.run_id, jobId, repo: job.repo, sha: job.sha });
+  await onQueued?.({ runId: job.run_id, jobId });
+  return true;
 }

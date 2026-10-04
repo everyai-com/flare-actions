@@ -3,6 +3,8 @@ import { dockerArgsForStep } from "./services.ts";
 
 export interface ExecStep {
   run: string;
+  // GitHub parity: the step may fail without failing the rest of the job.
+  continueOnError?: boolean;
 }
 
 export interface StepResult {
@@ -80,6 +82,7 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
   const outputLimit = opts.outputLimitPerStep ?? DEFAULT_OUTPUT_LIMIT;
   const results: StepResult[] = [];
   const logParts: string[] = [];
+  let hardFailure = false;
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const r = await runOne({
@@ -93,9 +96,15 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
     });
     results.push(r);
     logParts.push(`--- step ${i + 1}: ${step.run} ---\n${r.output}\n(exit ${r.exitCode}, ${r.durationMs}ms)`);
-    if (r.exitCode !== 0) break;
+    if (r.exitCode !== 0) {
+      if (!step.continueOnError) {
+        hardFailure = true;
+        break;
+      }
+      logParts.push(`--- step ${i + 1} failed but continue-on-error is set ---`);
+    }
   }
-  return { success: results.length > 0 && results.every((r) => r.exitCode === 0), results, log: logParts.join("\n") };
+  return { success: results.length > 0 && !hardFailure, results, log: logParts.join("\n") };
 }
 
 export function parseDefinition(definition: string): ExecStep[] | null {
@@ -105,9 +114,15 @@ export function parseDefinition(definition: string): ExecStep[] | null {
     const steps: ExecStep[] = [];
     for (const s of parsed.steps) {
       if (typeof s !== "object" || s === null) return null;
-      const run = (s as Record<string, unknown>).run;
+      const rec = s as Record<string, unknown>;
+      const run = rec.run;
       if (typeof run !== "string" || !run.trim()) return null;
-      steps.push({ run });
+      const step: ExecStep = { run };
+      if (rec.continueOnError !== undefined) {
+        if (typeof rec.continueOnError !== "boolean") return null;
+        step.continueOnError = rec.continueOnError;
+      }
+      steps.push(step);
     }
     return steps;
   } catch {

@@ -40,6 +40,8 @@ const JOB = {
   result: JSON.stringify({ steps: [{ command: "echo", exitCode: 0, durationMs: 5 }] }),
   triage: "",
   labels: "",
+  priority: 0,
+  attempts: 0,
   started_at: "2026-01-01T00:00:00.000Z",
   finished_at: "2026-01-01T00:01:00.000Z",
   created_at: "2026-01-01T00:00:00.000Z",
@@ -52,6 +54,8 @@ function deps(over: Partial<McpDeps> = {}): McpDeps {
     canWrite: true,
     dispatchRun: async () => ({ runId: "run9", jobIds: ["job9"] }),
     rerunJob: async () => ({ ok: true }),
+    waitForRun: async () => ({ timedOut: false }),
+    digestRun: async () => null,
     ...over,
   };
 }
@@ -135,7 +139,96 @@ describe("mcp", () => {
     expect(JSON.parse(((gen.body as { result: { content: { text: string }[] } }).result.content[0].text)).yaml).toContain("jobs:");
   });
 
+  it("runs and waits in one call, returning the digest", async () => {
+    const calls: { runId: string; timeoutMs: number }[] = [];
+    const digest = {
+      runId: "run9",
+      repo: "o/r",
+      sha: "abc",
+      branch: "main",
+      event: "dispatch",
+      status: "failure",
+      durationMs: 42000,
+      totalJobs: 1,
+      failedJobs: 1,
+      jobs: [{ id: "job9", name: "test", status: "failure", durationMs: 40000, stepCount: 2 }],
+    };
+    const d = deps({
+      waitForRun: async (runId, timeoutMs) => {
+        calls.push({ runId, timeoutMs });
+        return { timedOut: false };
+      },
+      digestRun: async () => digest,
+    });
+    const res = await handleMcpMessage(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "run_and_wait", arguments: { repo: "o/r", sha: "main", priority: 9, timeoutSeconds: 30 } },
+      },
+      d,
+    );
+    const out = JSON.parse(((res.body as { result: { content: { text: string }[] } }).result.content[0].text));
+    expect(out.runId).toBe("run9");
+    expect(out.timedOut).toBe(false);
+    expect(out.failedJobs).toBe(1);
+    expect(calls).toEqual([{ runId: "run9", timeoutMs: 30000 }]);
+  });
+
+  it("validates run_and_wait inputs and scope", async () => {
+    const d = deps({ canWrite: false });
+    const gated = await handleMcpMessage(
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "run_and_wait", arguments: { repo: "o/r", sha: "main" } } },
+      d,
+    );
+    expect(((gated.body as { error: { message: string } }).error.message)).toContain("run scope");
+    const badTimeout = await handleMcpMessage(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "run_and_wait", arguments: { repo: "o/r", sha: "main", timeoutSeconds: 120 } },
+      },
+      deps(),
+    );
+    expect(((badTimeout.body as { error: { message: string } }).error.message)).toContain("timeoutSeconds");
+  });
+
+  it("serves compact digests and reports missing runs as tool errors", async () => {
+    const d = deps({
+      digestRun: async (runId) =>
+        runId === "run1"
+          ? {
+              runId,
+              repo: "o/r",
+              sha: "abc",
+              branch: "main",
+              event: "dispatch",
+              status: "success",
+              durationMs: 1000,
+              totalJobs: 1,
+              failedJobs: 0,
+              jobs: [],
+            }
+          : null,
+    });
+    const ok = await handleMcpMessage(
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_run_digest", arguments: { runId: "run1" } } },
+      d,
+    );
+    expect(JSON.parse(((ok.body as { result: { content: { text: string }[] } }).result.content[0].text)).status).toBe("success");
+    const missing = await handleMcpMessage(
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_run_digest", arguments: { runId: "nope" } } },
+      d,
+    );
+    const body = missing.body as { result: { isError?: boolean } };
+    expect(body.result.isError).toBe(true);
+  });
+
   it("exposes discovery metadata", () => {
     expect(mcpDiscovery().tools).toContain("dispatch_run");
+    expect(mcpDiscovery().tools).toContain("run_and_wait");
+    expect(mcpDiscovery().tools).toContain("get_run_digest");
   });
 });

@@ -75,11 +75,15 @@ export async function beginOAuth(db: Db): Promise<string> {
   return state;
 }
 
+// Single-use, atomically: DELETE ... RETURNING closes the replay race
+// a read-then-delete leaves open between parallel callbacks.
 export async function consumeOAuthState(db: Db, state: string): Promise<boolean> {
-  const created = await getSetting(db, oauthStateKey(state));
-  if (!created) return false;
-  await db.prepare("DELETE FROM app_settings WHERE key = ?").bind(oauthStateKey(state)).run();
-  const ageMs = Date.now() - Date.parse(created);
+  const row = await db
+    .prepare("DELETE FROM app_settings WHERE key = ? RETURNING value")
+    .bind(oauthStateKey(state))
+    .first<{ value: string }>();
+  if (!row) return false;
+  const ageMs = Date.now() - Date.parse(row.value);
   return Number.isFinite(ageMs) && ageMs >= 0 && ageMs < OAUTH_STATE_TTL_MS;
 }
 

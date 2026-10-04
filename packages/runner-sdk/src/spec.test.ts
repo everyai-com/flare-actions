@@ -26,6 +26,13 @@ describe("parseJobSpec", () => {
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "echo" }] }))?.steps).toEqual([{ run: "echo" }]);
   });
 
+  it("keeps continue-on-error flags and rejects malformed ones", () => {
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x", continueOnError: true }] }))?.steps).toEqual([
+      { run: "x", continueOnError: true },
+    ]);
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x", continueOnError: 1 }] }))).toBeNull();
+  });
+
   it("rejects bad steps and bad option shapes", () => {
     expect(parseJobSpec("")).toBeNull();
     expect(parseJobSpec(JSON.stringify({ steps: [] }))).toBeNull();

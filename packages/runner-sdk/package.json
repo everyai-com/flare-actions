@@ -1,6 +1,7 @@
 {
   "name": "@flare-actions/runner-sdk",
   "version": "0.1.0",
+  "private": true,
   "description": "Shared client for Flare Actions runners",
   "license": "MIT",
   "type": "module",

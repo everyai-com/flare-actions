@@ -23,6 +23,21 @@ async function pollOnce(): Promise<boolean> {
   const { job, secrets, secretsError } = await client.nextClaim(LABELS);
   if (!job) return false;
   console.log(JSON.stringify({ msg: "picked up job", jobId: job.id, name: job.name, repo: job.repo, sha: job.sha }));
+  // Fail closed on corrupt or newer-format definitions: substituting an
+  // echo job would report a false green for work that never ran.
+  const spec = parseJobSpec(job.definition ?? "");
+  if (!spec) {
+    await client
+      .reportStatus(
+        job.run_id,
+        job.id,
+        "error",
+        "job definition could not be parsed (corrupt or from a newer version); refusing to run",
+      )
+      .catch(() => undefined);
+    console.error(JSON.stringify({ msg: "unparseable job definition", jobId: job.id }));
+    return true;
+  }
   // Liveness proof: quiet jobs get requeued past the stale horizon, so
   // long runs heartbeat until they report. Best effort, never fatal.
   const heartbeat = setInterval(() => {
@@ -38,9 +53,6 @@ async function pollOnce(): Promise<boolean> {
       dir: srcdir,
       token: process.env["GITHUB_TOKEN"],
     });
-    const spec = parseJobSpec(job.definition ?? "") ?? {
-      steps: [{ run: "echo hello from flare-actions" }],
-    };
     const outcome = await runJob(spec, {
       cwd: srcdir,
       env: {
@@ -77,7 +89,9 @@ async function main(): Promise<void> {
   for (;;) {
     try {
       const worked = await pollOnce();
-      await new Promise((r) => setTimeout(r, worked ? 1000 : 5000));
+      // Agent-speed pickup: 2s idle, 500ms right after a job so a
+      // queued backlog drains without a human-perceptible gap.
+      await new Promise((r) => setTimeout(r, worked ? 500 : 2000));
     } catch (err) {
       console.error(JSON.stringify({ msg: "poll error", error: String(err) }));
       await new Promise((r) => setTimeout(r, 5000));

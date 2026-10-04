@@ -2,6 +2,9 @@ import { parse as parseYaml } from "yaml";
 
 export interface PipelineStep {
   run: string;
+  // GitHub parity: a failing step with continue-on-error marks the step
+  // failed but lets the job proceed and still succeed.
+  continueOnError?: boolean;
 }
 
 export interface PipelineService {
@@ -38,6 +41,9 @@ export interface PipelineJob {
   group?: string;
   cancelInProgress?: boolean;
   timeoutMinutes?: number;
+  // Retries after a failed attempt (0-5); the scheduler requeues while
+  // attempts remain. Agent-friendly: flaky suites stop paging humans.
+  retry?: number;
 }
 
 export const MAX_JOBS = 32;
@@ -141,6 +147,7 @@ interface RawJob {
   group?: string;
   cancelInProgress: boolean;
   timeoutMinutes?: number;
+  retry?: number;
 }
 
 function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<string, string[]> }) | null {
@@ -152,7 +159,12 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     if (!isRecord(s)) return null;
     const run = s.run;
     if (typeof run !== "string" || !run.trim() || run.length > MAX_RUN_LENGTH) return null;
-    steps.push({ run: run.trim() });
+    const step: PipelineStep = { run: run.trim() };
+    if (s["continue-on-error"] !== undefined) {
+      if (typeof s["continue-on-error"] !== "boolean") return null;
+      step.continueOnError = s["continue-on-error"];
+    }
+    steps.push(step);
   }
   const job: RawJob & { axes?: Record<string, string[]> } = { name, steps, env: {}, needs: [], cancelInProgress: false };
   if (def["runs-on"] !== undefined) {
@@ -240,6 +252,11 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     if (typeof t !== "number" || !Number.isInteger(t) || t < 1 || t > 1440) return null;
     job.timeoutMinutes = t;
   }
+  if (def.retry !== undefined) {
+    const r = def.retry;
+    if (typeof r !== "number" || !Number.isInteger(r) || r < 0 || r > 5) return null;
+    job.retry = r;
+  }
   if (def.strategy !== undefined) {
     if (!isRecord(def.strategy) || def.strategy.matrix === undefined) return null;
     const axes = parseMatrix(def.strategy.matrix);
@@ -306,7 +323,7 @@ export function parsePipeline(text: string): PipelineJob[] | null {
       const suffix = combo ? ` (${Object.entries(combo).map(([k, v]) => `${k}=${v}`).join(", ")})` : "";
       const name = `${r.name}${suffix}`;
       if (name.length > 128) return null;
-      const steps = r.steps.map((s) => ({ run: interpolateRun(s.run, matrix ?? {}, r.env) }));
+      const steps = r.steps.map((s) => ({ ...s, run: interpolateRun(s.run, matrix ?? {}, r.env) }));
       const job: PipelineJob = { name, steps };
       if (combo) job.base = r.name;
       if (r.labels) job.labels = r.labels;
@@ -320,6 +337,7 @@ export function parsePipeline(text: string): PipelineJob[] | null {
       if (r.group) job.group = r.group;
       if (r.cancelInProgress) job.cancelInProgress = true;
       if (r.timeoutMinutes !== undefined) job.timeoutMinutes = r.timeoutMinutes;
+      if (r.retry !== undefined) job.retry = r.retry;
       out.push(job);
     }
   }
@@ -343,7 +361,19 @@ export function serializeDefinition(job: PipelineJob, baseName: string): string 
     needs: job.needs,
     group: job.group,
     timeoutMinutes: job.timeoutMinutes,
+    retry: job.retry,
   });
+}
+
+// Retry policy from a stored definition; tolerant of legacy shapes.
+export function readRetryPolicy(definition: string): number {
+  try {
+    const parsed = JSON.parse(definition) as { retry?: unknown };
+    const retry = parsed?.retry;
+    return typeof retry === "number" && Number.isInteger(retry) && retry >= 0 && retry <= 5 ? retry : 0;
+  } catch {
+    return 0;
+  }
 }
 
 export interface JobSpecSchedule {

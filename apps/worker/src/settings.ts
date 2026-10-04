@@ -10,7 +10,9 @@ export const SETTING_KEYS = {
   adminEmail: "admin_email",
   notifyFromEmail: "notify_from_email",
   notifyMode: "notify_mode",
+  notifyWebhookUrl: "notify_webhook_url",
   secretsKey: "secrets_key",
+  badgeHiddenRepos: "badge_hidden_repos",
 } as const;
 
 export function validateWebhookSecret(secret: unknown): string | null {
@@ -34,4 +36,44 @@ export function validateNotifyMode(mode: unknown): string | null {
     return "notify mode must be all, failures, or off";
   }
   return null;
+}
+
+// Chat webhook destinations (Slack incoming webhooks, Discord, hosted
+// Mattermost chat, …). https only — the URL itself is a credential.
+export function validateNotifyWebhookUrl(url: unknown): string | null {
+  if (typeof url !== "string" || url.length < 12 || url.length > 512) {
+    return "webhook URL must be a 12-512 character https URL";
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "webhook URL must be a valid https URL";
+  }
+  if (parsed.protocol !== "https:") return "webhook URL must use https";
+  return null;
+}
+
+// Status badges are public by design; repos listed here serve "unknown"
+// instead, so private repositories never leak pass/fail through a
+// guessable owner/name. Comma-separated storage, case-insensitive match.
+export function parseBadgeHiddenRepos(value: unknown): { repos: string[] } | { error: string } {
+  const list = typeof value === "string" ? value.split(",") : value;
+  if (!Array.isArray(list)) return { error: "badgeHiddenRepos must be a comma-separated string or an array" };
+  const repos: string[] = [];
+  for (const item of list) {
+    if (typeof item !== "string") return { error: "badgeHiddenRepos entries must be strings" };
+    const repo = item.trim();
+    if (!repo) continue;
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return { error: `badgeHiddenRepos entry must be owner/name: ${repo}` };
+    if (!repos.includes(repo)) repos.push(repo);
+  }
+  if (repos.length > 100) return { error: "badgeHiddenRepos supports at most 100 repos" };
+  return { repos };
+}
+
+export function isBadgeHiddenRepo(raw: string | null, repo: string): boolean {
+  if (!raw) return false;
+  const needle = repo.toLowerCase();
+  return raw.split(",").some((r) => r.trim().toLowerCase() === needle);
 }

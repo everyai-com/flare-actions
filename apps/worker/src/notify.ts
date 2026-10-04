@@ -9,13 +9,15 @@ import {
   type RunRow,
 } from "./db";
 import { jobDurationMs, summarizeRunCost } from "./cost";
+import { decryptSettingValue, resolveSecretsKey } from "./secrets";
 import { SETTING_KEYS } from "./settings";
 
-// Run completion emails via the EMAIL send_email binding. Best-effort like
-// triage: unconfigured sender, missing binding, or send errors degrade to a
-// skipped notification plus a structured log line, never to a 500. Callers
-// fire this from waitUntil (worker) or await it inline (seats); it never
-// throws.
+// Run completion notifications: emails via the EMAIL send_email binding
+// plus an optional chat webhook (Slack/Discord/Mattermost-compatible).
+// Best-effort like triage: unconfigured sender, missing binding, or
+// send errors degrade to a skipped notification plus a structured log
+// line, never to a 500. Callers fire this from waitUntil (worker) or
+// await it inline (seats); it never throws.
 
 export type NotifyMode = "all" | "failures" | "off";
 export const DEFAULT_NOTIFY_MODE: NotifyMode = "all";
@@ -29,6 +31,8 @@ export interface EmailSender {
 export interface NotifyMailEnv {
   EMAIL?: EmailSender;
   NOTIFY_FROM_EMAIL?: string;
+  // Raw SECRETS_KEY passthrough, used to decrypt the stored webhook URL.
+  SECRETS_KEY?: string;
 }
 
 export function parseNotifyMode(value: string | null): NotifyMode {
@@ -135,24 +139,69 @@ export function buildRunEmail(input: RunEmailInput): { subject: string; text: st
   return { subject, text, html };
 }
 
+// Chat payload shape per host: Slack incoming webhooks and Mattermost
+// read {text}; Discord reads {content} and ignores {text}.
+export function webhookPayload(url: string, text: string): Record<string, string> {
+  try {
+    const host = new URL(url).hostname;
+    if (/(^|\.)discord(app)?\.com$/i.test(host)) return { content: text };
+  } catch {
+    // Caller validated the URL; fall through to the Slack shape.
+  }
+  return { text };
+}
+
+export async function postNotifyWebhook(url: string, text: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(webhookPayload(url, text)),
+      signal: AbortSignal.timeout(10000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function notifyRunCompleted(
   db: Db,
   mail: NotifyMailEnv,
   input: { run: RunRow; origin: string },
-): Promise<{ sent: number; skipped: string | null }> {
+): Promise<{ sent: number; webhook: boolean; skipped: string | null }> {
   try {
     const mode = parseNotifyMode(await getSetting(db, SETTING_KEYS.notifyMode));
     if (!shouldNotifyForStatus(mode, input.run.status)) {
-      return { sent: 0, skipped: `mode ${mode} skips ${input.run.status}` };
+      return { sent: 0, webhook: false, skipped: `mode ${mode} skips ${input.run.status}` };
     }
-    const sender = resolveNotifySender(mail.NOTIFY_FROM_EMAIL, await getSetting(db, SETTING_KEYS.notifyFromEmail));
-    if (!sender) return { sent: 0, skipped: "no notify sender configured" };
-    const recipients = (await listUsers(db)).map((u) => u.email).filter((e) => e.includes("@"));
-    if (recipients.length === 0) return { sent: 0, skipped: "no recipients" };
-    const email = mail.EMAIL;
-    if (!email) return { sent: 0, skipped: "no EMAIL binding" };
     const jobs = await getJobsForRun(db, input.run.id);
-    const { subject, text, html } = buildRunEmail({ run: input.run, jobs, origin: input.origin });
+    const { subject, text } = buildRunEmail({ run: input.run, jobs, origin: input.origin });
+
+    // Chat webhook: independent of email configuration.
+    let webhook = false;
+    const storedWebhook = await getSetting(db, SETTING_KEYS.notifyWebhookUrl);
+    if (storedWebhook) {
+      try {
+        const key = await resolveSecretsKey(db, mail.SECRETS_KEY);
+        const url = await decryptSettingValue(key, storedWebhook);
+        webhook = await postNotifyWebhook(url, `${subject}\n\n${text}`);
+        console.log(
+          JSON.stringify({ level: webhook ? "info" : "warn", msg: "run webhook posted", runId: input.run.id, ok: webhook }),
+        );
+        await audit(db, "notify", webhook ? "run.webhook" : "run.webhook_failed", input.run.id);
+      } catch (err) {
+        console.log(JSON.stringify({ level: "warn", msg: "run webhook failed", runId: input.run.id, error: String(err) }));
+      }
+    }
+
+    const sender = resolveNotifySender(mail.NOTIFY_FROM_EMAIL, await getSetting(db, SETTING_KEYS.notifyFromEmail));
+    if (!sender) return { sent: 0, webhook, skipped: "no notify sender configured" };
+    const recipients = (await listUsers(db)).map((u) => u.email).filter((e) => e.includes("@"));
+    if (recipients.length === 0) return { sent: 0, webhook, skipped: "no recipients" };
+    const email = mail.EMAIL;
+    if (!email) return { sent: 0, webhook, skipped: "no EMAIL binding" };
+    const { html } = buildRunEmail({ run: input.run, jobs, origin: input.origin });
     const from = { name: "Flare Actions", email: sender };
     const results = await Promise.all(
       recipients.map(async (to) => {
@@ -170,9 +219,9 @@ export async function notifyRunCompleted(
       JSON.stringify({ level: "info", msg: "run notified", runId: input.run.id, sent, recipients: recipients.length }),
     );
     await audit(db, "notify", "run.notify", `${input.run.id} ${sent}/${recipients.length}`);
-    return { sent, skipped: null };
+    return { sent, webhook, skipped: null };
   } catch (err) {
     console.log(JSON.stringify({ level: "warn", msg: "notify failed", error: String(err) }));
-    return { sent: 0, skipped: "error" };
+    return { sent: 0, webhook: false, skipped: "error" };
   }
 }

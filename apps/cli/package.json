@@ -1,6 +1,7 @@
 {
   "name": "@flare-actions/cli",
   "version": "0.1.0",
+  "private": true,
   "description": "Minimal CLI for Flare Actions",
   "license": "MIT",
   "type": "module",

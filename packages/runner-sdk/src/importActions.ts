@@ -68,7 +68,7 @@ const TOOLCHAIN_CHECKS: [RegExp, string][] = [
 ];
 
 interface JobAcc {
-  steps: { run: string }[];
+  steps: { run: string; "continue-on-error"?: boolean }[];
   env: Record<string, string>;
   cachePaths: string[];
   cacheKey: string | null;
@@ -149,7 +149,13 @@ function convertStep(step: unknown, acc: JobAcc, warnings: string[], jobId: stri
   if (typeof step.run === "string" && step.run.trim()) {
     let run = step.run.trim();
     if (workdir) run = `(cd ${JSON.stringify(workdir)} &&\n${run}\n)`;
-    acc.steps.push({ run });
+    const out: { run: string; "continue-on-error"?: boolean } = { run };
+    if (step["continue-on-error"] === true) {
+      out["continue-on-error"] = true;
+    } else if (step["continue-on-error"] !== undefined && step["continue-on-error"] !== false) {
+      warnings.push(`${jobId}: non-boolean continue-on-error ignored`);
+    }
+    acc.steps.push(out);
     return;
   }
   warnings.push(`${jobId}: dropped a step with neither run nor uses`);
@@ -167,7 +173,16 @@ export function convertActionsWorkflow(text: string): ImportResult {
     return { error: "no jobs map found" };
   }
   const warnings: string[] = [];
-  if (doc.on !== undefined) warnings.push("triggers (on:) ignored — flare runs on push/PR webhooks");
+  if (doc.on !== undefined) {
+    const on = doc.on;
+    const hasSchedule =
+      (isRecord(on) && on.schedule !== undefined) || (Array.isArray(on) && on.includes("schedule")) || on === "schedule";
+    warnings.push(
+      hasSchedule
+        ? "triggers (on:) ignored — configure cron schedules in the dashboard (Settings → Schedules)"
+        : "triggers (on:) ignored — flare runs on push/PR webhooks",
+    );
+  }
   if (doc.permissions !== undefined) warnings.push("top-level permissions ignored — flare uses GitHub App permissions");
   const topEnv = isRecord(doc.env) ? doc.env : null;
   const topConcurrency = doc.concurrency;

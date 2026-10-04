@@ -1,13 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildRunEmail,
   escapeHtml,
   notifyRunCompleted,
   parseNotifyMode,
+  postNotifyWebhook,
   resolveNotifySender,
   shouldNotifyForStatus,
+  webhookPayload,
 } from "./notify";
 import type { Db, JobRow, RunRow, UserRow } from "./db";
+import { encryptSettingValue, resolveSecretsKey } from "./secrets";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const run: RunRow = {
   id: "run-1",
@@ -31,6 +38,8 @@ const job: JobRow = {
   result: "",
   triage: "",
   labels: "",
+  priority: 0,
+  attempts: 0,
   started_at: "2026-10-01T09:00:00.000Z",
   finished_at: "2026-10-01T09:02:00.000Z",
   created_at: "2026-10-01T09:00:00.000Z",
@@ -161,7 +170,7 @@ describe("notifyRunCompleted", () => {
       { EMAIL: { send: async (m) => void sent.push({ to: m.to, subject: m.subject }) } },
       { run, origin: "https://ci.example.com" },
     );
-    expect(out).toEqual({ sent: 2, skipped: null });
+    expect(out).toEqual({ sent: 2, webhook: false, skipped: null });
     expect(sent.map((s) => s.to).sort()).toEqual(["a@example.com", "b@example.com"]);
     expect(sent[0]?.subject).toContain("owner/repo");
     expect(db.audits).toEqual([{ actor: "notify", action: "run.notify", target: "run-1 2/2" }]);
@@ -175,6 +184,7 @@ describe("notifyRunCompleted", () => {
     // No sender configured.
     expect(await notifyRunCompleted(db, mail, { run, origin: "" })).toEqual({
       sent: 0,
+      webhook: false,
       skipped: "no notify sender configured",
     });
     // Mode off.
@@ -185,7 +195,11 @@ describe("notifyRunCompleted", () => {
     expect(out.skipped).toContain("off");
     // No binding.
     db.settings.set("notify_mode", "all");
-    expect(await notifyRunCompleted(db, {}, { run, origin: "" })).toEqual({ sent: 0, skipped: "no EMAIL binding" });
+    expect(await notifyRunCompleted(db, {}, { run, origin: "" })).toEqual({
+      sent: 0,
+      webhook: false,
+      skipped: "no EMAIL binding",
+    });
     expect(calls).toBe(0);
     expect(db.audits).toEqual([]);
   });
@@ -205,13 +219,69 @@ describe("notifyRunCompleted", () => {
       },
       { run, origin: "" },
     );
-    expect(out).toEqual({ sent: 1, skipped: null });
+    expect(out).toEqual({ sent: 1, webhook: false, skipped: null });
     // A broken db still resolves instead of rejecting.
     const broken = {
       prepare() {
         throw new Error("d1 down");
       },
     } as unknown as Db;
-    await expect(notifyRunCompleted(broken, {}, { run, origin: "" })).resolves.toEqual({ sent: 0, skipped: "error" });
+    await expect(notifyRunCompleted(broken, {}, { run, origin: "" })).resolves.toEqual({
+      sent: 0,
+      webhook: false,
+      skipped: "error",
+    });
+  });
+
+  it("posts a chat webhook even when email is unconfigured", async () => {
+    const db = new MemDb();
+    db.settings.set("secrets_key", Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"));
+    const key = await resolveSecretsKey(db, undefined);
+    db.settings.set("notify_webhook_url", await encryptSettingValue(key, "https://hooks.slack.com/services/T/B/X"));
+    db.jobs = [job];
+    const calls: { url: string; init?: RequestInit }[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return new Response("ok", { status: 200 });
+    });
+    const out = await notifyRunCompleted(db, {}, { run, origin: "https://ci.example.com" });
+    expect(out).toEqual({ sent: 0, webhook: true, skipped: "no notify sender configured" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("https://hooks.slack.com/services/T/B/X");
+    expect(JSON.parse(String(calls[0].init?.body)).text).toContain("owner/repo (main)");
+    expect(db.audits).toEqual([{ actor: "notify", action: "run.webhook", target: "run-1" }]);
+  });
+
+  it("degrades a rejected webhook without failing the notify", async () => {
+    const db = new MemDb();
+    db.settings.set("secrets_key", Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"));
+    const key = await resolveSecretsKey(db, undefined);
+    db.settings.set("notify_webhook_url", await encryptSettingValue(key, "https://discord.com/api/webhooks/1/x"));
+    vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+      // Discord shape check happens inside postNotifyWebhook.
+      const body = JSON.parse(String(init?.body)) as Record<string, string>;
+      if (body.content === undefined) return new Response("bad request", { status: 400 });
+      return new Response("nope", { status: 500 });
+    });
+    const out = await notifyRunCompleted(db, {}, { run, origin: "" });
+    expect(out.webhook).toBe(false);
+    expect(db.audits).toEqual([{ actor: "notify", action: "run.webhook_failed", target: "run-1" }]);
+  });
+});
+
+describe("webhook payloads", () => {
+  it("uses text for Slack-style hosts and content for Discord", () => {
+    expect(webhookPayload("https://hooks.slack.com/services/x", "hi")).toEqual({ text: "hi" });
+    expect(webhookPayload("https://discord.com/api/webhooks/1/x", "hi")).toEqual({ content: "hi" });
+    expect(webhookPayload("https://canary.discordapp.com/api/webhooks/1/x", "hi")).toEqual({ content: "hi" });
+  });
+
+  it("postNotifyWebhook returns false on network errors and non-2xx", async () => {
+    vi.stubGlobal("fetch", async () => {
+      throw new Error("down");
+    });
+    expect(await postNotifyWebhook("https://hooks.slack.com/services/x", "hi")).toBe(false);
+    vi.stubGlobal("fetch", async () => new Response("", { status: 410 }));
+    expect(await postNotifyWebhook("https://hooks.slack.com/services/x", "hi")).toBe(false);
   });
 });

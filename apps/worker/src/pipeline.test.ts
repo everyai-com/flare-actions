@@ -6,6 +6,7 @@ import {
   MAX_DEFINITION_BYTES,
   parsePipeline,
   readJobSpec,
+  readRetryPolicy,
   seatEligible,
   serializeDefinition,
 } from "./pipeline";
@@ -87,6 +88,28 @@ describe("parsePipeline v2 keys", () => {
     expect(
       parsePipeline("jobs:\n  a:\n    needs: b\n    steps:\n      - run: echo\n  b:\n    needs: a\n    steps:\n      - run: echo\n"),
     ).toBeNull();
+  });
+
+  it("parses and serializes the retry policy", () => {
+    const jobs = parsePipeline("jobs:\n  a:\n    retry: 2\n    steps:\n      - run: x\n");
+    expect(jobs?.[0].retry).toBe(2);
+    expect(parsePipeline("jobs:\n  a:\n    retry: 0\n    steps:\n      - run: x\n")?.[0].retry).toBe(0);
+    expect(parsePipeline("jobs:\n  a:\n    retry: 9\n    steps:\n      - run: x\n")).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    retry: 1.5\n    steps:\n      - run: x\n")).toBeNull();
+    const def = serializeDefinition({ name: "a", steps: [{ run: "x" }], retry: 2 }, "a");
+    expect(JSON.parse(def).retry).toBe(2);
+    expect(readRetryPolicy(def)).toBe(2);
+    expect(readRetryPolicy(JSON.stringify({ steps: [] }))).toBe(0);
+    expect(readRetryPolicy("junk")).toBe(0);
+  });
+
+  it("parses continue-on-error and preserves it through interpolation", () => {
+    const jobs = parsePipeline(
+      "jobs:\n  a:\n    strategy:\n      matrix:\n        n: [1]\n    steps:\n      - run: flaky-${{ matrix.n }}\n        continue-on-error: true\n      - run: hard\n",
+    );
+    expect(jobs?.[0].steps[0]).toEqual({ run: "flaky-1", continueOnError: true });
+    expect(jobs?.[0].steps[1].continueOnError).toBeUndefined();
+    expect(parsePipeline("jobs:\n  a:\n    steps:\n      - run: x\n        continue-on-error: maybe\n")).toBeNull();
   });
 
   it("parses concurrency, container, services, cache, artifacts, env, timeout", () => {

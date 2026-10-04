@@ -19,7 +19,7 @@ export interface JobArtifactsSpec {
 }
 
 export interface JobSpec {
-  steps: { run: string }[];
+  steps: { run: string; continueOnError?: boolean }[];
   base?: string;
   matrix?: Record<string, string>;
   env?: Record<string, string>;
@@ -58,10 +58,15 @@ export function parseJobSpec(definition: string): JobSpec | null {
     return null;
   }
   if (!isRecord(parsed) || !Array.isArray(parsed.steps) || parsed.steps.length === 0) return null;
-  const steps: { run: string }[] = [];
+  const steps: { run: string; continueOnError?: boolean }[] = [];
   for (const s of parsed.steps) {
     if (!isRecord(s) || typeof s.run !== "string" || !s.run.trim()) return null;
-    steps.push({ run: s.run });
+    const step: { run: string; continueOnError?: boolean } = { run: s.run };
+    if (s.continueOnError !== undefined) {
+      if (typeof s.continueOnError !== "boolean") return null;
+      step.continueOnError = s.continueOnError;
+    }
+    steps.push(step);
   }
   const spec: JobSpec = { steps };
   if (typeof parsed.base === "string" && parsed.base) spec.base = parsed.base;

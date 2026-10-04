@@ -7,22 +7,24 @@ import {
   isTerminal,
   releaseJob,
   rollupRunStatus,
-  updateJob,
+  updateRunningJob,
   type Db,
 } from "../../worker/src/db";
 import {
+  maybeRetryJob,
   promoteBlockedJobs,
   reportGitHubStatus,
   triageAndStore,
   type QueueSender,
 } from "../../worker/src/finish";
-import { getInstallationToken, mintAppJwt } from "../../worker/src/github";
+import { bytesEqual, getInstallationToken, mintAppJwt } from "../../worker/src/github";
+import { reportJobCheck } from "../../worker/src/checks";
 import { notifyRunCompleted, type NotifyMailEnv } from "../../worker/src/notify";
 import { seatEligible } from "../../worker/src/pipeline";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
 import type { AiBinding } from "../../worker/src/triage";
 import { interpolateSecrets, maskSecrets } from "../../../packages/runner-sdk/src/secrets";
-import { matrixEnv, parseJobSpec, type JobSpec } from "../../../packages/runner-sdk/src/spec";
+import { matrixEnv, parseJobSpec } from "../../../packages/runner-sdk/src/spec";
 
 // Managed-seat job execution: the seat Durable Object drives a Linux
 // container purely through exec calls while writing D1/R2 directly.
@@ -114,11 +116,26 @@ export interface SeatDeps {
 export type SeatOutcome =
   | { status: "completed"; jobId: string }
   | { status: "released"; jobId: string; detail: string }
-  | { status: "skipped"; jobId: string; detail: string };
+  | { status: "skipped"; jobId: string; detail: string }
+  | { status: "failed"; jobId: string; detail: string }
+  | { status: "retrying"; jobId: string; detail: string };
 
 export const SEAT_BLOB_CAP = 50 * 1024 * 1024;
 const STEP_OUTPUT_CAP = 32768;
 export const WORKDIR = "/work";
+
+// Constant-time seat token gate, shared by the seats worker fetch route.
+// Digest-then-compare so the check never leaks prefix length.
+export async function seatTokenAuthorized(request: Request, token: string | undefined): Promise<boolean> {
+  const header = request.headers.get("Authorization");
+  if (!header || !header.startsWith("Bearer ") || !token) return false;
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(header.slice("Bearer ".length))),
+    crypto.subtle.digest("SHA-256", enc.encode(token)),
+  ]);
+  return bytesEqual(new Uint8Array(a), new Uint8Array(b));
+}
 
 function decode(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
@@ -135,7 +152,7 @@ function safeRelPaths(paths: string[]): string[] | null {
 
 function sanitizeName(raw: string): string {
   const clean = raw
-    .replace(/[^\w.\-]/g, "-")
+    .replace(/[^\w.-]/g, "-")
     .replace(/^\.+/, "")
     .slice(0, 100);
   return clean || "artifact";
@@ -159,9 +176,20 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
   if (!seatEligible(job.definition)) {
     return { status: "skipped", jobId, detail: "ineligible for seats" };
   }
-  const spec: JobSpec = parseJobSpec(job.definition) ?? { steps: [{ run: "echo hello from flare-actions" }] };
   if (!(await claimJob(deps.db, jobId))) {
     return { status: "skipped", jobId, detail: "claim lost" };
+  }
+  // Corrupt or newer-format definition: fail closed. An echo-substitute
+  // "success" would be a false green; claiming first means exactly one
+  // executor records the error.
+  const spec = parseJobSpec(job.definition);
+  if (!spec) {
+    await updateRunningJob(deps.db, jobId, {
+      status: "error",
+      log: "[seat] refusing to execute: job definition could not be parsed (corrupt or from a newer version)",
+    });
+    await rollupRunStatus(deps.db, job.run_id);
+    return { status: "failed", jobId, detail: "unparseable job definition" };
   }
   // Repo secrets decrypt here (same key ladder as the main worker) and
   // interpolate executor-side, exactly like BYO runners.
@@ -180,7 +208,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
   }
   const records: StepRecord[] = [];
 
-  // Mirror a line to the job row immediately (terminal updateJob later
+  // Mirror a line to the job row immediately (the terminal updateRunningJob later
   // replaces the log with the full story, so nothing duplicates).
   // Progress logging never breaks execution: a seat that cannot write
   // its log must still run the job. Every mirrored line is masked so
@@ -359,6 +387,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       ...matrixEnv(spec.matrix),
     };
     let timedOutJob = false;
+    let hardFailure = false;
     for (let i = 0; i < spec.steps.length; i++) {
       if (Date.now() > deadline) {
         timedOutJob = true;
@@ -378,6 +407,11 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       if (r.timedOut) {
         records.push({ command: mask(command), exitCode: 124, durationMs, output: "[seat] step timed out after 10m" });
         logParts.push(mask(`--- step ${i + 1}: ${command} ---\n[seat] step timed out after 10m\n(exit 124, ${durationMs}ms)`));
+        if (step.continueOnError) {
+          logParts.push(`--- step ${i + 1} failed but continue-on-error is set ---`);
+          continue;
+        }
+        hardFailure = true;
         break;
       }
       const m = /EXIT:(\d+)\s*$/.exec(decode(r.stdout));
@@ -386,9 +420,31 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       const output = tail.timedOut ? "" : mask(decode(tail.stdout).trimEnd());
       records.push({ command: mask(command), exitCode, durationMs, output });
       logParts.push(mask(`--- step ${i + 1}: ${command} ---\n${output}\n(exit ${exitCode}, ${durationMs}ms)`));
-      if (exitCode !== 0) break;
+      if (exitCode !== 0) {
+        if (step.continueOnError) {
+          logParts.push(`--- step ${i + 1} failed but continue-on-error is set ---`);
+          continue;
+        }
+        hardFailure = true;
+        break;
+      }
     }
-    const success = !timedOutJob && records.length > 0 && records.every((r) => r.exitCode === 0);
+    const success = !timedOutJob && records.length > 0 && !hardFailure;
+
+    // Retry policy: requeue instead of going terminal while attempts
+    // remain (the job row is still `running`, so the conditional
+    // release in maybeRetryJob is race-safe).
+    if (!success) {
+      const retried = await maybeRetryJob(deps.db, deps.queue, jobId, (p) => deps.spawn?.(p.jobId));
+      if (retried) {
+        try {
+          deps.container.destroy();
+        } catch {
+          // Never started or already gone.
+        }
+        return { status: "retrying", jobId, detail: "requeued for another attempt" };
+      }
+    }
 
     // Cache save (success only, bounded).
     if (spec.cache && success && deps.cache) {
@@ -461,33 +517,64 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       }
     }
 
-    // Report terminal status like a runner would.
+    // Report terminal status like a runner would. Once the row is final,
+    // the rest is best-effort post-processing: it must never route into
+    // the catch-all release, which would stamp a "released" line on a
+    // finished job.
     const status = success ? "success" : "failure";
     const resultJson = mask(JSON.stringify({ steps: records, cacheHit, artifacts: uploaded, executor: "seat" }));
-    await updateJob(deps.db, jobId, { status, log: mask(logParts.join("\n")), result: resultJson });
-    await rollupRunStatus(deps.db, job.run_id);
-    const promoted = await promoteBlockedJobs(deps.db, deps.queue, run.repo, (p) => deps.spawn?.(p.jobId));
-    if (promoted.length > 0) logParts.push(`[seat] promoted ${promoted.length} job(s)`);
-    if (deps.mail) {
-      const finalRun = await getRun(deps.db, job.run_id);
-      if (finalRun && isTerminal(finalRun.status)) {
-        const mailed = await notifyRunCompleted(deps.db, deps.mail, { run: finalRun, origin: "" });
-        if (mailed.sent > 0) logParts.push(`[seat] notified ${mailed.sent} recipient(s)`);
-      }
-    }
-    const ghState = status === "success" ? "success" : "failure";
-    await reportGitHubStatus({
-      appId: deps.appId,
-      privateKey: deps.appKey,
-      installationId: run.installation_id,
-      repo: run.repo,
-      sha: run.sha,
-      state: ghState,
+    const recorded = await updateRunningJob(deps.db, jobId, {
+      status,
+      log: mask(logParts.join("\n")),
+      result: resultJson,
     });
-    if (status === "failure") {
-      const jobs = await getJobsForRun(deps.db, job.run_id);
-      const jobName = jobs.find((j) => j.id === job.id)?.name ?? "";
-      await triageAndStore(deps.db, deps.ai, run, job.id, jobName, mask(logParts.join("\n")), resultJson);
+    if (!recorded) {
+      try {
+        deps.container.destroy();
+      } catch {
+        // Never started or already gone.
+      }
+      return { status: "released", jobId, detail: "job was requeued before completion; result dropped" };
+    }
+    await rollupRunStatus(deps.db, job.run_id);
+    try {
+      const promoted = await promoteBlockedJobs(deps.db, deps.queue, run.repo, (p) => deps.spawn?.(p.jobId));
+      if (promoted.length > 0) await note(`[seat] promoted ${promoted.length} job(s)`);
+      if (deps.mail) {
+        const finalRun = await getRun(deps.db, job.run_id);
+        if (finalRun && isTerminal(finalRun.status)) {
+          const mailed = await notifyRunCompleted(deps.db, deps.mail, { run: finalRun, origin: "" });
+          if (mailed.sent > 0) await note(`[seat] notified ${mailed.sent} recipient(s)`);
+        }
+      }
+      const ghState = status === "success" ? "success" : "failure";
+      await reportGitHubStatus({
+        appId: deps.appId,
+        privateKey: deps.appKey,
+        installationId: run.installation_id,
+        repo: run.repo,
+        sha: run.sha,
+        state: ghState,
+      });
+      // Per-job Check Run (rich PR output), mirroring the BYO path.
+      await reportJobCheck(
+        {
+          appId: deps.appId,
+          privateKey: deps.appKey,
+          installationId: run.installation_id,
+          repo: run.repo,
+          sha: run.sha,
+          origin: "",
+        },
+        { ...job, status, result: resultJson },
+      );
+      if (status === "failure") {
+        const jobs = await getJobsForRun(deps.db, job.run_id);
+        const jobName = jobs.find((j) => j.id === job.id)?.name ?? "";
+        await triageAndStore(deps.db, deps.ai, run, job.id, jobName, mask(logParts.join("\n")), resultJson);
+      }
+    } catch (err) {
+      console.log(JSON.stringify({ level: "warn", msg: "seat post-processing failed", jobId, error: String(err) }));
     }
     try {
       deps.container.destroy();

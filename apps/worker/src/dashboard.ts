@@ -255,6 +255,31 @@ form.inline input { flex: 1; min-width: 180px; }
 </form>
 <p id="notifyErr" class="err"></p>
 <p id="notifyOk"></p>
+<form id="notifyWebhookForm" class="inline">
+<input id="notifyWebhookInput" placeholder="Slack/Discord webhook URL (https, write-only)" maxlength="512">
+<button type="submit">Save webhook</button>
+</form>
+<p class="muted" id="notifyWebhookInfo"></p>
+<p id="notifyWebhookErr" class="err"></p>
+<p id="notifyWebhookOk"></p>
+<h2>Status badges</h2>
+<p class="muted">Badge SVGs are public. Repos listed here (comma-separated owner/name) serve &quot;unknown&quot; instead, so private repositories never leak pass&#47;fail.</p>
+<form id="badgeHiddenForm" class="inline">
+<input id="badgeHiddenInput" placeholder="Private repos to hide, e.g. org/secret, org/private">
+<button type="submit">Save badge visibility</button>
+</form>
+<p id="badgeErr" class="err"></p>
+<p id="badgeOk"></p>
+<h2>Schedules</h2>
+<p class="muted">Run a repo on a cron schedule (UTC). &quot;last&quot; shows the most recent dispatch attempt, so a schedule that silently stops is visible instead of invisible.</p>
+<form id="scheduleForm" class="inline">
+<input id="scheduleRepoInput" placeholder="owner/repo" maxlength="100">
+<input id="scheduleRefInput" placeholder="branch or tag (e.g. main)" maxlength="128">
+<input id="scheduleCronInput" placeholder="cron (UTC), e.g. 0 3 * * *" maxlength="128">
+<button type="submit">Add schedule</button>
+</form>
+<p id="scheduleErr" class="err"></p>
+<div id="scheduleList"></div>
 <h2>Repository secrets</h2>
 <p class="muted">Write-only values for &#36;{{ secrets.NAME }} in steps and env. Only names are ever listed back; values decrypt inside job claims only.</p>
 <form id="secretLoadForm" class="inline">
@@ -980,6 +1005,13 @@ form.inline input { flex: 1; min-width: 180px; }
       document.getElementById("notifyModeSelect").value = s.notifyMode || "all";
       document.getElementById("notifyForm").style.display = s.notifyFromSource === "env" ? "none" : "flex";
       document.getElementById("notifyOk").textContent = "";
+      document.getElementById("notifyWebhookInput").value = "";
+      document.getElementById("notifyWebhookInfo").textContent =
+        "Chat webhook: " + (s.notifyWebhookSet ? "configured (write-only)." : "not set.") + " Works with Slack, Discord, and Mattermost-compatible URLs.";
+      document.getElementById("notifyWebhookOk").textContent = "";
+      document.getElementById("badgeHiddenInput").value = s.badgeHiddenRepos || "";
+      document.getElementById("badgeOk").textContent = "";
+      loadSchedules();
       var g = s.githubApp || { source: "none", installUrl: null };
       document.getElementById("githubInfo").textContent =
         "GitHub App: " + (g.source === "none" ? "not connected." : "connected via " + g.source + ".");
@@ -1040,6 +1072,99 @@ form.inline input { flex: 1; min-width: 180px; }
         loadSettings();
       })
       .catch(function () { err.textContent = "Could not save (valid sender email required)."; });
+  });
+
+  document.getElementById("notifyWebhookForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("notifyWebhookErr");
+    var ok = document.getElementById("notifyWebhookOk");
+    err.textContent = ""; ok.textContent = "";
+    var url = document.getElementById("notifyWebhookInput").value.trim();
+    api("/v1/admin/settings", { method: "POST", body: JSON.stringify({ notifyWebhookUrl: url }) })
+      .then(function () {
+        document.getElementById("notifyWebhookInput").value = "";
+        ok.textContent = url ? "Saved." : "Cleared.";
+        loadSettings();
+      })
+      .catch(function () { err.textContent = "Could not save (a 12-512 char https URL is required; empty clears)."; });
+  });
+
+  document.getElementById("badgeHiddenForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("badgeErr");
+    var ok = document.getElementById("badgeOk");
+    err.textContent = ""; ok.textContent = "";
+    var repos = document.getElementById("badgeHiddenInput").value;
+    api("/v1/admin/settings", { method: "POST", body: JSON.stringify({ badgeHiddenRepos: repos }) })
+      .then(function () {
+        ok.textContent = "Saved.";
+        loadSettings();
+      })
+      .catch(function () { err.textContent = "Could not save (entries must be owner/name)."; });
+  });
+
+  function scheduleAction(path, method, body) {
+    var err = document.getElementById("scheduleErr");
+    err.textContent = "";
+    api(path, { method: method, body: body ? JSON.stringify(body) : undefined })
+      .then(loadSchedules)
+      .catch(function () { err.textContent = "Could not update the schedule."; });
+  }
+
+  function loadSchedules() {
+    return api("/v1/admin/schedules").then(function (data) {
+      var list = document.getElementById("scheduleList");
+      list.textContent = "";
+      var rows = data.schedules || [];
+      if (rows.length === 0) {
+        var empty = el("p", "No schedules yet.");
+        empty.className = "muted";
+        list.appendChild(empty);
+        return;
+      }
+      rows.forEach(function (s) {
+        var row = el("div");
+        row.className = "inline";
+        var info = el("span", s.repo + "@" + s.ref + "  " + s.cron + (s.enabled ? "" : " (disabled)"));
+        info.className = "muted";
+        var last = el("span", s.lastRunAt ? "last: " + fmtAgo(s.lastRunAt) : "never ran");
+        last.className = "muted";
+        var toggle = el("button", s.enabled ? "Disable" : "Enable");
+        toggle.type = "button";
+        toggle.addEventListener("click", function () {
+          scheduleAction("/v1/admin/schedules/" + encodeURIComponent(s.id), "POST", { enabled: !s.enabled });
+        });
+        var del = el("button", "Delete");
+        del.type = "button";
+        del.addEventListener("click", function () {
+          scheduleAction("/v1/admin/schedules/" + encodeURIComponent(s.id), "DELETE");
+        });
+        row.appendChild(info);
+        row.appendChild(last);
+        row.appendChild(toggle);
+        row.appendChild(del);
+        list.appendChild(row);
+      });
+    }).catch(function () {
+      document.getElementById("scheduleErr").textContent = "Could not load schedules.";
+    });
+  }
+
+  document.getElementById("scheduleForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("scheduleErr");
+    err.textContent = "";
+    var repo = document.getElementById("scheduleRepoInput").value.trim();
+    var ref = document.getElementById("scheduleRefInput").value.trim();
+    var cron = document.getElementById("scheduleCronInput").value.trim();
+    api("/v1/admin/schedules", { method: "POST", body: JSON.stringify({ repo: repo, ref: ref, cron: cron }) })
+      .then(function () {
+        document.getElementById("scheduleForm").reset();
+        loadSchedules();
+      })
+      .catch(function () {
+        err.textContent = "Could not add schedule (owner/name, branch or tag, and a valid 5-field UTC cron required).";
+      });
   });
 
   document.getElementById("webhookForm").addEventListener("submit", function (ev) {

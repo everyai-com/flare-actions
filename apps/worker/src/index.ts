@@ -1,12 +1,15 @@
 import {
   audit,
   cancelGroupJobs,
+  claimAdminMarker,
   claimNextJob,
   createJob,
   createRun,
+  createSchedule,
   createToken,
   createUser,
   deleteRepoSecret,
+  deleteSchedule,
   deleteSession,
   deleteUser,
   deleteUserSessions,
@@ -19,22 +22,27 @@ import {
   getSetting,
   getUser,
   hasActiveGroupJob,
+  isAdminMarkerClaimed,
   isTerminal,
   latestInstallationId,
   latestRunStatus,
   listAudit,
   listRepoSecretNames,
   listRuns,
+  listSchedules,
   listTokens,
   listUsers,
   pruneOldRuns,
+  releaseAdminMarker,
   rerunJob,
   revokeToken,
   rollupRunStatus,
   setRepoSecret,
+  setScheduleEnabled,
   setSetting,
   touchJob,
-  updateJob,
+  touchScheduleRun,
+  updateRunningJob,
 } from "./db";
 import {
   bytesEqual,
@@ -46,13 +54,15 @@ import {
 import { DASHBOARD_HTML } from "./dashboard";
 import { ensureSchema } from "./schema";
 import {
+  decryptSettingValue,
   encryptSecretValue,
+  encryptSettingValue,
   getDecryptedRepoSecrets,
   resolveSecretsKey,
   validateSecretName,
   validateSecretValue,
 } from "./secrets";
-import { SETTING_KEYS, validateNotifyFromEmail, validateNotifyMode, validateWebhookSecret } from "./settings";
+import { SETTING_KEYS, isBadgeHiddenRepo, parseBadgeHiddenRepos, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateWebhookSecret } from "./settings";
 import {
   addAllowedUser,
   beginOAuth,
@@ -86,18 +96,24 @@ import {
   defaultPipeline,
   fetchPipeline,
   parsePipeline,
+  readRetryPolicy,
   seatEligible,
   serializeDefinition,
   type PipelineJob,
 } from "./pipeline";
-import { promoteBlockedJobs, reportGitHubStatus, requeueStaleJobs, triageAndStore } from "./finish";
+import { promoteBlockedJobs, maybeRetryJob, reportGitHubStatus, requeueStaleJobs, triageAndStore } from "./finish";
 import { notifyRunCompleted } from "./notify";
+import { authThrottleBlocked, authThrottleKeys, clearAuthFailures, recordAuthFailure } from "./ratelimit";
 import { hashToken, newTokenValue, normalizeScopes, parseScopes, scopesAllow } from "./tokens";
 import { badgeSvg } from "./badge";
 import { jobDurationMs, summarizeRunCost } from "./cost";
 import { runGenerate } from "./generate";
 import { handleCacheGet, handleCachePut } from "./cache";
-import { handleArtifactGet, handleArtifactPut, listRunArtifacts } from "./artifacts";
+import { deleteJobArtifacts, handleArtifactGet, handleArtifactPut, listRunArtifacts, pruneOldCache } from "./artifacts";
+import { cronMatches, validateCron } from "./cron";
+import { reportJobCheck } from "./checks";
+import { buildRunDigest } from "./digest";
+import { waitForRunTerminal } from "./wait";
 import { handleMcpMessage, mcpDiscovery } from "./mcp";
 import {
   beginConnect,
@@ -146,7 +162,9 @@ interface QueueJobMessage {
 }
 
 const MAX_WEBHOOK_BYTES = 2 * 1024 * 1024;
-const TERMINAL_REPORT_STATUSES = ["running", "success", "failure", "error", "cancelled", "skipped"];
+// Statuses an executor may report: "running" is the executor's liveness
+// signal, the rest are terminal.
+const REPORTED_STATUSES = ["running", "success", "failure", "error", "cancelled", "skipped"];
 
 function log(level: string, msg: string, extra?: Record<string, unknown>): void {
   console.log(JSON.stringify({ level, msg, ...extra }));
@@ -216,13 +234,15 @@ async function isAdminRequest(request: Request, env: WorkerEnv): Promise<boolean
 
 // Claimed once the first admin of either kind exists; before that,
 // Connect and email bootstrap stay open so a fresh deploy can start
-// with no credentials.
+// with no credentials. The claim marker covers a half-finished claim
+// (marker won, account write failed) so nobody else can slip in.
 async function isClaimed(env: WorkerEnv): Promise<boolean> {
-  const [github, email] = await Promise.all([
+  const [github, email, marker] = await Promise.all([
     getSetting(env.DB, SETTING_KEYS.adminGithubUser),
     getSetting(env.DB, SETTING_KEYS.adminEmail),
+    isAdminMarkerClaimed(env.DB),
   ]);
-  return github !== null || email !== null;
+  return github !== null || email !== null || marker;
 }
 
 async function getOAuthCreds(env: WorkerEnv): Promise<{ clientId: string; clientSecret: string } | null> {
@@ -230,19 +250,33 @@ async function getOAuthCreds(env: WorkerEnv): Promise<{ clientId: string; client
     getSetting(env.DB, SETTING_KEYS.githubClientId),
     getSetting(env.DB, SETTING_KEYS.githubClientSecret),
   ]);
-  if (clientId && clientSecret) return { clientId, clientSecret };
-  return null;
+  if (!clientId || !clientSecret) return null;
+  try {
+    const key = await resolveSecretsKey(env.DB, env.SECRETS_KEY);
+    return { clientId, clientSecret: await decryptSettingValue(key, clientSecret) };
+  } catch (err) {
+    log("error", "oauth client secret undecryptable", { error: String(err) });
+    return null;
+  }
 }
 
 // Env secrets take precedence; dashboard-managed values fill the gaps
 // so one-click deploys work with zero wrangler secret commands.
 async function getWebhookSecret(env: WorkerEnv): Promise<string | null> {
   if (env.GITHUB_WEBHOOK_SECRET) return env.GITHUB_WEBHOOK_SECRET;
-  return getSetting(env.DB, SETTING_KEYS.webhookSecret);
+  const stored = await getSetting(env.DB, SETTING_KEYS.webhookSecret);
+  if (!stored) return null;
+  try {
+    const key = await resolveSecretsKey(env.DB, env.SECRETS_KEY);
+    return await decryptSettingValue(key, stored);
+  } catch (err) {
+    log("error", "webhook secret undecryptable", { error: String(err) });
+    return null;
+  }
 }
 
 async function getAppCreds(env: WorkerEnv): Promise<{ appId: string; privateKey: string } | null> {
-  return resolveAppCreds(env.DB, { appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY });
+  return resolveAppCreds(env.DB, { appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY }, env.SECRETS_KEY);
 }
 
 async function requireScope(
@@ -329,6 +363,7 @@ async function createRunAndFanOut(
     event: string;
     installationId: number | null;
     jobs: PipelineJob[];
+    priority?: number;
   },
 ): Promise<{ runId: string; jobIds: string[]; queuedIds: string[]; blocked: number }> {
   const runId = crypto.randomUUID();
@@ -360,6 +395,7 @@ async function createRunAndFanOut(
       definition: serializeDefinition(job, base),
       labels: (job.labels ?? []).join(","),
       status,
+      priority: input.priority ?? 0,
     });
     jobIds.push(jobId);
     if (status === "queued") {
@@ -411,7 +447,12 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     if (!valid) return json({ error: "invalid signature" }, 401);
 
     const event = request.headers.get("x-github-event") ?? "unknown";
-    const payload = JSON.parse(new TextDecoder().decode(raw)) as GitHubWebhookPayload;
+    let payload: GitHubWebhookPayload;
+    try {
+      payload = JSON.parse(new TextDecoder().decode(raw)) as GitHubWebhookPayload;
+    } catch {
+      return json({ error: "invalid JSON payload" }, 400);
+    }
     const skip = webhookSkipReason(event, payload);
     if (skip) {
       log("info", "webhook skipped", { event, reason: skip });
@@ -433,7 +474,13 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
       (async () => {
         try {
           const pruned = await pruneOldRuns(env.DB);
-          if (pruned > 0) log("info", "pruned old runs", { pruned });
+          if (pruned.runs > 0) {
+            let artifacts = 0;
+            for (const jobId of pruned.jobIds) artifacts += await deleteJobArtifacts(env.CACHE, jobId);
+            log("info", "pruned old runs", { pruned: pruned.runs, artifacts });
+          }
+          const staleCache = await pruneOldCache(env.CACHE);
+          if (staleCache > 0) log("info", "pruned stale cache entries", { pruned: staleCache });
         } catch (err: unknown) {
           log("warn", "run prune failed", { error: String(err) });
         }
@@ -468,16 +515,39 @@ async function handleStatusCallback(
 ): Promise<Response> {
   try {
     if (!(await requireScope(request, env, "run"))) return json({ error: "unauthorized" }, 401);
-    const body = (await request.json()) as { status?: string; jobId?: string; log?: string; result?: unknown };
+    let body: { status?: string; jobId?: string; log?: string; result?: unknown };
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return json({ error: "invalid JSON body" }, 400);
+    }
     if (!body.status || !body.jobId) return json({ error: "missing status or jobId" }, 400);
-    if (!TERMINAL_REPORT_STATUSES.includes(body.status)) {
+    const jobId = body.jobId;
+    if (!REPORTED_STATUSES.includes(body.status)) {
       return json({ error: "invalid status" }, 400);
     }
     const run = await getRun(env.DB, runId);
     if (!run) return json({ error: "run not found" }, 404);
+    const job = await getJob(env.DB, jobId);
+    if (!job || job.run_id !== runId) return json({ error: "job not found" }, 404);
+    // Retry policy: a failing attempt requeues while the budget remains
+    // instead of going terminal (and triaging/notifying on every flake).
+    if ((body.status === "failure" || body.status === "error") && readRetryPolicy(job.definition) > 0) {
+      const retried = await maybeRetryJob(env.DB, env.RUN_QUEUE, jobId, (j) => wakeSeat(env, j.jobId));
+      if (retried) {
+        log("info", "job retrying", { runId, jobId, attempt: job.attempts + 2 });
+        return json({ ok: true, retrying: true });
+      }
+    }
     const result = typeof body.result === "string" ? body.result.slice(0, 65536) : undefined;
     const cappedLog = typeof body.log === "string" ? body.log.slice(0, 262144) : undefined;
-    await updateJob(env.DB, body.jobId, { status: body.status, log: cappedLog, result });
+    const recorded = await updateRunningJob(env.DB, jobId, { status: body.status, log: cappedLog, result });
+    if (!recorded) {
+      // The row moved on (re-run or stale requeue): this report belongs
+      // to a superseded execution, so drop it instead of clobbering.
+      log("warn", "status report dropped: job not running", { runId, jobId, status: body.status });
+      return json({ ok: true, dropped: true });
+    }
     await rollupRunStatus(env.DB, runId);
     // Same post-response maintenance as webhooks: dispatch-driven
     // instances with no push traffic still sweep stuck claims.
@@ -493,7 +563,7 @@ async function handleStatusCallback(
         }
       })(),
     );
-    log("info", "status updated", { runId, jobId: body.jobId, status: body.status });
+    log("info", "status updated", { runId, jobId, status: body.status });
     if (isTerminal(body.status)) {
       const promoted = await promoteBlockedJobs(env.DB, env.RUN_QUEUE, run.repo, (job) => wakeSeat(env, job.jobId));
       if (promoted.length > 0) log("info", "blocked jobs promoted", { runId, promoted });
@@ -522,10 +592,34 @@ async function handleStatusCallback(
         }),
       );
     }
+    // Per-job Check Run: the rich PR-page surface (failing command +
+    // output tail). Best-effort, independent of commit statuses.
+    if (isTerminal(body.status)) {
+      const creds = await getAppCreds(env);
+      const origin = new URL(request.url).origin;
+      ctx.waitUntil(
+        (async () => {
+          const fresh = await getJob(env.DB, jobId);
+          if (fresh) {
+            await reportJobCheck(
+              {
+                appId: creds?.appId,
+                privateKey: creds?.privateKey,
+                installationId: run.installation_id,
+                repo: run.repo,
+                sha: run.sha,
+                origin,
+              },
+              fresh,
+            );
+          }
+        })(),
+      );
+    }
     if (body.status === "failure" || body.status === "error") {
       const jobs = await getJobsForRun(env.DB, runId);
-      const jobName = jobs.find((j) => j.id === body.jobId)?.name ?? "";
-      ctx.waitUntil(triageAndStore(env.DB, env.AI, run, body.jobId, jobName, cappedLog, result));
+      const jobName = jobs.find((j) => j.id === jobId)?.name ?? "";
+      ctx.waitUntil(triageAndStore(env.DB, env.AI, run, jobId, jobName, cappedLog, result));
     }
     return json({ ok: true });
   } catch (err) {
@@ -538,8 +632,8 @@ export function isHexSha(s: string): boolean {
   return /^[0-9a-f]{4,64}$/i.test(s);
 }
 
-function validateDispatch(body: Record<string, unknown>): { repo: string; sha: string; ref: string; pipeline?: string } | { error: string } {
-  const { repo, sha, ref, pipeline } = body;
+export function validateDispatch(body: Record<string, unknown>): { repo: string; sha: string; ref: string; pipeline?: string; priority: number } | { error: string } {
+  const { repo, sha, ref, pipeline, priority } = body;
   if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return { error: "repo must be owner/name" };
   if (typeof sha !== "string" || !/^[\w./-]+$/.test(sha) || sha.length > 128 || sha.includes("..")) {
     return { error: "sha must be a commit SHA, branch, or tag" };
@@ -548,20 +642,45 @@ function validateDispatch(body: Record<string, unknown>): { repo: string; sha: s
   if (pipeline !== undefined && (typeof pipeline !== "string" || !pipeline.trim() || pipeline.length > 65536)) {
     return { error: "invalid pipeline" };
   }
-  return { repo, sha, ref: typeof ref === "string" ? ref : "", pipeline: typeof pipeline === "string" ? pipeline : undefined };
+  // Agent priority lane: 0 default, 10 urgent (jumps queued batch work).
+  if (priority !== undefined && (typeof priority !== "number" || !Number.isInteger(priority) || priority < 0 || priority > 10)) {
+    return { error: "priority must be an integer 0-10" };
+  }
+  return {
+    repo,
+    sha,
+    ref: typeof ref === "string" ? ref : "",
+    pipeline: typeof pipeline === "string" ? pipeline : undefined,
+    priority: typeof priority === "number" ? priority : 0,
+  };
+}
+
+export function validateScheduleInput(
+  body: Record<string, unknown>,
+): { repo: string; ref: string; cron: string } | { error: string } {
+  const { repo, ref, cron } = body;
+  if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return { error: "repo must be owner/name" };
+  if (typeof ref !== "string" || !/^[\w./-]+$/.test(ref) || ref.length > 128 || ref.includes("..")) {
+    return { error: "ref must be a branch or tag (max 128 chars)" };
+  }
+  const cronErr = validateCron(cron);
+  if (cronErr) return { error: cronErr };
+  return { repo, ref, cron: (cron as string).trim() };
 }
 
 async function dispatchRun(
   env: WorkerEnv,
-  input: { repo: string; sha: string; ref: string; pipeline?: string },
+  input: { repo: string; sha: string; ref: string; pipeline?: string; event?: string; priority?: number },
 ): Promise<{ runId: string; jobIds: string[]; queuedIds: string[] }> {
   // Dispatch accepts a SHA, branch, or tag: non-SHA refs resolve to the
   // head commit (installation token when the repo has App history, else
-  // the public API), so the stored run always pins a real commit.
+  // the public API), so the stored run always pins a real commit. The
+  // resolved installation rides into the run row so commit statuses and
+  // private pipeline fetches work for scheduled runs too.
   let sha = input.sha;
+  const installationId = await latestInstallationId(env.DB, input.repo);
   if (!isHexSha(sha)) {
     let token: string | null = null;
-    const installationId = await latestInstallationId(env.DB, input.repo);
     const creds = await getAppCreds(env);
     if (installationId && creds) {
       try {
@@ -580,18 +699,19 @@ async function dispatchRun(
     jobs = parsePipeline(input.pipeline);
     if (!jobs) throw new Error("pipeline parse failed");
   } else {
-    jobs = await loadPipelineJobs(env, input.repo, sha, null);
+    jobs = await loadPipelineJobs(env, input.repo, sha, installationId);
   }
   const branch = branchFromRef(input.ref) || input.ref || (!isHexSha(input.sha) ? input.sha : "");
   const { runId, jobIds, queuedIds } = await createRunAndFanOut(env, {
     repo: input.repo,
     sha,
     branch,
-    event: "dispatch",
-    installationId: null,
+    event: input.event ?? "dispatch",
+    installationId,
     jobs,
+    priority: input.priority ?? 0,
   });
-  log("info", "run dispatched", { runId, repo: input.repo, sha });
+  log("info", "run dispatched", { runId, repo: input.repo, sha, event: input.event ?? "dispatch" });
   return { runId, jobIds, queuedIds };
 }
 
@@ -650,7 +770,12 @@ async function handleCreateToken(request: Request, env: WorkerEnv): Promise<Resp
   try {
     const ident = await authIdentity(request, env);
     if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
-    const body = (await request.json()) as { name?: unknown; scopes?: unknown };
+    let body: { name?: unknown; scopes?: unknown };
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return json({ error: "invalid JSON body" }, 400);
+    }
     if (typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 64) {
       return json({ error: "name is required (1-64 chars)" }, 400);
     }
@@ -672,11 +797,26 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
   try {
     const ident = await authIdentity(request, env);
     if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
-    const body = (await request.json()) as { webhookSecret?: unknown; notifyFromEmail?: unknown; notifyMode?: unknown };
+    let body: {
+      webhookSecret?: unknown;
+      notifyFromEmail?: unknown;
+      notifyMode?: unknown;
+      notifyWebhookUrl?: unknown;
+      badgeHiddenRepos?: unknown;
+    };
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return json({ error: "invalid JSON body" }, 400);
+    }
     const hasWebhook = body.webhookSecret !== undefined;
     const hasNotifyFrom = body.notifyFromEmail !== undefined;
     const hasNotifyMode = body.notifyMode !== undefined;
-    if (!hasWebhook && !hasNotifyFrom && !hasNotifyMode) return json({ error: "no settings provided" }, 400);
+    const hasNotifyWebhook = body.notifyWebhookUrl !== undefined;
+    const hasBadgeHidden = body.badgeHiddenRepos !== undefined;
+    if (!hasWebhook && !hasNotifyFrom && !hasNotifyMode && !hasNotifyWebhook && !hasBadgeHidden) {
+      return json({ error: "no settings provided" }, 400);
+    }
     if (hasWebhook) {
       if (env.GITHUB_WEBHOOK_SECRET) {
         return json({ error: "webhook secret managed via environment" }, 409);
@@ -703,6 +843,28 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       await setSetting(env.DB, SETTING_KEYS.notifyMode, body.notifyMode as string);
       await audit(env.DB, ident.actor, "settings.notify_mode", body.notifyMode as string);
     }
+    if (hasNotifyWebhook) {
+      // Write-only credential: a URL is either set (encrypted) or
+      // cleared with an empty string/null. Never read back over the API.
+      const value = body.notifyWebhookUrl;
+      const clearing = value === null || value === "" || value === undefined;
+      if (clearing) {
+        await setSetting(env.DB, SETTING_KEYS.notifyWebhookUrl, "");
+        await audit(env.DB, ident.actor, "settings.notify_webhook", "cleared");
+      } else {
+        const err = validateNotifyWebhookUrl(value);
+        if (err) return json({ error: err }, 400);
+        const key = await resolveSecretsKey(env.DB, env.SECRETS_KEY);
+        await setSetting(env.DB, SETTING_KEYS.notifyWebhookUrl, await encryptSettingValue(key, value as string));
+        await audit(env.DB, ident.actor, "settings.notify_webhook", "set");
+      }
+    }
+    if (hasBadgeHidden) {
+      const parsed = parseBadgeHiddenRepos(body.badgeHiddenRepos);
+      if ("error" in parsed) return json({ error: parsed.error }, 400);
+      await setSetting(env.DB, SETTING_KEYS.badgeHiddenRepos, parsed.repos.join(","));
+      await audit(env.DB, ident.actor, "settings.badge_hidden", String(parsed.repos.length));
+    }
     return json({ ok: true });
   } catch (e) {
     log("error", "settings update failed", { error: String(e) });
@@ -721,6 +883,19 @@ export default {
     const url = new URL(request.url);
     try {
       await ensureSchema(env.DB);
+      // CSRF defense-in-depth for cookie-authenticated mutations:
+      // browsers send Origin on cross-site and same-origin fetch/form
+      // POSTs, so a mismatch is rejected. Bearer flows (API, MCP) and
+      // GitHub's webhook carry no session cookie and stay exempt.
+      if (request.method !== "GET" && request.method !== "HEAD" && request.method !== "OPTIONS") {
+        if (getBearer(request) === null && parseSessionCookie(request) !== null) {
+          const origin = request.headers.get("Origin");
+          if (origin && origin !== url.origin) {
+            log("warn", "cross-origin mutation rejected", { path: url.pathname, origin });
+            return json({ error: "cross-origin request rejected" }, 403);
+          }
+        }
+      }
       if (request.method === "GET" && url.pathname === "/") {
         return Response.redirect(new URL("/dashboard", url).toString(), 302);
       }
@@ -760,6 +935,11 @@ export default {
             }
             return out;
           },
+          waitForRun: async (runId, timeoutMs) => {
+            const out = await waitForRunTerminal(env.DB, runId, { timeoutMs });
+            return { timedOut: out ? out.timedOut : true };
+          },
+          digestRun: async (runId) => buildRunDigest(env.DB, runId),
         });
         if (res.status === 202) return new Response(null, { status: 202 });
         return json(res.body);
@@ -781,7 +961,15 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/v1/runs") {
         if (!(await requireScope(request, env, "read"))) return json({ error: "unauthorized" }, 401);
-        return json({ runs: await listRuns(env.DB) });
+        const limit = Number(url.searchParams.get("limit") ?? "50");
+        const offset = Number(url.searchParams.get("offset") ?? "0");
+        if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+          return json({ error: "limit must be an integer 1-200" }, 400);
+        }
+        if (!Number.isInteger(offset) || offset < 0 || offset > 100000) {
+          return json({ error: "offset must be an integer 0-100000" }, 400);
+        }
+        return json({ runs: await listRuns(env.DB, limit, offset) });
       }
       const runMatch = /^\/v1\/runs\/([^/]+)$/.exec(url.pathname);
       if (request.method === "GET" && runMatch) {
@@ -794,6 +982,33 @@ export default {
           jobs: jobs.map((j) => ({ ...j, durationMs: jobDurationMs(j) })),
           summary: summarizeRunCost(jobs),
         });
+      }
+      // Blocking wait: hold the request until the run is terminal (or the
+      // budget runs out) so agents verify in one call instead of polling.
+      const runWaitMatch = /^\/v1\/runs\/([^/]+)\/wait$/.exec(url.pathname);
+      if (request.method === "GET" && runWaitMatch) {
+        if (!(await requireScope(request, env, "read"))) return json({ error: "unauthorized" }, 401);
+        const timeout = Number(url.searchParams.get("timeout") ?? "30");
+        if (!Number.isFinite(timeout) || timeout < 1 || timeout > 90) {
+          return json({ error: "timeout must be 1-90 seconds" }, 400);
+        }
+        const out = await waitForRunTerminal(env.DB, runWaitMatch[1], { timeoutMs: timeout * 1000 });
+        if (!out) return json({ error: "run not found" }, 404);
+        return json({
+          run: out.run,
+          jobs: out.jobs.map((j) => ({ ...j, durationMs: jobDurationMs(j) })),
+          summary: summarizeRunCost(out.jobs),
+          timedOut: out.timedOut,
+          waitedMs: out.waitedMs,
+        });
+      }
+      // Token-efficient digest for agents: failures, bounded tails, no logs.
+      const runDigestMatch = /^\/v1\/runs\/([^/]+)\/digest$/.exec(url.pathname);
+      if (request.method === "GET" && runDigestMatch) {
+        if (!(await requireScope(request, env, "read"))) return json({ error: "unauthorized" }, 401);
+        const digest = await buildRunDigest(env.DB, runDigestMatch[1]);
+        if (!digest) return json({ error: "run not found" }, 404);
+        return json(digest);
       }
       const runArtifactsMatch = /^\/v1\/runs\/([^/]+)\/artifacts$/.exec(url.pathname);
       if (request.method === "GET" && runArtifactsMatch) {
@@ -868,7 +1083,10 @@ export default {
         const repo = url.searchParams.get("repo") ?? "";
         const branch = url.searchParams.get("branch") ?? undefined;
         if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
-        const status = await latestRunStatus(env.DB, repo, branch);
+        // Repos opted out (private ones) never leak pass/fail: the
+        // public endpoint serves "unknown" instead.
+        const hidden = isBadgeHiddenRepo(await getSetting(env.DB, SETTING_KEYS.badgeHiddenRepos), repo);
+        const status = hidden ? null : await latestRunStatus(env.DB, repo, branch);
         return new Response(badgeSvg(status), {
           headers: { "Content-Type": "image/svg+xml", "Cache-Control": "max-age=60" },
         });
@@ -903,10 +1121,11 @@ export default {
         const slug = connected ? await getSetting(env.DB, SETTING_KEYS.githubAppSlug) : null;
         return json({
           claimed: await isClaimed(env),
-          breakGlass: !!env.ADMIN_TOKEN,
           githubConnected: connected,
           installUrl: slug ? installUrl(slug) : null,
           user: ident ? { actor: ident.actor, admin: ident.scope === "admin" } : null,
+          // Deployment hardening detail: admins only, not the pre-login page.
+          ...(ident?.scope === "admin" ? { breakGlass: !!env.ADMIN_TOKEN } : {}),
         });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/logout") {
@@ -943,15 +1162,26 @@ export default {
         if (!accessToken) return fail("exchange");
         const login = await fetchGithubLogin(accessToken);
         if (!login) return fail("exchange");
-        const decision = await decideLogin(env.DB, login);
+        let decision = await decideLogin(env.DB, login);
         if (!decision.allowed) {
           log("info", "github login denied", { login });
           return Response.redirect(new URL("/dashboard?github=forbidden", url).toString(), 302);
         }
         if (!decision.claimed) {
-          await claimAdmin(env.DB, login);
-          await audit(env.DB, `github:${login}`, "admin.claim", "");
-          log("info", "admin claimed", { login });
+          // Atomic gate for the first login: a concurrent first login
+          // that loses the race re-decides against the winner's state
+          // instead of both claiming admin.
+          if (await claimAdminMarker(env.DB)) {
+            await claimAdmin(env.DB, login);
+            await audit(env.DB, `github:${login}`, "admin.claim", "");
+            log("info", "admin claimed", { login });
+          } else {
+            decision = await decideLogin(env.DB, login);
+            if (!decision.allowed) {
+              log("info", "github login denied", { login });
+              return Response.redirect(new URL("/dashboard?github=forbidden", url).toString(), 302);
+            }
+          }
         }
         const sessionId = await createLoginSession(env.DB, { kind: "github", login, isAdmin: decision.isAdmin });
         await audit(env.DB, `github:${login}`, "session.login", "");
@@ -1025,13 +1255,24 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/register") {
         const body = (await request.json().catch(() => ({}))) as { token?: unknown; password?: unknown };
-        if (typeof body.token !== "string" || !body.token) return json({ error: "invite required" }, 400);
+        const keys = await authThrottleKeys(request);
+        if (await authThrottleBlocked(env.DB, keys)) {
+          return json({ error: "too many attempts — try again later" }, 429);
+        }
+        const fail = async (res: Response): Promise<Response> => {
+          await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
+          return res;
+        };
+        if (typeof body.token !== "string" || !body.token) return await fail(json({ error: "invite required" }, 400));
         const pwErr = validatePassword(body.password);
-        if (pwErr) return json({ error: pwErr }, 400);
+        if (pwErr) return await fail(json({ error: pwErr }, 400));
         const invite = await consumeInvite(env.DB, body.token);
-        if (!invite) return json({ error: "invite invalid or expired" }, 404);
-        if (await getUser(env.DB, invite.email)) return json({ error: "that email already has an account" }, 409);
+        if (!invite) return await fail(json({ error: "invite invalid or expired" }, 404));
+        if (await getUser(env.DB, invite.email)) {
+          return await fail(json({ error: "that email already has an account" }, 409));
+        }
         await createUser(env.DB, { email: invite.email, passwordHash: await hashPassword(body.password as string), isAdmin: false });
+        await clearAuthFailures(env.DB, keys);
         const sessionId = await createLoginSession(env.DB, { kind: "email", login: invite.email, isAdmin: false });
         await audit(env.DB, `email:${invite.email}`, "session.register", "");
         return new Response(JSON.stringify({ ok: true }), {
@@ -1045,13 +1286,30 @@ export default {
       if (request.method === "POST" && url.pathname === "/v1/admin/bootstrap") {
         if (await isClaimed(env)) return json({ error: "already claimed" }, 403);
         const body = (await request.json().catch(() => ({}))) as { email?: unknown; password?: unknown };
+        const keys = await authThrottleKeys(request, typeof body.email === "string" ? normalizeEmail(body.email) : undefined);
+        if (await authThrottleBlocked(env.DB, keys)) {
+          return json({ error: "too many attempts — try again later" }, 429);
+        }
+        const fail = async (res: Response): Promise<Response> => {
+          await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
+          return res;
+        };
         const emailErr = validateEmail(body.email);
-        if (emailErr) return json({ error: emailErr }, 400);
+        if (emailErr) return await fail(json({ error: emailErr }, 400));
         const pwErr = validatePassword(body.password);
-        if (pwErr) return json({ error: pwErr }, 400);
+        if (pwErr) return await fail(json({ error: pwErr }, 400));
         const email = normalizeEmail(body.email as string);
-        await createUser(env.DB, { email, passwordHash: await hashPassword(body.password as string), isAdmin: true });
-        await setSetting(env.DB, SETTING_KEYS.adminEmail, email);
+        // Atomic gate: concurrent first requests can otherwise both pass
+        // the isClaimed() read above and both create an admin.
+        if (!(await claimAdminMarker(env.DB))) return json({ error: "already claimed" }, 403);
+        try {
+          await createUser(env.DB, { email, passwordHash: await hashPassword(body.password as string), isAdmin: true });
+          await setSetting(env.DB, SETTING_KEYS.adminEmail, email);
+        } catch (err) {
+          await releaseAdminMarker(env.DB);
+          throw err;
+        }
+        await clearAuthFailures(env.DB, keys);
         const sessionId = await createLoginSession(env.DB, { kind: "email", login: email, isAdmin: true });
         await audit(env.DB, `email:${email}`, "admin.claim", "");
         log("info", "admin claimed", { email });
@@ -1069,9 +1327,18 @@ export default {
           return json({ error: "invalid email or password" }, 401);
         }
         const email = normalizeEmail(body.email as string);
+        const keys = await authThrottleKeys(request, email);
+        if (await authThrottleBlocked(env.DB, keys)) {
+          log("warn", "login throttled", { email });
+          return json({ error: "too many attempts — try again later" }, 429);
+        }
         const user = await getUser(env.DB, email);
         const ok = await verifyPassword(body.password, user?.password_hash ?? dummyPasswordHash());
-        if (!user || !ok) return json({ error: "invalid email or password" }, 401);
+        if (!user || !ok) {
+          await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
+          return json({ error: "invalid email or password" }, 401);
+        }
+        await clearAuthFailures(env.DB, keys);
         const sessionId = await createLoginSession(env.DB, { kind: "email", login: email, isAdmin: user.is_admin === 1 });
         await audit(env.DB, `email:${email}`, "session.login", "");
         return new Response(JSON.stringify({ ok: true }), {
@@ -1105,6 +1372,8 @@ export default {
           notifyFrom: env.NOTIFY_FROM_EMAIL ?? (await getSetting(env.DB, SETTING_KEYS.notifyFromEmail)),
           notifyFromSource,
           notifyMode: (await getSetting(env.DB, SETTING_KEYS.notifyMode)) ?? "all",
+          notifyWebhookSet: !!(await getSetting(env.DB, SETTING_KEYS.notifyWebhookUrl)),
+          badgeHiddenRepos: (await getSetting(env.DB, SETTING_KEYS.badgeHiddenRepos)) ?? "",
         });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/github/connect") {
@@ -1141,7 +1410,7 @@ export default {
           log("warn", "github connect exchange failed");
           return fail("exchange");
         }
-        await storeAppCredentials(env.DB, app);
+        await storeAppCredentials(env.DB, app, await resolveSecretsKey(env.DB, env.SECRETS_KEY));
         await audit(env.DB, "github-connect", "github.connect.done", app.slug);
         log("info", "github app connected", { slug: app.slug, appId: app.appId });
         return Response.redirect(new URL("/dashboard?github=connected", url).toString(), 302);
@@ -1158,6 +1427,55 @@ export default {
       if (request.method === "GET" && url.pathname === "/v1/admin/audit") {
         if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
         return json({ entries: await listAudit(env.DB) });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/admin/schedules") {
+        if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
+        const schedules = await listSchedules(env.DB);
+        return json({
+          schedules: schedules.map((s) => ({
+            id: s.id,
+            repo: s.repo,
+            ref: s.ref,
+            cron: s.cron,
+            enabled: s.enabled === 1,
+            lastRunAt: s.last_run_at,
+            createdAt: s.created_at,
+          })),
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/schedules") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const valid = validateScheduleInput(body);
+        if ("error" in valid) return json({ error: valid.error }, 400);
+        if ((await listSchedules(env.DB)).length >= 50) {
+          return json({ error: "schedule limit reached (50)" }, 400);
+        }
+        const id = crypto.randomUUID();
+        await createSchedule(env.DB, { id, repo: valid.repo, ref: valid.ref, cron: valid.cron });
+        await audit(env.DB, ident.actor, "schedule.create", `${id} ${valid.repo}@${valid.ref} ${valid.cron}`);
+        log("info", "schedule created", { id, repo: valid.repo, ref: valid.ref, cron: valid.cron });
+        return json({ id }, 201);
+      }
+      const scheduleMatch = /^\/v1\/admin\/schedules\/([^/]+)$/.exec(url.pathname);
+      if (scheduleMatch && request.method === "POST") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const body = (await request.json().catch(() => ({}))) as { enabled?: unknown };
+        if (typeof body.enabled !== "boolean") return json({ error: "enabled must be a boolean" }, 400);
+        const ok = await setScheduleEnabled(env.DB, scheduleMatch[1], body.enabled);
+        if (!ok) return json({ error: "schedule not found" }, 404);
+        await audit(env.DB, ident.actor, "schedule.toggle", `${scheduleMatch[1]} ${String(body.enabled)}`);
+        return json({ ok: true });
+      }
+      if (scheduleMatch && request.method === "DELETE") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const ok = await deleteSchedule(env.DB, scheduleMatch[1]);
+        if (!ok) return json({ error: "schedule not found" }, 404);
+        await audit(env.DB, ident.actor, "schedule.delete", scheduleMatch[1]);
+        return json({ ok: true });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/generate") {
         const ident = await authIdentity(request, env);
@@ -1195,6 +1513,36 @@ export default {
         log("error", "queue message failed, retrying", { error: String(err) });
         msg.retry();
       }
+    }
+  },
+
+  // Cron trigger (every minute): fire due schedules. last_run_at guards
+  // against trigger redelivery and broken schedules hot-looping.
+  async scheduled(controller: ScheduledController, env: WorkerEnv, _ctx: ExecutionContext): Promise<void> {
+    try {
+      await ensureSchema(env.DB);
+      // Previews share the staging database; only production dispatches.
+      if (env.ENVIRONMENT !== "production") return;
+      const now = new Date(controller.scheduledTime);
+      const schedules = await listSchedules(env.DB);
+      for (const s of schedules) {
+        if (s.enabled !== 1 || !cronMatches(s.cron, now)) continue;
+        if (s.last_run_at && Date.now() - Date.parse(s.last_run_at) < 60000) continue;
+        try {
+          const out = await dispatchRun(env, { repo: s.repo, sha: s.ref, ref: s.ref, event: "schedule" });
+          await touchScheduleRun(env.DB, s.id);
+          await audit(env.DB, "schedule", "run.dispatch", `${s.id} ${out.runId}`);
+          for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
+          log("info", "scheduled run dispatched", { scheduleId: s.id, runId: out.runId, repo: s.repo, ref: s.ref });
+        } catch (err) {
+          // Stamp the attempt anyway: a schedule that cannot dispatch
+          // must not retry every minute forever.
+          await touchScheduleRun(env.DB, s.id).catch(() => undefined);
+          log("warn", "scheduled dispatch failed", { scheduleId: s.id, error: String(err) });
+        }
+      }
+    } catch (err) {
+      log("error", "scheduled handler failed", { error: String(err) });
     }
   },
 };

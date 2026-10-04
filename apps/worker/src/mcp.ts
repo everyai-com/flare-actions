@@ -1,5 +1,6 @@
 import { flakyStats, getJobsForRun, getRun, listRuns, type Db } from "./db";
 import { jobDurationMs } from "./cost";
+import type { RunDigest } from "./digest";
 import { runGenerate } from "./generate";
 import type { AiBinding } from "./triage";
 
@@ -8,7 +9,7 @@ import type { AiBinding } from "./triage";
 // read tools need `read`, dispatch/rerun/generate need `run`.
 
 export const MCP_PROTOCOL_VERSION = "2024-11-05";
-export const MCP_SERVER_VERSION = "0.2.0";
+export const MCP_SERVER_VERSION = "0.1.0";
 
 export interface McpToolDef {
   name: string;
@@ -37,9 +38,33 @@ export const MCP_TOOLS: McpToolDef[] = [
         sha: { type: "string", description: "commit sha or branch" },
         ref: { type: "string", description: "optional branch label" },
         pipeline: { type: "string", description: "optional inline flare.yml (else fetched at sha)" },
+        priority: { type: "number", description: "0-10; higher jumps queued batch work (agent fast lane)" },
       },
       required: ["repo", "sha"],
     },
+  },
+  {
+    name: "run_and_wait",
+    description:
+      "Dispatch a run and block until it finishes, returning a compact digest (status, failing step commands/exit codes, bounded output tails, triage). The one-call verify loop: edit → run_and_wait → fix. Needs run scope.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo: { type: "string", description: "owner/name" },
+        sha: { type: "string", description: "commit sha or branch" },
+        ref: { type: "string", description: "optional branch label" },
+        pipeline: { type: "string", description: "optional inline flare.yml (else fetched at sha)" },
+        priority: { type: "number", description: "0-10; higher jumps queued batch work (agent fast lane)" },
+        timeoutSeconds: { type: "number", description: "How long to block, 1-90 (default 45)" },
+      },
+      required: ["repo", "sha"],
+    },
+  },
+  {
+    name: "get_run_digest",
+    description:
+      "Compact, token-efficient run result: per-job status, failing step command/exit code, bounded output tail, and AI triage. Prefer this over get_run for verification loops.",
+    inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] },
   },
   {
     name: "rerun_job",
@@ -71,6 +96,7 @@ export interface McpDispatchInput {
   sha: string;
   ref?: string;
   pipeline?: string;
+  priority?: number;
 }
 
 export interface McpDeps {
@@ -79,6 +105,10 @@ export interface McpDeps {
   canWrite: boolean;
   dispatchRun: (input: McpDispatchInput) => Promise<{ runId: string; jobIds: string[] }>;
   rerunJob: (runId: string, jobId: string) => Promise<{ ok: boolean; error?: string }>;
+  // Blocking wait until terminal (or timeout); `timedOut` tells the agent
+  // whether to call get_run_digest again later.
+  waitForRun: (runId: string, timeoutMs: number) => Promise<{ timedOut: boolean }>;
+  digestRun: (runId: string) => Promise<RunDigest | null>;
 }
 
 export interface McpResult {
@@ -161,15 +191,63 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
       const sha = str(args.sha);
       if (!repo || !sha) return fail(id, -32602, "repo and sha are required");
       if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return fail(id, -32602, "repo must be owner/name");
-      if (!/^[\w.-]+$/.test(sha) || sha.length > 128) return fail(id, -32602, "invalid sha");
+      // Same ref rules as the HTTP dispatch API: slashed branch names
+      // work identically on both surfaces.
+      if (!/^[\w./-]+$/.test(sha) || sha.length > 128 || sha.includes("..")) {
+        return fail(id, -32602, "sha must be a commit SHA, branch, or tag");
+      }
       const ref = args.ref === undefined ? undefined : str(args.ref);
       if (ref === null || (ref !== undefined && ref.length > 128)) return fail(id, -32602, "invalid ref");
       const pipeline = args.pipeline === undefined ? undefined : str(args.pipeline);
       if (pipeline === null || (pipeline !== undefined && pipeline.length > 65536)) {
         return fail(id, -32602, "invalid pipeline");
       }
-      const dispatched = await deps.dispatchRun({ repo, sha, ref, pipeline });
+      const priority = args.priority === undefined ? undefined : num(args.priority);
+      if (priority === null || (priority !== undefined && (!Number.isInteger(priority) || priority < 0 || priority > 10))) {
+        return fail(id, -32602, "priority must be an integer 0-10");
+      }
+      const dispatched = await deps.dispatchRun({ repo, sha, ref, pipeline, priority });
       return toolResult(id, dispatched);
+    }
+    case "run_and_wait": {
+      if (!deps.canWrite) return fail(id, -32602, "run_and_wait needs run scope");
+      const repo = str(args.repo);
+      const sha = str(args.sha);
+      if (!repo || !sha) return fail(id, -32602, "repo and sha are required");
+      if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return fail(id, -32602, "repo must be owner/name");
+      if (!/^[\w./-]+$/.test(sha) || sha.length > 128 || sha.includes("..")) {
+        return fail(id, -32602, "sha must be a commit SHA, branch, or tag");
+      }
+      const ref = args.ref === undefined ? undefined : str(args.ref);
+      if (ref === null || (ref !== undefined && ref.length > 128)) return fail(id, -32602, "invalid ref");
+      const pipeline = args.pipeline === undefined ? undefined : str(args.pipeline);
+      if (pipeline === null || (pipeline !== undefined && pipeline.length > 65536)) {
+        return fail(id, -32602, "invalid pipeline");
+      }
+      const priority = args.priority === undefined ? undefined : num(args.priority);
+      if (priority === null || (priority !== undefined && (!Number.isInteger(priority) || priority < 0 || priority > 10))) {
+        return fail(id, -32602, "priority must be an integer 0-10");
+      }
+      const timeoutSeconds = args.timeoutSeconds === undefined ? 45 : num(args.timeoutSeconds);
+      if (timeoutSeconds === null || timeoutSeconds < 1 || timeoutSeconds > 90) {
+        return fail(id, -32602, "timeoutSeconds must be 1-90");
+      }
+      const dispatched = await deps.dispatchRun({ repo, sha, ref, pipeline, priority });
+      const waited = await deps.waitForRun(dispatched.runId, Math.floor(timeoutSeconds) * 1000);
+      const digest = await deps.digestRun(dispatched.runId);
+      return toolResult(id, {
+        runId: dispatched.runId,
+        jobIds: dispatched.jobIds,
+        timedOut: waited.timedOut,
+        ...(digest ?? {}),
+      });
+    }
+    case "get_run_digest": {
+      const runId = str(args.runId);
+      if (!runId) return fail(id, -32602, "runId is required");
+      const digest = await deps.digestRun(runId);
+      if (!digest) return toolResult(id, { error: "run not found" }, true);
+      return toolResult(id, digest);
     }
     case "rerun_job": {
       if (!deps.canWrite) return fail(id, -32602, "rerun_job needs run scope");
@@ -242,7 +320,9 @@ export async function handleMcpMessage(msg: unknown, deps: McpDeps): Promise<Mcp
         return fail(normId, -32601, `method not found: ${rec.method}`);
     }
   } catch (err) {
-    return fail(normId, -32603, `internal error: ${String(err)}`);
+    // Never echo internal error text to clients; the log keeps the detail.
+    console.log(JSON.stringify({ level: "error", msg: "mcp request failed", error: String(err) }));
+    return fail(normId, -32603, "internal error");
   }
 }
 

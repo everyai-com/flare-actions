@@ -82,4 +82,29 @@ describe("import helpers", () => {
     expect(sanitizeCacheKey("node-${{ runner.os }}-${{ hashFiles('x') }}")).toBe("node-expr-expr");
     expect(sanitizeCacheKey("plain/key.1")).toBe("plain/key.1");
   });
+
+  it("preserves continue-on-error on run steps", () => {
+    const res = convertActionsWorkflow(
+      "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: flaky\n        continue-on-error: true\n      - run: hard\n",
+    );
+    if (!isImportSuccess(res)) throw new Error(res.error);
+    expect(res.yaml).toContain("continue-on-error: true");
+    expect(res.yaml).toContain("run: hard");
+  });
+
+  it("warns on non-boolean continue-on-error", () => {
+    const res = convertActionsWorkflow(
+      "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: x\n        continue-on-error: always()\n",
+    );
+    if (!isImportSuccess(res)) throw new Error(res.error);
+    expect(res.warnings.join("\n")).toContain("continue-on-error");
+  });
+
+  it("points scheduled workflows at the dashboard schedules", () => {
+    const res = convertActionsWorkflow(
+      "on:\n  schedule:\n    - cron: '0 3 * * *'\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: x\n",
+    );
+    if (!isImportSuccess(res)) throw new Error(res.error);
+    expect(res.warnings.join("\n")).toContain("Settings → Schedules");
+  });
 });

@@ -28,6 +28,8 @@ export const SCHEMA_STATEMENTS = [
     result TEXT NOT NULL DEFAULT '',
     triage TEXT NOT NULL DEFAULT '',
     labels TEXT NOT NULL DEFAULT '',
+    priority INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
     started_at TEXT,
     finished_at TEXT,
     created_at TEXT NOT NULL,
@@ -79,6 +81,21 @@ export const SCHEMA_STATEMENTS = [
     PRIMARY KEY (repo, name)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_repo_secrets_repo ON repo_secrets(repo)`,
+  `CREATE TABLE IF NOT EXISTS auth_attempts (
+    key TEXT PRIMARY KEY,
+    failures INTEGER NOT NULL DEFAULT 0,
+    window_started_at TEXT NOT NULL,
+    blocked_until TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS schedules (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    cron TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_run_at TEXT,
+    created_at TEXT NOT NULL
+  )`,
 ];
 
 // Additive columns for databases created before the matching migration.
@@ -87,6 +104,8 @@ export const SCHEMA_STATEMENTS = [
 export const ALTER_STATEMENTS = [
   `ALTER TABLE runs ADD COLUMN branch TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE jobs ADD COLUMN labels TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE jobs ADD COLUMN started_at TEXT`,
   `ALTER TABLE jobs ADD COLUMN finished_at TEXT`,
   `ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'github'`,

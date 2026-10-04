@@ -1,4 +1,5 @@
 import { getSetting, setSetting, type Db } from "./db";
+import { decryptSettingValue, encryptSettingValue, resolveSecretsKey } from "./secrets";
 import { SETTING_KEYS } from "./settings";
 
 // One-click GitHub App creation via App Manifests: the dashboard
@@ -42,8 +43,9 @@ export function buildManifest(name: string, origin: string): AppManifest {
     public: false,
     // Every default event needs a backing permission or GitHub rejects the
     // manifest ("Default events are not supported by permissions"): push is
-    // covered by contents, pull_request requires pull_requests.
-    default_permissions: { contents: "read", statuses: "write", pull_requests: "read" },
+    // covered by contents, pull_request requires pull_requests. checks:write
+    // powers per-job Check Runs with failure output on the PR page.
+    default_permissions: { contents: "read", statuses: "write", checks: "write", pull_requests: "read" },
     default_events: ["push", "pull_request"],
     hook_attributes: { url: `${base}/webhooks/github`, active: true },
   };
@@ -63,21 +65,16 @@ export async function beginConnect(db: Db): Promise<string> {
   return state;
 }
 
-// Single-use: an accepted state is deleted, so a captured callback
-// URL cannot be replayed.
+// Single-use, atomically: DELETE ... RETURNING closes the replay race
+// a read-then-delete leaves open between parallel callbacks.
 export async function consumeConnectState(db: Db, state: string): Promise<boolean> {
-  const created = await getSetting(db, stateKey(state));
-  if (!created) return false;
-  await deleteConnectState(db, state);
-  const ageMs = Date.now() - Date.parse(created);
-  return Number.isFinite(ageMs) && ageMs >= 0 && ageMs < CONNECT_STATE_TTL_MS;
-}
-
-async function deleteConnectState(db: Db, state: string): Promise<void> {
-  await db
-    .prepare("DELETE FROM app_settings WHERE key = ?")
+  const row = await db
+    .prepare("DELETE FROM app_settings WHERE key = ? RETURNING value")
     .bind(stateKey(state))
-    .run();
+    .first<{ value: string }>();
+  if (!row) return false;
+  const ageMs = Date.now() - Date.parse(row.value);
+  return Number.isFinite(ageMs) && ageMs >= 0 && ageMs < CONNECT_STATE_TTL_MS;
 }
 
 export interface ConvertedApp {
@@ -129,13 +126,17 @@ export function installUrl(slug: string): string {
   return `https://github.com/apps/${slug}/installations/new`;
 }
 
-export async function storeAppCredentials(db: Db, app: ConvertedApp): Promise<void> {
+// The private key, client secret, and webhook secret encrypt with the
+// shared data key before landing in D1; app id and slug stay plaintext
+// (both are public). Values written by older versions read as plaintext
+// and are upgraded on the next Connect.
+export async function storeAppCredentials(db: Db, app: ConvertedApp, secretsKey: CryptoKey): Promise<void> {
   await setSetting(db, SETTING_KEYS.githubAppId, app.appId);
-  await setSetting(db, SETTING_KEYS.githubPrivateKey, app.privateKey);
+  await setSetting(db, SETTING_KEYS.githubPrivateKey, await encryptSettingValue(secretsKey, app.privateKey));
   await setSetting(db, SETTING_KEYS.githubAppSlug, app.slug);
   await setSetting(db, SETTING_KEYS.githubClientId, app.clientId);
-  await setSetting(db, SETTING_KEYS.githubClientSecret, app.clientSecret);
-  await setSetting(db, SETTING_KEYS.webhookSecret, app.webhookSecret);
+  await setSetting(db, SETTING_KEYS.githubClientSecret, await encryptSettingValue(secretsKey, app.clientSecret));
+  await setSetting(db, SETTING_KEYS.webhookSecret, await encryptSettingValue(secretsKey, app.webhookSecret));
 }
 
 export interface AppCreds {
@@ -144,16 +145,24 @@ export interface AppCreds {
 }
 
 // Env secrets take precedence; Connect-flow values in D1 fill the
-// gaps. Shared shape so main and seats resolve identically.
+// gaps. Shared shape so main and seats resolve identically; stored
+// secrets decrypt with the shared data key (undecryptable values — a
+// lost key — behave as unconfigured rather than crash-minting JWTs).
 export async function resolveAppCreds(
   db: Db,
   envCreds: { appId?: string; privateKey?: string },
+  secretsEnvKey?: string,
 ): Promise<AppCreds | null> {
   if (envCreds.appId && envCreds.privateKey) return { appId: envCreds.appId, privateKey: envCreds.privateKey };
   const [appId, privateKey] = await Promise.all([
     getSetting(db, SETTING_KEYS.githubAppId),
     getSetting(db, SETTING_KEYS.githubPrivateKey),
   ]);
-  if (appId && privateKey) return { appId, privateKey };
-  return null;
+  if (!appId || !privateKey) return null;
+  try {
+    const key = await resolveSecretsKey(db, secretsEnvKey);
+    return { appId, privateKey: await decryptSettingValue(key, privateKey) };
+  } catch {
+    return null;
+  }
 }

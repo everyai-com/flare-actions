@@ -82,6 +82,36 @@ export interface FlareFlakyStat {
   rate: number;
 }
 
+export interface FlareDigestStep {
+  command: string;
+  exitCode: number;
+  durationMs: number;
+  outputTail: string;
+}
+
+export interface FlareDigestJob {
+  id: string;
+  name: string;
+  status: string;
+  durationMs: number | null;
+  stepCount: number;
+  failing?: FlareDigestStep;
+  triage?: string;
+}
+
+export interface FlareRunDigest {
+  runId: string;
+  repo: string;
+  sha: string;
+  branch: string;
+  event: string;
+  status: string;
+  durationMs: number | null;
+  totalJobs: number;
+  failedJobs: number;
+  jobs: FlareDigestJob[];
+}
+
 export interface FlareRun {
   id: string;
   repo: string;
@@ -186,7 +216,11 @@ export class FlareClient {
     return data.artifacts;
   }
 
-  async dispatch(repo: string, sha: string, opts?: { ref?: string; pipeline?: string }): Promise<{ runId: string; jobIds: string[] }> {
+  async dispatch(
+    repo: string,
+    sha: string,
+    opts?: { ref?: string; pipeline?: string; priority?: number },
+  ): Promise<{ runId: string; jobIds: string[] }> {
     const res = await this.call("/v1/runs/dispatch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -244,5 +278,29 @@ export class FlareClient {
     const res = await this.call(`/v1/runs/${runId}`);
     if (!res.ok) throw new Error(`getRun failed: ${res.status}`);
     return (await res.json()) as { run: FlareRun; jobs: FlareJobDetail[] };
+  }
+
+  // Blocking wait: the server holds the request until the run is terminal
+  // (or the budget runs out). One call per check instead of a sleep loop;
+  // `timedOut` means call again.
+  async waitRun(
+    runId: string,
+    timeoutSeconds = 45,
+  ): Promise<{ run: FlareRun; jobs: FlareJobDetail[]; timedOut: boolean; waitedMs: number }> {
+    const res = await this.call(
+      `/v1/runs/${encodeURIComponent(runId)}/wait?timeout=${timeoutSeconds}`,
+      undefined,
+      (timeoutSeconds + 15) * 1000,
+    );
+    if (!res.ok) throw new Error(`waitRun failed: ${res.status}`);
+    return (await res.json()) as { run: FlareRun; jobs: FlareJobDetail[]; timedOut: boolean; waitedMs: number };
+  }
+
+  // Compact, token-efficient result: failing step command/exit, bounded
+  // output tail, triage. The payload agents should feed their context loop.
+  async getRunDigest(runId: string): Promise<FlareRunDigest> {
+    const res = await this.call(`/v1/runs/${encodeURIComponent(runId)}/digest`);
+    if (!res.ok) throw new Error(`getRunDigest failed: ${res.status}`);
+    return (await res.json()) as FlareRunDigest;
   }
 }

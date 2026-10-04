@@ -115,3 +115,22 @@ export async function decryptSecretValue(key: CryptoKey, iv: string, data: strin
   );
   return new TextDecoder().decode(pt);
 }
+
+// Settings at rest (GitHub App private key, OAuth client secret,
+// webhook secret) use the same data key as repo secrets, tagged with a
+// version prefix: values written before encryption existed carry no
+// prefix and read as plaintext, then get encrypted on the next write.
+// A D1 dump alone exposes nothing once those paths are rewritten.
+const SETTING_PREFIX = "enc1:";
+
+export async function encryptSettingValue(key: CryptoKey, plaintext: string): Promise<string> {
+  const enc = await encryptSecretValue(key, plaintext);
+  return `${SETTING_PREFIX}${enc.iv}:${enc.data}`;
+}
+
+export async function decryptSettingValue(key: CryptoKey, value: string): Promise<string> {
+  if (!value.startsWith(SETTING_PREFIX)) return value;
+  const [iv, data] = value.slice(SETTING_PREFIX.length).split(":");
+  if (!iv || !data) throw new Error("malformed encrypted setting");
+  return decryptSecretValue(key, iv, data);
+}

@@ -1,6 +1,7 @@
 {
   "name": "@flare-actions/runner",
   "version": "0.1.0",
+  "private": true,
   "description": "Minimal external pull-runner for Flare Actions",
   "license": "MIT",
   "type": "module",

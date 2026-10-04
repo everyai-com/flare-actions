@@ -25,6 +25,18 @@ describe("executeSteps", () => {
     expect(out.log).not.toContain("after");
   });
 
+  it("continues past a continue-on-error failure and still succeeds", async () => {
+    const out = await executeSteps(
+      [{ run: "exit 3", continueOnError: true }, { run: "echo after" }],
+      { cwd: "/tmp", env: { ...process.env } },
+    );
+    expect(out.success).toBe(true);
+    expect(out.results).toHaveLength(2);
+    expect(out.results[0].exitCode).toBe(3);
+    expect(out.log).toContain("after");
+    expect(out.log).toContain("continue-on-error");
+  });
+
   it("passes environment through", async () => {
     const out = await executeSteps([{ run: "echo $FLARE_SHA" }], {
       cwd: "/tmp",
@@ -52,5 +64,12 @@ describe("parseDefinition", () => {
     expect(parseDefinition("not json")).toBeNull();
     expect(parseDefinition(JSON.stringify({ steps: [] }))).toBeNull();
     expect(parseDefinition(JSON.stringify({ steps: [{ run: "" }] }))).toBeNull();
+  });
+
+  it("round-trips continue-on-error and rejects malformed flags", () => {
+    expect(parseDefinition(JSON.stringify({ steps: [{ run: "a", continueOnError: true }] }))).toEqual([
+      { run: "a", continueOnError: true },
+    ]);
+    expect(parseDefinition(JSON.stringify({ steps: [{ run: "a", continueOnError: "yes" }] }))).toBeNull();
   });
 });

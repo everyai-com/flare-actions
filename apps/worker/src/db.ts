@@ -22,6 +22,8 @@ export interface JobRow {
   result: string;
   triage: string;
   labels: string;
+  priority: number;
+  attempts: number;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
@@ -80,10 +82,10 @@ export async function getRun(db: Db, id: string): Promise<RunRow | null> {
   return db.prepare("SELECT * FROM runs WHERE id = ?").bind(id).first<RunRow>();
 }
 
-export async function listRuns(db: Db, limit = 50): Promise<RunRow[]> {
+export async function listRuns(db: Db, limit = 50, offset = 0): Promise<RunRow[]> {
   const res = await db
-    .prepare("SELECT * FROM runs ORDER BY created_at DESC LIMIT ?")
-    .bind(limit)
+    .prepare("SELECT * FROM runs ORDER BY created_at DESC LIMIT ? OFFSET ?")
+    .bind(limit, offset)
     .all<RunRow>();
   return res.results;
 }
@@ -122,19 +124,43 @@ export async function createJob(
   db: Db,
   id: string,
   runId: string,
-  opts?: { name?: string; definition?: string; labels?: string; status?: string },
+  opts?: { name?: string; definition?: string; labels?: string; status?: string; priority?: number },
 ): Promise<void> {
   const now = nowIso();
   await db
     .prepare(
-      "INSERT INTO jobs (id, run_id, status, log, name, definition, result, labels, created_at, updated_at) VALUES (?, ?, ?, '', ?, ?, '', ?, ?, ?)",
+      "INSERT INTO jobs (id, run_id, status, log, name, definition, result, labels, priority, created_at, updated_at) VALUES (?, ?, ?, '', ?, ?, '', ?, ?, ?, ?)",
     )
-    .bind(id, runId, opts?.status ?? "queued", opts?.name ?? "", opts?.definition ?? "", opts?.labels ?? "", now, now)
+    .bind(
+      id,
+      runId,
+      opts?.status ?? "queued",
+      opts?.name ?? "",
+      opts?.definition ?? "",
+      opts?.labels ?? "",
+      opts?.priority ?? 0,
+      now,
+      now,
+    )
     .run();
 }
 
 export async function getJob(db: Db, id: string): Promise<JobRow | null> {
   return db.prepare("SELECT * FROM jobs WHERE id = ?").bind(id).first<JobRow>();
+}
+
+export type JobWithRun = JobRow & { repo: string; sha: string };
+
+export async function getJobWithRun(db: Db, id: string): Promise<JobWithRun | null> {
+  return db
+    .prepare("SELECT j.*, r.repo, r.sha FROM jobs j JOIN runs r ON r.id = j.run_id WHERE j.id = ?")
+    .bind(id)
+    .first<JobWithRun>();
+}
+
+// Retry accounting: attempts counts retries already used.
+export async function bumpJobAttempt(db: Db, id: string): Promise<void> {
+  await db.prepare("UPDATE jobs SET attempts = attempts + 1, updated_at = ? WHERE id = ?").bind(nowIso(), id).run();
 }
 
 export async function jobExists(db: Db, id: string): Promise<boolean> {
@@ -197,6 +223,31 @@ export async function touchJob(db: Db, id: string): Promise<boolean> {
   return (res?.meta?.changes ?? 0) > 0;
 }
 
+const ADMIN_CLAIM_KEY = "admin_claim";
+
+// One winner, ever. Admin claimers (email bootstrap, first GitHub
+// login) race across two kinds; each does a read-then-write that two
+// concurrent first requests can both pass. This marker insert is the
+// single atomic gate: exactly one caller ever gets true.
+export async function claimAdminMarker(db: Db): Promise<boolean> {
+  const res = (await db
+    .prepare("INSERT INTO app_settings (key, value, updated_at) VALUES (?, '1', ?) ON CONFLICT(key) DO NOTHING")
+    .bind(ADMIN_CLAIM_KEY, nowIso())
+    .run()) as { meta?: { changes?: number } };
+  return (res?.meta?.changes ?? 0) > 0;
+}
+
+// Roll back a won claim whose account write failed, so a transient
+// error cannot brick a fresh deploy into an unclaimable state.
+export async function releaseAdminMarker(db: Db): Promise<void> {
+  await db.prepare("DELETE FROM app_settings WHERE key = ?").bind(ADMIN_CLAIM_KEY).run();
+}
+
+export async function isAdminMarkerClaimed(db: Db): Promise<boolean> {
+  const row = await db.prepare("SELECT key FROM app_settings WHERE key = ?").bind(ADMIN_CLAIM_KEY).first<{ key: string }>();
+  return row !== null;
+}
+
 export interface StaleJobRow {
   id: string;
   run_id: string;
@@ -218,43 +269,79 @@ export async function listStaleRunningJobs(db: Db, cutoffIso: string, limit = 50
   return res.results;
 }
 
-// Poll-and-claim loop: walk matching queued jobs oldest-first until one
-// claim wins or candidates run out.
+const CLAIM_PAGE_SIZE = 25;
+// Bounded per poll: enough to look past a backlog of label-mismatched
+// jobs without letting one poll walk an unbounded queue.
+const CLAIM_MAX_SCAN = 200;
+
+// Poll-and-claim loop: walk matching queued jobs highest-priority-first
+// (then oldest-first) until one claim wins or the scan budget runs out.
+// Keyset pagination on (priority, created_at, id) instead of OFFSET:
+// concurrent claims above the cursor cannot cause a job to be skipped,
+// and a fixed window (the old LIMIT 10) could starve every runner
+// behind jobs only other labels can take. Priority lets an agent's
+// verify loop jump ahead of batch work.
 export async function claimNextJob(
   db: Db,
   runnerLabels: string[] = [],
 ): Promise<(JobRow & { repo: string; sha: string }) | null> {
-  const res = await db
-    .prepare(
-      `SELECT j.*, r.repo, r.sha FROM jobs j JOIN runs r ON r.id = j.run_id
-       WHERE j.status = 'queued' ORDER BY j.created_at ASC LIMIT 10`,
-    )
-    .bind()
-    .all<JobRow & { repo: string; sha: string }>();
-  for (const job of res.results) {
-    if (!labelsMatch(job.labels ?? "", runnerLabels)) continue;
-    if (await claimJob(db, job.id)) return { ...job, status: "running" };
+  let afterPriority = 0;
+  let afterCreated: string | null = null;
+  let afterId = "";
+  let scanned = 0;
+  while (scanned < CLAIM_MAX_SCAN) {
+    const res: { results: (JobRow & { repo: string; sha: string })[] } =
+      afterCreated === null
+        ? await db
+            .prepare(
+              `SELECT j.*, r.repo, r.sha FROM jobs j JOIN runs r ON r.id = j.run_id
+               WHERE j.status = 'queued' ORDER BY j.priority DESC, j.created_at ASC, j.id ASC LIMIT ?`,
+            )
+            .bind(CLAIM_PAGE_SIZE)
+            .all<JobRow & { repo: string; sha: string }>()
+        : await db
+            .prepare(
+              `SELECT j.*, r.repo, r.sha FROM jobs j JOIN runs r ON r.id = j.run_id
+               WHERE j.status = 'queued' AND (j.priority < ? OR (j.priority = ? AND (j.created_at > ? OR (j.created_at = ? AND j.id > ?))))
+               ORDER BY j.priority DESC, j.created_at ASC, j.id ASC LIMIT ?`,
+            )
+            .bind(afterPriority, afterPriority, afterCreated, afterCreated, afterId, CLAIM_PAGE_SIZE)
+            .all<JobRow & { repo: string; sha: string }>();
+    if (res.results.length === 0) return null;
+    for (const job of res.results) {
+      if (!labelsMatch(job.labels ?? "", runnerLabels)) continue;
+      if (await claimJob(db, job.id)) return { ...job, status: "running" };
+    }
+    const last = res.results[res.results.length - 1];
+    afterPriority = last.priority ?? 0;
+    afterCreated = last.created_at;
+    afterId = last.id;
+    scanned += res.results.length;
   }
   return null;
 }
 
-export async function updateJob(
+// Executor status report. The conditional UPDATE requires the row to
+// still be `running`, so a late report from an execution superseded by
+// a re-run or a stale requeue cannot flip the new queued row terminal
+// (the re-run would otherwise silently lose its result). Returns false
+// when the report was dropped.
+export async function updateRunningJob(
   db: Db,
   id: string,
-  patch: { status?: string; log?: string; result?: string },
-): Promise<void> {
-  const current = await db.prepare("SELECT * FROM jobs WHERE id = ?").bind(id).first<JobRow>();
-  if (!current) return;
-  const status = patch.status ?? current.status;
-  const log = patch.log ?? current.log;
-  const result = patch.result ?? current.result;
+  patch: { status: string; log?: string; result?: string },
+): Promise<boolean> {
   const now = nowIso();
-  const startedAt = status === "running" && !current.started_at ? now : current.started_at;
-  const finishedAt = isTerminal(status) && !current.finished_at ? now : current.finished_at;
-  await db
-    .prepare("UPDATE jobs SET status = ?, log = ?, result = ?, started_at = ?, finished_at = ?, updated_at = ? WHERE id = ?")
-    .bind(status, log, result, startedAt, finishedAt, now, id)
-    .run();
+  const finishedAt = isTerminal(patch.status) ? now : null;
+  const res = (await db
+    .prepare(
+      `UPDATE jobs SET status = ?, log = COALESCE(?, log), result = COALESCE(?, result),
+         finished_at = COALESCE(finished_at, ?), updated_at = ?
+       WHERE id = ? AND status = 'running'`,
+    )
+    .bind(patch.status, patch.log ?? null, patch.result ?? null, finishedAt, now, id)
+    .run()) as { meta?: { changes?: number } };
+  return (res?.meta?.changes ?? 0) > 0;
 }
 
 // Scheduler-side transition (blocked -> queued/skipped, group cancels).
@@ -279,7 +366,7 @@ export async function rerunJob(db: Db, jobId: string): Promise<(JobRow & { repo:
   if (job.status === "queued" || job.status === "running" || job.status === "blocked") return job;
   await db
     .prepare(
-      "UPDATE jobs SET status = 'queued', log = '', result = '', triage = '', started_at = NULL, finished_at = NULL, updated_at = ? WHERE id = ?",
+      "UPDATE jobs SET status = 'queued', log = '', result = '', triage = '', attempts = 0, started_at = NULL, finished_at = NULL, updated_at = ? WHERE id = ?",
     )
     .bind(nowIso(), jobId)
     .run();
@@ -520,17 +607,28 @@ export async function getRepoSecretRows(db: Db, repo: string): Promise<RepoSecre
 // Retention janitor: drop runs (and their jobs — D1 does not enforce
 // ON DELETE CASCADE without PRAGMA foreign_keys) older than maxAgeDays.
 // Bounded per pass so a huge backlog never blows a request budget.
-export async function pruneOldRuns(db: Db, maxAgeDays = 90, limit = 500): Promise<number> {
+// Job ids come back so the caller can delete the matching R2 artifacts.
+export async function pruneOldRuns(
+  db: Db,
+  maxAgeDays = 90,
+  limit = 500,
+): Promise<{ runs: number; jobIds: string[] }> {
   const cutoff = new Date(Date.now() - maxAgeDays * 86400000).toISOString();
   const stale = await db
     .prepare("SELECT id FROM runs WHERE created_at < ? AND status IN ('success','failure','error','cancelled','skipped') ORDER BY created_at ASC LIMIT ?")
     .bind(cutoff, limit)
     .all<{ id: string }>();
+  const jobIds: string[] = [];
   for (const row of stale.results) {
+    const jobs = await db
+      .prepare("SELECT id FROM jobs WHERE run_id = ?")
+      .bind(row.id)
+      .all<{ id: string }>();
+    for (const job of jobs.results) jobIds.push(job.id);
     await db.prepare("DELETE FROM jobs WHERE run_id = ?").bind(row.id).run();
     await db.prepare("DELETE FROM runs WHERE id = ?").bind(row.id).run();
   }
-  return stale.results.length;
+  return { runs: stale.results.length, jobIds };
 }
 
 export async function audit(db: Db, actor: string, action: string, target = ""): Promise<void> {
@@ -600,4 +698,47 @@ export async function latestRunStatus(db: Db, repo: string, branch?: string): Pr
         .bind(repo)
         .first<{ status: string }>();
   return row?.status ?? null;
+}
+
+export interface ScheduleRow {
+  id: string;
+  repo: string;
+  ref: string;
+  cron: string;
+  enabled: number;
+  last_run_at: string | null;
+  created_at: string;
+}
+
+export async function createSchedule(db: Db, s: { id: string; repo: string; ref: string; cron: string }): Promise<void> {
+  await db
+    .prepare("INSERT INTO schedules (id, repo, ref, cron, enabled, last_run_at, created_at) VALUES (?, ?, ?, ?, 1, NULL, ?)")
+    .bind(s.id, s.repo, s.ref, s.cron, nowIso())
+    .run();
+}
+
+export async function listSchedules(db: Db): Promise<ScheduleRow[]> {
+  const res = await db.prepare("SELECT * FROM schedules ORDER BY created_at ASC").bind().all<ScheduleRow>();
+  return res.results;
+}
+
+export async function deleteSchedule(db: Db, id: string): Promise<boolean> {
+  const res = (await db.prepare("DELETE FROM schedules WHERE id = ?").bind(id).run()) as {
+    meta?: { changes?: number };
+  };
+  return (res?.meta?.changes ?? 0) > 0;
+}
+
+export async function setScheduleEnabled(db: Db, id: string, enabled: boolean): Promise<boolean> {
+  const res = (await db
+    .prepare("UPDATE schedules SET enabled = ? WHERE id = ?")
+    .bind(enabled ? 1 : 0, id)
+    .run()) as { meta?: { changes?: number } };
+  return (res?.meta?.changes ?? 0) > 0;
+}
+
+// Stamped after every dispatch attempt (success or failure) so a broken
+// schedule cannot hot-loop every cron tick.
+export async function touchScheduleRun(db: Db, id: string): Promise<void> {
+  await db.prepare("UPDATE schedules SET last_run_at = ? WHERE id = ?").bind(nowIso(), id).run();
 }

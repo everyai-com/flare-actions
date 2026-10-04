@@ -11,7 +11,23 @@ export interface CheckoutOptions {
 
 const DEFAULT_TIMEOUT_MS = 180000;
 
-function git(args: string[], cwd: string, timeoutMs: number): Promise<void> {
+// The token reaches git through environment config
+// (GIT_CONFIG_COUNT + http.<url>.extraheader), never argv: process
+// arguments are world-readable in process listings, process
+// environments are not. The remote URL stays token-free so git errors
+// cannot echo a credential.
+function gitEnv(token?: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  if (token) {
+    const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+    env["GIT_CONFIG_COUNT"] = "1";
+    env["GIT_CONFIG_KEY_0"] = "http.https://github.com/.extraheader";
+    env["GIT_CONFIG_VALUE_0"] = `Authorization: Basic ${basic}`;
+  }
+  return env;
+}
+
+function git(args: string[], cwd: string, timeoutMs: number, env: NodeJS.ProcessEnv): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile(
       "git",
@@ -20,7 +36,7 @@ function git(args: string[], cwd: string, timeoutMs: number): Promise<void> {
         cwd,
         timeout: timeoutMs,
         maxBuffer: 1024 * 1024,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        env,
       },
       (error, _stdout, stderr) => {
         if (error) {
@@ -35,7 +51,7 @@ function git(args: string[], cwd: string, timeoutMs: number): Promise<void> {
 
 export async function gitAvailable(): Promise<boolean> {
   try {
-    await git(["--version"], process.cwd(), 10000);
+    await git(["--version"], process.cwd(), 10000, { ...process.env, GIT_TERMINAL_PROMPT: "0" });
     return true;
   } catch {
     return false;
@@ -44,23 +60,22 @@ export async function gitAvailable(): Promise<boolean> {
 
 // Shallow-checkout repo@sha into dir. Public repos need no token;
 // private repos need a token with repo read (e.g. GITHUB_TOKEN).
-// The token never appears in logs or errors.
+// The token never appears in argv, logs, or errors.
 export async function checkoutRepo(opts: CheckoutOptions, urlOverride?: string): Promise<void> {
   if (!/^[\w.-]+\/[\w.-]+$/.test(opts.repo)) throw new Error(`invalid repo: ${opts.repo}`);
   if (!/^[\w.-]+$/.test(opts.sha)) throw new Error(`invalid sha: ${opts.sha}`);
   if (!(await gitAvailable())) throw new Error("git is not installed");
   mkdirSync(opts.dir, { recursive: true });
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const url = urlOverride ?? (opts.token
-    ? `https://x-access-token:${opts.token}@github.com/${opts.repo}.git`
-    : `https://github.com/${opts.repo}.git`);
+  const url = urlOverride ?? `https://github.com/${opts.repo}.git`;
+  const env = gitEnv(opts.token);
   try {
-    await git(["init", "-q"], opts.dir, timeoutMs);
-    await git(["remote", "add", "origin", url], opts.dir, timeoutMs);
-    await git(["fetch", "-q", "--depth", "1", "origin", opts.sha], opts.dir, timeoutMs);
-    await git(["checkout", "-q", opts.sha], opts.dir, timeoutMs);
+    await git(["init", "-q"], opts.dir, timeoutMs, env);
+    await git(["remote", "add", "origin", url], opts.dir, timeoutMs, env);
+    await git(["fetch", "-q", "--depth", "1", "origin", opts.sha], opts.dir, timeoutMs, env);
+    await git(["checkout", "-q", opts.sha], opts.dir, timeoutMs, env);
   } catch (err) {
-    // git errors can echo the remote URL — scrub the token before throwing.
+    // Belt and braces: scrub the token if a git error ever echoes it.
     const msg = String((err as Error)?.message ?? err);
     throw new Error(opts.token ? msg.split(opts.token).join("[redacted]") : msg);
   }

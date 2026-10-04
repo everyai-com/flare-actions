@@ -78,7 +78,11 @@ export class ContainerSeat extends DurableObject<SeatsEnv> {
       // Same D1 the main worker stores Connect-flow credentials in, so
       // connecting once on the dashboard lights up private checkouts
       // on seats with no extra secrets.
-      const creds = await resolveAppCreds(env.DB, { appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY });
+      const creds = await resolveAppCreds(
+        env.DB,
+        { appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY },
+        env.SECRETS_KEY,
+      );
       const outcome = await runSeatJob(
         {
           db: env.DB,
@@ -88,7 +92,7 @@ export class ContainerSeat extends DurableObject<SeatsEnv> {
           ai: env.AI,
           appId: creds?.appId,
           appKey: creds?.privateKey,
-          mail: { EMAIL: env.EMAIL, NOTIFY_FROM_EMAIL: env.NOTIFY_FROM_EMAIL },
+          mail: { EMAIL: env.EMAIL, NOTIFY_FROM_EMAIL: env.NOTIFY_FROM_EMAIL, SECRETS_KEY: env.SECRETS_KEY },
           secretsKey: env.SECRETS_KEY,
           container: adapt(container),
           spawn: async (id: string) => {

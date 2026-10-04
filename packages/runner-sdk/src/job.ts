@@ -42,7 +42,7 @@ export const MAX_ARTIFACT_BYTES = 400 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MINUTES = 30;
 
 export function sanitizeArtifactName(raw: string): string {
-  const clean = raw.replace(/[^\w.\-]/g, "-").replace(/^\.+/, "").slice(0, 100);
+  const clean = raw.replace(/[^\w.-]/g, "-").replace(/^\.+/, "").slice(0, 100);
   return clean || "artifact";
 }
 

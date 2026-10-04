@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isHexSha, webhookSkipReason } from "./index";
+import { isHexSha, validateDispatch, validateScheduleInput, webhookSkipReason } from "./index";
 
 const SHA = "4203928f77b90dec92b4cd47b9e0795378752ef7";
 const ZERO = "0000000000000000000000000000000000000000";
@@ -50,5 +50,65 @@ describe("isHexSha", () => {
     expect(isHexSha("main")).toBe(false);
     expect(isHexSha("feature/foo")).toBe(false);
     expect(isHexSha("v1.2.3")).toBe(false);
+  });
+});
+
+describe("validateDispatch", () => {
+  it("accepts shas, slashed branches, tags, and optional pipeline", () => {
+    expect(validateDispatch({ repo: "o/r", sha: "main" })).toEqual({
+      repo: "o/r",
+      sha: "main",
+      ref: "",
+      pipeline: undefined,
+      priority: 0,
+    });
+    expect(validateDispatch({ repo: "o/r", sha: "feature/x", ref: "feature/x" })).toEqual({
+      repo: "o/r",
+      sha: "feature/x",
+      ref: "feature/x",
+      pipeline: undefined,
+      priority: 0,
+    });
+    expect(validateDispatch({ repo: "o/r", sha: "v1.2.3", pipeline: "jobs: {}" })).toMatchObject({ pipeline: "jobs: {}" });
+  });
+
+  it("parses the agent priority lane", () => {
+    expect(validateDispatch({ repo: "o/r", sha: "main", priority: 9 })).toMatchObject({ priority: 9 });
+    expect(validateDispatch({ repo: "o/r", sha: "main", priority: 0 })).toMatchObject({ priority: 0 });
+    expect(validateDispatch({ repo: "o/r", sha: "main", priority: 11 })).toHaveProperty("error");
+    expect(validateDispatch({ repo: "o/r", sha: "main", priority: 1.5 })).toHaveProperty("error");
+    expect(validateDispatch({ repo: "o/r", sha: "main", priority: "high" })).toHaveProperty("error");
+  });
+
+  it("rejects malformed input with a message", () => {
+    expect(validateDispatch({ repo: "nope", sha: "main" })).toHaveProperty("error");
+    expect(validateDispatch({ repo: "o/r" })).toHaveProperty("error");
+    expect(validateDispatch({ repo: "o/r", sha: "../etc/passwd" })).toHaveProperty("error");
+    expect(validateDispatch({ repo: "o/r", sha: "a".repeat(129) })).toHaveProperty("error");
+    expect(validateDispatch({ repo: "o/r", sha: "main", pipeline: "   " })).toHaveProperty("error");
+    expect(validateDispatch({ repo: "o/r", sha: "main", ref: 42 })).toHaveProperty("error");
+  });
+});
+
+describe("validateScheduleInput", () => {
+  it("accepts a well-formed schedule and trims the cron", () => {
+    expect(validateScheduleInput({ repo: "o/r", ref: "main", cron: "0 3 * * *" })).toEqual({
+      repo: "o/r",
+      ref: "main",
+      cron: "0 3 * * *",
+    });
+    expect(validateScheduleInput({ repo: "o/r", ref: "release/v1", cron: "  */15 * * * * " })).toEqual({
+      repo: "o/r",
+      ref: "release/v1",
+      cron: "*/15 * * * *",
+    });
+  });
+
+  it("rejects bad repos, refs, and crons", () => {
+    expect(validateScheduleInput({ repo: "nope", ref: "main", cron: "0 3 * * *" })).toHaveProperty("error");
+    expect(validateScheduleInput({ repo: "o/r", ref: "", cron: "0 3 * * *" })).toHaveProperty("error");
+    expect(validateScheduleInput({ repo: "o/r", ref: "../x", cron: "0 3 * * *" })).toHaveProperty("error");
+    expect(validateScheduleInput({ repo: "o/r", ref: "main", cron: "0 3 * *" })).toHaveProperty("error");
+    expect(validateScheduleInput({ repo: "o/r", ref: "main", cron: 42 })).toHaveProperty("error");
   });
 });

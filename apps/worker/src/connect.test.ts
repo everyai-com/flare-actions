@@ -11,6 +11,7 @@ import {
   validateAppName,
 } from "./connect";
 import type { Db } from "./db";
+import { resolveSecretsKey } from "./secrets";
 
 class MemSettings implements Db {
   store = new Map<string, string>();
@@ -21,9 +22,17 @@ class MemSettings implements Db {
       bind: (...values: unknown[]) => ({
         all: async <T,>() => ({ results: [] as T[] }),
         first: async <T,>() => {
-          if (!norm.startsWith("SELECT value FROM app_settings")) throw new Error(`unrouted first: ${norm}`);
-          const v = this.store.get(values[0] as string);
-          return (v === undefined ? null : { value: v }) as T | null;
+          if (norm.startsWith("SELECT value FROM app_settings")) {
+            const v = this.store.get(values[0] as string);
+            return (v === undefined ? null : { value: v }) as T | null;
+          }
+          if (norm.startsWith("DELETE FROM app_settings") && norm.includes("RETURNING")) {
+            const key = values[0] as string;
+            const v = this.store.get(key);
+            this.store.delete(key);
+            return (v === undefined ? null : { value: v }) as T | null;
+          }
+          throw new Error(`unrouted first: ${norm}`);
         },
         run: async () => {
           if (norm.startsWith("INSERT INTO app_settings")) {
@@ -53,7 +62,7 @@ describe("connect", () => {
     expect(m.setup_url).toBe("https://ci.example.com/dashboard");
     expect(m.redirect_url).toBe("https://ci.example.com/v1/admin/github/callback");
     expect(m.callback_urls).toEqual(["https://ci.example.com/v1/admin/github/oauth/callback"]);
-    expect(m.default_permissions).toEqual({ contents: "read", statuses: "write", pull_requests: "read" });
+    expect(m.default_permissions).toEqual({ contents: "read", statuses: "write", checks: "write", pull_requests: "read" });
     expect(m.default_events).toEqual(["push", "pull_request"]);
     expect(m.hook_attributes).toEqual({ url: "https://ci.example.com/webhooks/github", active: true });
   });
@@ -119,22 +128,44 @@ describe("connect", () => {
     expect(installUrl("flare-actions-a1b2")).toBe("https://github.com/apps/flare-actions-a1b2/installations/new");
   });
 
-  it("stores credentials and resolves env-first, D1-second", async () => {
+  it("stores credentials encrypted and resolves env-first, D1-second", async () => {
     const db = new MemSettings();
-    await storeAppCredentials(db, { appId: "42", slug: "s", webhookSecret: "w", privateKey: "k", clientId: "c", clientSecret: "cs" });
+    const key = await resolveSecretsKey(db, undefined);
+    const pem = "-----BEGIN RSA PRIVATE KEY-----\nk\n-----END RSA PRIVATE KEY-----\n";
+    await storeAppCredentials(
+      db,
+      { appId: "42", slug: "s", webhookSecret: "whsec_abc", privateKey: pem, clientId: "c", clientSecret: "cs" },
+      key,
+    );
     expect(db.store.get("github_app_id")).toBe("42");
-    expect(db.store.get("github_private_key")).toBe("k");
     expect(db.store.get("github_app_slug")).toBe("s");
     expect(db.store.get("github_client_id")).toBe("c");
-    expect(db.store.get("github_client_secret")).toBe("cs");
-    expect(db.store.get("webhook_secret")).toBe("w");
+    // Secrets land encrypted: no plaintext private key, client secret,
+    // or webhook secret in the settings table.
+    expect(db.store.get("github_private_key")).toMatch(/^enc1:/);
+    expect(db.store.get("github_client_secret")).toMatch(/^enc1:/);
+    expect(db.store.get("webhook_secret")).toMatch(/^enc1:/);
+    expect(db.store.get("github_private_key")).not.toContain("BEGIN RSA");
 
     await expect(resolveAppCreds(db, { appId: "env", privateKey: "envkey" })).resolves.toEqual({
       appId: "env",
       privateKey: "envkey",
     });
-    await expect(resolveAppCreds(db, {})).resolves.toEqual({ appId: "42", privateKey: "k" });
+    await expect(resolveAppCreds(db, {})).resolves.toEqual({ appId: "42", privateKey: pem });
     await expect(resolveAppCreds(new MemSettings(), {})).resolves.toBeNull();
+
+    // Legacy plaintext rows keep working (pre-encryption deploys).
+    const legacy = new MemSettings();
+    legacy.store.set("github_app_id", "7");
+    legacy.store.set("github_private_key", "legacy-key");
+    await expect(resolveAppCreds(legacy, {})).resolves.toEqual({ appId: "7", privateKey: "legacy-key" });
+
+    // A wrong or lost data key reads as unconfigured, never a crash.
+    const locked = new MemSettings();
+    locked.store.set("github_app_id", "42");
+    locked.store.set("github_private_key", db.store.get("github_private_key") as string);
+    await expect(resolveAppCreds(locked, {})).resolves.toBeNull();
+
     const partial = new MemSettings();
     partial.store.set("github_app_id", "42");
     await expect(resolveAppCreds(partial, {})).resolves.toBeNull();

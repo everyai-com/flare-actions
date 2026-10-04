@@ -36,6 +36,12 @@ class MemEmail implements Db {
             const v = this.settings.get(values[0] as string);
             return (v === undefined ? null : { value: v }) as T | null;
           }
+          if (norm.startsWith("DELETE FROM app_settings") && norm.includes("RETURNING")) {
+            const key = values[0] as string;
+            const v = this.settings.get(key);
+            this.settings.delete(key);
+            return (v === undefined ? null : { value: v }) as T | null;
+          }
           if (norm.startsWith("SELECT * FROM users WHERE email")) {
             return ((this.users.get(values[0] as string) as T | undefined) ?? null) as T | null;
           }

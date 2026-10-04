@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   runSeatJob,
+  seatTokenAuthorized,
   type ContainerCtl,
   type ContainerStartOptions,
   type ExecHandle,
@@ -35,6 +36,12 @@ class MemDb implements Db {
   private routeFirst(norm: string, values: unknown[]): Row | null {
     if (norm.startsWith("SELECT * FROM jobs WHERE id")) return this.jobs.get(values[0] as string) ?? null;
     if (norm.startsWith("SELECT * FROM runs WHERE id")) return this.runs.get(values[0] as string) ?? null;
+    if (norm.startsWith("SELECT j.*, r.repo, r.sha FROM jobs j JOIN runs r")) {
+      const job = this.jobs.get(values[0] as string);
+      if (!job) return null;
+      const run = this.runs.get(job.run_id as string);
+      return { ...job, repo: run?.repo, sha: run?.sha } as Row;
+    }
     throw new Error(`unrouted first: ${norm}`);
   }
 
@@ -62,17 +69,15 @@ class MemDb implements Db {
       job.updated_at = values[1];
       return { meta: { changes: 1 } };
     }
-    if (norm.startsWith("UPDATE jobs SET status = ?, log = ?, result = ?")) {
-      const job = this.jobs.get(values[6] as string);
-      if (job) {
-        job.status = values[0];
-        job.log = values[1];
-        job.result = values[2];
-        job.started_at = values[3];
-        job.finished_at = values[4];
-        job.updated_at = values[5];
-      }
-      return {};
+    if (norm.startsWith("UPDATE jobs SET status = ?, log = COALESCE")) {
+      const job = this.jobs.get(values[5] as string);
+      if (!job || job.status !== "running") return { meta: { changes: 0 } };
+      job.status = values[0];
+      if (values[1] !== null) job.log = values[1];
+      if (values[2] !== null) job.result = values[2];
+      if (job.finished_at == null && values[3] !== null) job.finished_at = values[3];
+      job.updated_at = values[4];
+      return { meta: { changes: 1 } };
     }
     if (norm.startsWith("UPDATE jobs SET status = ?, finished_at")) {
       const job = this.jobs.get(values[2] as string);
@@ -82,13 +87,19 @@ class MemDb implements Db {
       }
       return {};
     }
+    if (norm.startsWith("UPDATE jobs SET attempts")) {
+      const job = this.jobs.get(values[1] as string);
+      if (job) job.attempts = ((job.attempts as number) ?? 0) + 1;
+      return {};
+    }
     if (norm.startsWith("UPDATE jobs SET status = 'queued'")) {
       const job = this.jobs.get(values[1] as string);
       if (job && job.status === "running") {
         job.status = "queued";
         job.started_at = null;
+        return { meta: { changes: 1 } };
       }
-      return {};
+      return { meta: { changes: 0 } };
     }
     if (norm.startsWith("UPDATE jobs SET triage")) {
       const job = this.jobs.get(values[2] as string);
@@ -116,6 +127,8 @@ function seed(db: MemDb, definition: string, status = "queued") {
     result: "",
     triage: "",
     labels: "",
+    priority: 0,
+    attempts: 0,
     started_at: null,
     finished_at: null,
   });
@@ -207,6 +220,26 @@ function deps(db: MemDb, container: FakeContainer, over: Partial<SeatDeps> = {})
 
 const DEF = (extra = {}) =>
   JSON.stringify({ steps: [{ run: "echo one" }, { run: "echo two" }], base: "test", ...extra });
+
+describe("seatTokenAuthorized", () => {
+  it("accepts only the exact bearer token", async () => {
+    const req = new Request("https://seat/run", { headers: { Authorization: "Bearer sekrit" } });
+    expect(await seatTokenAuthorized(req, "sekrit")).toBe(true);
+    expect(await seatTokenAuthorized(req, "sekrit-longer")).toBe(false);
+    expect(await seatTokenAuthorized(req, "other")).toBe(false);
+  });
+
+  it("rejects missing, malformed, and unconfigured tokens", async () => {
+    expect(await seatTokenAuthorized(new Request("https://seat/run"), "sekrit")).toBe(false);
+    expect(
+      await seatTokenAuthorized(new Request("https://seat/run", { headers: { Authorization: "sekrit" } }), "sekrit"),
+    ).toBe(false);
+    expect(
+      await seatTokenAuthorized(new Request("https://seat/run", { headers: { Authorization: "Bearer sekrit" } }), undefined),
+    ).toBe(false);
+    expect(await seatTokenAuthorized(new Request("https://seat/run", { headers: { Authorization: "Bearer " } }), "")).toBe(false);
+  });
+});
 
 describe("runSeatJob", () => {
   it("runs steps to success with env propagation", async () => {
@@ -461,6 +494,67 @@ describe("runSeatJob", () => {
     await runSeatJob(d, "j1");
     expect([...store.keys()]).toEqual(["artifacts/j1/README.md"]);
     expect(JSON.parse((db.jobs.get("j1")?.result ?? "{}") as string).artifacts).toEqual(["README.md"]);
+  });
+
+  it("continues past continue-on-error steps and still succeeds", async () => {
+    const db = new MemDb();
+    seed(db, JSON.stringify({ steps: [{ run: "flaky", continueOnError: true }, { run: "echo after" }], base: "t" }));
+    const container = new FakeContainer();
+    container.stepExits = [1];
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("success");
+    const stepRuns = container.calls.filter((c) => c.cmd[2]?.startsWith("sh -s >"));
+    expect(stepRuns).toHaveLength(2);
+    expect(JSON.parse(db.jobs.get("j1")?.result as string).steps).toHaveLength(2);
+    expect(db.jobs.get("j1")?.log as string).toContain("continue-on-error");
+  });
+
+  it("requeues a failed job while the retry policy allows", async () => {
+    const db = new MemDb();
+    seed(db, JSON.stringify({ steps: [{ run: "flaky" }], base: "t", retry: 1 }));
+    const container = new FakeContainer();
+    container.stepExits = [1];
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("retrying");
+    expect(db.jobs.get("j1")?.status).toBe("queued");
+    expect(db.jobs.get("j1")?.attempts).toBe(1);
+    expect(db.jobs.get("j1")?.log as string).toContain("retrying after failure (attempt 2/2)");
+    expect(container.destroys).toBe(1);
+  });
+
+  it("fails closed on an unparseable definition instead of echo-succeeding", async () => {
+    const db = new MemDb();
+    seed(db, "{not-json");
+    const container = new FakeContainer();
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out).toEqual({ status: "failed", jobId: "j1", detail: "unparseable job definition" });
+    expect(db.jobs.get("j1")?.status).toBe("error");
+    expect(db.jobs.get("j1")?.log as string).toContain("could not be parsed");
+    expect(container.calls).toHaveLength(0);
+    expect(db.runs.get("r1")?.status).toBe("failure");
+  });
+
+  it("drops the result when the job was requeued before completion", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    // Simulate the stale sweep releasing the job mid-execution: the
+    // terminal report must not clobber the fresh queued row.
+    const origExec = container.exec.bind(container);
+    let flipped = false;
+    container.exec = (cmd: string[], opts?: ExecOptions) => {
+      if (!flipped) {
+        flipped = true;
+        (db.jobs.get("j1") as Row).status = "queued";
+      }
+      return origExec(cmd, opts);
+    };
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("released");
+    expect((out as { detail: string }).detail).toContain("requeued before completion");
+    expect(db.jobs.get("j1")?.status).toBe("queued");
+    expect(db.jobs.get("j1")?.result).toBe("");
   });
 
   it("kills hung steps and fails the job", async () => {
