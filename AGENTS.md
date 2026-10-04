@@ -48,6 +48,10 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   50MB cap, 7-day prune, traversal-guarded on extraction) and the single,
   edited-in-place PR summary comment (pull_requests:write). Source runs
   (`event: "source"`) skip commit statuses and checks — there is no commit.
+- `scripts/bench.mjs` (`npm run bench`) — dispatch → claim → terminal
+  latency against FLARE_ACTIONS_URL + RUNNER_TOKEN; the script plays the
+  runner through the real `/v1/jobs/next` path, so numbers include queue,
+  API, and rollup latency.
 - Webhook idempotency: `X-GitHub-Delivery` claims a row in
   `webhook_deliveries` before anything else, so GitHub redeliveries ack
   without duplicating runs; rows prune with the run sweep.
@@ -172,7 +176,14 @@ gaps so one-click deploys need zero `wrangler secret` commands.
   via `resolveAppCreds`.
 - API: legacy `RUNNER_TOKEN` env plus D1 `api_tokens` (`admin` =
   everything, `runner` = run+read, `readonly` = read). Hashes only in
-  D1; plaintext shown once at creation.
+  D1; plaintext shown once at creation. Tokens carry an optional
+  repo allowlist (`repos`, empty = all): `repoAllowed` gates dispatch,
+  claim (`claimNextJob` filters in SQL), runs list/get/wait/digest,
+  artifacts, rerun, status, heartbeat, flaky, secrets, and schedules.
+  Cache keys are opaque and stay run-scope only. Password reset
+  (`/v1/admin/reset[/confirm]`) is self-serve, single-use (1h), generic
+  200 (no enumeration), and needs a mail sender + EMAIL binding;
+  completing it drops every session for the account.
 - Repo secrets (`${{ secrets.NAME }}`): AES-GCM in D1 `repo_secrets`,
   key from `SECRETS_KEY` env or auto-generated D1 `secrets_key` (env
   wins; D1 fallback protects only against casual reads — say so in

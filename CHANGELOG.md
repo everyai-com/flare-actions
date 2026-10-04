@@ -8,6 +8,16 @@ deploys from `main` and does not cut versioned releases yet.
 
 ### Added
 
+- Password reset: self-serve, single-use 1-hour email link, throttled,
+  generic responses (no account enumeration); completing a reset drops
+  every session for the account.
+- Per-repo tokens: `repos` allowlist on api_tokens gates dispatch,
+  job claims (SQL-filtered), runs, artifacts, rerun, status,
+  heartbeats, flaky, secrets, and schedules. Empty = all repos.
+- Run cancellation: `POST /v1/runs/:id/cancel` + `cli cancel` stop
+  queued/blocked jobs (running work finishes naturally).
+- `npm run bench`: measured dispatch → pickup → terminal latency against
+  a local or deployed worker (p50 ≈ 38/17/63 ms locally).
 - Source dispatch: upload a working-tree tarball (`POST /v1/source`,
   50 MB cap, traversal-guarded) and run it with no commit — `cli run
   <repo> --source` wraps the whole loop (tar, upload, dispatch, wait,

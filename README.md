@@ -106,8 +106,11 @@ issue named tokens in the Access tab.
   email (single-use links, 24h), and issue named tokens: `runner`
   tokens pull jobs and report status (CI machines, teammates),
   `readonly` tokens only view runs, `admin` tokens do everything (CLI
-  admin commands). Each token is shown once at creation;
-  revoke any token and it stops working immediately.
+  admin commands). Each token can be **scoped to specific repos**
+  (`repos: owner/name, …`); unscoped tokens see everything. Each token
+  is shown once at creation; revoke any token and it stops working
+  immediately. Email users can reset their own password from the login
+  screen when a mail sender is configured.
 
 ## Preview environments
 
@@ -245,6 +248,10 @@ MCP, or CLI. No git ceremony, no sleep loops, no log spelunking.
   of the working tree (50 MB cap, path-traversal-guarded on both
   executors) and runs it server-side with full parity — seats,
   containers, services — with **no commit anywhere**.
+- **Measured, not claimed** — `npm run bench` (against `npm run dev` or a
+  deployment) reports dispatch → job pickup → terminal latency: on a
+  local worker, p50 ≈ 38 ms / 17 ms / 63 ms. Nothing here waits on a
+  2–3 minute hosted queue.
 
 ```bash
 # agent inner loop: run the working tree locally, no server, no commit
@@ -314,6 +321,7 @@ npm run cli -- local [job]             # run flare.yml here (no server, warm cac
 npm run cli -- run <repo> <sha>        # dispatch, wait, print the compact digest (exit 1 on failure)
 npm run cli -- run <repo> --source     # upload the working tree and run it (no commit needed)
 npm run cli -- watch <runId>           # wait on an existing run + digest
+npm run cli -- cancel <runId>          # cancel queued/blocked jobs of a run
 npm run cli -- logs <runId>            # jobs, steps, triage, logs
 npm run cli -- dispatch <repo> <sha> [--priority N]   # trigger a run
 npm run cli -- rerun <runId> <jobId>   # reset a finished job
@@ -346,8 +354,10 @@ npm run cli -- mcp-config              # MCP client config
 - `GET /v1/badge.svg?repo=&branch=` — status badge (public)
 - `GET /v1/flaky?repo=&days=` — per-job failure rates (read scope)
 - `GET /v1/admin/tokens` — list access tokens (admin only)
-- `POST /v1/admin/tokens` — issue a token, shown once (admin only)
+- `POST /v1/admin/tokens` — issue a token, shown once (admin only; optional `repos` scoping)
 - `POST /v1/admin/tokens/:id/revoke` — revoke a token (admin only)
+- `POST /v1/runs/:id/cancel` — cancel queued/blocked jobs of a run (running jobs finish naturally)
+- `POST /v1/admin/reset`, `POST /v1/admin/reset/confirm` — self-serve password reset (public, throttled, single-use 1h link)
 - `GET /v1/admin/audit` — audit log (admin only)
 - `GET|POST /v1/admin/schedules` — list / create cron schedules (admin only)
 - `POST /v1/admin/schedules/:id` — enable or disable a schedule (admin only)
