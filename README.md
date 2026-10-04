@@ -99,7 +99,9 @@ issue named tokens in the Access tab.
   Every terminal job also posts a GitHub **Check Run** — the PR page shows
   the failing command, its output tail, and inline annotations parsed from
   `file:line` output — without opening the dashboard (requires the App's
-  checks:write permission; commit statuses still work without it).
+  checks:write permission; commit statuses still work without it). Pull
+  request runs also get **one summary comment**, edited in place as the
+  run completes (needs pull_requests:write).
 - **Access** — allow GitHub users (view runs), invite teammates by
   email (single-use links, 24h), and issue named tokens: `runner`
   tokens pull jobs and report status (CI machines, teammates),
@@ -150,14 +152,17 @@ jobs:
 - Each step runs as `sh -c` in a fresh temp dir with `FLARE_REPO`,
   `FLARE_SHA`, `FLARE_RUN_ID`, `FLARE_JOB_ID`, and `CI=true` (GitHub
   parity) in the environment.
-- Steps stop at the first non-zero exit; 10 min timeout and 32 KB of
-  captured output per step. A step marked `continue-on-error: true`
-  is recorded as failed but doesn't fail the job. Steps accept a bounded
-  `if:` subset — `always()`, `failure()`, `success()`, `cancelled()` and
-  `!fn()` negations — so cleanup and notification steps still run after a
-  failure. Jobs can declare `retry: 2` (0–5): a failed attempt requeues
-  automatically until the budget is exhausted, so flaky suites stop
-  paging humans. Limits: 32 jobs, 100 steps/job, 64 KB file.
+- Steps stop at the first non-zero exit; 10 min timeout (per-step
+  `timeout-minutes:` 1–180 overrides) and 32 KB of captured output per
+  step. `shell: bash` switches the interpreter. A step marked
+  `continue-on-error: true` is recorded as failed but doesn't fail the
+  job. Steps and jobs accept a bounded `if:` subset — `always()`,
+  `failure()`, `success()`, `cancelled()` and `!fn()` negations — so
+  cleanup and notification steps still run after a failure, and a job
+  with `if: always()` runs even when a `needs` job failed. Jobs can
+  declare `retry: 2` (0–5): a failed attempt requeues automatically
+  until the budget is exhausted, so flaky suites stop paging humans.
+  Limits: 32 jobs, 100 steps/job, 64 KB file.
 - Every job records machine-readable results (`result` JSON: per-step
   command, exit code, duration, output) alongside the human log — this
   is what agents consume to triage failures.
@@ -236,7 +241,10 @@ MCP, or CLI. No git ceremony, no sleep loops, no log spelunking.
 - **Machine-readable everything** — per-step structured results with exit
   codes and durations; the dashboard is optional.
 - **No git required** — dispatch by SHA or branch with an inline
-  `pipeline` to try a workflow without merging it anywhere.
+  `pipeline`, or go further: `cli run <repo> --source` uploads a tarball
+  of the working tree (50 MB cap, path-traversal-guarded on both
+  executors) and runs it server-side with full parity — seats,
+  containers, services — with **no commit anywhere**.
 
 ```bash
 # agent inner loop: run the working tree locally, no server, no commit
@@ -245,6 +253,7 @@ npm run cli -- local test --file flare.yml
 
 # agent verify loop: dispatch, wait, print the digest (exit 1 on failure)
 npm run cli -- run owner/repo "$(git rev-parse HEAD)" --priority 9
+npm run cli -- run owner/repo --source --priority 9   # uncommitted tree, server-side
 npm run cli -- watch <runId>        # block on an existing run + digest
 npm run cli -- dispatch owner/repo main --priority 9   # fire and forget
 ```
@@ -303,6 +312,7 @@ with the secrets data key.
 npm run cli -- runs                    # list runs
 npm run cli -- local [job]             # run flare.yml here (no server, warm cache)
 npm run cli -- run <repo> <sha>        # dispatch, wait, print the compact digest (exit 1 on failure)
+npm run cli -- run <repo> --source     # upload the working tree and run it (no commit needed)
 npm run cli -- watch <runId>           # wait on an existing run + digest
 npm run cli -- logs <runId>            # jobs, steps, triage, logs
 npm run cli -- dispatch <repo> <sha> [--priority N]   # trigger a run
@@ -319,7 +329,8 @@ npm run cli -- mcp-config              # MCP client config
 - `GET /dashboard` — dashboard UI (`/` redirects here)
 - `POST /webhooks/github` — GitHub App webhook (HMAC verified)
 - `GET /mcp` — MCP server metadata (public); `POST /mcp` — MCP JSON-RPC
-- `POST /v1/runs/dispatch` — trigger a run by SHA, branch, or tag, optional inline `pipeline` and `priority` (0–10)
+- `POST /v1/runs/dispatch` — trigger a run by SHA, branch, or tag, optional inline `pipeline`, `priority` (0–10), or `source` (uploaded working tree)
+- `POST /v1/source` — upload a gzipped working-tree tarball (≤50 MB); `GET /v1/source/:id` — fetch it (run scope)
 - `GET /v1/runs/:id/wait?timeout=` — block until terminal (1–90s), returns the run + `timedOut`
 - `GET|POST|DELETE /v1/admin/secrets` — repo secrets, names listed, values write-only (admin only)
 - `GET /v1/runs?limit=&offset=` — list runs, newest first (admin, runner, or readonly token; limit 1–200)

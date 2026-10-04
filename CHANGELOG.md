@@ -8,6 +8,17 @@ deploys from `main` and does not cut versioned releases yet.
 
 ### Added
 
+- Source dispatch: upload a working-tree tarball (`POST /v1/source`,
+  50 MB cap, traversal-guarded) and run it with no commit — `cli run
+  <repo> --source` wraps the whole loop (tar, upload, dispatch, wait,
+  digest).
+- Webhook idempotency: `X-GitHub-Delivery` dedupes GitHub retries and
+  manual redeliveries so a push can never create two runs.
+- One PR summary comment per run, edited in place (build/permission:
+  pull_requests:write).
+- Job-level `if:` (always/failure/success/cancelled) evaluated when
+  needs settle; per-step `timeout-minutes` (1–180) and `shell:`; the
+  importer translates all three.
 - `cli local`: run `flare.yml` in the working tree with no server and no
   commit — the same execution engine, a warm local cache, and artifacts
   under `.flare/`. The zero-latency inner loop for agents.

@@ -40,9 +40,17 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   and the blocking wait (`GET /v1/runs/:id/wait`) that replaces client
   poll loops. MCP `run_and_wait` composes dispatch + wait + digest.
 - `apps/worker/src/checks.ts` — per-job GitHub Check Runs (failing
-  command + bounded tail on the PR page). Needs the App's checks:write;
-  best-effort like every GitHub call. Both executors post them on the
-  terminal transition.
+  command + bounded tail + `file:line` annotations on the PR page).
+  Needs the App's checks:write; best-effort like every GitHub call.
+  Both executors post them on the terminal transition.
+- `apps/worker/src/{sources,prcomment}.ts` — source dispatch (uploaded
+  working-tree tarballs under `sources/<uuid>`; content-length required,
+  50MB cap, 7-day prune, traversal-guarded on extraction) and the single,
+  edited-in-place PR summary comment (pull_requests:write). Source runs
+  (`event: "source"`) skip commit statuses and checks — there is no commit.
+- Webhook idempotency: `X-GitHub-Delivery` claims a row in
+  `webhook_deliveries` before anything else, so GitHub redeliveries ack
+  without duplicating runs; rows prune with the run sweep.
 - `apps/worker/migrations/*.sql` — tracked history; `schema.ts` mirrors it for
   one-click forks that skip manual migration. Update BOTH when changing schema.
   `ensureSchema` also runs best-effort `ALTER`s so existing DBs self-heal.

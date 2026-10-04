@@ -7,6 +7,7 @@ default echo job — pushes never fail to dispatch.
 ```yaml
 jobs:
   test:
+    if: always()                   # job-level condition; always() runs even after failed needs
     runs-on: linux                 # labels (string or list); omit = any runner
     needs: build                   # job name(s); waits for success, skips on failure
     strategy:
@@ -31,6 +32,10 @@ jobs:
     retry: 2                       # requeue failed jobs up to 2 extra tries
     steps:
       - run: npm ci && npm test
+      - run: ./slow-suite.sh         # per-step bound (1-180 minutes)
+        timeout-minutes: 30
+      - run: bash --version          # interpreter override (sh default)
+        shell: bash
       - run: codecov                 # optional step; failure won't fail the job
         continue-on-error: true
       - run: ./scripts/cleanup.sh    # cleanup still runs after a failure
@@ -41,9 +46,11 @@ jobs:
 
 ## Semantics
 
-- **Steps** run as `sh -c` in the checkout dir, fail-fast, 10 min each,
-  32 KB captured output each. A step with `continue-on-error: true` is
-  recorded as failed but does not stop the job or fail it (GitHub parity).
+- **Steps** run as `sh -c` in the checkout dir, fail-fast, 10 min each
+  (per-step `timeout-minutes: 1–180` overrides; `shell:` picks the
+  interpreter, `sh` default), 32 KB captured output each. A step with
+  `continue-on-error: true` is recorded as failed but does not stop the
+  job or fail it (GitHub parity).
   Steps accept a bounded `if:` subset — `always()`, `success()`,
   `failure()`, `cancelled()`, and `!fn()` negations. After a failure,
   default (`success()`) steps are skipped while `failure()`/`always()`
@@ -56,6 +63,10 @@ jobs:
 - **`needs`** takes job names (pre-matrix). A job runs when all its needs
   succeed, skips when any need fails/errors/cancels/skips. Cycles and
   unknown names invalidate the file.
+- **Job `if`** (same bounded subset as steps) is evaluated when the needs
+  settle: default/`success()` requires all-success, `failure()` runs only
+  after a failed need, `always()` runs either way — the notify/cleanup
+  pattern. With no `needs`, `failure()` never runs.
 - **`retry`** (0–5) requeues a failed job for another attempt instead of
   going terminal; attempts are stamped, so the budget is exact and a
   failing job can never loop forever. The run only reports failure once

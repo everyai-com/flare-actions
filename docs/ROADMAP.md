@@ -37,6 +37,19 @@ Speed wins trials; price wins migrations; agents win the next decade.
 - [x] Windows BYO parity, status badges, required-checks UX (commit statuses)
 - [x] SOC 2-friendly audit log (who ran what, where, with which token)
 
+## Phase 5 — Agent-native (shipped)
+
+- [x] Blocking wait + compact digests (`GET /v1/runs/:id/wait|digest`),
+      MCP `run_and_wait` — one call, zero sleep loops
+- [x] Priority lane (0–10) so verification jumps queued batch work
+- [x] `cli local`: run `flare.yml` in the working tree, warm cache, no server
+- [x] Source dispatch: run an uploaded working tree with no commit
+      (`cli run --source`) — something a forge-hosted CI cannot do
+- [x] Rich GitHub surfaces: per-job Check Runs with failing-command
+      output and inline annotations, one evolving PR summary comment
+- [x] Reliability: webhook delivery dedupe, scheduled runs with
+      last-dispatch visibility, per-job retries, `if:` conditionals
+
 ## Non-goals (for now)
 
 - Replacing GitHub the forge (repos, PRs, reviews stay where they are).
