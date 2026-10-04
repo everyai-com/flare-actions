@@ -1,24 +1,57 @@
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { assertSafeTar, createTar, extractTar, restoreCache, safeCachePaths, saveCache } from "./cache";
 
+// GNU tar strips leading `../` when creating archives, so traversal
+// members cannot be produced with the tar binary on Linux. Handcraft the
+// archive instead (this is what a hostile uploader would do).
+function tarArchive(members: { name: string; content: string }[]): Uint8Array {
+  const enc = new TextEncoder();
+  const blocks: Uint8Array[] = [];
+  for (const m of members) {
+    const header = new Uint8Array(512);
+    header.set(enc.encode(m.name).slice(0, 100), 0);
+    header.set(enc.encode("0000644"), 100);
+    header.set(enc.encode("0000000"), 108);
+    header.set(enc.encode("0000000"), 116);
+    const data = enc.encode(m.content);
+    header.set(enc.encode(data.length.toString(8).padStart(11, "0")), 124);
+    header.set(enc.encode("00000000000"), 136);
+    header.set(enc.encode("        "), 148);
+    header.set(enc.encode("0"), 156);
+    header.set(enc.encode("ustar"), 257);
+    header.set(enc.encode("00"), 263);
+    let sum = 0;
+    for (const b of header) sum += b;
+    header.set(enc.encode(`${sum.toString(8).padStart(6, "0")}\0 `), 148);
+    blocks.push(header);
+    const padded = new Uint8Array(Math.ceil(data.length / 512) * 512);
+    padded.set(data);
+    blocks.push(padded);
+  }
+  blocks.push(new Uint8Array(1024));
+  const out = new Uint8Array(blocks.reduce((n, b) => n + b.length, 0));
+  let offset = 0;
+  for (const b of blocks) {
+    out.set(b, offset);
+    offset += b.length;
+  }
+  return out;
+}
+
 describe("assertSafeTar", () => {
-  it("accepts normal archives and rejects traversal members", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "flare-tar-"));
-    try {
-      writeFileSync(join(dir, "ok.txt"), "hi");
-      mkdirSync(join(dir, "sub"));
-      writeFileSync(join(dir, "outside.txt"), "escape");
-      const safe = execFileSync("tar", ["-czf", "-", "-C", dir, "ok.txt"]);
-      await expect(assertSafeTar(new Uint8Array(safe))).resolves.toBeUndefined();
-      const evil = execFileSync("tar", ["-czf", "-", "-C", join(dir, "sub"), "../outside.txt"]);
-      await expect(assertSafeTar(new Uint8Array(evil))).rejects.toThrow("unsafe tar member");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it("accepts normal archives and rejects traversal or absolute members", async () => {
+    const safe = gzipSync(tarArchive([{ name: "src/ok.txt", content: "hi" }]));
+    await expect(assertSafeTar(new Uint8Array(safe))).resolves.toBeUndefined();
+    const traversal = gzipSync(tarArchive([{ name: "../outside.txt", content: "escape" }]));
+    await expect(assertSafeTar(new Uint8Array(traversal))).rejects.toThrow("unsafe tar member");
+    const absolute = gzipSync(tarArchive([{ name: "/etc/passwd", content: "x" }]));
+    await expect(assertSafeTar(new Uint8Array(absolute))).rejects.toThrow("unsafe tar member");
+    const junk = new Uint8Array([1, 2, 3]);
+    await expect(assertSafeTar(junk)).rejects.toThrow();
   });
 });
 
