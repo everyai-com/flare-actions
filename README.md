@@ -97,9 +97,9 @@ issue named tokens in the Access tab.
 - **Runs** — see every run and drill into job logs; admins can dispatch
   runs by branch, tag, or SHA, and re-run finished jobs from the detail view.
   Every terminal job also posts a GitHub **Check Run** — the PR page shows
-  the failing command and its output tail without opening the dashboard
-  (requires the App's checks:write permission; commit statuses still work
-  without it).
+  the failing command, its output tail, and inline annotations parsed from
+  `file:line` output — without opening the dashboard (requires the App's
+  checks:write permission; commit statuses still work without it).
 - **Access** — allow GitHub users (view runs), invite teammates by
   email (single-use links, 24h), and issue named tokens: `runner`
   tokens pull jobs and report status (CI machines, teammates),
@@ -152,10 +152,12 @@ jobs:
   parity) in the environment.
 - Steps stop at the first non-zero exit; 10 min timeout and 32 KB of
   captured output per step. A step marked `continue-on-error: true`
-  (`- run: …` / `continue-on-error: true`) is recorded as failed but
-  doesn't fail the job. Jobs can declare `retry: 2` (0–5): a failed
-  attempt requeues automatically until the budget is exhausted, so flaky
-  suites stop paging humans. Limits: 32 jobs, 100 steps/job, 64 KB file.
+  is recorded as failed but doesn't fail the job. Steps accept a bounded
+  `if:` subset — `always()`, `failure()`, `success()`, `cancelled()` and
+  `!fn()` negations — so cleanup and notification steps still run after a
+  failure. Jobs can declare `retry: 2` (0–5): a failed attempt requeues
+  automatically until the budget is exhausted, so flaky suites stop
+  paging humans. Limits: 32 jobs, 100 steps/job, 64 KB file.
 - Every job records machine-readable results (`result` JSON: per-step
   command, exit code, duration, output) alongside the human log — this
   is what agents consume to triage failures.
@@ -217,6 +219,12 @@ MCP, or CLI. No git ceremony, no sleep loops, no log spelunking.
   and blocks until the run is terminal
   (`GET /v1/runs/:id/wait?timeout=60` under the hood). Verify → fix →
   repeat, without a polling loop.
+- **Zero-latency inner loop** — `cli local` runs `flare.yml` in the current
+  working tree, on this machine, with no server and no commit: the
+  working-tree code, a warm local cache (`~/.flare/cache`), artifacts in
+  `.flare/artifacts/`, and the same execution engine as the server
+  (`continue-on-error`, `if:`, needs, matrix). Server dispatch stays the
+  parity check.
 - **Priority lane** — `priority: 0–10` on dispatch jumps queued batch
   work, so an agent's verification beats the nightly backlog.
 - **Token-efficient digests** — `GET /v1/runs/:id/digest` (or
@@ -231,7 +239,11 @@ MCP, or CLI. No git ceremony, no sleep loops, no log spelunking.
   `pipeline` to try a workflow without merging it anywhere.
 
 ```bash
-# agent fast loop: dispatch, wait, print the digest (exit 1 on failure)
+# agent inner loop: run the working tree locally, no server, no commit
+npm run cli -- local                 # all jobs; warm cache across runs
+npm run cli -- local test --file flare.yml
+
+# agent verify loop: dispatch, wait, print the digest (exit 1 on failure)
 npm run cli -- run owner/repo "$(git rev-parse HEAD)" --priority 9
 npm run cli -- watch <runId>        # block on an existing run + digest
 npm run cli -- dispatch owner/repo main --priority 9   # fire and forget
@@ -289,6 +301,7 @@ with the secrets data key.
 
 ```bash
 npm run cli -- runs                    # list runs
+npm run cli -- local [job]             # run flare.yml here (no server, warm cache)
 npm run cli -- run <repo> <sha>        # dispatch, wait, print the compact digest (exit 1 on failure)
 npm run cli -- watch <runId>           # wait on an existing run + digest
 npm run cli -- logs <runId>            # jobs, steps, triage, logs

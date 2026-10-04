@@ -33,6 +33,10 @@ jobs:
       - run: npm ci && npm test
       - run: codecov                 # optional step; failure won't fail the job
         continue-on-error: true
+      - run: ./scripts/cleanup.sh    # cleanup still runs after a failure
+        if: always()
+      - run: ./scripts/notify.sh     # only when something failed earlier
+        if: failure()
 ```
 
 ## Semantics
@@ -40,6 +44,11 @@ jobs:
 - **Steps** run as `sh -c` in the checkout dir, fail-fast, 10 min each,
   32 KB captured output each. A step with `continue-on-error: true` is
   recorded as failed but does not stop the job or fail it (GitHub parity).
+  Steps accept a bounded `if:` subset — `always()`, `success()`,
+  `failure()`, `cancelled()`, and `!fn()` negations. After a failure,
+  default (`success()`) steps are skipped while `failure()`/`always()`
+  steps still run; anything outside the subset invalidates the file
+  rather than guessing at expression soup.
   `FLARE_REPO`, `FLARE_SHA`, `FLARE_RUN_ID`,
   `FLARE_JOB_ID`, and `FLARE_MATRIX_*` are always set.
 - **Schedules** are configured per deployment (dashboard → Settings →

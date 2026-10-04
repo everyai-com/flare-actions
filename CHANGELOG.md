@@ -8,6 +8,14 @@ deploys from `main` and does not cut versioned releases yet.
 
 ### Added
 
+- `cli local`: run `flare.yml` in the working tree with no server and no
+  commit — the same execution engine, a warm local cache, and artifacts
+  under `.flare/`. The zero-latency inner loop for agents.
+- Step conditionals: bounded `if:` subset (`always()`, `success()`,
+  `failure()`, `cancelled()`, `!fn()`), so cleanup and notification steps
+  still run after a failure. Unsupported expressions fail the parse.
+- Check Runs now carry inline annotations parsed from `file:line` output,
+  and the importer translates supported step conditions.
 - GitHub Check Runs: every terminal job posts a rich check to the
   PR/commit page (failing command, exit code, bounded output tail,
   triage) — needs the App's checks:write, which the Connect manifest now
@@ -54,6 +62,9 @@ deploys from `main` and does not cut versioned releases yet.
 
 ### Fixed
 
+- `runJob` preserves per-step flags (`continue-on-error`, `if`) — they
+  were silently dropped for anything running through the SDK orchestrator
+  (BYO runners and `cli local`).
 - Job claims no longer starve label-specific runners behind a fixed
   window of queued jobs for other labels.
 - Late status callbacks from superseded executions (rerun, stale requeue)
