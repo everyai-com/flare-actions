@@ -191,7 +191,10 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
       const forwardKeys = spec.container
         ? [...new Set([...Object.keys(jobEnv), ...Object.keys(matrix), ...Object.keys(opts.env).filter((k) => k.startsWith("FLARE_"))])]
         : undefined;
-      const steps = spec.steps.map((s) => ({ run: interpolateSecrets(s.run, secrets) }));
+      // Preserve per-step flags (continue-on-error, if) — dropping them
+      // here would silently disable both on every executor that runs
+      // through runJob (BYO runners and cli local).
+      const steps = spec.steps.map((s) => ({ ...s, run: interpolateSecrets(s.run, secrets) }));
       const outcome = await executeSteps(steps, {
         cwd: opts.cwd,
         env: stepEnv,

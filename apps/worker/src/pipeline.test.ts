@@ -103,6 +103,22 @@ describe("parsePipeline v2 keys", () => {
     expect(readRetryPolicy("junk")).toBe(0);
   });
 
+  it("parses step conditions and rejects expression soup", () => {
+    const ok = parsePipeline("jobs:\n  a:\n    steps:\n      - run: clean\n        if: always()\n      - run: notify\n        if: failure()\n");
+    expect(ok?.[0].steps).toEqual([
+      { run: "clean", if: "always()" },
+      { run: "notify", if: "failure()" },
+    ]);
+    const matrix = parsePipeline(
+      "jobs:\n  a:\n    strategy:\n      matrix:\n        n: [1]\n    steps:\n      - run: clean-${{ matrix.n }}\n        if: ALWAYS()\n",
+    );
+    expect(matrix?.[0].steps[0]).toEqual({ run: "clean-1", if: "always()" });
+    expect(
+      parsePipeline("jobs:\n  a:\n    steps:\n      - run: x\n        if: github.event_name == 'push'\n"),
+    ).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    steps:\n      - run: x\n        if: 42\n")).toBeNull();
+  });
+
   it("parses continue-on-error and preserves it through interpolation", () => {
     const jobs = parsePipeline(
       "jobs:\n  a:\n    strategy:\n      matrix:\n        n: [1]\n    steps:\n      - run: flaky-${{ matrix.n }}\n        continue-on-error: true\n      - run: hard\n",

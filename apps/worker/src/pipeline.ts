@@ -5,6 +5,18 @@ export interface PipelineStep {
   // GitHub parity: a failing step with continue-on-error marks the step
   // failed but lets the job proceed and still succeed.
   continueOnError?: boolean;
+  // Bounded conditional subset (mirrors runner-sdk/spec.ts):
+  // always()/success()/failure()/cancelled() and `!fn()` negations.
+  if?: string;
+}
+
+const STEP_CONDITION_FUNCTIONS = ["always()", "success()", "failure()", "cancelled()"];
+
+export function normalizeStepCondition(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const norm = raw.trim().toLowerCase();
+  const fn = norm.startsWith("!") ? norm.slice(1) : norm;
+  return STEP_CONDITION_FUNCTIONS.includes(fn) ? norm : null;
 }
 
 export interface PipelineService {
@@ -163,6 +175,11 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     if (s["continue-on-error"] !== undefined) {
       if (typeof s["continue-on-error"] !== "boolean") return null;
       step.continueOnError = s["continue-on-error"];
+    }
+    if (s.if !== undefined) {
+      const cond = normalizeStepCondition(s.if);
+      if (!cond) return null;
+      step.if = cond;
     }
     steps.push(step);
   }

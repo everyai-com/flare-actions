@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkConclusion, checkOutput, reportJobCheck } from "./checks";
+import { checkAnnotations, checkConclusion, checkOutput, reportJobCheck } from "./checks";
 import type { JobRow } from "./db";
 
 function jobRow(over: Partial<JobRow> = {}): JobRow {
@@ -42,6 +42,35 @@ describe("checkConclusion", () => {
     expect(checkConclusion(jobRow({ status: "failure", result: JSON.stringify({ steps: [], timedOut: true }) }))).toBe(
       "timed_out",
     );
+  });
+});
+
+describe("checkAnnotations", () => {
+  it("extracts colon and paren location formats, deduping", () => {
+    const out = checkAnnotations(
+      [
+        "src/app.ts:12:5: error TS2322: nope",
+        "src/lib/util.ts(44,9): error TS1005: ';' expected",
+        "src/app.ts:12:5: duplicate of the first",
+        "tests/spec.py:7: assert failed",
+      ].join("\n"),
+    );
+    expect(out).toEqual([
+      { path: "src/app.ts", start_line: 12, end_line: 12, annotation_level: "failure", message: "src/app.ts:12:5: error TS2322: nope" },
+      { path: "src/lib/util.ts", start_line: 44, end_line: 44, annotation_level: "failure", message: "src/lib/util.ts(44,9): error TS1005: ';' expected" },
+      { path: "tests/spec.py", start_line: 7, end_line: 7, annotation_level: "failure", message: "tests/spec.py:7: assert failed" },
+    ]);
+  });
+
+  it("skips URLs, absolute paths, traversal, and caps the list", () => {
+    const junk = [
+      "see https://example.com:8080/docs for details",
+      "/abs/path.ts:3:1: nope",
+      "../outside.ts:2:1: nope",
+    ].join("\n");
+    expect(checkAnnotations(junk)).toEqual([]);
+    const many = Array.from({ length: 20 }, (_, i) => `src/f${i}.ts:1:1: error`).join("\n");
+    expect(checkAnnotations(many)).toHaveLength(10);
   });
 });
 
@@ -97,7 +126,7 @@ describe("reportJobCheck", () => {
     });
 
     const job = jobRow({
-      result: resultJson([{ command: "npm test", exitCode: 1, output: "expected 3, got 2" }]),
+      result: resultJson([{ command: "npm test", exitCode: 1, output: "src/x.ts:3:1: error TS0001: expected 3, got 2" }]),
       triage: "Cause: fixture drift.",
     });
     const ok = await reportJobCheck(
@@ -112,9 +141,12 @@ describe("reportJobCheck", () => {
     expect(calls[0].body.status).toBe("completed");
     expect(calls[0].body.conclusion).toBe("failure");
     expect(calls[0].body.details_url).toBe("https://ci.example.com/dashboard");
-    const output = calls[0].body.output as { title: string; summary: string };
+    const output = calls[0].body.output as { title: string; summary: string; annotations?: { path: string; start_line: number }[] };
     expect(output.title).toContain("npm test");
     expect(output.summary).toContain("expected 3, got 2");
+    expect(output.annotations).toEqual([
+      { path: "src/x.ts", start_line: 3, end_line: 3, annotation_level: "failure", message: "src/x.ts:3:1: error TS0001: expected 3, got 2" },
+    ]);
   });
 
   it("skips without credentials and never throws on failures", async () => {

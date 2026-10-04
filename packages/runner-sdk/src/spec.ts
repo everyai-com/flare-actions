@@ -19,7 +19,7 @@ export interface JobArtifactsSpec {
 }
 
 export interface JobSpec {
-  steps: { run: string; continueOnError?: boolean }[];
+  steps: { run: string; continueOnError?: boolean; if?: string }[];
   base?: string;
   matrix?: Record<string, string>;
   env?: Record<string, string>;
@@ -28,6 +28,53 @@ export interface JobSpec {
   cache?: JobCacheSpec;
   artifacts?: JobArtifactsSpec;
   timeoutMinutes?: number;
+}
+
+// Step conditionals: the bounded GitHub subset that covers cleanup and
+// failure-notification steps. `!fn()` negations are allowed; anything
+// else (expression soup) is rejected at parse time, never guessed.
+export const STEP_CONDITIONS = ["always()", "success()", "failure()", "cancelled()"] as const;
+
+export function normalizeStepCondition(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const norm = raw.trim().toLowerCase();
+  const fn = norm.startsWith("!") ? norm.slice(1) : norm;
+  return (STEP_CONDITIONS as readonly string[]).includes(fn) ? norm : null;
+}
+
+export interface StepRunState {
+  // Any earlier step exited non-zero (continue-on-error included).
+  anyFailed: boolean;
+  // An earlier step failed without continue-on-error: default
+  // (success()) steps are skipped from here on, while failure()/always()
+  // steps still run.
+  jobFailed: boolean;
+}
+
+export function stepRuns(condition: string | undefined, state: StepRunState): boolean {
+  if (condition === undefined || condition === "") return !state.jobFailed; // default = success()
+  const norm = condition.trim().toLowerCase();
+  const neg = norm.startsWith("!");
+  const fn = neg ? norm.slice(1) : norm;
+  let value: boolean;
+  switch (fn) {
+    case "always()":
+      value = true;
+      break;
+    case "success()":
+      value = !state.jobFailed;
+      break;
+    case "failure()":
+      value = state.anyFailed;
+      break;
+    case "cancelled()":
+      value = false;
+      break;
+    default:
+      value = !state.jobFailed;
+      break;
+  }
+  return neg ? !value : value;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -58,13 +105,18 @@ export function parseJobSpec(definition: string): JobSpec | null {
     return null;
   }
   if (!isRecord(parsed) || !Array.isArray(parsed.steps) || parsed.steps.length === 0) return null;
-  const steps: { run: string; continueOnError?: boolean }[] = [];
+  const steps: { run: string; continueOnError?: boolean; if?: string }[] = [];
   for (const s of parsed.steps) {
     if (!isRecord(s) || typeof s.run !== "string" || !s.run.trim()) return null;
-    const step: { run: string; continueOnError?: boolean } = { run: s.run };
+    const step: { run: string; continueOnError?: boolean; if?: string } = { run: s.run };
     if (s.continueOnError !== undefined) {
       if (typeof s.continueOnError !== "boolean") return null;
       step.continueOnError = s.continueOnError;
+    }
+    if (s.if !== undefined) {
+      const cond = normalizeStepCondition(s.if);
+      if (!cond) return null;
+      step.if = cond;
     }
     steps.push(step);
   }

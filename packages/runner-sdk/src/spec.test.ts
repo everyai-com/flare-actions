@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matrixEnv, parseJobSpec } from "./spec";
+import { matrixEnv, parseJobSpec, stepRuns } from "./spec";
 
 describe("parseJobSpec", () => {
   it("parses a full spec", () => {
@@ -33,12 +33,41 @@ describe("parseJobSpec", () => {
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x", continueOnError: 1 }] }))).toBeNull();
   });
 
+  it("keeps supported step conditions and rejects expression soup", () => {
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x", if: "always()" }] }))?.steps).toEqual([
+      { run: "x", if: "always()" },
+    ]);
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x", if: "!cancelled()" }] }))?.steps).toEqual([
+      { run: "x", if: "!cancelled()" },
+    ]);
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x", if: "github.event_name == 'push'" }] }))).toBeNull();
+  });
+
   it("rejects bad steps and bad option shapes", () => {
     expect(parseJobSpec("")).toBeNull();
     expect(parseJobSpec(JSON.stringify({ steps: [] }))).toBeNull();
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: 42 }] }))).toBeNull();
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], container: 42 }))).toBeNull();
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], cache: { key: "k" } }))).toBeNull();
+  });
+});
+
+describe("stepRuns", () => {
+  it("evaluates the bounded subset with negations", () => {
+    const clean = { anyFailed: false, jobFailed: false };
+    const failed = { anyFailed: true, jobFailed: true };
+    const coeOnly = { anyFailed: true, jobFailed: false };
+    expect(stepRuns(undefined, clean)).toBe(true);
+    expect(stepRuns(undefined, failed)).toBe(false);
+    expect(stepRuns("always()", failed)).toBe(true);
+    expect(stepRuns("success()", coeOnly)).toBe(true);
+    expect(stepRuns("failure()", failed)).toBe(true);
+    expect(stepRuns("failure()", clean)).toBe(false);
+    expect(stepRuns("failure()", coeOnly)).toBe(true);
+    expect(stepRuns("cancelled()", failed)).toBe(false);
+    expect(stepRuns("!cancelled()", failed)).toBe(true);
+    expect(stepRuns("!always()", clean)).toBe(false);
+    expect(stepRuns("!failure()", clean)).toBe(true);
   });
 });
 

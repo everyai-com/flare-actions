@@ -6,6 +6,7 @@ import {
   loadEnv,
   type FlareRunDigest,
 } from "@flare-actions/runner-sdk";
+import { runLocal } from "./local.ts";
 
 loadEnv();
 
@@ -17,6 +18,7 @@ function usage(): never {
       "usage:",
       "  cli runs                                  list recent runs",
       "  cli logs <runId>                           show run jobs, steps, triage, logs",
+      "  cli local [job] [--file flare.yml]         run the pipeline in this directory (no server, warm cache)",
       "  cli run <repo> <sha|branch|tag> [ref]      dispatch, wait, print the compact digest (exit 1 on failure)",
       "  cli watch <runId>                          wait for a run and print the compact digest",
       "  cli dispatch <repo> <sha|branch|tag> [ref]  trigger a run without waiting",
@@ -28,6 +30,7 @@ function usage(): never {
       "  cli mcp-config                              print MCP client config for this server",
       "",
       "run/dispatch accept --priority N (0-10): higher jumps queued batch work.",
+      "cli local reads FLARE_SECRET_<NAME> for ${{ secrets.NAME }} placeholders.",
       "env: FLARE_ACTIONS_URL + RUNNER_TOKEN (from `npm run setup` or the dashboard).",
       "Reads accept readonly tokens; dispatch/rerun need runner scope.",
     ].join("\n"),
@@ -118,6 +121,18 @@ try {
       if (j.triage) console.log(`AI triage:\n${j.triage}`);
       console.log(j.log);
     }
+  } else if (cmd === "local") {
+    let file: string | undefined;
+    const positional: string[] = [];
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--file") {
+        file = rest[++i];
+      } else {
+        positional.push(rest[i]);
+      }
+    }
+    const result = await runLocal({ cwd: process.cwd(), file, job: positional[0] });
+    process.exitCode = result.ok ? 0 : 1;
   } else if (cmd === "run" && rest[0] && rest[1]) {
     const { args, priority } = takePriority(rest);
     if (!args[0] || !args[1]) usage();

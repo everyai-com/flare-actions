@@ -1,4 +1,5 @@
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { normalizeStepCondition } from "./spec.ts";
 
 // GitHub Actions workflow -> flare.yml translator. Pure and lossless
 // where the models overlap; everything else becomes a warning so the
@@ -68,7 +69,7 @@ const TOOLCHAIN_CHECKS: [RegExp, string][] = [
 ];
 
 interface JobAcc {
-  steps: { run: string; "continue-on-error"?: boolean }[];
+  steps: { run: string; "continue-on-error"?: boolean; if?: string }[];
   env: Record<string, string>;
   cachePaths: string[];
   cacheKey: string | null;
@@ -82,6 +83,7 @@ function convertUses(
   acc: JobAcc,
   warnings: string[],
   jobId: string,
+  cond?: string,
 ): void {
   if (/^actions\/checkout@/i.test(uses)) {
     warnings.push(`${jobId}: dropped actions/checkout (flare checks out natively)`);
@@ -93,7 +95,7 @@ function convertUses(
       warnings.push(
         `${jobId}: ${uses} became \`${check}\` — install the toolchain on your runner${ver ? ` (wanted ${String(ver)})` : ""}`,
       );
-      acc.steps.push({ run: check });
+      acc.steps.push({ run: check, ...(cond ? { if: cond } : {}) });
       return;
     }
   }
@@ -129,8 +131,13 @@ function convertStep(step: unknown, acc: JobAcc, warnings: string[], jobId: stri
     warnings.push(`${jobId}: dropped a malformed step`);
     return;
   }
-  if (typeof step.if === "string" && step.if.trim()) {
-    warnings.push(`${jobId}: dropped step condition \`${step.if}\` (step always runs)`);
+  // Bounded conditional subset: translate the supported forms, warn on
+  // anything else instead of guessing at expression soup.
+  let cond: string | undefined;
+  if (step.if !== undefined) {
+    const norm = normalizeStepCondition(step.if);
+    if (norm) cond = norm;
+    else warnings.push(`${jobId}: dropped unsupported step condition \`${String(step.if)}\``);
   }
   if (typeof step.shell === "string" && step.shell && !/^(sh|bash)$/i.test(step.shell)) {
     warnings.push(`${jobId}: step shell \`${step.shell}\` runs under sh instead`);
@@ -143,18 +150,19 @@ function convertStep(step: unknown, acc: JobAcc, warnings: string[], jobId: stri
     }
   }
   if (typeof step.uses === "string" && step.uses.trim()) {
-    convertUses(step.uses.trim(), isRecord(step.with) ? step.with : {}, acc, warnings, jobId);
+    convertUses(step.uses.trim(), isRecord(step.with) ? step.with : {}, acc, warnings, jobId, cond);
     return;
   }
   if (typeof step.run === "string" && step.run.trim()) {
     let run = step.run.trim();
     if (workdir) run = `(cd ${JSON.stringify(workdir)} &&\n${run}\n)`;
-    const out: { run: string; "continue-on-error"?: boolean } = { run };
+    const out: { run: string; "continue-on-error"?: boolean; if?: string } = { run };
     if (step["continue-on-error"] === true) {
       out["continue-on-error"] = true;
     } else if (step["continue-on-error"] !== undefined && step["continue-on-error"] !== false) {
       warnings.push(`${jobId}: non-boolean continue-on-error ignored`);
     }
+    if (cond) out.if = cond;
     acc.steps.push(out);
     return;
   }

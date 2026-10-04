@@ -100,6 +100,16 @@ describe("import helpers", () => {
     expect(res.warnings.join("\n")).toContain("continue-on-error");
   });
 
+  it("translates supported step conditions and warns on expression soup", () => {
+    const res = convertActionsWorkflow(
+      "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cleanup\n        if: always()\n      - run: notify\n        if: failure()\n      - run: x\n        if: github.ref == 'refs/heads/main'\n",
+    );
+    if (!isImportSuccess(res)) throw new Error(res.error);
+    expect(res.yaml).toContain("if: always()");
+    expect(res.yaml).toContain("if: failure()");
+    expect(res.warnings.join("\n")).toContain("unsupported step condition");
+  });
+
   it("points scheduled workflows at the dashboard schedules", () => {
     const res = convertActionsWorkflow(
       "on:\n  schedule:\n    - cron: '0 3 * * *'\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: x\n",

@@ -24,7 +24,7 @@ import { seatEligible } from "../../worker/src/pipeline";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
 import type { AiBinding } from "../../worker/src/triage";
 import { interpolateSecrets, maskSecrets } from "../../../packages/runner-sdk/src/secrets";
-import { matrixEnv, parseJobSpec } from "../../../packages/runner-sdk/src/spec";
+import { matrixEnv, parseJobSpec, stepRuns } from "../../../packages/runner-sdk/src/spec";
 
 // Managed-seat job execution: the seat Durable Object drives a Linux
 // container purely through exec calls while writing D1/R2 directly.
@@ -387,7 +387,8 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       ...matrixEnv(spec.matrix),
     };
     let timedOutJob = false;
-    let hardFailure = false;
+    let anyFailed = false;
+    let jobFailed = false;
     for (let i = 0; i < spec.steps.length; i++) {
       if (Date.now() > deadline) {
         timedOutJob = true;
@@ -395,6 +396,10 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         break;
       }
       const step = spec.steps[i];
+      if (!stepRuns(step.if, { anyFailed, jobFailed })) {
+        logParts.push(`--- step ${i + 1}: skipped (${step.if}) ---`);
+        continue;
+      }
       const command = interpolateSecrets(step.run, secrets);
       await note(`[seat] step ${i + 1} start: ${command}`);
       const startedAt = Date.now();
@@ -407,12 +412,13 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       if (r.timedOut) {
         records.push({ command: mask(command), exitCode: 124, durationMs, output: "[seat] step timed out after 10m" });
         logParts.push(mask(`--- step ${i + 1}: ${command} ---\n[seat] step timed out after 10m\n(exit 124, ${durationMs}ms)`));
+        anyFailed = true;
         if (step.continueOnError) {
           logParts.push(`--- step ${i + 1} failed but continue-on-error is set ---`);
           continue;
         }
-        hardFailure = true;
-        break;
+        jobFailed = true;
+        continue;
       }
       const m = /EXIT:(\d+)\s*$/.exec(decode(r.stdout));
       const exitCode = m ? Number(m[1]) : r.exitCode;
@@ -421,15 +427,15 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       records.push({ command: mask(command), exitCode, durationMs, output });
       logParts.push(mask(`--- step ${i + 1}: ${command} ---\n${output}\n(exit ${exitCode}, ${durationMs}ms)`));
       if (exitCode !== 0) {
+        anyFailed = true;
         if (step.continueOnError) {
           logParts.push(`--- step ${i + 1} failed but continue-on-error is set ---`);
           continue;
         }
-        hardFailure = true;
-        break;
+        jobFailed = true;
       }
     }
-    const success = !timedOutJob && records.length > 0 && !hardFailure;
+    const success = !timedOutJob && records.length > 0 && !jobFailed;
 
     // Retry policy: requeue instead of going terminal while attempts
     // remain (the job row is still `running`, so the conditional

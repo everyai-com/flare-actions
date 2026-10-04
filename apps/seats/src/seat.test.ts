@@ -510,6 +510,27 @@ describe("runSeatJob", () => {
     expect(db.jobs.get("j1")?.log as string).toContain("continue-on-error");
   });
 
+  it("runs always() cleanup steps after a failure, skipping defaults", async () => {
+    const db = new MemDb();
+    seed(
+      db,
+      JSON.stringify({
+        steps: [{ run: "fail" }, { run: "cleanup", if: "always()" }, { run: "skipped-default" }],
+        base: "t",
+      }),
+    );
+    const container = new FakeContainer();
+    container.stepExits = [1];
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("failure");
+    const stepRuns = container.calls.filter((c) => c.cmd[2]?.startsWith("sh -s >"));
+    expect(stepRuns).toHaveLength(2); // fail + cleanup; the default step never starts
+    const log = db.jobs.get("j1")?.log as string;
+    expect(log).toContain("cleanup");
+    expect(log).toContain("skipped (");
+  });
+
   it("requeues a failed job while the retry policy allows", async () => {
     const db = new MemDb();
     seed(db, JSON.stringify({ steps: [{ run: "flaky" }], base: "t", retry: 1 }));

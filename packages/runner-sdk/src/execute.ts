@@ -1,10 +1,14 @@
 import { execFile } from "node:child_process";
 import { dockerArgsForStep } from "./services.ts";
+import { normalizeStepCondition, stepRuns } from "./spec.ts";
 
 export interface ExecStep {
   run: string;
   // GitHub parity: the step may fail without failing the rest of the job.
   continueOnError?: boolean;
+  // Bounded condition subset (always()/success()/failure()/cancelled()
+  // and negations); undefined means success().
+  if?: string;
 }
 
 export interface StepResult {
@@ -82,9 +86,17 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
   const outputLimit = opts.outputLimitPerStep ?? DEFAULT_OUTPUT_LIMIT;
   const results: StepResult[] = [];
   const logParts: string[] = [];
-  let hardFailure = false;
+  // Failure state drives conditionals: default steps stop once the job
+  // has failed, while `if: failure()` / `if: always()` steps (cleanup,
+  // notifications) still run.
+  let anyFailed = false;
+  let jobFailed = false;
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
+    if (!stepRuns(step.if, { anyFailed, jobFailed })) {
+      logParts.push(`--- step ${i + 1}: skipped (${step.if}) ---`);
+      continue;
+    }
     const r = await runOne({
       command: step.run,
       cwd: opts.cwd,
@@ -97,14 +109,15 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
     results.push(r);
     logParts.push(`--- step ${i + 1}: ${step.run} ---\n${r.output}\n(exit ${r.exitCode}, ${r.durationMs}ms)`);
     if (r.exitCode !== 0) {
-      if (!step.continueOnError) {
-        hardFailure = true;
-        break;
+      anyFailed = true;
+      if (step.continueOnError) {
+        logParts.push(`--- step ${i + 1} failed but continue-on-error is set ---`);
+      } else {
+        jobFailed = true;
       }
-      logParts.push(`--- step ${i + 1} failed but continue-on-error is set ---`);
     }
   }
-  return { success: results.length > 0 && !hardFailure, results, log: logParts.join("\n") };
+  return { success: results.length > 0 && !jobFailed, results, log: logParts.join("\n") };
 }
 
 export function parseDefinition(definition: string): ExecStep[] | null {
@@ -121,6 +134,11 @@ export function parseDefinition(definition: string): ExecStep[] | null {
       if (rec.continueOnError !== undefined) {
         if (typeof rec.continueOnError !== "boolean") return null;
         step.continueOnError = rec.continueOnError;
+      }
+      if (rec.if !== undefined) {
+        const cond = normalizeStepCondition(rec.if);
+        if (!cond) return null;
+        step.if = cond;
       }
       steps.push(step);
     }

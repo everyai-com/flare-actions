@@ -37,6 +37,35 @@ describe("executeSteps", () => {
     expect(out.log).toContain("continue-on-error");
   });
 
+  it("runs failure() and always() steps after a failure, skipping defaults", async () => {
+    const out = await executeSteps(
+      [
+        { run: "exit 3" },
+        { run: "echo default" },
+        { run: "echo cleanup", if: "always()" },
+        { run: "echo notify", if: "failure()" },
+        { run: "echo no", if: "success()" },
+      ],
+      { cwd: "/tmp", env: { ...process.env } },
+    );
+    expect(out.success).toBe(false);
+    expect(out.log).toContain("skipped (success())");
+    expect(out.log).toContain("cleanup");
+    expect(out.log).toContain("notify");
+    expect(out.log).not.toContain("default");
+    expect(out.results.map((r) => r.command)).toEqual(["exit 3", "echo cleanup", "echo notify"]);
+  });
+
+  it("treats continue-on-error failures as failure() without failing the job", async () => {
+    const out = await executeSteps(
+      [{ run: "exit 1", continueOnError: true }, { run: "echo notify", if: "failure()" }, { run: "echo next" }],
+      { cwd: "/tmp", env: { ...process.env } },
+    );
+    expect(out.success).toBe(true);
+    expect(out.log).toContain("notify");
+    expect(out.log).toContain("next");
+  });
+
   it("passes environment through", async () => {
     const out = await executeSteps([{ run: "echo $FLARE_SHA" }], {
       cwd: "/tmp",
