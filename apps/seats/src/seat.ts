@@ -24,7 +24,7 @@ import { seatEligible } from "../../worker/src/pipeline";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
 import type { AiBinding } from "../../worker/src/triage";
 import { interpolateSecrets, maskSecrets } from "../../../packages/runner-sdk/src/secrets";
-import { matrixEnv, parseJobSpec, stepRuns } from "../../../packages/runner-sdk/src/spec";
+import { matrixEnv, parseJobSpec, stepRuns, unsafeTarMember } from "../../../packages/runner-sdk/src/spec";
 
 // Managed-seat job execution: the seat Durable Object drives a Linux
 // container purely through exec calls while writing D1/R2 directly.
@@ -330,32 +330,53 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
   await note(`[seat] container running (attempt ${startAttempt})`);
 
   try {
-    // Checkout (script over stdin so the token never appears in argv).
-    if (!/^[\w.-]+\/[\w.-]+$/.test(run.repo) || !/^[\w.-]+$/.test(run.sha)) {
-      return release("invalid repo or sha");
-    }
-    let appToken: string | null = null;
-    if (run.installation_id && deps.appId && deps.appKey) {
-      try {
-        const jwt = await mintAppJwt(deps.appId, deps.appKey);
-        appToken = await getInstallationToken(jwt, run.installation_id);
-      } catch {
-        appToken = null;
+    if (run.source) {
+      // Source dispatch: unpack the uploaded working tree (guarded —
+      // list first, reject absolute/.. members, then extract).
+      const entry = deps.cache ? await deps.cache.get(`sources/${run.source}`) : null;
+      if (!entry) return release("source tarball missing (expired, or artifact storage not configured)");
+      if (entry.size > SEAT_BLOB_CAP) return release(`source tarball too large (>${SEAT_BLOB_CAP}b)`);
+      const blob = new Uint8Array(await entry.arrayBuffer());
+      const reset = await execBounded(["sh", "-c", `rm -rf ${WORKDIR} && mkdir -p ${WORKDIR}`], {}, 30000);
+      if (reset.timedOut || reset.exitCode !== 0) return release("workspace reset failed");
+      const listing = await execBounded(["tar", "-tzf", "-"], { stdin: blob }, timing.blobMs);
+      if (listing.timedOut) return release("source listing timed out");
+      const bad = decode(listing.stdout)
+        .split("\n")
+        .map((n) => n.trim())
+        .find((n) => n && unsafeTarMember(n));
+      if (bad) return release(`unsafe source member: ${bad.slice(0, 120)}`);
+      const extracted = await execBounded(["tar", "-xzf", "-", "-C", WORKDIR], { stdin: blob }, timing.blobMs);
+      if (extracted.timedOut || extracted.exitCode !== 0) return release("source extract failed");
+      await note("[seat] source unpacked");
+    } else {
+      // Checkout (script over stdin so the token never appears in argv).
+      if (!/^[\w.-]+\/[\w.-]+$/.test(run.repo) || !/^[\w.-]+$/.test(run.sha)) {
+        return release("invalid repo or sha");
       }
+      let appToken: string | null = null;
+      if (run.installation_id && deps.appId && deps.appKey) {
+        try {
+          const jwt = await mintAppJwt(deps.appId, deps.appKey);
+          appToken = await getInstallationToken(jwt, run.installation_id);
+        } catch {
+          appToken = null;
+        }
+      }
+      const remote = appToken
+        ? `https://x-access-token:${appToken}@github.com/${run.repo}.git`
+        : `https://github.com/${run.repo}.git`;
+      const checkoutScript = `set -e\nrm -rf ${WORKDIR}\nmkdir -p ${WORKDIR}\ncd ${WORKDIR}\ngit init -q\ngit remote add origin ${remote}\ngit fetch -q --depth 1 origin ${run.sha}\ngit checkout -q FETCH_HEAD\n`;
+      const co = await execBounded(["sh", "-s"], { stdin: checkoutScript }, timing.checkoutMs ?? 180000);
+      if (co.timedOut || co.exitCode !== 0) {
+        const raw = decode(co.timedOut ? co.stderr : new Uint8Array([...co.stdout, ...co.stderr])).slice(0, 300);
+        // git errors can echo the remote URL — scrub the token (the
+        // release detail lands in seat logs, never in job rows).
+        const errText = appToken ? raw.split(appToken).join("[redacted]") : raw;
+        return release(`checkout failed: ${errText || "unknown"}`);
+      }
+      await note("[seat] checkout ok");
     }
-    const remote = appToken
-      ? `https://x-access-token:${appToken}@github.com/${run.repo}.git`
-      : `https://github.com/${run.repo}.git`;
-    const checkoutScript = `set -e\nrm -rf ${WORKDIR}\nmkdir -p ${WORKDIR}\ncd ${WORKDIR}\ngit init -q\ngit remote add origin ${remote}\ngit fetch -q --depth 1 origin ${run.sha}\ngit checkout -q FETCH_HEAD\n`;
-    const co = await execBounded(["sh", "-s"], { stdin: checkoutScript }, timing.checkoutMs ?? 180000);
-    if (co.timedOut || co.exitCode !== 0) {
-      const raw = decode(co.timedOut ? co.stderr : new Uint8Array([...co.stdout, ...co.stderr])).slice(0, 300);
-      // git errors can echo the remote URL — scrub the token (the
-      // release detail lands in seat logs, never in job rows).
-      const errText = appToken ? raw.split(appToken).join("[redacted]") : raw;
-      return release(`checkout failed: ${errText || "unknown"}`);
-    }
-    await note("[seat] checkout ok");
 
     // Cache restore.
     let cacheHit = false;
@@ -403,10 +424,12 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       const command = interpolateSecrets(step.run, secrets);
       await note(`[seat] step ${i + 1} start: ${command}`);
       const startedAt = Date.now();
+      const shell = step.shell ?? "sh";
+      const stepTimeout = step.timeoutMinutes !== undefined ? step.timeoutMinutes * 60000 : timing.stepMs;
       const r = await execBounded(
-        ["sh", "-c", `sh -s > /tmp/step.log 2>&1; printf 'EXIT:%d' $?`],
+        ["sh", "-c", `${shell} -s > /tmp/step.log 2>&1; printf 'EXIT:%d' $?`],
         { stdin: command, env: stepEnv, cwd: WORKDIR },
-        timing.stepMs,
+        stepTimeout,
       );
       const durationMs = Date.now() - startedAt;
       if (r.timedOut) {

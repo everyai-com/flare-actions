@@ -8,9 +8,14 @@ export interface PipelineStep {
   // Bounded conditional subset (mirrors runner-sdk/spec.ts):
   // always()/success()/failure()/cancelled() and `!fn()` negations.
   if?: string;
+  // Per-step bounds/overrides (mirror runner-sdk/spec.ts): minutes (1-180)
+  // and the interpreter (sh default; bash when the image has it).
+  timeoutMinutes?: number;
+  shell?: string;
 }
 
 const STEP_CONDITION_FUNCTIONS = ["always()", "success()", "failure()", "cancelled()"];
+const SHELL_RE = /^[\w./-]{1,32}$/;
 
 export function normalizeStepCondition(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
@@ -56,6 +61,10 @@ export interface PipelineJob {
   // Retries after a failed attempt (0-5); the scheduler requeues while
   // attempts remain. Agent-friendly: flaky suites stop paging humans.
   retry?: number;
+  // Job-level condition (bounded subset, same as steps): the scheduling
+  // context is needs — `always()`/`failure()` still run after a failed
+  // need, `success()` (default) skips.
+  if?: string;
 }
 
 export const MAX_JOBS = 32;
@@ -160,6 +169,7 @@ interface RawJob {
   cancelInProgress: boolean;
   timeoutMinutes?: number;
   retry?: number;
+  if?: string;
 }
 
 function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<string, string[]> }) | null {
@@ -180,6 +190,15 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
       const cond = normalizeStepCondition(s.if);
       if (!cond) return null;
       step.if = cond;
+    }
+    if (s["timeout-minutes"] !== undefined) {
+      const t = s["timeout-minutes"];
+      if (typeof t !== "number" || !Number.isInteger(t) || t < 1 || t > 180) return null;
+      step.timeoutMinutes = t;
+    }
+    if (s.shell !== undefined) {
+      if (typeof s.shell !== "string" || !SHELL_RE.test(s.shell.trim())) return null;
+      step.shell = s.shell.trim();
     }
     steps.push(step);
   }
@@ -274,6 +293,11 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     if (typeof r !== "number" || !Number.isInteger(r) || r < 0 || r > 5) return null;
     job.retry = r;
   }
+  if (def.if !== undefined) {
+    const cond = normalizeStepCondition(def.if);
+    if (!cond) return null;
+    job.if = cond;
+  }
   if (def.strategy !== undefined) {
     if (!isRecord(def.strategy) || def.strategy.matrix === undefined) return null;
     const axes = parseMatrix(def.strategy.matrix);
@@ -355,6 +379,7 @@ export function parsePipeline(text: string): PipelineJob[] | null {
       if (r.cancelInProgress) job.cancelInProgress = true;
       if (r.timeoutMinutes !== undefined) job.timeoutMinutes = r.timeoutMinutes;
       if (r.retry !== undefined) job.retry = r.retry;
+      if (r.if !== undefined) job.if = r.if;
       out.push(job);
     }
   }
@@ -379,6 +404,7 @@ export function serializeDefinition(job: PipelineJob, baseName: string): string 
     group: job.group,
     timeoutMinutes: job.timeoutMinutes,
     retry: job.retry,
+    if: job.if,
   });
 }
 
@@ -397,6 +423,9 @@ export interface JobSpecSchedule {
   base: string;
   needs: string[];
   group?: string;
+  // Job-level condition (bounded subset); validated at parse time, kept
+  // tolerant here so legacy definitions schedule as before.
+  if?: string;
 }
 
 // Seats are Linux containers without docker: eligible jobs need no
@@ -433,7 +462,8 @@ export function readJobSpec(definition: string, fallbackName: string): JobSpecSc
       : [];
     const group = typeof parsed.group === "string" && parsed.group ? parsed.group : undefined;
     const base = typeof parsed.base === "string" && parsed.base ? parsed.base : fallbackName;
-    return { base, needs, group };
+    const cond = normalizeStepCondition(parsed["if"]);
+    return cond ? { base, needs, group, if: cond } : { base, needs, group };
   } catch {
     return fallback;
   }

@@ -3,6 +3,7 @@ import {
   cancelGroupJobs,
   claimAdminMarker,
   claimNextJob,
+  claimWebhookDelivery,
   createJob,
   createRun,
   createSchedule,
@@ -33,11 +34,13 @@ import {
   listTokens,
   listUsers,
   pruneOldRuns,
+  pruneWebhookDeliveries,
   releaseAdminMarker,
   rerunJob,
   revokeToken,
   rollupRunStatus,
   setRepoSecret,
+  setRunPrComment,
   setScheduleEnabled,
   setSetting,
   touchJob,
@@ -112,6 +115,8 @@ import { handleCacheGet, handleCachePut } from "./cache";
 import { deleteJobArtifacts, handleArtifactGet, handleArtifactPut, listRunArtifacts, pruneOldCache } from "./artifacts";
 import { cronMatches, validateCron } from "./cron";
 import { reportJobCheck } from "./checks";
+import { upsertPrComment } from "./prcomment";
+import { deleteSource, handleSourceGet, handleSourcePut, pruneOldSources, SOURCE_ID_RE } from "./sources";
 import { buildRunDigest } from "./digest";
 import { waitForRunTerminal } from "./wait";
 import { handleMcpMessage, mcpDiscovery } from "./mcp";
@@ -296,7 +301,7 @@ export interface GitHubWebhookPayload {
   repository?: { full_name?: string };
   after?: string;
   installation?: { id?: number };
-  pull_request?: { head?: { sha?: string; ref?: string } };
+  pull_request?: { head?: { sha?: string; ref?: string }; number?: number };
 }
 
 const ZERO_SHA = "0000000000000000000000000000000000000000";
@@ -364,6 +369,8 @@ async function createRunAndFanOut(
     installationId: number | null;
     jobs: PipelineJob[];
     priority?: number;
+    source?: string | null;
+    prNumber?: number | null;
   },
 ): Promise<{ runId: string; jobIds: string[]; queuedIds: string[]; blocked: number }> {
   const runId = crypto.randomUUID();
@@ -374,6 +381,8 @@ async function createRunAndFanOut(
     event: input.event,
     installationId: input.installationId,
     branch: input.branch,
+    source: input.source ?? null,
+    prNumber: input.prNumber ?? null,
   });
   const jobIds: string[] = [];
   const queuedIds: string[] = [];
@@ -446,6 +455,17 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     );
     if (!valid) return json({ error: "invalid signature" }, 401);
 
+    // Idempotency: GitHub retries (and manual redeliveries) reuse the
+    // delivery UUID. First claim wins; a duplicate is acknowledged.
+    const delivery = request.headers.get("x-github-delivery");
+    if (delivery) {
+      if (!/^[A-Za-z0-9-]{8,64}$/.test(delivery)) return json({ error: "invalid delivery id" }, 400);
+      if (!(await claimWebhookDelivery(env.DB, delivery))) {
+        log("info", "webhook duplicate ignored", { delivery });
+        return json({ skipped: "duplicate delivery" }, 200);
+      }
+    }
+
     const event = request.headers.get("x-github-event") ?? "unknown";
     let payload: GitHubWebhookPayload;
     try {
@@ -464,8 +484,17 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     const branch = branchFromRef(payload.ref) || payload.pull_request?.head?.ref || "";
 
     const installationId = payload.installation?.id ?? null;
+    const prNumber = event === "pull_request" ? (payload.pull_request?.number ?? null) : null;
     const jobs = await loadPipelineJobs(env, repo, sha, installationId);
-    const { runId, jobIds, queuedIds, blocked } = await createRunAndFanOut(env, { repo, sha, branch, event, installationId, jobs });
+    const { runId, jobIds, queuedIds, blocked } = await createRunAndFanOut(env, {
+      repo,
+      sha,
+      branch,
+      event,
+      installationId,
+      jobs,
+      prNumber,
+    });
 
     // Post-response maintenance never blocks the webhook: bounded
     // retention prune plus the stuck-claim sweep (dead executors get
@@ -477,10 +506,14 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
           if (pruned.runs > 0) {
             let artifacts = 0;
             for (const jobId of pruned.jobIds) artifacts += await deleteJobArtifacts(env.CACHE, jobId);
-            log("info", "pruned old runs", { pruned: pruned.runs, artifacts });
+            for (const source of pruned.sources) await deleteSource(env.CACHE, source);
+            log("info", "pruned old runs", { pruned: pruned.runs, artifacts, sources: pruned.sources.length });
           }
           const staleCache = await pruneOldCache(env.CACHE);
           if (staleCache > 0) log("info", "pruned stale cache entries", { pruned: staleCache });
+          const staleSources = await pruneOldSources(env.CACHE);
+          if (staleSources > 0) log("info", "pruned stale sources", { pruned: staleSources });
+          await pruneWebhookDeliveries(env.DB);
         } catch (err: unknown) {
           log("warn", "run prune failed", { error: String(err) });
         }
@@ -576,9 +609,35 @@ async function handleStatusCallback(
       if (finalRun && isTerminal(finalRun.status)) {
         const origin = new URL(request.url).origin;
         ctx.waitUntil(notifyRunCompleted(env.DB, env, { run: finalRun, origin }));
+        // One PR comment per run, edited in place on later completions.
+        if (run.event !== "source" && finalRun.pr_number && run.installation_id) {
+          const creds = await getAppCreds(env);
+          ctx.waitUntil(
+            (async () => {
+              const jobs = await getJobsForRun(env.DB, runId);
+              const id = await upsertPrComment(
+                {
+                  appId: creds?.appId,
+                  privateKey: creds?.privateKey,
+                  installationId: run.installation_id,
+                  repo: run.repo,
+                  prNumber: finalRun.pr_number as number,
+                  existingCommentId: run.pr_comment_id,
+                  origin,
+                },
+                finalRun,
+                jobs,
+              );
+              if (id && !run.pr_comment_id) await setRunPrComment(env.DB, runId, id).catch(() => undefined);
+            })(),
+          );
+        }
       }
     }
-    if (body.status === "success" || body.status === "failure" || body.status === "error") {
+    // Source runs have no commit to annotate: skip commit statuses and
+    // Check Runs for them (triage/notify/digest still apply).
+    const isSourceRun = run.event === "source";
+    if (!isSourceRun && (body.status === "success" || body.status === "failure" || body.status === "error")) {
       const ghState = body.status === "success" ? "success" : "failure";
       const creds = await getAppCreds(env);
       ctx.waitUntil(
@@ -594,7 +653,7 @@ async function handleStatusCallback(
     }
     // Per-job Check Run: the rich PR-page surface (failing command +
     // output tail). Best-effort, independent of commit statuses.
-    if (isTerminal(body.status)) {
+    if (!isSourceRun && isTerminal(body.status)) {
       const creds = await getAppCreds(env);
       const origin = new URL(request.url).origin;
       ctx.waitUntil(
@@ -632,12 +691,11 @@ export function isHexSha(s: string): boolean {
   return /^[0-9a-f]{4,64}$/i.test(s);
 }
 
-export function validateDispatch(body: Record<string, unknown>): { repo: string; sha: string; ref: string; pipeline?: string; priority: number } | { error: string } {
-  const { repo, sha, ref, pipeline, priority } = body;
+export function validateDispatch(
+  body: Record<string, unknown>,
+): { repo: string; sha: string; ref: string; pipeline?: string; priority: number; source?: string } | { error: string } {
+  const { repo, sha, ref, pipeline, priority, source } = body;
   if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return { error: "repo must be owner/name" };
-  if (typeof sha !== "string" || !/^[\w./-]+$/.test(sha) || sha.length > 128 || sha.includes("..")) {
-    return { error: "sha must be a commit SHA, branch, or tag" };
-  }
   if (ref !== undefined && (typeof ref !== "string" || ref.length > 128)) return { error: "invalid ref" };
   if (pipeline !== undefined && (typeof pipeline !== "string" || !pipeline.trim() || pipeline.length > 65536)) {
     return { error: "invalid pipeline" };
@@ -646,12 +704,25 @@ export function validateDispatch(body: Record<string, unknown>): { repo: string;
   if (priority !== undefined && (typeof priority !== "number" || !Number.isInteger(priority) || priority < 0 || priority > 10)) {
     return { error: "priority must be an integer 0-10" };
   }
+  const parsedPriority = typeof priority === "number" ? priority : 0;
+  const parsedRef = typeof ref === "string" ? ref : "";
+  // Source runs execute an uploaded working tree: no commit, no ref —
+  // the inline pipeline is the contract (empty pipeline would silently
+  // echo, so require it explicitly).
+  if (source !== undefined) {
+    if (typeof source !== "string" || !SOURCE_ID_RE.test(source)) return { error: "invalid source id" };
+    if (typeof pipeline !== "string") return { error: "source runs need an inline pipeline" };
+    return { repo, sha: "", ref: parsedRef, pipeline, priority: parsedPriority, source };
+  }
+  if (typeof sha !== "string" || !/^[\w./-]+$/.test(sha) || sha.length > 128 || sha.includes("..")) {
+    return { error: "sha must be a commit SHA, branch, or tag" };
+  }
   return {
     repo,
     sha,
-    ref: typeof ref === "string" ? ref : "",
+    ref: parsedRef,
     pipeline: typeof pipeline === "string" ? pipeline : undefined,
-    priority: typeof priority === "number" ? priority : 0,
+    priority: parsedPriority,
   };
 }
 
@@ -670,38 +741,49 @@ export function validateScheduleInput(
 
 async function dispatchRun(
   env: WorkerEnv,
-  input: { repo: string; sha: string; ref: string; pipeline?: string; event?: string; priority?: number },
+  input: { repo: string; sha: string; ref: string; pipeline?: string; event?: string; priority?: number; source?: string },
 ): Promise<{ runId: string; jobIds: string[]; queuedIds: string[] }> {
   // Dispatch accepts a SHA, branch, or tag: non-SHA refs resolve to the
   // head commit (installation token when the repo has App history, else
   // the public API), so the stored run always pins a real commit. The
   // resolved installation rides into the run row so commit statuses and
-  // private pipeline fetches work for scheduled runs too.
+  // private pipeline fetches work for scheduled runs too. Source runs
+  // skip all of that: they execute the uploaded tree against the inline
+  // pipeline.
   let sha = input.sha;
-  const installationId = await latestInstallationId(env.DB, input.repo);
-  if (!isHexSha(sha)) {
-    let token: string | null = null;
-    const creds = await getAppCreds(env);
-    if (installationId && creds) {
-      try {
-        const jwt = await mintAppJwt(creds.appId, creds.privateKey);
-        token = await getInstallationToken(jwt, installationId);
-      } catch {
-        token = null;
-      }
-    }
-    const resolved = await resolveRefToSha(token, input.repo, sha);
-    if (!resolved) throw new Error(`could not resolve ref "${sha}" — paste a full commit SHA`);
-    sha = resolved;
-  }
+  let installationId: number | null = null;
   let jobs: PipelineJob[] | null = null;
-  if (input.pipeline) {
-    jobs = parsePipeline(input.pipeline);
+  if (input.source) {
+    sha = `src-${input.source.slice(0, 8)}`;
+    jobs = input.pipeline ? parsePipeline(input.pipeline) : null;
     if (!jobs) throw new Error("pipeline parse failed");
   } else {
-    jobs = await loadPipelineJobs(env, input.repo, sha, installationId);
+    installationId = await latestInstallationId(env.DB, input.repo);
+    if (!isHexSha(sha)) {
+      let token: string | null = null;
+      const creds = await getAppCreds(env);
+      if (installationId && creds) {
+        try {
+          const jwt = await mintAppJwt(creds.appId, creds.privateKey);
+          token = await getInstallationToken(jwt, installationId);
+        } catch {
+          token = null;
+        }
+      }
+      const resolved = await resolveRefToSha(token, input.repo, sha);
+      if (!resolved) throw new Error(`could not resolve ref "${sha}" — paste a full commit SHA`);
+      sha = resolved;
+    }
+    if (input.pipeline) {
+      jobs = parsePipeline(input.pipeline);
+      if (!jobs) throw new Error("pipeline parse failed");
+    } else {
+      jobs = await loadPipelineJobs(env, input.repo, sha, installationId);
+    }
   }
-  const branch = branchFromRef(input.ref) || input.ref || (!isHexSha(input.sha) ? input.sha : "");
+  const branch = input.source
+    ? input.ref || "local"
+    : branchFromRef(input.ref) || input.ref || (!isHexSha(input.sha) ? input.sha : "");
   const { runId, jobIds, queuedIds } = await createRunAndFanOut(env, {
     repo: input.repo,
     sha,
@@ -710,8 +792,9 @@ async function dispatchRun(
     installationId,
     jobs,
     priority: input.priority ?? 0,
+    source: input.source ?? null,
   });
-  log("info", "run dispatched", { runId, repo: input.repo, sha, event: input.event ?? "dispatch" });
+  log("info", "run dispatched", { runId, repo: input.repo, sha, event: input.event ?? "dispatch", source: input.source ?? null });
   return { runId, jobIds, queuedIds };
 }
 
@@ -1070,6 +1153,17 @@ export default {
         const key = decodeURIComponent(cacheMatch[1]);
         if (request.method === "PUT") return await handleCachePut(env.CACHE, key, request);
         return await handleCacheGet(env.CACHE, key);
+      }
+      // Source dispatch: upload a working-tree tarball, then dispatch
+      // with `source: <id>` and an inline pipeline (run scope only).
+      if (request.method === "POST" && url.pathname === "/v1/source") {
+        if (!(await requireScope(request, env, "run"))) return json({ error: "unauthorized" }, 401);
+        return await handleSourcePut(env.CACHE, request);
+      }
+      const sourceMatch = /^\/v1\/source\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "GET" && sourceMatch) {
+        if (!(await requireScope(request, env, "run"))) return json({ error: "unauthorized" }, 401);
+        return await handleSourceGet(env.CACHE, sourceMatch[1]);
       }
       const artifactMatch = /^\/v1\/jobs\/([^/]+)\/artifacts\/([^/]+)$/.exec(url.pathname);
       if (artifactMatch && (request.method === "PUT" || request.method === "GET")) {

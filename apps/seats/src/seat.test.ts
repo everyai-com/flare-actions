@@ -190,6 +190,7 @@ class FakeContainer implements ContainerCtl {
     if (cmd[0] === "tar") return { exitCode: 0 };
     if (cmd[0] === "stat") return { exitCode: 0, stdout: bytes("12") };
     if (cmd[0] === "cat") return { exitCode: 0, stdout: bytes("blob-bytes-12") };
+    if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("rm -rf")) return { exitCode: 0 };
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("test -f")) return { exitCode: 0 };
     if (cmd[0] === "sleep-forever") return { exitCode: 0, hang: true };
     throw new Error(`unrouted exec: ${JSON.stringify(cmd)} stdin=${String(opts?.stdin).slice(0, 60)}`);
@@ -542,6 +543,35 @@ describe("runSeatJob", () => {
     expect(db.jobs.get("j1")?.attempts).toBe(1);
     expect(db.jobs.get("j1")?.log as string).toContain("retrying after failure (attempt 2/2)");
     expect(container.destroys).toBe(1);
+  });
+
+  it("unpacks source tarballs instead of checking out", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const sourceId = "123e4567-e89b-12d3-a456-426614174000";
+    (db.runs.get("r1") as Row).source = sourceId;
+    const container = new FakeContainer();
+    const d = deps(db, container);
+    await d.cache?.put(`sources/${sourceId}`, bytes("fake-tar-bytes"));
+    const out = await runSeatJob(d, "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("success");
+    const gitCheckout = container.calls.find((c) => c.cmd[0] === "sh" && c.cmd[1] === "-s");
+    expect(gitCheckout).toBeUndefined();
+    expect(container.calls.find((c) => c.cmd[0] === "tar" && c.cmd[1] === "-tzf")).toBeDefined();
+    expect(container.calls.find((c) => c.cmd[0] === "tar" && c.cmd[1] === "-xzf")).toBeDefined();
+    expect(db.jobs.get("j1")?.log as string).toContain("source unpacked");
+  });
+
+  it("releases when the source tarball is missing", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    (db.runs.get("r1") as Row).source = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const container = new FakeContainer();
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("released");
+    expect((out as { detail: string }).detail).toContain("source tarball missing");
+    expect(db.jobs.get("j1")?.status).toBe("queued");
   });
 
   it("fails closed on an unparseable definition instead of echo-succeeding", async () => {

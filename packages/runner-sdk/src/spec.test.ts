@@ -43,6 +43,14 @@ describe("parseJobSpec", () => {
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x", if: "github.event_name == 'push'" }] }))).toBeNull();
   });
 
+  it("keeps step timeouts/shell and rejects malformed ones", () => {
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x", timeoutMinutes: 5, shell: "bash" }] }))?.steps).toEqual([
+      { run: "x", timeoutMinutes: 5, shell: "bash" },
+    ]);
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x", timeoutMinutes: 0 }] }))).toBeNull();
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x", shell: "sh -c evil" }] }))).toBeNull();
+  });
+
   it("rejects bad steps and bad option shapes", () => {
     expect(parseJobSpec("")).toBeNull();
     expect(parseJobSpec(JSON.stringify({ steps: [] }))).toBeNull();

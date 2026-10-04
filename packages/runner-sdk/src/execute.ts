@@ -9,6 +9,9 @@ export interface ExecStep {
   // Bounded condition subset (always()/success()/failure()/cancelled()
   // and negations); undefined means success().
   if?: string;
+  // Per-step bound/override: minutes (1-180) and interpreter (sh default).
+  timeoutMinutes?: number;
+  shell?: string;
 }
 
 export interface StepResult {
@@ -50,6 +53,7 @@ interface RunOneOptions {
   outputLimit: number;
   container?: string;
   containerEnv?: string[];
+  shell: string;
 }
 
 function runOne(o: RunOneOptions): Promise<StepResult> {
@@ -71,13 +75,13 @@ function runOne(o: RunOneOptions): Promise<StepResult> {
     if (o.container) {
       execFile(
         "docker",
-        dockerArgsForStep(o.container, o.cwd, o.env, o.containerEnv ?? [], o.command),
+        dockerArgsForStep(o.container, o.cwd, o.env, o.containerEnv ?? [], o.command, o.shell),
         { timeout: o.timeoutMs, maxBuffer: 4 * 1024 * 1024 },
         finish,
       );
       return;
     }
-    execFile("sh", ["-c", o.command], { cwd: o.cwd, env: o.env, timeout: o.timeoutMs, maxBuffer: 4 * 1024 * 1024 }, finish);
+    execFile(o.shell, ["-c", o.command], { cwd: o.cwd, env: o.env, timeout: o.timeoutMs, maxBuffer: 4 * 1024 * 1024 }, finish);
   });
 }
 
@@ -101,10 +105,11 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
       command: step.run,
       cwd: opts.cwd,
       env: opts.env,
-      timeoutMs,
+      timeoutMs: step.timeoutMinutes !== undefined ? step.timeoutMinutes * 60000 : timeoutMs,
       outputLimit,
       container: opts.container,
       containerEnv: opts.containerEnv,
+      shell: step.shell ?? "sh",
     });
     results.push(r);
     logParts.push(`--- step ${i + 1}: ${step.run} ---\n${r.output}\n(exit ${r.exitCode}, ${r.durationMs}ms)`);
@@ -139,6 +144,16 @@ export function parseDefinition(definition: string): ExecStep[] | null {
         const cond = normalizeStepCondition(rec.if);
         if (!cond) return null;
         step.if = cond;
+      }
+      if (rec.timeoutMinutes !== undefined) {
+        if (typeof rec.timeoutMinutes !== "number" || !Number.isInteger(rec.timeoutMinutes) || rec.timeoutMinutes < 1 || rec.timeoutMinutes > 180) {
+          return null;
+        }
+        step.timeoutMinutes = rec.timeoutMinutes;
+      }
+      if (rec.shell !== undefined) {
+        if (typeof rec.shell !== "string" || !/^[\w./-]{1,32}$/.test(rec.shell.trim())) return null;
+        step.shell = rec.shell.trim();
       }
       steps.push(step);
     }

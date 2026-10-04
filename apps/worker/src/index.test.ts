@@ -80,6 +80,26 @@ describe("validateDispatch", () => {
     expect(validateDispatch({ repo: "o/r", sha: "main", priority: "high" })).toHaveProperty("error");
   });
 
+  it("validates source dispatches (working tree, no commit)", () => {
+    const id = "123e4567-e89b-12d3-a456-426614174000";
+    expect(validateDispatch({ repo: "o/r", pipeline: "jobs: {}", source: id })).toEqual({
+      repo: "o/r",
+      sha: "",
+      ref: "",
+      pipeline: "jobs: {}",
+      priority: 0,
+      source: id,
+    });
+    expect(validateDispatch({ repo: "o/r", pipeline: "jobs: {}", source: id, priority: 5, ref: "local" })).toMatchObject({
+      priority: 5,
+      ref: "local",
+      source: id,
+    });
+    expect(validateDispatch({ repo: "o/r", source: "nope", pipeline: "jobs: {}" })).toHaveProperty("error");
+    expect(validateDispatch({ repo: "o/r", source: id })).toHaveProperty("error"); // pipeline is the contract
+    expect(validateDispatch({ repo: "o/r", source: id, pipeline: "   " })).toHaveProperty("error");
+  });
+
   it("rejects malformed input with a message", () => {
     expect(validateDispatch({ repo: "nope", sha: "main" })).toHaveProperty("error");
     expect(validateDispatch({ repo: "o/r" })).toHaveProperty("error");

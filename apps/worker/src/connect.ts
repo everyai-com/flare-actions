@@ -44,8 +44,9 @@ export function buildManifest(name: string, origin: string): AppManifest {
     // Every default event needs a backing permission or GitHub rejects the
     // manifest ("Default events are not supported by permissions"): push is
     // covered by contents, pull_request requires pull_requests. checks:write
-    // powers per-job Check Runs with failure output on the PR page.
-    default_permissions: { contents: "read", statuses: "write", checks: "write", pull_requests: "read" },
+    // powers per-job Check Runs with failure output on the PR page;
+    // pull_requests:write powers the per-run PR summary comment.
+    default_permissions: { contents: "read", statuses: "write", checks: "write", pull_requests: "write" },
     default_events: ["push", "pull_request"],
     hook_attributes: { url: `${base}/webhooks/github`, active: true },
   };

@@ -3,7 +3,9 @@ import type { Db, JobRow } from "./db";
 import {
   claimAdminMarker,
   claimNextJob,
+  claimWebhookDelivery,
   isAdminMarkerClaimed,
+  pruneWebhookDeliveries,
   releaseAdminMarker,
   updateRunningJob,
 } from "./db";
@@ -44,7 +46,7 @@ class QueueDb implements Db {
     return {
       bind: (...values: unknown[]) => ({
         all: async <T,>(): Promise<{ results: T[] }> => {
-          if (norm.startsWith("SELECT j.*, r.repo, r.sha FROM jobs")) {
+          if (norm.startsWith("SELECT j.*, r.repo, r.sha, r.source FROM jobs")) {
             this.selects += 1;
             return { results: this.select(norm, values) as T[] };
           }
@@ -256,5 +258,61 @@ describe("claimAdminMarker", () => {
     await releaseAdminMarker(db);
     expect(await isAdminMarkerClaimed(db)).toBe(false);
     expect(await claimAdminMarker(db)).toBe(true);
+  });
+});
+
+// Routes the webhook-delivery SQL against an in-memory map (id ->
+// created_at).
+class DeliveriesDb implements Db {
+  store = new Map<string, string>();
+
+  prepare(sql: string) {
+    const norm = sql.replace(/\s+/g, " ").trim();
+    return {
+      bind: (...values: unknown[]) => ({
+        all: async <T,>() => ({ results: [] as T[] }),
+        first: async <T,>(): Promise<T | null> => {
+          throw new Error(`unrouted first: ${norm}`);
+        },
+        run: async () => {
+          if (norm.startsWith("INSERT INTO webhook_deliveries") && norm.includes("DO NOTHING")) {
+            const id = values[0] as string;
+            if (this.store.has(id)) return { meta: { changes: 0 } };
+            this.store.set(id, values[1] as string);
+            return { meta: { changes: 1 } };
+          }
+          if (norm.startsWith("DELETE FROM webhook_deliveries")) {
+            const cutoff = values[0] as string;
+            let changes = 0;
+            for (const [id, created] of this.store) {
+              if (created < cutoff) {
+                this.store.delete(id);
+                changes += 1;
+              }
+            }
+            return { meta: { changes } };
+          }
+          throw new Error(`unrouted run: ${norm}`);
+        },
+      }),
+    };
+  }
+}
+
+describe("claimWebhookDelivery", () => {
+  it("acks the first delivery and ignores redeliveries", async () => {
+    const db = new DeliveriesDb();
+    expect(await claimWebhookDelivery(db, "delivery-1")).toBe(true);
+    expect(await claimWebhookDelivery(db, "delivery-1")).toBe(false);
+    expect(await claimWebhookDelivery(db, "delivery-2")).toBe(true);
+  });
+
+  it("prunes deliveries older than the window", async () => {
+    const db = new DeliveriesDb();
+    db.store.set("old", "2000-01-01T00:00:00.000Z");
+    db.store.set("new", new Date().toISOString());
+    expect(await pruneWebhookDeliveries(db, 24)).toBe(1);
+    expect(db.store.has("old")).toBe(false);
+    expect(db.store.has("new")).toBe(true);
   });
 });

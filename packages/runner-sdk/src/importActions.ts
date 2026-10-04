@@ -69,7 +69,7 @@ const TOOLCHAIN_CHECKS: [RegExp, string][] = [
 ];
 
 interface JobAcc {
-  steps: { run: string; "continue-on-error"?: boolean; if?: string }[];
+  steps: { run: string; "continue-on-error"?: boolean; if?: string; "timeout-minutes"?: number; shell?: string }[];
   env: Record<string, string>;
   cachePaths: string[];
   cacheKey: string | null;
@@ -139,8 +139,19 @@ function convertStep(step: unknown, acc: JobAcc, warnings: string[], jobId: stri
     if (norm) cond = norm;
     else warnings.push(`${jobId}: dropped unsupported step condition \`${String(step.if)}\``);
   }
-  if (typeof step.shell === "string" && step.shell && !/^(sh|bash)$/i.test(step.shell)) {
-    warnings.push(`${jobId}: step shell \`${step.shell}\` runs under sh instead`);
+  const shell =
+    typeof step.shell === "string" && /^(sh|bash)$/i.test(step.shell.trim()) ? step.shell.trim().toLowerCase() : undefined;
+  if (step.shell !== undefined && shell === undefined) {
+    warnings.push(`${jobId}: dropped unsupported step shell \`${String(step.shell)}\``);
+  }
+  let stepTimeout: number | undefined;
+  if (step["timeout-minutes"] !== undefined) {
+    const t = step["timeout-minutes"];
+    if (typeof t === "number" && Number.isInteger(t) && t >= 1 && t <= 180) {
+      stepTimeout = t;
+    } else {
+      warnings.push(`${jobId}: dropped invalid step timeout-minutes`);
+    }
   }
   const stepEnv = isRecord(step.env) ? step.env : null;
   if (stepEnv) {
@@ -156,13 +167,15 @@ function convertStep(step: unknown, acc: JobAcc, warnings: string[], jobId: stri
   if (typeof step.run === "string" && step.run.trim()) {
     let run = step.run.trim();
     if (workdir) run = `(cd ${JSON.stringify(workdir)} &&\n${run}\n)`;
-    const out: { run: string; "continue-on-error"?: boolean; if?: string } = { run };
+    const out: { run: string; "continue-on-error"?: boolean; if?: string; "timeout-minutes"?: number; shell?: string } = { run };
     if (step["continue-on-error"] === true) {
       out["continue-on-error"] = true;
     } else if (step["continue-on-error"] !== undefined && step["continue-on-error"] !== false) {
       warnings.push(`${jobId}: non-boolean continue-on-error ignored`);
     }
     if (cond) out.if = cond;
+    if (stepTimeout !== undefined) out["timeout-minutes"] = stepTimeout;
+    if (shell) out.shell = shell;
     acc.steps.push(out);
     return;
   }

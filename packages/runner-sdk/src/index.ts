@@ -7,7 +7,7 @@ export { checkoutRepo, gitAvailable } from "./checkout.ts";
 export type { CheckoutOptions } from "./checkout.ts";
 export { parseJobSpec, matrixEnv } from "./spec.ts";
 export type { JobArtifactsSpec, JobCacheSpec, JobServiceSpec, JobSpec } from "./spec.ts";
-export { createTar, extractTar, restoreCache, safeCachePaths, saveCache } from "./cache.ts";
+export { createTar, extractTar, assertSafeTar, restoreCache, safeCachePaths, saveCache } from "./cache.ts";
 export type { CacheClient } from "./cache.ts";
 export { dockerArgsForService, dockerArgsForStep, dockerAvailable, dockerServicesCtl } from "./services.ts";
 export type { ServiceHandle, ServicesCtl } from "./services.ts";
@@ -49,6 +49,7 @@ export interface FlareJob {
   sha: string;
   name: string;
   definition: string;
+  source?: string | null;
 }
 
 export interface FlareStepResult {
@@ -219,7 +220,7 @@ export class FlareClient {
   async dispatch(
     repo: string,
     sha: string,
-    opts?: { ref?: string; pipeline?: string; priority?: number },
+    opts?: { ref?: string; pipeline?: string; priority?: number; source?: string },
   ): Promise<{ runId: string; jobIds: string[] }> {
     const res = await this.call("/v1/runs/dispatch", {
       method: "POST",
@@ -228,6 +229,29 @@ export class FlareClient {
     });
     if (!res.ok) throw new Error(`dispatch failed: ${res.status}`);
     return (await res.json()) as { runId: string; jobIds: string[] };
+  }
+
+  // Source dispatch: upload a gzipped tarball of a working tree, then
+  // dispatch with `source: id` and an inline pipeline.
+  async putSource(data: Uint8Array): Promise<string> {
+    const res = await this.call(
+      "/v1/source",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/gzip" },
+        body: data as unknown as BodyInit,
+      },
+      300000,
+    );
+    if (!res.ok) throw new Error(`putSource failed: ${res.status}`);
+    const body = (await res.json()) as { id: string };
+    return body.id;
+  }
+
+  async getSource(id: string): Promise<Uint8Array> {
+    const res = await this.call(`/v1/source/${encodeURIComponent(id)}`, undefined, 300000);
+    if (!res.ok) throw new Error(`getSource failed: ${res.status}`);
+    return new Uint8Array(await res.arrayBuffer());
   }
 
   async rerun(runId: string, jobId: string): Promise<void> {

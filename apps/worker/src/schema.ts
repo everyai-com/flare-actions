@@ -12,12 +12,20 @@ export const SCHEMA_STATEMENTS = [
     event TEXT NOT NULL,
     installation_id INTEGER,
     branch TEXT NOT NULL DEFAULT '',
+    source TEXT,
+    pr_number INTEGER,
+    pr_comment_id INTEGER,
     status TEXT NOT NULL DEFAULT 'queued',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_runs_status_created ON runs(status, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_runs_repo_branch ON runs(repo, branch)`,
+  `CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_created ON webhook_deliveries(created_at)`,
   `CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -103,6 +111,9 @@ export const SCHEMA_STATEMENTS = [
 // database is the expected outcome, not an error.
 export const ALTER_STATEMENTS = [
   `ALTER TABLE runs ADD COLUMN branch TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE runs ADD COLUMN source TEXT`,
+  `ALTER TABLE runs ADD COLUMN pr_number INTEGER`,
+  `ALTER TABLE runs ADD COLUMN pr_comment_id INTEGER`,
   `ALTER TABLE jobs ADD COLUMN labels TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`,

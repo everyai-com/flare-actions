@@ -5,6 +5,7 @@ import {
   getJobsForRun,
   getJobWithRun,
   hasActiveGroupJob,
+  isTerminal,
   listBlockedJobsInRepo,
   listStaleRunningJobs,
   releaseJob,
@@ -104,8 +105,36 @@ export async function triageAndStore(
   }
 }
 
+// Job-level condition, evaluated when its needs settle. The subset maps
+// onto the only scheduling context that exists here: whether any need
+// failed. `success()` (default) requires all-success, `failure()` runs
+// only after a failed need, `always()` either way.
+export function jobConditionSatisfied(condition: string | undefined, needsFailed: boolean): boolean {
+  const c = (condition ?? "success()").trim().toLowerCase();
+  const neg = c.startsWith("!");
+  const fn = neg ? c.slice(1) : c;
+  let value: boolean;
+  switch (fn) {
+    case "always()":
+      value = true;
+      break;
+    case "failure()":
+      value = needsFailed;
+      break;
+    case "cancelled()":
+      value = false;
+      break;
+    case "success()":
+    default:
+      value = !needsFailed;
+      break;
+  }
+  return neg ? !value : value;
+}
+
 // After any terminal transition: unblock needs-satisfied jobs (oldest
-// first so concurrency groups serialize), skip jobs whose needs failed.
+// first so concurrency groups serialize), skip jobs whose needs failed
+// (unless their job-level `if` says otherwise), honor group capacity.
 // onQueued fires for every newly queued job (seat wake-up hook).
 export async function promoteBlockedJobs(
   db: Db,
@@ -127,17 +156,18 @@ export async function promoteBlockedJobs(
       }
       const byBase = new Map<string, string[]>();
       for (const s of siblings) byBase.set(s.base, [...(byBase.get(s.base) ?? []), s.status]);
-      if (spec.needs.some((n) => (byBase.get(n) ?? []).some((st) => FAILED_STATUSES.includes(st)))) {
+      const needsSettled = spec.needs.every((n) => {
+        const statuses = byBase.get(n) ?? [];
+        return statuses.length > 0 && statuses.every((st) => isTerminal(st));
+      });
+      if (!needsSettled) continue;
+      const anyFailed = spec.needs.some((n) => (byBase.get(n) ?? []).some((st) => FAILED_STATUSES.includes(st)));
+      if (!jobConditionSatisfied(spec.if, anyFailed)) {
         await setJobStatus(db, job.id, "skipped");
         await rollupRunStatus(db, job.run_id);
         runJobsCache.delete(job.run_id);
         continue;
       }
-      const satisfied = spec.needs.every((n) => {
-        const statuses = byBase.get(n) ?? [];
-        return statuses.length > 0 && statuses.every((st) => st === "success");
-      });
-      if (!satisfied) continue;
     }
     if (spec.group && (await hasActiveGroupJob(db, repo, spec.group))) continue;
     await setJobStatus(db, job.id, "queued");

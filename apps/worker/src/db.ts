@@ -7,6 +7,9 @@ export interface RunRow {
   event: string;
   installation_id: number | null;
   branch: string;
+  source: string | null;
+  pr_number: number | null;
+  pr_comment_id: number | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -67,14 +70,34 @@ export function splitLabels(labels: string): string[] {
 
 export async function createRun(
   db: Db,
-  run: { id: string; repo: string; sha: string; event: string; installationId: number | null; branch?: string },
+  run: {
+    id: string;
+    repo: string;
+    sha: string;
+    event: string;
+    installationId: number | null;
+    branch?: string;
+    source?: string | null;
+    prNumber?: number | null;
+  },
 ): Promise<void> {
   const now = nowIso();
   await db
     .prepare(
-      "INSERT INTO runs (id, repo, sha, event, installation_id, branch, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+      "INSERT INTO runs (id, repo, sha, event, installation_id, branch, source, pr_number, pr_comment_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'queued', ?, ?)",
     )
-    .bind(run.id, run.repo, run.sha, run.event, run.installationId, run.branch ?? "", now, now)
+    .bind(
+      run.id,
+      run.repo,
+      run.sha,
+      run.event,
+      run.installationId,
+      run.branch ?? "",
+      run.source ?? null,
+      run.prNumber ?? null,
+      now,
+      now,
+    )
     .run();
 }
 
@@ -274,6 +297,31 @@ const CLAIM_PAGE_SIZE = 25;
 // jobs without letting one poll walk an unbounded queue.
 const CLAIM_MAX_SCAN = 200;
 
+// Webhook idempotency: GitHub retries (and manual redeliveries) carry the
+// same X-GitHub-Delivery UUID. First claim wins; a duplicate is a no-op.
+export async function claimWebhookDelivery(db: Db, id: string): Promise<boolean> {
+  const res = (await db
+    .prepare("INSERT INTO webhook_deliveries (id, created_at) VALUES (?, ?) ON CONFLICT(id) DO NOTHING")
+    .bind(id, nowIso())
+    .run()) as { meta?: { changes?: number } };
+  return (res?.meta?.changes ?? 0) > 0;
+}
+
+export async function pruneWebhookDeliveries(db: Db, maxAgeHours = 24): Promise<number> {
+  const cutoff = new Date(Date.now() - maxAgeHours * 3600000).toISOString();
+  const res = (await db.prepare("DELETE FROM webhook_deliveries WHERE created_at < ?").bind(cutoff).run()) as {
+    meta?: { changes?: number };
+  };
+  return res?.meta?.changes ?? 0;
+}
+
+// One PR comment per run, updated in place as the run progresses.
+export async function setRunPrComment(db: Db, runId: string, commentId: number): Promise<void> {
+  await db.prepare("UPDATE runs SET pr_comment_id = ? WHERE id = ?").bind(commentId, runId).run();
+}
+
+export type JobWithSource = JobRow & { repo: string; sha: string; source: string | null };
+
 // Poll-and-claim loop: walk matching queued jobs highest-priority-first
 // (then oldest-first) until one claim wins or the scan budget runs out.
 // Keyset pagination on (priority, created_at, id) instead of OFFSET:
@@ -284,29 +332,29 @@ const CLAIM_MAX_SCAN = 200;
 export async function claimNextJob(
   db: Db,
   runnerLabels: string[] = [],
-): Promise<(JobRow & { repo: string; sha: string }) | null> {
+): Promise<JobWithSource | null> {
   let afterPriority = 0;
   let afterCreated: string | null = null;
   let afterId = "";
   let scanned = 0;
   while (scanned < CLAIM_MAX_SCAN) {
-    const res: { results: (JobRow & { repo: string; sha: string })[] } =
+    const res: { results: JobWithSource[] } =
       afterCreated === null
         ? await db
             .prepare(
-              `SELECT j.*, r.repo, r.sha FROM jobs j JOIN runs r ON r.id = j.run_id
+              `SELECT j.*, r.repo, r.sha, r.source FROM jobs j JOIN runs r ON r.id = j.run_id
                WHERE j.status = 'queued' ORDER BY j.priority DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
             .bind(CLAIM_PAGE_SIZE)
-            .all<JobRow & { repo: string; sha: string }>()
+            .all<JobWithSource>()
         : await db
             .prepare(
-              `SELECT j.*, r.repo, r.sha FROM jobs j JOIN runs r ON r.id = j.run_id
+              `SELECT j.*, r.repo, r.sha, r.source FROM jobs j JOIN runs r ON r.id = j.run_id
                WHERE j.status = 'queued' AND (j.priority < ? OR (j.priority = ? AND (j.created_at > ? OR (j.created_at = ? AND j.id > ?))))
                ORDER BY j.priority DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
             .bind(afterPriority, afterPriority, afterCreated, afterCreated, afterId, CLAIM_PAGE_SIZE)
-            .all<JobRow & { repo: string; sha: string }>();
+            .all<JobWithSource>();
     if (res.results.length === 0) return null;
     for (const job of res.results) {
       if (!labelsMatch(job.labels ?? "", runnerLabels)) continue;
@@ -607,28 +655,31 @@ export async function getRepoSecretRows(db: Db, repo: string): Promise<RepoSecre
 // Retention janitor: drop runs (and their jobs — D1 does not enforce
 // ON DELETE CASCADE without PRAGMA foreign_keys) older than maxAgeDays.
 // Bounded per pass so a huge backlog never blows a request budget.
-// Job ids come back so the caller can delete the matching R2 artifacts.
+// Job ids and source ids come back so the caller can delete the matching
+// R2 artifacts and source tarballs.
 export async function pruneOldRuns(
   db: Db,
   maxAgeDays = 90,
   limit = 500,
-): Promise<{ runs: number; jobIds: string[] }> {
+): Promise<{ runs: number; jobIds: string[]; sources: string[] }> {
   const cutoff = new Date(Date.now() - maxAgeDays * 86400000).toISOString();
   const stale = await db
-    .prepare("SELECT id FROM runs WHERE created_at < ? AND status IN ('success','failure','error','cancelled','skipped') ORDER BY created_at ASC LIMIT ?")
+    .prepare("SELECT id, source FROM runs WHERE created_at < ? AND status IN ('success','failure','error','cancelled','skipped') ORDER BY created_at ASC LIMIT ?")
     .bind(cutoff, limit)
-    .all<{ id: string }>();
+    .all<{ id: string; source: string | null }>();
   const jobIds: string[] = [];
+  const sources: string[] = [];
   for (const row of stale.results) {
     const jobs = await db
       .prepare("SELECT id FROM jobs WHERE run_id = ?")
       .bind(row.id)
       .all<{ id: string }>();
     for (const job of jobs.results) jobIds.push(job.id);
+    if (row.source) sources.push(row.source);
     await db.prepare("DELETE FROM jobs WHERE run_id = ?").bind(row.id).run();
     await db.prepare("DELETE FROM runs WHERE id = ?").bind(row.id).run();
   }
-  return { runs: stale.results.length, jobIds };
+  return { runs: stale.results.length, jobIds, sources };
 }
 
 export async function audit(db: Db, actor: string, action: string, target = ""): Promise<void> {

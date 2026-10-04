@@ -19,7 +19,7 @@ export interface JobArtifactsSpec {
 }
 
 export interface JobSpec {
-  steps: { run: string; continueOnError?: boolean; if?: string }[];
+  steps: { run: string; continueOnError?: boolean; if?: string; timeoutMinutes?: number; shell?: string }[];
   base?: string;
   matrix?: Record<string, string>;
   env?: Record<string, string>;
@@ -49,6 +49,13 @@ export interface StepRunState {
   // (success()) steps are skipped from here on, while failure()/always()
   // steps still run.
   jobFailed: boolean;
+}
+
+// Tar member safety for untrusted archives (source dispatch): absolute
+// paths and `..` traversal are rejected before extraction. Lives here
+// (not cache.ts) because the seats bundle must not pull in node:child_process.
+export function unsafeTarMember(name: string): boolean {
+  return name.startsWith("/") || name.split("/").includes("..");
 }
 
 export function stepRuns(condition: string | undefined, state: StepRunState): boolean {
@@ -105,10 +112,12 @@ export function parseJobSpec(definition: string): JobSpec | null {
     return null;
   }
   if (!isRecord(parsed) || !Array.isArray(parsed.steps) || parsed.steps.length === 0) return null;
-  const steps: { run: string; continueOnError?: boolean; if?: string }[] = [];
+  const steps: { run: string; continueOnError?: boolean; if?: string; timeoutMinutes?: number; shell?: string }[] = [];
   for (const s of parsed.steps) {
     if (!isRecord(s) || typeof s.run !== "string" || !s.run.trim()) return null;
-    const step: { run: string; continueOnError?: boolean; if?: string } = { run: s.run };
+    const step: { run: string; continueOnError?: boolean; if?: string; timeoutMinutes?: number; shell?: string } = {
+      run: s.run,
+    };
     if (s.continueOnError !== undefined) {
       if (typeof s.continueOnError !== "boolean") return null;
       step.continueOnError = s.continueOnError;
@@ -117,6 +126,16 @@ export function parseJobSpec(definition: string): JobSpec | null {
       const cond = normalizeStepCondition(s.if);
       if (!cond) return null;
       step.if = cond;
+    }
+    if (s.timeoutMinutes !== undefined) {
+      if (typeof s.timeoutMinutes !== "number" || !Number.isInteger(s.timeoutMinutes) || s.timeoutMinutes < 1 || s.timeoutMinutes > 180) {
+        return null;
+      }
+      step.timeoutMinutes = s.timeoutMinutes;
+    }
+    if (s.shell !== undefined) {
+      if (typeof s.shell !== "string" || !/^[\w./-]{1,32}$/.test(s.shell.trim())) return null;
+      step.shell = s.shell.trim();
     }
     steps.push(step);
   }

@@ -1,8 +1,26 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createTar, extractTar, restoreCache, safeCachePaths, saveCache } from "./cache";
+import { assertSafeTar, createTar, extractTar, restoreCache, safeCachePaths, saveCache } from "./cache";
+
+describe("assertSafeTar", () => {
+  it("accepts normal archives and rejects traversal members", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-tar-"));
+    try {
+      writeFileSync(join(dir, "ok.txt"), "hi");
+      mkdirSync(join(dir, "sub"));
+      writeFileSync(join(dir, "outside.txt"), "escape");
+      const safe = execFileSync("tar", ["-czf", "-", "-C", dir, "ok.txt"]);
+      await expect(assertSafeTar(new Uint8Array(safe))).resolves.toBeUndefined();
+      const evil = execFileSync("tar", ["-czf", "-", "-C", join(dir, "sub"), "../outside.txt"]);
+      await expect(assertSafeTar(new Uint8Array(evil))).rejects.toThrow("unsafe tar member");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("cache tar", () => {
   it("round-trips directories", async () => {

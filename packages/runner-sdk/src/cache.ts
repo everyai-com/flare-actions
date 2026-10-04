@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { unsafeTarMember } from "./spec.ts";
 
 // Build cache over the server's R2 store: tar the cached paths, PUT the
 // blob under the cache key; on later runs GET it back and extract.
@@ -62,6 +63,22 @@ export async function createTar(dir: string, paths: string[]): Promise<Uint8Arra
 
 export async function extractTar(dir: string, data: Uint8Array): Promise<void> {
   await runTar(["-xzf", "-"], dir, data);
+}
+
+// Extraction guard for untrusted tarballs (source dispatch): list first,
+// reject absolute paths and `..` traversal, then extract. The listing
+// pass costs one read of the blob; the alternative (a hostile member
+// escaping the workspace) costs much more.
+export async function assertSafeTar(data: Uint8Array): Promise<void> {
+  const listing = await runTar(["-tzf", "-"], process.cwd(), data);
+  const names = new TextDecoder().decode(listing).split("\n");
+  for (const raw of names) {
+    const name = raw.trim();
+    if (!name) continue;
+    if (unsafeTarMember(name)) {
+      throw new Error(`unsafe tar member: ${name.slice(0, 120)}`);
+    }
+  }
 }
 
 export async function restoreCache(

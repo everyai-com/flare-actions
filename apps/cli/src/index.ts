@@ -7,6 +7,7 @@ import {
   type FlareRunDigest,
 } from "@flare-actions/runner-sdk";
 import { runLocal } from "./local.ts";
+import { dispatchSource } from "./source.ts";
 
 loadEnv();
 
@@ -20,6 +21,7 @@ function usage(): never {
       "  cli logs <runId>                           show run jobs, steps, triage, logs",
       "  cli local [job] [--file flare.yml]         run the pipeline in this directory (no server, warm cache)",
       "  cli run <repo> <sha|branch|tag> [ref]      dispatch, wait, print the compact digest (exit 1 on failure)",
+      "  cli run <repo> --source [ref]              upload the working tree and run it (no commit needed)",
       "  cli watch <runId>                          wait for a run and print the compact digest",
       "  cli dispatch <repo> <sha|branch|tag> [ref]  trigger a run without waiting",
       "  cli rerun <runId> <jobId>                   reset a finished job to queued",
@@ -133,16 +135,31 @@ try {
     }
     const result = await runLocal({ cwd: process.cwd(), file, job: positional[0] });
     process.exitCode = result.ok ? 0 : 1;
-  } else if (cmd === "run" && rest[0] && rest[1]) {
+  } else if (cmd === "run" && rest[0]) {
     const { args, priority } = takePriority(rest);
-    if (!args[0] || !args[1]) usage();
-    const out = await client().dispatch(args[0], args[1], {
-      ...(args[2] ? { ref: args[2] } : {}),
-      ...(priority !== undefined ? { priority } : {}),
-    });
-    console.error(`run ${out.runId} dispatched — waiting for the digest…`);
-    const digest = await waitAndDigest(client(), out.runId);
-    process.exitCode = digest.status === "success" ? 0 : 1;
+    const sourceMode = args.includes("--source");
+    const positional = args.filter((a) => a !== "--source");
+    const repo = positional[0];
+    if (!repo || (!sourceMode && !positional[1])) usage();
+    if (sourceMode) {
+      const out = await dispatchSource(client(), {
+        repo,
+        ref: positional[1],
+        cwd: process.cwd(),
+        ...(priority !== undefined ? { priority } : {}),
+      });
+      console.error(`source run ${out.runId} dispatched (upload ${out.sourceId.slice(0, 8)}…) — waiting for the digest…`);
+      const digest = await waitAndDigest(client(), out.runId);
+      process.exitCode = digest.status === "success" ? 0 : 1;
+    } else {
+      const out = await client().dispatch(repo, positional[1] as string, {
+        ...(positional[2] ? { ref: positional[2] } : {}),
+        ...(priority !== undefined ? { priority } : {}),
+      });
+      console.error(`run ${out.runId} dispatched — waiting for the digest…`);
+      const digest = await waitAndDigest(client(), out.runId);
+      process.exitCode = digest.status === "success" ? 0 : 1;
+    }
   } else if (cmd === "watch" && rest[0]) {
     const digest = await waitAndDigest(client(), rest[0]);
     process.exitCode = digest.status === "success" ? 0 : 1;

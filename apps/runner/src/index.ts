@@ -1,7 +1,15 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { arch, platform, tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkoutRepo, FlareClient, loadEnv, parseJobSpec, runJob } from "@flare-actions/runner-sdk";
+import {
+  assertSafeTar,
+  checkoutRepo,
+  extractTar,
+  FlareClient,
+  loadEnv,
+  parseJobSpec,
+  runJob,
+} from "@flare-actions/runner-sdk";
 
 loadEnv();
 const baseUrl = process.env["FLARE_ACTIONS_URL"];
@@ -47,12 +55,23 @@ async function pollOnce(): Promise<boolean> {
   const workdir = mkdtempSync(join(tmpdir(), "flare-job-"));
   try {
     const srcdir = join(workdir, "src");
-    await checkoutRepo({
-      repo: job.repo,
-      sha: job.sha,
-      dir: srcdir,
-      token: process.env["GITHUB_TOKEN"],
-    });
+    if (job.source) {
+      // Source dispatch: the workspace is an uploaded tarball of the
+      // agent's working tree (no commit exists). Guard traversal, then
+      // unpack instead of checking anything out.
+      console.log(JSON.stringify({ msg: "unpacking source", jobId: job.id }));
+      const blob = await client.getSource(job.source);
+      await assertSafeTar(blob);
+      mkdirSync(srcdir, { recursive: true });
+      await extractTar(srcdir, blob);
+    } else {
+      await checkoutRepo({
+        repo: job.repo,
+        sha: job.sha,
+        dir: srcdir,
+        token: process.env["GITHUB_TOKEN"],
+      });
+    }
     const outcome = await runJob(spec, {
       cwd: srcdir,
       env: {

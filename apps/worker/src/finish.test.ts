@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Db, JobRow, StaleJobRow } from "./db";
-import { maybeRetryJob, requeueStaleJobs } from "./finish";
+import { jobConditionSatisfied, maybeRetryJob, promoteBlockedJobs, requeueStaleJobs } from "./finish";
 
 function jobRow(over: Partial<JobRow> = {}): JobRow {
   return {
@@ -25,6 +25,7 @@ function jobRow(over: Partial<JobRow> = {}): JobRow {
 
 class MemDb implements Db {
   stale: StaleJobRow[] = [];
+  blocked: unknown[] = [];
   jobs = new Map<string, JobRow>();
   runStatus = new Map<string, string>();
   releaseChanges = 1;
@@ -37,12 +38,18 @@ class MemDb implements Db {
           if (norm.startsWith("SELECT j.id, j.run_id, j.name, r.repo, r.sha FROM jobs")) {
             return { results: this.stale as T[] };
           }
+          if (norm.includes("status = 'blocked'")) {
+            return { results: this.blocked as T[] };
+          }
           if (norm.startsWith("SELECT * FROM jobs WHERE run_id")) {
             return { results: [...this.jobs.values()].filter((j) => j.run_id === values[0]) as T[] };
           }
           throw new Error(`unrouted all: ${norm}`);
         },
         first: async <T,>(): Promise<T | null> => {
+          if (norm.startsWith("SELECT * FROM jobs WHERE id")) {
+            return (this.jobs.get(values[0] as string) ?? null) as unknown as T | null;
+          }
           if (norm.startsWith("SELECT j.*, r.repo, r.sha FROM jobs j JOIN runs r")) {
             const job = this.jobs.get(values[0] as string);
             if (!job) return null;
@@ -69,6 +76,11 @@ class MemDb implements Db {
               return { meta: { changes: 1 } };
             }
             return { meta: { changes: 0 } };
+          }
+          if (norm.startsWith("UPDATE jobs SET status = ?, finished_at")) {
+            const job = this.jobs.get(values[3] as string);
+            if (job) job.status = values[0] as string;
+            return {};
           }
           if (norm.startsWith("UPDATE runs SET status")) {
             this.runStatus.set(values[2] as string, values[0] as string);
@@ -125,6 +137,76 @@ describe("requeueStaleJobs", () => {
     const sent: unknown[] = [];
     expect(await requeueStaleJobs(db, { send: async (m) => void sent.push(m) })).toEqual([]);
     expect(sent).toEqual([]);
+  });
+});
+
+describe("jobConditionSatisfied", () => {
+  it("maps the bounded subset onto needs outcomes", () => {
+    expect(jobConditionSatisfied(undefined, false)).toBe(true);
+    expect(jobConditionSatisfied(undefined, true)).toBe(false);
+    expect(jobConditionSatisfied("success()", true)).toBe(false);
+    expect(jobConditionSatisfied("failure()", true)).toBe(true);
+    expect(jobConditionSatisfied("failure()", false)).toBe(false);
+    expect(jobConditionSatisfied("always()", true)).toBe(true);
+    expect(jobConditionSatisfied("cancelled()", true)).toBe(false);
+    expect(jobConditionSatisfied("!failure()", false)).toBe(true);
+    expect(jobConditionSatisfied("!cancelled()", true)).toBe(true);
+  });
+});
+
+describe("promoteBlockedJobs", () => {
+  function def(over: Record<string, unknown> = {}) {
+    return JSON.stringify({ steps: [{ run: "x" }], base: "notify", needs: ["test"], ...over });
+  }
+  function blocked(definition: string, id = "job-2"): JobRow & { repo: string; sha: string } {
+    return { ...jobRow({ id, name: "notify", status: "blocked", definition }), repo: "o/r", sha: "abc123" };
+  }
+
+  it("promotes needs-satisfied jobs", async () => {
+    const db = new MemDb();
+    db.jobs.set("job-1", jobRow({ id: "job-1", name: "test", status: "success" }));
+    const job = blocked(def(), "job-2");
+    db.jobs.set("job-2", job);
+    db.blocked = [job];
+    const sent: unknown[] = [];
+    const promoted = await promoteBlockedJobs(db, { send: async (m) => void sent.push(m) }, "o/r");
+    expect(promoted).toEqual(["job-2"]);
+    expect(db.jobs.get("job-2")?.status).toBe("queued");
+    expect(sent).toEqual([{ runId: "run-1", jobId: "job-2", repo: "o/r", sha: "abc123" }]);
+  });
+
+  it("skips defaults after a failed need but runs failure()/always() jobs", async () => {
+    const db = new MemDb();
+    db.jobs.set("job-1", jobRow({ id: "job-1", name: "test", status: "failure" }));
+    const plain = blocked(def(), "job-2");
+    const always = blocked(def({ if: "always()" }), "job-3");
+    const onFail = blocked(def({ if: "failure()" }), "job-4");
+    db.jobs.set("job-2", plain);
+    db.jobs.set("job-3", always);
+    db.jobs.set("job-4", onFail);
+    db.blocked = [plain, always, onFail];
+    const sent: unknown[] = [];
+    const promoted = await promoteBlockedJobs(db, { send: async (m) => void sent.push(m) }, "o/r");
+    expect(promoted).toEqual(["job-3", "job-4"]);
+    expect(db.jobs.get("job-2")?.status).toBe("skipped");
+    expect(db.jobs.get("job-3")?.status).toBe("queued");
+    expect(db.jobs.get("job-4")?.status).toBe("queued");
+    expect(sent).toHaveLength(2);
+  });
+
+  it("skips failure() jobs after success and waits for pending needs", async () => {
+    const db = new MemDb();
+    db.jobs.set("job-1", jobRow({ id: "job-1", name: "test", status: "success" }));
+    const onFail = blocked(def({ if: "failure()" }), "job-2");
+    const pending = blocked(JSON.stringify({ steps: [{ run: "x" }], base: "notify2", needs: ["other"] }), "job-3");
+    db.jobs.set("job-2", onFail);
+    db.jobs.set("job-3", pending);
+    db.jobs.set("job-4", jobRow({ id: "job-4", name: "other", status: "running", definition: JSON.stringify({ base: "other" }) }));
+    db.blocked = [onFail, pending];
+    const promoted = await promoteBlockedJobs(db, { send: async () => undefined }, "o/r");
+    expect(promoted).toEqual([]);
+    expect(db.jobs.get("job-2")?.status).toBe("skipped");
+    expect(db.jobs.get("job-3")?.status).toBe("blocked");
   });
 });
 

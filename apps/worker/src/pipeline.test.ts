@@ -103,6 +103,20 @@ describe("parsePipeline v2 keys", () => {
     expect(readRetryPolicy("junk")).toBe(0);
   });
 
+  it("parses per-step timeout/shell and job-level conditions", () => {
+    const jobs = parsePipeline(
+      "jobs:\n  a:\n    if: always()\n    steps:\n      - run: x\n        timeout-minutes: 5\n        shell: bash\n",
+    );
+    expect(jobs?.[0].if).toBe("always()");
+    expect(jobs?.[0].steps[0]).toEqual({ run: "x", timeoutMinutes: 5, shell: "bash" });
+    expect(parsePipeline("jobs:\n  a:\n    if: github.ref == 'x'\n    steps:\n      - run: x\n")).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    steps:\n      - run: x\n        timeout-minutes: 0\n")).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    steps:\n      - run: x\n        shell: 'sh -c evil'\n")).toBeNull();
+    const def = serializeDefinition({ name: "a", steps: [{ run: "x" }], if: "failure()" }, "a");
+    expect(readJobSpec(def, "a").if).toBe("failure()");
+    expect(readJobSpec("junk", "a").if).toBeUndefined();
+  });
+
   it("parses step conditions and rejects expression soup", () => {
     const ok = parsePipeline("jobs:\n  a:\n    steps:\n      - run: clean\n        if: always()\n      - run: notify\n        if: failure()\n");
     expect(ok?.[0].steps).toEqual([

@@ -110,6 +110,16 @@ describe("import helpers", () => {
     expect(res.warnings.join("\n")).toContain("unsupported step condition");
   });
 
+  it("translates step shell and timeout, warning on unsupported shells", () => {
+    const res = convertActionsWorkflow(
+      "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: x\n        shell: bash\n        timeout-minutes: 5\n      - run: y\n        shell: python\n",
+    );
+    if (!isImportSuccess(res)) throw new Error(res.error);
+    expect(res.yaml).toContain("shell: bash");
+    expect(res.yaml).toContain("timeout-minutes: 5");
+    expect(res.warnings.join("\n")).toContain("unsupported step shell");
+  });
+
   it("points scheduled workflows at the dashboard schedules", () => {
     const res = convertActionsWorkflow(
       "on:\n  schedule:\n    - cron: '0 3 * * *'\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: x\n",

@@ -35,21 +35,22 @@ export function dockerArgsForService(containerName: string, svc: JobServiceSpec)
 }
 
 // Steps run as: docker run --rm -v <cwd>:/work -w /work [-e K=V ...]
-// <image> sh -c <command>. Only the listed env keys cross the boundary;
-// the container keeps its own PATH and toolchain.
+// <image> <shell> -c <command>. Only the listed env keys cross the
+// boundary; the container keeps its own PATH and toolchain.
 export function dockerArgsForStep(
   image: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
   forwardKeys: string[],
   command: string,
+  shell = "sh",
 ): string[] {
   const args = ["run", "--rm", "-v", `${cwd}:/work`, "-w", "/work"];
   for (const k of forwardKeys) {
     const v = env[k];
     if (v !== undefined) args.push("-e", `${k}=${v}`);
   }
-  args.push(image, "sh", "-c", command);
+  args.push(image, shell, "-c", command);
   return args;
 }
 

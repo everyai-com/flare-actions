@@ -66,6 +66,12 @@ describe("executeSteps", () => {
     expect(out.log).toContain("next");
   });
 
+  it("runs steps under the requested shell", async () => {
+    const out = await executeSteps([{ run: "echo $0", shell: "bash" }], { cwd: "/tmp", env: { ...process.env } });
+    expect(out.success).toBe(true);
+    expect(out.results[0].output).toContain("bash");
+  });
+
   it("passes environment through", async () => {
     const out = await executeSteps([{ run: "echo $FLARE_SHA" }], {
       cwd: "/tmp",
