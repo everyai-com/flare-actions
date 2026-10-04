@@ -30,6 +30,7 @@
     "types": "wrangler types --config apps/worker/wrangler.jsonc apps/worker/src/worker-configuration.d.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
+    "bench": "node scripts/bench.mjs",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"
   },

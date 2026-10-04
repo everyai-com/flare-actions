@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Db, JobRow } from "./db";
 import {
+  cancelQueuedJobs,
   claimAdminMarker,
   claimNextJob,
   claimWebhookDelivery,
@@ -10,7 +11,7 @@ import {
   updateRunningJob,
 } from "./db";
 
-function jobRow(over: Partial<JobRow> = {}): JobRow & { repo: string; sha: string } {
+function jobRow(over: Partial<JobRow & { repo: string; sha: string }> = {}): JobRow & { repo: string; sha: string } {
   return {
     id: "job-1",
     run_id: "run-1",
@@ -65,6 +66,16 @@ class QueueDb implements Db {
             }
             return { meta: { changes: 0 } };
           }
+          if (norm.startsWith("UPDATE jobs SET status = 'cancelled'")) {
+            let changes = 0;
+            for (const j of this.jobs) {
+              if (j.run_id === values[2] && (j.status === "queued" || j.status === "blocked")) {
+                j.status = "cancelled";
+                changes += 1;
+              }
+            }
+            return { meta: { changes } };
+          }
           if (norm.startsWith("UPDATE jobs SET status = ?, log = COALESCE")) {
             const job = this.jobs.find((j) => j.id === values[5]);
             if (!job || job.status !== "running") return { meta: { changes: 0 } };
@@ -90,6 +101,12 @@ class QueueDb implements Db {
           (j.priority ?? 0) < priority ||
           ((j.priority ?? 0) === priority && (j.created_at > created || (j.created_at === created && j.id > id))),
       );
+    }
+    const inMatch = /r\.repo IN \(([^)]*)\)/.exec(norm);
+    if (inMatch) {
+      const count = (inMatch[1].match(/\?/g) ?? []).length;
+      const repos = values.slice(values.length - 1 - count, values.length - 1) as string[];
+      rows = rows.filter((j) => repos.includes(j.repo));
     }
     rows = rows
       .slice()
@@ -160,6 +177,15 @@ describe("claimNextJob", () => {
     db.raced.add("job-a");
     const claimed = await claimNextJob(db, ["linux"]);
     expect(claimed?.id).toBe("job-b");
+  });
+
+  it("scopes claims to the token's repos when set", async () => {
+    const db = new QueueDb([
+      jobRow({ id: "job-a", repo: "o/a", created_at: "2026-10-02T09:00:00.000Z" }),
+      jobRow({ id: "job-b", repo: "o/b", created_at: "2026-10-02T08:00:00.000Z" }),
+    ]);
+    expect((await claimNextJob(db, [], ["o/a"]))?.id).toBe("job-a");
+    expect((await claimNextJob(db, []))?.id).toBe("job-b");
   });
 
   it("claims higher-priority jobs before older batch work", async () => {
@@ -243,6 +269,23 @@ class SettingsDb implements Db {
     };
   }
 }
+
+describe("cancelQueuedJobs", () => {
+  it("cancels queued/blocked jobs of one run, leaving running and other runs", async () => {
+    const db = new QueueDb([
+      jobRow({ id: "q", status: "queued" }),
+      jobRow({ id: "b", status: "blocked" }),
+      jobRow({ id: "r", status: "running" }),
+      jobRow({ id: "other", run_id: "run-2", status: "queued" }),
+    ]);
+    expect(await cancelQueuedJobs(db, "run-1")).toBe(2);
+    expect(db.jobs.find((j) => j.id === "q")?.status).toBe("cancelled");
+    expect(db.jobs.find((j) => j.id === "b")?.status).toBe("cancelled");
+    expect(db.jobs.find((j) => j.id === "r")?.status).toBe("running");
+    expect(db.jobs.find((j) => j.id === "other")?.status).toBe("queued");
+    expect(await cancelQueuedJobs(db, "run-1")).toBe(0);
+  });
+});
 
 describe("claimAdminMarker", () => {
   it("lets exactly one claimer win", async () => {

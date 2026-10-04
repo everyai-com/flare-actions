@@ -259,6 +259,15 @@ export class FlareClient {
     if (!res.ok) throw new Error(`rerun failed: ${res.status}`);
   }
 
+  // Explicit cancellation: queued/blocked jobs stop; running jobs have no
+  // interrupt channel and finish naturally.
+  async cancelRun(runId: string): Promise<number> {
+    const res = await this.call(`/v1/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+    if (!res.ok) throw new Error(`cancelRun failed: ${res.status}`);
+    const body = (await res.json()) as { cancelled?: unknown };
+    return typeof body.cancelled === "number" ? body.cancelled : 0;
+  }
+
   async getFlaky(repo: string, days = 30): Promise<FlareFlakyStat[]> {
     const res = await this.call(`/v1/flaky?repo=${encodeURIComponent(repo)}&days=${days}`);
     if (!res.ok) throw new Error(`getFlaky failed: ${res.status}`);

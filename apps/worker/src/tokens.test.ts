@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DASHBOARD_HTML } from "./dashboard";
-import { hashToken, newTokenValue, normalizeScopes, parseScopes, scopesAllow } from "./tokens";
+import { hashToken, newTokenValue, normalizeRepos, normalizeScopes, parseRepos, parseScopes, scopesAllow } from "./tokens";
 
 describe("hashToken", () => {
   it("is deterministic and hex-shaped", async () => {
@@ -53,6 +53,20 @@ describe("scopes", () => {
   });
 });
 
+describe("repo scoping", () => {
+  it("normalizes repo allowlists strictly", () => {
+    expect(normalizeRepos(undefined)).toEqual([]);
+    expect(normalizeRepos("")).toEqual([]);
+    expect(normalizeRepos("o/a, o/b,o/a")).toEqual(["o/a", "o/b"]);
+    expect(normalizeRepos(["o/a"])).toEqual(["o/a"]);
+    expect(normalizeRepos("nope")).toBeNull();
+    expect(normalizeRepos([42])).toBeNull();
+    expect(normalizeRepos(Array.from({ length: 51 }, (_, i) => `o/r${i}`))).toBeNull();
+    expect(parseRepos("o/a, bad entry, o/b")).toEqual(["o/a", "o/b"]);
+    expect(parseRepos("")).toEqual([]);
+  });
+});
+
 describe("dashboard", () => {
   it("serves a page wired to the admin and runs APIs", () => {
     expect(DASHBOARD_HTML).toContain("<title>Flare Actions</title>");
@@ -93,6 +107,11 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain('id="scheduleForm"');
     expect(DASHBOARD_HTML).toContain('id="scheduleList"');
     expect(DASHBOARD_HTML).toContain("/v1/admin/schedules");
+    expect(DASHBOARD_HTML).toContain('id="resetPane"');
+    expect(DASHBOARD_HTML).toContain('id="resetConfirmPane"');
+    expect(DASHBOARD_HTML).toContain('id="forgotBtn"');
+    expect(DASHBOARD_HTML).toContain("/v1/admin/reset");
+    expect(DASHBOARD_HTML).toContain('id="tokenRepos"');
     expect(DASHBOARD_HTML).toContain("just now");
     expect(DASHBOARD_HTML).not.toContain("${");
   });

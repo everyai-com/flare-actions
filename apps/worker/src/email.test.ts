@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   consumeInvite,
+  consumeResetToken,
   createInvite,
+  createResetToken,
   dummyPasswordHash,
   hashPassword,
   listInvites,
@@ -12,6 +14,26 @@ import {
   verifyPassword,
 } from "./email";
 import { createUser, deleteUser, deleteUserSessions, getUser, listUsers, type Db } from "./db";
+
+describe("reset tokens", () => {
+  it("issues single-use, expiring, normalized reset tokens", async () => {
+    const db = new MemEmail();
+    const token = await createResetToken(db, "  User@Example.com ");
+    expect(token).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await consumeResetToken(db, token)).toBe("user@example.com");
+    expect(await consumeResetToken(db, token)).toBeNull(); // single-use
+
+    const stale = await createResetToken(db, "a@b.co");
+    db.settings.set(
+      `email_reset_${stale}`,
+      JSON.stringify({ email: "a@b.co", expiresAt: new Date(Date.now() - 1000).toISOString() }),
+    );
+    expect(await consumeResetToken(db, stale)).toBeNull();
+
+    expect(await consumeResetToken(db, "not a token!")).toBeNull();
+    expect(await consumeResetToken(db, "missing-token")).toBeNull();
+  });
+});
 
 class MemEmail implements Db {
   settings = new Map<string, string>();

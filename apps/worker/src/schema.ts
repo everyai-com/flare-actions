@@ -49,6 +49,7 @@ export const SCHEMA_STATEMENTS = [
     name TEXT NOT NULL,
     token_hash TEXT NOT NULL UNIQUE,
     scopes TEXT NOT NULL DEFAULT 'runner',
+    repos TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     revoked_at TEXT
   )`,
@@ -116,6 +117,7 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE runs ADD COLUMN pr_comment_id INTEGER`,
   `ALTER TABLE jobs ADD COLUMN labels TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE api_tokens ADD COLUMN repos TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE jobs ADD COLUMN started_at TEXT`,
   `ALTER TABLE jobs ADD COLUMN finished_at TEXT`,

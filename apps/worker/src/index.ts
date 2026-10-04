@@ -1,6 +1,7 @@
 import {
   audit,
   cancelGroupJobs,
+  cancelQueuedJobs,
   claimAdminMarker,
   claimNextJob,
   claimWebhookDelivery,
@@ -43,6 +44,7 @@ import {
   setRunPrComment,
   setScheduleEnabled,
   setSetting,
+  setUserPassword,
   touchJob,
   touchScheduleRun,
   updateRunningJob,
@@ -85,7 +87,9 @@ import {
 } from "./oauth";
 import {
   consumeInvite,
+  consumeResetToken,
   createInvite,
+  createResetToken,
   dummyPasswordHash,
   hashPassword,
   listInvites,
@@ -105,9 +109,15 @@ import {
   type PipelineJob,
 } from "./pipeline";
 import { promoteBlockedJobs, maybeRetryJob, reportGitHubStatus, requeueStaleJobs, triageAndStore } from "./finish";
-import { notifyRunCompleted } from "./notify";
-import { authThrottleBlocked, authThrottleKeys, clearAuthFailures, recordAuthFailure } from "./ratelimit";
-import { hashToken, newTokenValue, normalizeScopes, parseScopes, scopesAllow } from "./tokens";
+import { notifyRunCompleted, resolveNotifySender } from "./notify";
+import {
+  authThrottleBlocked,
+  authThrottleKeys,
+  clearAuthFailures,
+  ipThrottleKey,
+  recordAuthFailure,
+} from "./ratelimit";
+import { hashToken, newTokenValue, normalizeRepos, normalizeScopes, parseRepos, parseScopes, scopesAllow } from "./tokens";
 import { badgeSvg } from "./badge";
 import { jobDurationMs, summarizeRunCost } from "./cost";
 import { runGenerate } from "./generate";
@@ -202,22 +212,24 @@ function getBearer(request: Request): string | null {
 // Tokens plus GitHub sessions. Bearer: break-glass env admin, env
 // runner, D1-issued tokens (admin/runner/readonly). Cookie: GitHub
 // login sessions (admin, everyone else reads). Admin does everything;
-// runner runs + reads; readonly only reads runs.
-async function authIdentity(request: Request, env: WorkerEnv): Promise<{ scope: AuthScope; actor: string } | null> {
+// runner runs + reads; readonly only reads runs. `repos` is the token's
+// repo allowlist ([] = all repos).
+async function authIdentity(request: Request, env: WorkerEnv): Promise<{ scope: AuthScope; actor: string; repos: string[] } | null> {
   const bearer = getBearer(request);
   if (bearer) {
     if (env.ADMIN_TOKEN && (await timingSafeEqualStr(bearer, env.ADMIN_TOKEN))) {
-      return { scope: "admin", actor: "break-glass" };
+      return { scope: "admin", actor: "break-glass", repos: [] };
     }
     if (env.RUNNER_TOKEN && (await timingSafeEqualStr(bearer, env.RUNNER_TOKEN))) {
-      return { scope: "runner", actor: "env:runner" };
+      return { scope: "runner", actor: "env:runner", repos: [] };
     }
     const row = await findLiveToken(env.DB, await hashToken(bearer));
     if (!row) return null;
     const scopes = parseScopes(row.scopes);
-    if (scopesAllow(scopes, "admin")) return { scope: "admin", actor: `token:${row.id}` };
-    if (scopesAllow(scopes, "run")) return { scope: "runner", actor: `token:${row.id}` };
-    if (scopesAllow(scopes, "read")) return { scope: "readonly", actor: `token:${row.id}` };
+    const repos = parseRepos(row.repos ?? "");
+    if (scopesAllow(scopes, "admin")) return { scope: "admin", actor: `token:${row.id}`, repos };
+    if (scopesAllow(scopes, "run")) return { scope: "runner", actor: `token:${row.id}`, repos };
+    if (scopesAllow(scopes, "read")) return { scope: "readonly", actor: `token:${row.id}`, repos };
     return null;
   }
   const sessionId = parseSessionCookie(request);
@@ -226,7 +238,14 @@ async function authIdentity(request: Request, env: WorkerEnv): Promise<{ scope: 
   if (!session || Date.parse(session.expires_at) <= Date.now()) return null;
   const kind = session.kind === "email" ? "email" : "github";
   const actor = `${kind}:${session.github_user}`;
-  return session.is_admin ? { scope: "admin", actor } : { scope: "readonly", actor };
+  return session.is_admin ? { scope: "admin", actor, repos: [] } : { scope: "readonly", actor, repos: [] };
+}
+
+// Repo-scoped tokens: empty allowlist means every repo.
+function repoAllowed(ident: { repos: string[] }, repo: string): boolean {
+  if (ident.repos.length === 0) return true;
+  const needle = repo.toLowerCase();
+  return ident.repos.some((r) => r.toLowerCase() === needle);
 }
 
 async function authScope(request: Request, env: WorkerEnv): Promise<AuthScope | null> {
@@ -288,7 +307,7 @@ async function requireScope(
   request: Request,
   env: WorkerEnv,
   need: "run" | "read",
-): Promise<{ scope: AuthScope; actor: string } | null> {
+): Promise<{ scope: AuthScope; actor: string; repos: string[] } | null> {
   const ident = await authIdentity(request, env);
   if (!ident) return null;
   if (ident.scope === "admin" || ident.scope === "runner") return ident;
@@ -547,7 +566,8 @@ async function handleStatusCallback(
   runId: string,
 ): Promise<Response> {
   try {
-    if (!(await requireScope(request, env, "run"))) return json({ error: "unauthorized" }, 401);
+    const ident = await requireScope(request, env, "run");
+    if (!ident) return json({ error: "unauthorized" }, 401);
     let body: { status?: string; jobId?: string; log?: string; result?: unknown };
     try {
       body = (await request.json()) as typeof body;
@@ -561,6 +581,7 @@ async function handleStatusCallback(
     }
     const run = await getRun(env.DB, runId);
     if (!run) return json({ error: "run not found" }, 404);
+    if (!repoAllowed(ident, run.repo)) return json({ error: "job not found" }, 404);
     const job = await getJob(env.DB, jobId);
     if (!job || job.run_id !== runId) return json({ error: "job not found" }, 404);
     // Retry policy: a failing attempt requeues while the budget remains
@@ -821,12 +842,14 @@ async function handleRepoSecrets(request: Request, env: WorkerEnv): Promise<Resp
   if (request.method === "GET") {
     const repo = url.searchParams.get("repo") ?? "";
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
+    if (!repoAllowed(ident, repo)) return json({ error: "token is not scoped to that repo" }, 403);
     return json({ secrets: await listRepoSecretNames(env.DB, repo) });
   }
   if (request.method === "DELETE") {
     const repo = url.searchParams.get("repo") ?? "";
     const name = url.searchParams.get("name") ?? "";
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
+    if (!repoAllowed(ident, repo)) return json({ error: "token is not scoped to that repo" }, 403);
     const nameErr = validateSecretName(name);
     if (nameErr) return json({ error: nameErr }, 400);
     const deleted = await deleteRepoSecret(env.DB, repo, name);
@@ -838,6 +861,7 @@ async function handleRepoSecrets(request: Request, env: WorkerEnv): Promise<Resp
   if (typeof body.repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(body.repo)) {
     return json({ error: "repo must be owner/name" }, 400);
   }
+  if (!repoAllowed(ident, body.repo)) return json({ error: "token is not scoped to that repo" }, 403);
   const nameErr = validateSecretName(body.name);
   if (nameErr) return json({ error: nameErr }, 400);
   const valueErr = validateSecretValue(body.value);
@@ -853,7 +877,7 @@ async function handleCreateToken(request: Request, env: WorkerEnv): Promise<Resp
   try {
     const ident = await authIdentity(request, env);
     if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
-    let body: { name?: unknown; scopes?: unknown };
+    let body: { name?: unknown; scopes?: unknown; repos?: unknown };
     try {
       body = (await request.json()) as typeof body;
     } catch {
@@ -864,12 +888,20 @@ async function handleCreateToken(request: Request, env: WorkerEnv): Promise<Resp
     }
     const scopes = body.scopes === undefined ? ["runner"] : normalizeScopes(body.scopes);
     if (!scopes) return json({ error: "scopes must be a non-empty array of runner|readonly|admin" }, 400);
+    const repos = normalizeRepos(body.repos);
+    if (repos === null) return json({ error: "repos must be owner/name entries (max 50)" }, 400);
     const id = crypto.randomUUID();
     const value = newTokenValue();
-    await createToken(env.DB, { id, name: body.name.trim(), tokenHash: await hashToken(value), scopes: scopes.join(",") });
+    await createToken(env.DB, {
+      id,
+      name: body.name.trim(),
+      tokenHash: await hashToken(value),
+      scopes: scopes.join(","),
+      repos: repos.join(","),
+    });
     await audit(env.DB, ident.actor, "token.create", id);
-    log("info", "token issued", { id });
-    return json({ id, name: body.name.trim(), scopes, token: value }, 201);
+    log("info", "token issued", { id, repos: repos.length });
+    return json({ id, name: body.name.trim(), scopes, repos, token: value }, 201);
   } catch (err) {
     log("error", "create token failed", { error: String(err) });
     return json({ error: "create token failed" }, 500);
@@ -1005,6 +1037,7 @@ export default {
           ai: env.AI,
           canWrite: ident.scope === "admin" || ident.scope === "runner",
           dispatchRun: async (input) => {
+            if (!repoAllowed(ident, input.repo)) throw new Error("token is not scoped to that repo");
             const out = await dispatchRun(env, { repo: input.repo, sha: input.sha, ref: input.ref ?? "", pipeline: input.pipeline });
             await audit(env.DB, ident.actor, "run.dispatch", out.runId);
             for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
@@ -1033,6 +1066,7 @@ export default {
         const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
         const valid = validateDispatch(body);
         if ("error" in valid) return json({ error: valid.error }, 400);
+        if (!repoAllowed(ident, valid.repo)) return json({ error: "token is not scoped to that repo" }, 403);
         try {
           const out = await dispatchRun(env, valid);
           await audit(env.DB, ident.actor, "run.dispatch", out.runId);
@@ -1043,7 +1077,8 @@ export default {
         }
       }
       if (request.method === "GET" && url.pathname === "/v1/runs") {
-        if (!(await requireScope(request, env, "read"))) return json({ error: "unauthorized" }, 401);
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
         const limit = Number(url.searchParams.get("limit") ?? "50");
         const offset = Number(url.searchParams.get("offset") ?? "0");
         if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
@@ -1052,13 +1087,14 @@ export default {
         if (!Number.isInteger(offset) || offset < 0 || offset > 100000) {
           return json({ error: "offset must be an integer 0-100000" }, 400);
         }
-        return json({ runs: await listRuns(env.DB, limit, offset) });
+        return json({ runs: await listRuns(env.DB, limit, offset, ident.repos) });
       }
       const runMatch = /^\/v1\/runs\/([^/]+)$/.exec(url.pathname);
       if (request.method === "GET" && runMatch) {
-        if (!(await requireScope(request, env, "read"))) return json({ error: "unauthorized" }, 401);
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
         const run = await getRun(env.DB, runMatch[1]);
-        if (!run) return json({ error: "run not found" }, 404);
+        if (!run || !repoAllowed(ident, run.repo)) return json({ error: "run not found" }, 404);
         const jobs = await getJobsForRun(env.DB, run.id);
         return json({
           run,
@@ -1070,7 +1106,10 @@ export default {
       // budget runs out) so agents verify in one call instead of polling.
       const runWaitMatch = /^\/v1\/runs\/([^/]+)\/wait$/.exec(url.pathname);
       if (request.method === "GET" && runWaitMatch) {
-        if (!(await requireScope(request, env, "read"))) return json({ error: "unauthorized" }, 401);
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const known = await getRun(env.DB, runWaitMatch[1]);
+        if (!known || !repoAllowed(ident, known.repo)) return json({ error: "run not found" }, 404);
         const timeout = Number(url.searchParams.get("timeout") ?? "30");
         if (!Number.isFinite(timeout) || timeout < 1 || timeout > 90) {
           return json({ error: "timeout must be 1-90 seconds" }, 400);
@@ -1088,27 +1127,32 @@ export default {
       // Token-efficient digest for agents: failures, bounded tails, no logs.
       const runDigestMatch = /^\/v1\/runs\/([^/]+)\/digest$/.exec(url.pathname);
       if (request.method === "GET" && runDigestMatch) {
-        if (!(await requireScope(request, env, "read"))) return json({ error: "unauthorized" }, 401);
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const known = await getRun(env.DB, runDigestMatch[1]);
+        if (!known || !repoAllowed(ident, known.repo)) return json({ error: "run not found" }, 404);
         const digest = await buildRunDigest(env.DB, runDigestMatch[1]);
         if (!digest) return json({ error: "run not found" }, 404);
         return json(digest);
       }
       const runArtifactsMatch = /^\/v1\/runs\/([^/]+)\/artifacts$/.exec(url.pathname);
       if (request.method === "GET" && runArtifactsMatch) {
-        if (!(await requireScope(request, env, "read"))) return json({ error: "unauthorized" }, 401);
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
         const run = await getRun(env.DB, runArtifactsMatch[1]);
-        if (!run) return json({ error: "run not found" }, 404);
+        if (!run || !repoAllowed(ident, run.repo)) return json({ error: "run not found" }, 404);
         const artifacts = await listRunArtifacts(env.CACHE, env.DB, run.id);
         if (!artifacts) return json({ error: "artifact storage not configured" }, 501);
         return json({ artifacts });
       }
       if (request.method === "GET" && url.pathname === "/v1/jobs/next") {
-        if (!(await requireScope(request, env, "run"))) return json({ error: "unauthorized" }, 401);
+        const ident = await requireScope(request, env, "run");
+        if (!ident) return json({ error: "unauthorized" }, 401);
         const labels = (url.searchParams.get("labels") ?? "")
           .split(",")
           .map((l) => l.trim())
           .filter(Boolean);
-        const job = await claimNextJob(env.DB, labels);
+        const job = await claimNextJob(env.DB, labels, ident.repos);
         if (!job) return json({ job: null }, 200);
         await rollupRunStatus(env.DB, job.run_id);
         // Secrets ride the authenticated claim only — never any read API.
@@ -1125,13 +1169,28 @@ export default {
         }
         return json({ job, secrets, secretsError });
       }
+      const runCancelMatch = /^\/v1\/runs\/([^/]+)\/cancel$/.exec(url.pathname);
+      if (request.method === "POST" && runCancelMatch) {
+        const ident = await requireScope(request, env, "run");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const run = await getRun(env.DB, runCancelMatch[1]);
+        if (!run || !repoAllowed(ident, run.repo)) return json({ error: "run not found" }, 404);
+        const cancelled = await cancelQueuedJobs(env.DB, run.id);
+        await rollupRunStatus(env.DB, run.id);
+        await audit(env.DB, ident.actor, "run.cancel", `${run.id} ${cancelled}`);
+        log("info", "run cancelled", { runId: run.id, cancelled });
+        return json({ ok: true, cancelled });
+      }
       const statusMatch = /^\/v1\/runs\/([^/]+)\/status$/.exec(url.pathname);
       if (request.method === "POST" && statusMatch) {
         return await handleStatusCallback(request, env, ctx, statusMatch[1]);
       }
       const heartbeatMatch = /^\/v1\/runs\/([^/]+)\/jobs\/([^/]+)\/heartbeat$/.exec(url.pathname);
       if (request.method === "POST" && heartbeatMatch) {
-        if (!(await requireScope(request, env, "run"))) return json({ error: "unauthorized" }, 401);
+        const ident = await requireScope(request, env, "run");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const hbRun = await getRun(env.DB, heartbeatMatch[1]);
+        if (!hbRun || !repoAllowed(ident, hbRun.repo)) return json({ error: "job not found" }, 404);
         const job = await getJob(env.DB, heartbeatMatch[2]);
         if (!job || job.run_id !== heartbeatMatch[1]) return json({ error: "job not found" }, 404);
         await touchJob(env.DB, job.id);
@@ -1141,6 +1200,8 @@ export default {
       if (request.method === "POST" && rerunMatch) {
         const ident = await requireScope(request, env, "run");
         if (!ident) return json({ error: "unauthorized" }, 401);
+        const rerunRun = await getRun(env.DB, rerunMatch[1]);
+        if (!rerunRun || !repoAllowed(ident, rerunRun.repo)) return json({ error: "job not found" }, 404);
         const out = await rerunJobAndQueue(env, rerunMatch[1], rerunMatch[2]);
         if (!out.ok) return json({ error: out.error ?? "rerun failed" }, 404);
         await audit(env.DB, ident.actor, "job.rerun", rerunMatch[2]);
@@ -1168,7 +1229,12 @@ export default {
       const artifactMatch = /^\/v1\/jobs\/([^/]+)\/artifacts\/([^/]+)$/.exec(url.pathname);
       if (artifactMatch && (request.method === "PUT" || request.method === "GET")) {
         const need = request.method === "PUT" ? "run" : "read";
-        if (!(await requireScope(request, env, need))) return json({ error: "unauthorized" }, 401);
+        const ident = await requireScope(request, env, need);
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const artifactJob = await getJob(env.DB, artifactMatch[1]);
+        if (!artifactJob) return json({ error: "job not found" }, 404);
+        const artifactRun = await getRun(env.DB, artifactJob.run_id);
+        if (!artifactRun || !repoAllowed(ident, artifactRun.repo)) return json({ error: "job not found" }, 404);
         const name = decodeURIComponent(artifactMatch[2]);
         if (request.method === "PUT") return await handleArtifactPut(env.CACHE, env.DB, artifactMatch[1], name, request);
         return await handleArtifactGet(env.CACHE, artifactMatch[1], name);
@@ -1186,9 +1252,11 @@ export default {
         });
       }
       if (request.method === "GET" && url.pathname === "/v1/flaky") {
-        if (!(await requireScope(request, env, "read"))) return json({ error: "unauthorized" }, 401);
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
         const repo = url.searchParams.get("repo") ?? "";
         if (!repo) return json({ error: "repo is required" }, 400);
+        if (!repoAllowed(ident, repo)) return json({ error: "token is not scoped to that repo" }, 403);
         const days = Number(url.searchParams.get("days") ?? "30");
         if (!Number.isFinite(days) || days < 1 || days > 365) return json({ error: "days must be 1-365" }, 400);
         return json({ stats: await flakyStats(env.DB, repo, Math.floor(days)) });
@@ -1443,6 +1511,75 @@ export default {
           },
         });
       }
+      if (request.method === "POST" && url.pathname === "/v1/admin/reset") {
+        // Self-serve reset: generic 200 always (no account-enumeration
+        // oracle), delivered only when a sender + EMAIL binding exist.
+        const body = (await request.json().catch(() => ({}))) as { email?: unknown };
+        const emailErr = validateEmail(body.email);
+        const email = emailErr === null ? normalizeEmail(body.email as string) : "";
+        const ipKey = await ipThrottleKey(request);
+        const keys = [...(email ? [`reset:${email}`] : []), ...(ipKey ? [ipKey] : [])];
+        if (await authThrottleBlocked(env.DB, keys)) {
+          return json({ error: "too many attempts — try again later" }, 429);
+        }
+        if (emailErr !== null) return json({ error: emailErr }, 400);
+        // Spam brake: every request counts against its windows.
+        await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
+        const user = await getUser(env.DB, email);
+        const sender = resolveNotifySender(env.NOTIFY_FROM_EMAIL, await getSetting(env.DB, SETTING_KEYS.notifyFromEmail));
+        const mailer = env.EMAIL;
+        if (user && sender && mailer) {
+          try {
+            const token = await createResetToken(env.DB, email);
+            const link = new URL(`/dashboard?reset=${encodeURIComponent(token)}`, url).toString();
+            await mailer.send({
+              from: { name: "Flare Actions", email: sender },
+              to: email,
+              subject: "[flare] Reset your password",
+              text: `Someone requested a password reset for ${email}.\n\n${link}\n\nThe link expires in 1 hour and works once. If this was not you, ignore this email.`,
+            });
+            await audit(env.DB, "reset", "password.reset_sent", email);
+            log("info", "password reset sent", { email });
+          } catch (err) {
+            log("warn", "password reset send failed", { email, error: String(err) });
+          }
+        } else {
+          log("info", "password reset skipped (unknown account or email not configured)", {
+            known: !!user,
+            sender: !!sender,
+            mail: !!mailer,
+          });
+        }
+        return json({ ok: true });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/reset/confirm") {
+        const body = (await request.json().catch(() => ({}))) as { token?: unknown; password?: unknown };
+        const ipKey = await ipThrottleKey(request);
+        const keys = ipKey ? [ipKey] : [];
+        if (await authThrottleBlocked(env.DB, keys)) {
+          return json({ error: "too many attempts — try again later" }, 429);
+        }
+        if (typeof body.token !== "string" || !body.token) return json({ error: "reset token required" }, 400);
+        const pwErr = validatePassword(body.password);
+        if (pwErr) {
+          await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
+          return json({ error: pwErr }, 400);
+        }
+        const email = await consumeResetToken(env.DB, body.token);
+        if (!email) {
+          await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
+          return json({ error: "reset link invalid or expired" }, 404);
+        }
+        const user = await getUser(env.DB, email);
+        if (!user) return json({ error: "account not found" }, 404);
+        await setUserPassword(env.DB, email, await hashPassword(body.password as string));
+        // Reset invalidates every existing session for that account.
+        await deleteUserSessions(env.DB, "email", email);
+        await clearAuthFailures(env.DB, keys);
+        await audit(env.DB, `email:${email}`, "password.reset", "");
+        log("info", "password reset completed", { email });
+        return json({ ok: true });
+      }
       if (request.method === "GET" && url.pathname === "/v1/admin/settings") {
         if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
         const webhookSecretSource = env.GITHUB_WEBHOOK_SECRET
@@ -1543,6 +1680,7 @@ export default {
         const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
         const valid = validateScheduleInput(body);
         if ("error" in valid) return json({ error: valid.error }, 400);
+        if (!repoAllowed(ident, valid.repo)) return json({ error: "token is not scoped to that repo" }, 403);
         if ((await listSchedules(env.DB)).length >= 50) {
           return json({ error: "schedule limit reached (50)" }, 400);
         }

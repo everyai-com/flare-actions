@@ -92,6 +92,14 @@ describe("FlareClient", () => {
     expect(calls[0].url).toBe("https://x/v1/flaky?repo=o%2Fr&days=7");
   });
 
+  it("cancels runs and returns the cancelled count", async () => {
+    const calls = stubFetch(() => jsonResponse({ ok: true, cancelled: 3 }));
+    const n = await new FlareClient("https://x", "t").cancelRun("run-1");
+    expect(n).toBe(3);
+    expect(calls[0].url).toBe("https://x/v1/runs/run-1/cancel");
+    expect(calls[0].init?.method).toBe("POST");
+  });
+
   it("waits on runs through the blocking endpoint", async () => {
     const calls = stubFetch(() => jsonResponse({ run: { id: "run-1", status: "running" }, jobs: [], timedOut: true, waitedMs: 30000 }));
     const out = await new FlareClient("https://x", "t").waitRun("run-1", 30);

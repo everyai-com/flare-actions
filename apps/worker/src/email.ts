@@ -9,6 +9,7 @@ import { timingSafeEqualHex } from "./github";
 
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,253}\.[^\s@]{1,63}$/;
 const INVITE_TTL_MS = 24 * 3600000;
+const RESET_TTL_MS = 3600000;
 
 // Workers caps PBKDF2 at 100k iterations; OWASP's SHA-256 floor is 600k,
 // so compensate with the platform max plus per-user salts. Revisit if
@@ -128,6 +129,40 @@ export async function consumeInvite(db: Db, token: string): Promise<Invite | nul
     .bind(inviteKey(token))
     .first<{ value: string }>();
   return parseInvite(row?.value ?? null);
+}
+
+// Password reset: single-use, 1-hour token, delivered by email when the
+// deployment has a sender + EMAIL binding configured. Consume is atomic
+// (DELETE ... RETURNING), so a leaked link cannot be redeemed twice.
+function resetKey(token: string): string {
+  return `email_reset_${token}`;
+}
+
+export async function createResetToken(db: Db, email: string): Promise<string> {
+  const token = crypto.randomUUID();
+  await setSetting(
+    db,
+    resetKey(token),
+    JSON.stringify({ email: normalizeEmail(email), expiresAt: new Date(Date.now() + RESET_TTL_MS).toISOString() }),
+  );
+  return token;
+}
+
+export async function consumeResetToken(db: Db, token: string): Promise<string | null> {
+  if (!/^[A-Za-z0-9-]+$/.test(token)) return null;
+  const row = await db
+    .prepare("DELETE FROM app_settings WHERE key = ? RETURNING value")
+    .bind(resetKey(token))
+    .first<{ value: string }>();
+  if (!row) return null;
+  try {
+    const parsed = JSON.parse(row.value) as { email?: unknown; expiresAt?: unknown };
+    if (typeof parsed.email !== "string" || typeof parsed.expiresAt !== "string") return null;
+    if (Date.parse(parsed.expiresAt) <= Date.now()) return null;
+    return parsed.email;
+  } catch {
+    return null;
+  }
 }
 
 export async function listInvites(db: Db): Promise<Invite[]> {

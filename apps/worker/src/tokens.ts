@@ -36,3 +36,31 @@ export function normalizeScopes(input: unknown): TokenScope[] | null {
   }
   return out.length > 0 ? out : null;
 }
+
+// Per-token repo scoping: an empty list means "all repos" (backwards
+// compatible with existing tokens); otherwise the token only sees the
+// listed owner/name entries.
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
+export function normalizeRepos(input: unknown): string[] | null {
+  if (input === undefined || input === null || input === "") return [];
+  const list = typeof input === "string" ? input.split(",") : input;
+  if (!Array.isArray(list)) return null;
+  const out: string[] = [];
+  for (const item of list) {
+    if (typeof item !== "string") return null;
+    const repo = item.trim();
+    if (!repo) continue;
+    if (!REPO_RE.test(repo)) return null;
+    if (!out.includes(repo)) out.push(repo);
+  }
+  if (out.length > 50) return null;
+  return out;
+}
+
+export function parseRepos(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((r) => r.trim())
+    .filter((r) => REPO_RE.test(r));
+}

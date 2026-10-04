@@ -126,6 +126,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <button type="submit" id="emailBtn" class="btn-block">Log in</button>
 </form>
 <p id="emailErr" class="err"></p>
+<p class="muted"><button id="forgotBtn" class="ghost" type="button">Forgot password?</button></p>
 </div>
 <div id="connectBox">
 <h2>Connect GitHub</h2>
@@ -162,6 +163,32 @@ form.inline input { flex: 1; min-width: 180px; }
 <button type="submit" class="btn-block">Create account</button>
 </form>
 <p id="inviteErr" class="err"></p>
+</div>
+</section>
+<section id="resetPane" class="card auth-card" hidden>
+<div class="auth-narrow">
+<div class="brand"><span class="brand-mark">F</span><span class="brand-name">Flare Actions</span></div>
+<h2>Reset your password</h2>
+<p class="muted">If that account exists, we'll email a single-use reset link (1 hour).</p>
+<form id="resetRequestForm" class="auth-form">
+<label class="field"><span>Email</span><input id="resetEmailInput" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254"></label>
+<button type="submit" class="btn-block">Send reset link</button>
+</form>
+<p id="resetRequestErr" class="err"></p>
+<p id="resetRequestOk"></p>
+<p class="muted"><button id="resetBackBtn" class="ghost" type="button">Back to login</button></p>
+</div>
+</section>
+<section id="resetConfirmPane" class="card auth-card" hidden>
+<div class="auth-narrow">
+<div class="brand"><span class="brand-mark">F</span><span class="brand-name">Flare Actions</span></div>
+<h2>Choose a new password</h2>
+<form id="resetConfirmForm" class="auth-form">
+<label class="field"><span>New password</span><input id="resetPw1" type="password" placeholder="8+ characters" autocomplete="new-password"></label>
+<label class="field"><span>Confirm password</span><input id="resetPw2" type="password" placeholder="Confirm password" autocomplete="new-password"></label>
+<button type="submit" class="btn-block">Update password</button>
+</form>
+<p id="resetConfirmErr" class="err"></p>
 </div>
 </section>
 <section id="appPane" hidden>
@@ -204,6 +231,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <form id="tokenForm" class="inline">
 <input id="tokenName" placeholder="Token name, e.g. ci-laptop" maxlength="64">
 <select id="tokenScope"><option value="runner">runner</option><option value="readonly">readonly</option><option value="admin">admin</option></select>
+<input id="tokenRepos" placeholder="optional: owner/repo, owner/repo2 (blank = all repos)" maxlength="2000">
 <button type="submit">Create token</button>
 </form>
 <p id="tokenErr" class="err"></p>
@@ -212,7 +240,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <code class="token" id="newTokenVal"></code>
 <p><button id="copyTokenBtn" class="ghost" type="button">Copy</button></p>
 </div>
-<div class="table-scroll"><table><thead><tr><th>Name</th><th>Scopes</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody id="tokensBody"></tbody></table></div>
+<div class="table-scroll"><table><thead><tr><th>Name</th><th>Scopes</th><th>Repos</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody id="tokensBody"></tbody></table></div>
 <h2>GitHub users</h2>
 <p class="muted" id="usersInfo"></p>
 <form id="userForm" class="inline">
@@ -356,14 +384,30 @@ form.inline input { flex: 1; min-width: 180px; }
   var userLabel = document.getElementById("userLabel");
   var lastStatus = null;
   var inviteToken = null;
+  var resetPane = document.getElementById("resetPane");
+  var resetConfirmPane = document.getElementById("resetConfirmPane");
+  var resetToken = null;
 
   function showInvite() {
     invitePane.hidden = false; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
+    resetPane.hidden = true; resetConfirmPane.hidden = true;
+  }
+
+  function showReset() {
+    resetPane.hidden = false; resetConfirmPane.hidden = true; invitePane.hidden = true; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
+    document.getElementById("resetRequestOk").textContent = "";
+    document.getElementById("resetRequestErr").textContent = "";
+  }
+
+  function showResetConfirm(token) {
+    resetToken = token;
+    resetConfirmPane.hidden = false; resetPane.hidden = true; invitePane.hidden = true; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
   }
 
   function showAuth(st) {
     lastStatus = st;
     invitePane.hidden = true;
+    resetPane.hidden = true; resetConfirmPane.hidden = true;
     authPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
     document.getElementById("emailPw2Wrap").hidden = st.claimed;
     document.getElementById("emailBtn").textContent = st.claimed ? "Log in" : "Create admin account";
@@ -384,6 +428,7 @@ form.inline input { flex: 1; min-width: 180px; }
     isAdmin = !!admin;
     document.getElementById("dispatchBox").hidden = !admin;
     invitePane.hidden = true;
+    resetPane.hidden = true; resetConfirmPane.hidden = true;
     authPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false;
     document.getElementById("connectBanner").hidden = !(admin && !githubConnected);
     userLabel.textContent = actor ? actor + " " : "";
@@ -438,9 +483,10 @@ form.inline input { flex: 1; min-width: 180px; }
       var q = new URLSearchParams(window.location.search);
       var g = q.get("github");
       var inv = q.get("invite");
+      var rt = q.get("reset");
       var installed = q.get("installation_id");
       var setupAction = q.get("setup_action");
-      if ((g || inv || installed || setupAction) && window.history && window.history.replaceState) window.history.replaceState({}, "", "/dashboard");
+      if ((g || inv || rt || installed || setupAction) && window.history && window.history.replaceState) window.history.replaceState({}, "", "/dashboard");
       if (installed) {
         try { sessionStorage.setItem("flare-installed", setupAction || "install"); } catch (e) {}
       }
@@ -458,8 +504,13 @@ form.inline input { flex: 1; min-width: 180px; }
         });
         return;
       }
+      if (rt && rt !== "done" && !st.user) {
+        showResetConfirm(rt);
+        return;
+      }
       route(st);
       handleGithubQuery(st, g, q.get("reason"));
+      if (rt === "done") document.getElementById("loginMsg").textContent = "Password updated — log in.";
     }).catch(function () { showAuth({ claimed: true, githubConnected: false, breakGlass: false, installUrl: null }); });
   }
 
@@ -491,6 +542,50 @@ form.inline input { flex: 1; min-width: 180px; }
         boot();
       })
       .catch(function () { err.textContent = "Invalid email or password."; });
+  });
+
+  document.getElementById("forgotBtn").addEventListener("click", function (ev) {
+    ev.preventDefault();
+    showReset();
+  });
+
+  document.getElementById("resetBackBtn").addEventListener("click", function (ev) {
+    ev.preventDefault();
+    route(lastStatus || { claimed: true, githubConnected: false, breakGlass: false, installUrl: null });
+  });
+
+  document.getElementById("resetRequestForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("resetRequestErr");
+    var ok = document.getElementById("resetRequestOk");
+    err.textContent = ""; ok.textContent = "";
+    var email = document.getElementById("resetEmailInput").value.trim();
+    fetch("/v1/admin/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email }) })
+      .then(function (res) {
+        if (!res.ok) throw new Error("bad");
+        document.getElementById("resetEmailInput").value = "";
+        ok.textContent = "If that account exists, a reset link is on its way.";
+      })
+      .catch(function () { err.textContent = "Could not send (check the address, or try again later)."; });
+  });
+
+  document.getElementById("resetConfirmForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("resetConfirmErr");
+    err.textContent = "";
+    var a = document.getElementById("resetPw1").value;
+    var b = document.getElementById("resetPw2").value;
+    if (a !== b) { err.textContent = "Passwords do not match."; return; }
+    fetch("/v1/admin/reset/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: resetToken, password: a }),
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error("bad");
+        window.location.href = "/dashboard?reset=done";
+      })
+      .catch(function () { err.textContent = "Could not reset (link expired, or 8+ char password needed)."; });
   });
 
   document.getElementById("inviteForm").addEventListener("submit", function (ev) {
@@ -858,13 +953,14 @@ form.inline input { flex: 1; min-width: 180px; }
   });
   function loadTokens() {
     var body = document.getElementById("tokensBody");
-    stateRow(body, 5, "Loading tokens…", "muted");
+    stateRow(body, 6, "Loading tokens…", "muted");
     api("/v1/admin/tokens").then(function (data) {
       body.textContent = "";
       (data.tokens || []).forEach(function (t) {
         var tr = el("tr");
         tr.appendChild(el("td", t.name));
         tr.appendChild(el("td", t.scopes));
+        tr.appendChild(el("td", t.repos ? t.repos : "all"));
         tr.appendChild(timeCell(t.created_at));
         tr.appendChild(el("td", t.revoked_at ? "revoked" : "active"));
         var tdBtn = el("td");
@@ -880,8 +976,8 @@ form.inline input { flex: 1; min-width: 180px; }
         tr.appendChild(tdBtn);
         body.appendChild(tr);
       });
-      if (!body.children.length) stateRow(body, 5, "No tokens yet — create one above.", "muted");
-    }).catch(function () { stateRow(body, 5, "Could not load tokens.", "err"); });
+      if (!body.children.length) stateRow(body, 6, "No tokens yet — create one above.", "muted");
+    }).catch(function () { stateRow(body, 6, "Could not load tokens.", "err"); });
   }
 
   document.getElementById("tokenForm").addEventListener("submit", function (ev) {
@@ -891,14 +987,16 @@ form.inline input { flex: 1; min-width: 180px; }
     document.getElementById("newTokenBox").hidden = true;
     var name = document.getElementById("tokenName").value.trim();
     var scope = document.getElementById("tokenScope").value;
-    api("/v1/admin/tokens", { method: "POST", body: JSON.stringify({ name: name, scopes: [scope] }) })
+    var repos = document.getElementById("tokenRepos").value.trim();
+    api("/v1/admin/tokens", { method: "POST", body: JSON.stringify({ name: name, scopes: [scope], repos: repos }) })
       .then(function (data) {
         document.getElementById("newTokenVal").textContent = data.token;
         document.getElementById("newTokenBox").hidden = false;
         document.getElementById("tokenName").value = "";
+        document.getElementById("tokenRepos").value = "";
         loadTokens();
       })
-      .catch(function () { err.textContent = "Could not create token. Name is required."; });
+      .catch(function () { err.textContent = "Could not create token (name required; repos must be owner/name entries)."; });
   });
 
   function loadUsers() {

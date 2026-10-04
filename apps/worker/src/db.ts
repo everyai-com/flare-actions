@@ -105,10 +105,16 @@ export async function getRun(db: Db, id: string): Promise<RunRow | null> {
   return db.prepare("SELECT * FROM runs WHERE id = ?").bind(id).first<RunRow>();
 }
 
-export async function listRuns(db: Db, limit = 50, offset = 0): Promise<RunRow[]> {
+export async function listRuns(
+  db: Db,
+  limit = 50,
+  offset = 0,
+  allowedRepos: string[] = [],
+): Promise<RunRow[]> {
+  const filter = allowedRepos.length > 0 ? ` WHERE repo IN (${allowedRepos.map(() => "?").join(", ")})` : "";
   const res = await db
-    .prepare("SELECT * FROM runs ORDER BY created_at DESC LIMIT ? OFFSET ?")
-    .bind(limit, offset)
+    .prepare(`SELECT * FROM runs${filter} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .bind(...allowedRepos, limit, offset)
     .all<RunRow>();
   return res.results;
 }
@@ -332,7 +338,10 @@ export type JobWithSource = JobRow & { repo: string; sha: string; source: string
 export async function claimNextJob(
   db: Db,
   runnerLabels: string[] = [],
+  allowedRepos: string[] = [],
 ): Promise<JobWithSource | null> {
+  // Repo-scoped tokens only claim jobs from their repos (empty = all).
+  const repoFilter = allowedRepos.length > 0 ? ` AND r.repo IN (${allowedRepos.map(() => "?").join(", ")})` : "";
   let afterPriority = 0;
   let afterCreated: string | null = null;
   let afterId = "";
@@ -343,17 +352,17 @@ export async function claimNextJob(
         ? await db
             .prepare(
               `SELECT j.*, r.repo, r.sha, r.source FROM jobs j JOIN runs r ON r.id = j.run_id
-               WHERE j.status = 'queued' ORDER BY j.priority DESC, j.created_at ASC, j.id ASC LIMIT ?`,
+               WHERE j.status = 'queued'${repoFilter} ORDER BY j.priority DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
-            .bind(CLAIM_PAGE_SIZE)
+            .bind(...allowedRepos, CLAIM_PAGE_SIZE)
             .all<JobWithSource>()
         : await db
             .prepare(
               `SELECT j.*, r.repo, r.sha, r.source FROM jobs j JOIN runs r ON r.id = j.run_id
-               WHERE j.status = 'queued' AND (j.priority < ? OR (j.priority = ? AND (j.created_at > ? OR (j.created_at = ? AND j.id > ?))))
+               WHERE j.status = 'queued'${repoFilter} AND (j.priority < ? OR (j.priority = ? AND (j.created_at > ? OR (j.created_at = ? AND j.id > ?))))
                ORDER BY j.priority DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
-            .bind(afterPriority, afterPriority, afterCreated, afterCreated, afterId, CLAIM_PAGE_SIZE)
+            .bind(afterPriority, afterPriority, afterCreated, afterCreated, afterId, ...allowedRepos, CLAIM_PAGE_SIZE)
             .all<JobWithSource>();
     if (res.results.length === 0) return null;
     for (const job of res.results) {
@@ -468,6 +477,7 @@ export interface TokenRow {
   name: string;
   token_hash: string;
   scopes: string;
+  repos: string;
   created_at: string;
   revoked_at: string | null;
 }
@@ -476,25 +486,26 @@ export interface TokenPublic {
   id: string;
   name: string;
   scopes: string;
+  repos: string;
   created_at: string;
   revoked_at: string | null;
 }
 
 export async function createToken(
   db: Db,
-  token: { id: string; name: string; tokenHash: string; scopes: string },
+  token: { id: string; name: string; tokenHash: string; scopes: string; repos: string },
 ): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO api_tokens (id, name, token_hash, scopes, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, NULL)",
+      "INSERT INTO api_tokens (id, name, token_hash, scopes, repos, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, NULL)",
     )
-    .bind(token.id, token.name, token.tokenHash, token.scopes, nowIso())
+    .bind(token.id, token.name, token.tokenHash, token.scopes, token.repos, nowIso())
     .run();
 }
 
 export async function listTokens(db: Db): Promise<TokenPublic[]> {
   const res = await db
-    .prepare("SELECT id, name, scopes, created_at, revoked_at FROM api_tokens ORDER BY created_at DESC")
+    .prepare("SELECT id, name, scopes, repos, created_at, revoked_at FROM api_tokens ORDER BY created_at DESC")
     .bind()
     .all<TokenPublic>();
   return res.results;
@@ -559,6 +570,13 @@ export async function getUser(db: Db, email: string): Promise<UserRow | null> {
 
 export async function deleteUser(db: Db, email: string): Promise<void> {
   await db.prepare("DELETE FROM users WHERE email = ?").bind(email).run();
+}
+
+export async function setUserPassword(db: Db, email: string, passwordHash: string): Promise<boolean> {
+  const res = (await db.prepare("UPDATE users SET password_hash = ? WHERE email = ?").bind(passwordHash, email).run()) as {
+    meta?: { changes?: number };
+  };
+  return (res?.meta?.changes ?? 0) > 0;
 }
 
 export async function listUsers(db: Db): Promise<UserRow[]> {
@@ -680,6 +698,18 @@ export async function pruneOldRuns(
     await db.prepare("DELETE FROM runs WHERE id = ?").bind(row.id).run();
   }
   return { runs: stale.results.length, jobIds, sources };
+}
+
+// Explicit run cancellation: stop everything not yet executing. Running
+// jobs have no interrupt channel and finish naturally (their reports
+// still apply); queued/blocked jobs are cancelled and roll up.
+export async function cancelQueuedJobs(db: Db, runId: string): Promise<number> {
+  const now = nowIso();
+  const res = (await db
+    .prepare("UPDATE jobs SET status = 'cancelled', finished_at = ?, updated_at = ? WHERE run_id = ? AND status IN ('queued', 'blocked')")
+    .bind(now, now, runId)
+    .run()) as { meta?: { changes?: number } };
+  return res?.meta?.changes ?? 0;
 }
 
 export async function audit(db: Db, actor: string, action: string, target = ""): Promise<void> {

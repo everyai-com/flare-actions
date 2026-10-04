@@ -23,6 +23,7 @@ function usage(): never {
       "  cli run <repo> <sha|branch|tag> [ref]      dispatch, wait, print the compact digest (exit 1 on failure)",
       "  cli run <repo> --source [ref]              upload the working tree and run it (no commit needed)",
       "  cli watch <runId>                          wait for a run and print the compact digest",
+      "  cli cancel <runId>                         cancel queued/blocked jobs of a run",
       "  cli dispatch <repo> <sha|branch|tag> [ref]  trigger a run without waiting",
       "  cli rerun <runId> <jobId>                   reset a finished job to queued",
       "  cli flaky <repo> [days]                     per-job failure rates, worst first",
@@ -163,6 +164,9 @@ try {
   } else if (cmd === "watch" && rest[0]) {
     const digest = await waitAndDigest(client(), rest[0]);
     process.exitCode = digest.status === "success" ? 0 : 1;
+  } else if (cmd === "cancel" && rest[0]) {
+    const cancelled = await client().cancelRun(rest[0]);
+    console.log(JSON.stringify({ ok: true, cancelled }));
   } else if (cmd === "dispatch" && rest[0] && rest[1]) {
     const { args, priority } = takePriority(rest);
     if (!args[0] || !args[1]) usage();

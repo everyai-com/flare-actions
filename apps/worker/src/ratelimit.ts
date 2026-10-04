@@ -14,7 +14,7 @@ export const AUTH_MAX_FAILURES = 10;
 export const AUTH_BLOCK_MS = 15 * 60000;
 
 // Hashed so raw client IPs never land in D1 (they already land in logs).
-async function ipThrottleKey(request: Request): Promise<string | null> {
+export async function ipThrottleKey(request: Request): Promise<string | null> {
   const ip = request.headers.get("cf-connecting-ip");
   if (!ip) return null;
   return `ip:${await hashToken(ip)}`;
