@@ -4,6 +4,14 @@
   "private": true,
   "description": "Open-source GitHub Actions alternative you host on your Cloudflare",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/everyai-com/flare-actions.git"
+  },
+  "bugs": {
+    "url": "https://github.com/everyai-com/flare-actions/issues"
+  },
+  "homepage": "https://github.com/everyai-com/flare-actions#readme",
   "type": "module",
   "engines": {
     "node": ">=22.6"
@@ -21,14 +29,21 @@
     "deploy:dry": "wrangler deploy --dry-run --config apps/worker/wrangler.jsonc",
     "types": "wrangler types --config apps/worker/wrangler.jsonc apps/worker/src/worker-configuration.d.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260926.1",
+    "@eslint/js": "^9.39.5",
     "@types/node": "^22.20.4",
+    "@vitest/coverage-v8": "^2.1.9",
+    "eslint": "^9.39.5",
+    "globals": "^17.13.0",
     "typescript": "^5.6.0",
+    "typescript-eslint": "^8.71.0",
     "vitest": "^2.1.0",
-    "wrangler": "^4.120.0"
+    "wrangler": "^4.135.0"
   },
   "dependencies": {
     "yaml": "^2.9.1"

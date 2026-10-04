@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a capability or an improvement to an existing one.
+title: "[feat] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that the project makes hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should happen instead? Sketch the API/CLI/config shape if you have one.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered (optional)
+      description: Workarounds you tried, or how GitHub Actions handles this.
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Small (docs, CLI flag, config key)
+        - Medium (new endpoint/tool, runner behavior)
+        - Large (new subsystem — please let a maintainer weigh in before coding)

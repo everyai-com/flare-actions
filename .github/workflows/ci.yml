@@ -19,6 +19,9 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run deploy:dry
+      # The seats config is generated (gitignored) from its committed
+      # template; dry-run just needs a well-formed placeholder account.
+      - run: node -e "const fs=require('fs');fs.writeFileSync('apps/seats/wrangler.jsonc',fs.readFileSync('apps/seats/wrangler.jsonc.example','utf8').replace('__ACCOUNT_ID__','0123456789abcdef0123456789abcdef'))"
       - run: npx wrangler deploy --dry-run --config apps/seats/wrangler.jsonc
 
   preview:

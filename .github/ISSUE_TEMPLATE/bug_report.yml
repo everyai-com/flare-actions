@@ -1,0 +1,46 @@
+name: Bug report
+description: Something broke — a run, the dashboard, the CLI, or the docs.
+title: "[bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not include secrets, tokens, webhook signatures, or private repo content.**
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Worker / dispatch / webhooks
+        - Runner (BYO machine)
+        - Managed seats (Cloudflare Containers)
+        - CLI
+        - Dashboard
+        - MCP server
+        - Docs
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit / version
+      description: Output of `git rev-parse --short HEAD` if running from source.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Exact commands and observable output beat prose.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment (optional)
+      description: "e.g. Linux + docker runner, macOS label, `wrangler dev`, deployed worker"
