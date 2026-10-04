@@ -44,7 +44,7 @@ function fail(msg) {
 }
 
 // 3. Queues (idempotent)
-for (const q of ["flare-actions-runs", "flare-actions-dlq", "flare-actions-seats"]) {
+for (const q of ["flare-actions-runs", "flare-actions-dlq", "flare-actions-seats", "flare-actions-seats-dlq"]) {
   const r = run("npx", ["wrangler", "queues", "create", q]);
   const out = r.stdout + r.stderr;
   if (r.status !== 0 && !/already (exists|taken)/i.test(out) && !dryRun) {
@@ -117,10 +117,14 @@ let seatsToken = null;
     r = run("npx", ["wrangler", "containers", "push", tag]);
     const pushed = /Pushed image: (\S+)/.exec(r.stdout + r.stderr);
     if (!pushed) fail(`seat image push failed:\n${r.stdout}\n${r.stderr}`);
-    const seatsPath = join(root, seatsConfig);
-    const seatsCfg = JSON.parse(readFileSync(seatsPath, "utf8"));
+    // Generate the seats config from its template: the committed example
+    // never carries anyone's account id, and the generated file is
+    // gitignored so setup leaves no dirty tree.
+    const examplePath = join(root, "apps/seats/wrangler.jsonc.example");
+    const seatsCfg = JSON.parse(readFileSync(examplePath, "utf8"));
     seatsCfg.containers[0].image = pushed[1];
-    writeFileSync(seatsPath, JSON.stringify(seatsCfg));
+    writeFileSync(join(root, seatsConfig), JSON.stringify(seatsCfg));
+    console.log("generated apps/seats/wrangler.jsonc (gitignored) with the pushed image");
     // Token gates the seats public URL for direct debugging; the main
     // worker needs nothing — wakes travel over the seats queue.
     seatsToken = randomBytes(32).toString("hex");
@@ -166,5 +170,5 @@ if (!dryRun) {
   console.log(`Dashboard: ${workerUrl}/dashboard (create your admin password on first open)`);
   console.log(seatsUrl ? `Seats:    ${seatsUrl} (managed executor live)` : "Seats:    skipped (no docker — BYO runners cover execution)");
   console.log("Next: Connect GitHub in the dashboard Settings tab, then `npm run runner` and `npm run cli -- runs`.");
-  console.log("Note: for CLI admin commands, issue an admin token in the dashboard Access tab.");
+  console.log("Note: the CLI uses the runner token above; issue readonly/runner/admin tokens for other machines in the Access tab.");
 }
