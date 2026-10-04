@@ -32,9 +32,9 @@ server metadata and the tool list for discovery.
 
 The Bearer token maps onto existing scopes:
 
-- `readonly` — `list_runs`, `get_run`, `get_flaky`
-- `runner` / admin — everything, including `dispatch_run`, `rerun_job`,
-  `generate_pipeline`
+- `readonly` — `list_runs`, `get_run`, `get_run_digest`, `get_flaky`
+- `runner` / admin — everything, including `run_and_wait`,
+  `dispatch_run`, `rerun_job`, `generate_pipeline`
 
 ## Tools
 
@@ -42,7 +42,9 @@ The Bearer token maps onto existing scopes:
 | ---- | ---- | ---- |
 | `list_runs` | `limit?` (1–50) | Recent runs, newest first |
 | `get_run` | `runId` | Run + jobs: status, step results, log tails, AI triage |
-| `dispatch_run` | `repo`, `sha`, `ref?`, `pipeline?` | Trigger a run; inline `pipeline` skips the `flare.yml` fetch |
+| `get_run_digest` | `runId` | **Compact result for agents**: failing step command/exit, bounded output tails, triage — no full logs |
+| `dispatch_run` | `repo`, `sha`, `ref?`, `pipeline?`, `priority?` | Trigger a run; inline `pipeline` skips the `flare.yml` fetch; `priority` 0–10 jumps queued batch work |
+| `run_and_wait` | `repo`, `sha`, `ref?`, `pipeline?`, `priority?`, `timeoutSeconds?` | **One-call verify loop**: dispatch and block until terminal, returning the digest |
 | `rerun_job` | `runId`, `jobId` | Reset a finished job to queued |
 | `get_flaky` | `repo`, `days?` | Per-job failure rates, worst first |
 | `generate_pipeline` | `prompt` | Natural language → `flare.yml` |
@@ -51,20 +53,40 @@ Responses are `tools/call` text payloads containing JSON. Unknown tools
 and bad arguments return JSON-RPC errors (`-32602`); tool-level misses
 (e.g. unknown run) return `{ error }` with `isError: true`.
 
+## The agent fast loop
+
+The intended shape of an agent's verify cycle is **two calls, zero sleeps**:
+
+```
+1. run_and_wait { repo, sha, pipeline?, priority: 9, timeoutSeconds: 45 }
+   → { runId, status: "failure", failedJobs: 1, jobs: [
+       { name: "test", status: "failure",
+         failing: { command: "npm test", exitCode: 1, outputTail: "…expected 3, got 2…" },
+         triage: "Cause: … Fix: …" } ], timedOut: false }
+2. fix, export a new sha, repeat.
+```
+
+- `priority: 9` puts the job ahead of queued batch work (0 default, 10 max).
+- `timedOut: true` means the run is still going: call `get_run_digest` again
+  (or `run_and_wait` with a longer timeout) — never sleep-and-poll blind.
+- The digest is deliberately small (a few KB): bounded output tails and
+  capped triage, so it can be fed back into context repeatedly.
+
 ## Example session
 
 ```
-> list recent runs
-< 3 runs, newest 9f2c… status failure
-> get_run 9f2c…
-< job "test (node=20)" failed step 2 `npm test`; triage: …
-> rerun_job 9f2c… <jobId>
+> run_and_wait o/r main --priority 9
+< run9 dispatched… failure  1/2 failed
+< [FAIL] test: `npm test` exit 1 — "expected 3, got 2" · triage: …
+> get_run_digest run9
+< same compact payload (no re-dispatch)
+> rerun_job run9 <jobId>
 < { ok: true }
 ```
 
 ## Notes
 
-- `dispatch_run` on private repos needs an inline `pipeline` (manual
-  dispatch can't mint installation tokens); webhooks cover private repos.
-- AI tools (`generate_pipeline`, triage in `get_run`) degrade gracefully
-  when the deployment has no AI binding.
+- Dispatch resolves refs and private-repo pipelines with the GitHub App
+  installation when the repo has one; public repos need nothing.
+- AI tools (`generate_pipeline`, triage in `get_run`/`get_run_digest`)
+  degrade gracefully when the deployment has no AI binding.

@@ -11,7 +11,8 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
 
 - Faster: warm edge dispatch, no 2–3 min hosted queue waits.
 - Easier: TypeScript + `wrangler.jsonc`, local `wrangler dev`, no YAML push-test loop.
-- Better: durable Queue retry + DLQ, D1 run history, fully open and self-hosted.
+- Better: durable dispatch signals with Queue retry + DLQ, D1 run history,
+  fully open and self-hosted.
 
 ## Layout
 
@@ -57,7 +58,7 @@ npm run cli -- logs <id>  # run logs
 ```
 
 Manual fallback (if you prefer each step by hand): `wrangler d1 create`,
-`wrangler queues create` × 3 (`-runs`, `-dlq`, `-seats`),
+`wrangler queues create` × 4 (`-runs`, `-dlq`, `-seats`, `-seats-dlq`),
 `wrangler r2 bucket create flare-actions-cache`,
 `wrangler d1 migrations apply --remote`, `wrangler secret put` for
 `RUNNER_TOKEN`, then `npm run deploy` — Connect GitHub in the
@@ -70,10 +71,13 @@ which becomes the dashboard recovery password). Local dev:
 ## GitHub App setup
 
 **One click:** dashboard → Settings → **Connect GitHub**. GitHub shows a
-pre-filled App (Contents read, Pull requests read, Commit statuses write, `push` +
-`pull_request` events, webhook URL wired) — click Create, then install
-it on your repos. App ID, private key, and webhook secret land in D1,
-so the main worker and managed seats both pick them up.
+pre-filled App (Contents read, Pull requests read, Commit statuses write,
+Checks write, `push` + `pull_request` events, webhook URL wired) — click
+Create, then install it on your repos. App ID, private key, and webhook
+secret land in D1, so the main worker and managed seats both pick them
+up. The checks:write permission is what makes failures show up as rich
+Check Runs (failing command + output tail) on the PR page; apps created
+before it existed just need the permission added in App settings.
 
 **Manual fallback** (env-managed instead): create the App yourself with
 the same permissions/events and webhook URL
@@ -86,11 +90,16 @@ Install the App on your repo either way.
 
 Open `https://<worker>/dashboard` and log in with GitHub or email
 (first login of either kind claims admin). Allow more GitHub users or
-invite teammates by email in the Access tab. For CLI admin commands,
-issue an `admin` token in the Access tab instead.
+invite teammates by email in the Access tab. The CLI works with any
+token scope — `readonly` reads, `runner` also dispatches and reruns;
+issue named tokens in the Access tab.
 
 - **Runs** — see every run and drill into job logs; admins can dispatch
   runs by branch, tag, or SHA, and re-run finished jobs from the detail view.
+  Every terminal job also posts a GitHub **Check Run** — the PR page shows
+  the failing command and its output tail without opening the dashboard
+  (requires the App's checks:write permission; commit statuses still work
+  without it).
 - **Access** — allow GitHub users (view runs), invite teammates by
   email (single-use links, 24h), and issue named tokens: `runner`
   tokens pull jobs and report status (CI machines, teammates),
@@ -142,7 +151,11 @@ jobs:
   `FLARE_SHA`, `FLARE_RUN_ID`, `FLARE_JOB_ID`, and `CI=true` (GitHub
   parity) in the environment.
 - Steps stop at the first non-zero exit; 10 min timeout and 32 KB of
-  captured output per step. Limits: 32 jobs, 100 steps/job, 64 KB file.
+  captured output per step. A step marked `continue-on-error: true`
+  (`- run: …` / `continue-on-error: true`) is recorded as failed but
+  doesn't fail the job. Jobs can declare `retry: 2` (0–5): a failed
+  attempt requeues automatically until the budget is exhausted, so flaky
+  suites stop paging humans. Limits: 32 jobs, 100 steps/job, 64 KB file.
 - Every job records machine-readable results (`result` JSON: per-step
   command, exit code, duration, output) alongside the human log — this
   is what agents consume to triage failures.
@@ -151,6 +164,18 @@ jobs:
 
 Full reference (matrix, `needs`, concurrency, containers, services,
 cache, artifacts, labels, timeouts): [docs/PIPELINES.md](docs/PIPELINES.md).
+
+## Scheduled runs
+
+Cron schedules live on the deployment — dashboard → Settings → Schedules,
+or `GET|POST|DELETE /v1/admin/schedules` — not in `flare.yml`: a repo, a
+ref (branch or tag), and a 5-field UTC cron, checked every minute by a
+Worker cron trigger. Each entry shows its last dispatch attempt, so a
+schedule that silently stops is visible instead of invisible — the exact
+failure mode GitHub's best-effort `on: schedule` is known for. Previews
+never fire schedules, failed attempts are stamped (no hot-looping), and
+a schedule's run gets commit statuses and private-repo pipeline fetching
+like any other dispatch.
 
 ## Runner
 
@@ -177,9 +202,40 @@ See [docs/CONTAINERS.md](docs/CONTAINERS.md).
 ## MCP server (agents)
 
 Every deployment is an MCP server at `/mcp`: list runs, read logs and
-triage, dispatch runs, re-run jobs, check flakes, generate pipelines.
+triage, dispatch runs, **run and wait in one call** with compact
+digests, re-run jobs, check flakes, generate pipelines.
 `npm run cli -- mcp-config` prints a paste-ready client config; details
 in [docs/MCP.md](docs/MCP.md).
+
+## Built for agents
+
+GitHub Actions is built for humans — commit, push, then stare at a queue.
+Flare is built for agents: trigger, wait, and read results over the API,
+MCP, or CLI. No git ceremony, no sleep loops, no log spelunking.
+
+- **One-call verify loop** — `run_and_wait` (MCP) or `cli run` dispatches
+  and blocks until the run is terminal
+  (`GET /v1/runs/:id/wait?timeout=60` under the hood). Verify → fix →
+  repeat, without a polling loop.
+- **Priority lane** — `priority: 0–10` on dispatch jumps queued batch
+  work, so an agent's verification beats the nightly backlog.
+- **Token-efficient digests** — `GET /v1/runs/:id/digest` (or
+  `get_run_digest`) returns each job's failing step command, exit code, a
+  bounded output tail, and AI triage in a few KB — context-window friendly,
+  no megabyte logs.
+- **Near-instant pickup** — BYO runners poll every 2s idle / 500ms after a
+  job; managed seats wake immediately over the queue.
+- **Machine-readable everything** — per-step structured results with exit
+  codes and durations; the dashboard is optional.
+- **No git required** — dispatch by SHA or branch with an inline
+  `pipeline` to try a workflow without merging it anywhere.
+
+```bash
+# agent fast loop: dispatch, wait, print the digest (exit 1 on failure)
+npm run cli -- run owner/repo "$(git rev-parse HEAD)" --priority 9
+npm run cli -- watch <runId>        # block on an existing run + digest
+npm run cli -- dispatch owner/repo main --priority 9   # fire and forget
+```
 
 ## Importing from GitHub Actions
 
@@ -200,6 +256,8 @@ Public, embeddable, no token needed:
 ```
 
 `npm run cli -- badge owner/name main` prints the snippet. For
+private repositories, list them under Settings → Status badges so the
+public endpoint serves `unknown` instead of leaking pass/fail. For
 required-checks UX, the GitHub App already posts commit statuses on
 every run — mark them required in repo Settings → Branches.
 
@@ -211,7 +269,7 @@ free tier): likely cause, culprit file/command, and one concrete fix.
 It appears on the job in the dashboard and CLI. Forks without the AI
 binding simply skip triage — nothing breaks.
 
-## Email notifications
+## Notifications
 
 Every finished run emails all registered email users: status, branch,
 jobs, cost, and the AI triage excerpt on failures. Set the sender in
@@ -221,12 +279,20 @@ pick all completions, failures only, or off. Env `NOTIFY_FROM_EMAIL`
 overrides the dashboard value. Deployments without a sender simply
 skip — nothing breaks.
 
+**Chat webhooks:** paste a Slack, Discord, or Mattermost-compatible
+webhook URL in Settings → Run notifications and the same summary posts
+there on every finished run — independently of email, so it works even
+with no sender configured. The URL is write-only and encrypted at rest
+with the secrets data key.
+
 ## CLI
 
 ```bash
 npm run cli -- runs                    # list runs
+npm run cli -- run <repo> <sha>        # dispatch, wait, print the compact digest (exit 1 on failure)
+npm run cli -- watch <runId>           # wait on an existing run + digest
 npm run cli -- logs <runId>            # jobs, steps, triage, logs
-npm run cli -- dispatch <repo> <sha>   # trigger a run
+npm run cli -- dispatch <repo> <sha> [--priority N]   # trigger a run
 npm run cli -- rerun <runId> <jobId>   # reset a finished job
 npm run cli -- flaky <repo>            # per-job failure rates
 npm run cli -- artifacts <runId>       # list artifacts
@@ -240,10 +306,12 @@ npm run cli -- mcp-config              # MCP client config
 - `GET /dashboard` — dashboard UI (`/` redirects here)
 - `POST /webhooks/github` — GitHub App webhook (HMAC verified)
 - `GET /mcp` — MCP server metadata (public); `POST /mcp` — MCP JSON-RPC
-- `POST /v1/runs/dispatch` — trigger a run by SHA, branch, or tag, optional inline `pipeline`
+- `POST /v1/runs/dispatch` — trigger a run by SHA, branch, or tag, optional inline `pipeline` and `priority` (0–10)
+- `GET /v1/runs/:id/wait?timeout=` — block until terminal (1–90s), returns the run + `timedOut`
 - `GET|POST|DELETE /v1/admin/secrets` — repo secrets, names listed, values write-only (admin only)
-- `GET /v1/runs` — list runs (admin, runner, or readonly token)
+- `GET /v1/runs?limit=&offset=` — list runs, newest first (admin, runner, or readonly token; limit 1–200)
 - `GET /v1/runs/:id` — run + jobs + cost summary (admin, runner, readonly)
+- `GET /v1/runs/:id/digest` — compact agent digest: failing steps, bounded tails, triage (read scope)
 - `GET /v1/runs/:id/artifacts` — list a run's artifacts (read scope)
 - `GET /v1/jobs/next?labels=` — pull next matching queued job (run scope)
 - `POST /v1/runs/:id/status` — runner status callback (admin or runner token)
@@ -257,14 +325,30 @@ npm run cli -- mcp-config              # MCP client config
 - `POST /v1/admin/tokens` — issue a token, shown once (admin only)
 - `POST /v1/admin/tokens/:id/revoke` — revoke a token (admin only)
 - `GET /v1/admin/audit` — audit log (admin only)
+- `GET|POST /v1/admin/schedules` — list / create cron schedules (admin only)
+- `POST /v1/admin/schedules/:id` — enable or disable a schedule (admin only)
+- `DELETE /v1/admin/schedules/:id` — delete a schedule (admin only)
 - `POST /v1/admin/generate` — natural language → `flare.yml` (admin only)
+- `GET|POST /v1/admin/settings` — webhook secret, run notifications, badge visibility (admin only)
+- `GET /v1/admin/users` — allowed GitHub users, email users, invites (admin only)
+- `POST /v1/admin/users|users/email|users/invite` — allow/remove users, mint single-use invite links (admin only)
+- `POST /v1/admin/register` — redeem an invite (public, throttled)
+- `POST /v1/admin/bootstrap` — first-run admin claim (open until claimed, throttled)
+- `POST /v1/admin/login`, `POST /v1/admin/logout` — email sessions (throttled)
+- `GET|POST /v1/admin/github/*` — GitHub App connect + login flows
+- `GET /v1/admin/status` — setup state for the dashboard (public)
 
 ## Cost
 
-Runs entirely on Cloudflare's free tier at small-to-medium scale:
+The core — webhooks, dispatch, dashboard, D1 history, queues, R2
+cache/artifacts — fits Cloudflare's free tier at small-to-medium scale:
 Workers (100k requests/day), Queues (10k operations/day ≈ 3,300
 dispatches/day), D1 (5M rows read + 100k rows written/day, 5 GB storage),
-R2 (10 GB storage, zero egress). Every run reports its compute minutes
+R2 (10 GB storage, zero egress). The **managed seats** executor adds
+Cloudflare Containers, which need the Workers Paid plan ($5/mo base) —
+BYO runners stay free. Retention keeps storage honest: finished runs and
+their artifacts prune after 90 days, cache blobs after 90 days without a
+hit, all bounded per pass. Every run reports its compute minutes
 plus the Actions list-price equivalent, so the gap is a number, not a claim.
 See [Workers](https://developers.cloudflare.com/workers/platform/pricing/),
 [Queues](https://developers.cloudflare.com/queues/platform/pricing/),

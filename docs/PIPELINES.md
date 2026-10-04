@@ -28,18 +28,29 @@ jobs:
       paths: [dist]
     env: { TAG: v1 }               # extra step env; ${{ env.TAG }} in steps
     timeout-minutes: 30            # whole job (default 30, max 1440)
+    retry: 2                       # requeue failed jobs up to 2 extra tries
     steps:
       - run: npm ci && npm test
+      - run: codecov                 # optional step; failure won't fail the job
+        continue-on-error: true
 ```
 
 ## Semantics
 
 - **Steps** run as `sh -c` in the checkout dir, fail-fast, 10 min each,
-  32 KB captured output each. `FLARE_REPO`, `FLARE_SHA`, `FLARE_RUN_ID`,
+  32 KB captured output each. A step with `continue-on-error: true` is
+  recorded as failed but does not stop the job or fail it (GitHub parity).
+  `FLARE_REPO`, `FLARE_SHA`, `FLARE_RUN_ID`,
   `FLARE_JOB_ID`, and `FLARE_MATRIX_*` are always set.
+- **Schedules** are configured per deployment (dashboard → Settings →
+  Schedules), not in `flare.yml` — see the README's scheduled runs section.
 - **`needs`** takes job names (pre-matrix). A job runs when all its needs
   succeed, skips when any need fails/errors/cancels/skips. Cycles and
   unknown names invalidate the file.
+- **`retry`** (0–5) requeues a failed job for another attempt instead of
+  going terminal; attempts are stamped, so the budget is exact and a
+  failing job can never loop forever. The run only reports failure once
+  retries are exhausted (each attempt is logged on the job).
 - **`runs-on`** labels match runners that carry *every* listed label.
   Label-less jobs match any runner. See `docs/RUNNERS.md`.
 - **`concurrency`** groups serialize across runs of the same repo (oldest

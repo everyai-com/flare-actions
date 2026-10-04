@@ -31,6 +31,18 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `apps/worker/src/{pipeline,mcp,cache,artifacts,badge,cost,generate}.ts` —
   `flare.yml` parse/expand/serialize, MCP server, R2 cache/artifacts, badges,
   cost attribution, NL pipeline generation.
+- `apps/worker/src/ratelimit.ts` — auth endpoint throttling (failure
+  windows per email + hashed client IP in D1 `auth_attempts`).
+- `apps/worker/src/cron.ts` — 5-field UTC cron parser for scheduled
+  runs (bounded POSIX subset; Vixie DOM/DOW OR semantics).
+- `apps/worker/src/{digest,wait}.ts` — the agent surface: token-efficient
+  run digests (failing step + bounded output tail + triage, no full logs)
+  and the blocking wait (`GET /v1/runs/:id/wait`) that replaces client
+  poll loops. MCP `run_and_wait` composes dispatch + wait + digest.
+- `apps/worker/src/checks.ts` — per-job GitHub Check Runs (failing
+  command + bounded tail on the PR page). Needs the App's checks:write;
+  best-effort like every GitHub call. Both executors post them on the
+  terminal transition.
 - `apps/worker/migrations/*.sql` — tracked history; `schema.ts` mirrors it for
   one-click forks that skip manual migration. Update BOTH when changing schema.
   `ensureSchema` also runs best-effort `ALTER`s so existing DBs self-heal.
@@ -58,13 +70,38 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   a `waitUntil` emails all registered email users via the `EMAIL`
   send_email binding (sender = `NOTIFY_FROM_EMAIL` env or D1
   `notify_from_email`, unset = off; mode = D1 `notify_mode`
-  all|failures|off). Unconfigured or failed sends degrade to skip +
-  audit, never to 500.
+  all|failures|off) and posts to the optional chat webhook
+  (`notify_webhook_url`, AES-GCM encrypted, write-only over the API;
+  `{text}` for Slack/Mattermost, `{content}` for Discord). Unconfigured
+  or failed sends degrade to skip + audit, never to 500.
+- Scheduled runs: a `* * * * *` cron trigger fires due rows in D1
+  `schedules` (repo + ref + 5-field UTC cron; managed in the dashboard
+  or via `/v1/admin/schedules`). `last_run_at` dedupes trigger
+  redelivery and stamps failed attempts so a broken schedule cannot
+  hot-loop; previews (`ENVIRONMENT !== "production"`) never fire. The
+  scheduled dispatch goes through `dispatchRun` with event `schedule`.
 - Scheduling: `needs`/`concurrency` park jobs as `blocked` at fan-out;
   terminal callbacks `rollupRunStatus` then `promoteBlockedJobs` (oldest
   first, so groups serialize). `cancel-in-progress` cancels other runs'
   same-group jobs at fan-out. Run/job statuses: queued, running, blocked,
   success, failure, error, cancelled, skipped.
+- Job claims (`claimNextJob`): label-matched, priority-first
+  (`priority DESC`, then oldest), keyset-paged scan of queued
+  jobs (bounded 200 per poll) — a fixed window would starve every runner
+  behind jobs only other labels can take. Executor status reports go
+  through `updateRunningJob`, which only touches a `running` row: a late
+  callback from an execution superseded by a rerun or stale requeue is
+  dropped, never applied to the new queued row. Unparseable job
+  definitions fail closed (terminal `error`), never echo-succeed.
+  Failed jobs with a `retry: N` policy are requeued by `maybeRetryJob`
+  while `attempts` (stamped, bounded 0-5) remain — both executors
+  intercept before the terminal transition, so retries never triage,
+  notify, or post checks for intermediate attempts.
+- Agent fast lane: dispatch accepts `priority` 0-10 (agent verification
+  jumps batch work); `GET /v1/runs/:id/wait` blocks server-side until
+  terminal (1-90s, no client sleep loops) and
+  `GET /v1/runs/:id/digest` is the small, structured payload agents feed
+  back into context. Runners poll every 2s idle / 500ms after a job.
 
 Data flow: GitHub webhook → HMAC verify → event gate (non push/PR events,
 branch/tag deletions, and zero SHAs ack 200 with no run) → D1 run+job rows → Queue (DLQ on
@@ -77,9 +114,12 @@ exhaustion) → runner polls `GET /v1/jobs/next?labels=` → executes →
   touches it). Shares worker modules (`db`, `finish`, `pipeline`,
   `github`, `triage`) by relative import — bundled by wrangler.
 - Wakes travel the `flare-actions-seats` queue (main produces, seats
-  consumes). Never worker→workers.dev HTTPS (edge error 1042) and never
-  a service binding in the committed config (deploy-time validation
-  would couple one-click deploys to the seats worker).
+  consumes; DLQ `flare-actions-seats-dlq`). Never worker→workers.dev
+  HTTPS (edge error 1042) and never a service binding (deploy-time
+  validation would couple one-click deploys to the seats worker).
+  `apps/seats/wrangler.jsonc` is generated (gitignored) from the
+  committed `wrangler.jsonc.example` by setup — never commit an
+  account's registry path.
 - Seats claim atomically (`claimJob`) and release what they can't do;
   `/run` executes inline and answers with the outcome (an open request
   keeps the seat alive; detached `waitUntil` hibernates mid-job).
@@ -93,17 +133,24 @@ gaps so one-click deploys need zero `wrangler secret` commands.
 - Auth: Login with GitHub (`oauth.ts`) or email + password
   (`email.ts`, PBKDF2, D1 `users`); sessions in D1 `sessions` (kind
   github|email), cookie `flare_session`. First login of either kind
-  claims admin (`admin_github_user`/`admin_email`); admin + allow-listed
-  GitHub users + registered emails may log in (non-admin reads).
-  Connect and email bootstrap are open pre-claim, then locked.
+  claims admin (`admin_github_user`/`admin_email`) through the atomic
+  `admin_claim` marker — concurrent first requests cannot both claim.
+  Login/register/bootstrap throttle per email + hashed client IP
+  (`ratelimit.ts`); one-time tokens (invites, OAuth state, connect
+  state) consume atomically via `DELETE ... RETURNING`. Admin +
+  allow-listed GitHub users + registered emails may log in (non-admin
+  reads). Connect and email bootstrap are open pre-claim, then locked.
   Teammates join via single-use 24h invite links (no email delivery
   needed). `ADMIN_TOKEN` env is break-glass recovery only; setup
   never mints it.
-- Webhooks: `GITHUB_WEBHOOK_SECRET` env or D1 `webhook_secret` (Settings tab).
+- Webhooks: `GITHUB_WEBHOOK_SECRET` env or D1 `webhook_secret` (Settings
+  tab; encrypted at rest with the secrets data key).
 - GitHub App: Connect flow (`connect.ts` manifest + callback; creds in
-  D1 under `github_app_*`, incl. OAuth client id/secret) or env
-  `GITHUB_APP_ID`/`GITHUB_PRIVATE_KEY` (env wins; Connect 409s while
-  env manages any of them; manual flow needs `ADMIN_TOKEN` for
+  D1 under `github_app_*`, incl. OAuth client id/secret; the private
+  key, client secret, and webhook secret are AES-GCM encrypted with the
+  secrets key ladder — legacy plaintext upgrades on the next Connect)
+  or env `GITHUB_APP_ID`/`GITHUB_PRIVATE_KEY` (env wins; Connect 409s
+  while env manages any of them; manual flow needs `ADMIN_TOKEN` for
   dashboard access since OAuth is impossible). Both workers resolve
   via `resolveAppCreds`.
 - API: legacy `RUNNER_TOKEN` env plus D1 `api_tokens` (`admin` =
@@ -118,7 +165,10 @@ gaps so one-click deploys need zero `wrangler secret` commands.
   shared by runners and seats), and are masked in all logs/results.
 - Retention: webhooks `waitUntil`-prune terminal runs older than 90d
   (`pruneOldRuns`, bounded 500/pass, jobs deleted explicitly — D1
-  ignores `ON DELETE CASCADE` without `PRAGMA foreign_keys`).
+  ignores `ON DELETE CASCADE` without `PRAGMA foreign_keys`), delete
+  each pruned job's R2 artifacts by prefix, and prune cache blobs older
+  than 90 days — all bounded and best-effort (`deleteJobArtifacts` /
+  `pruneOldCache`).
 - Liveness: runners heartbeat every 60s (`POST .../heartbeat`, best
   effort), seats mirror progress; webhooks + status callbacks
   `waitUntil`-sweep `running` jobs quiet 20m+ back to `queued`
@@ -145,7 +195,11 @@ gaps so one-click deploys need zero `wrangler secret` commands.
   via stdin pipe — never secret values in argv, never printed. `.env` (root,
   gitignored) is written by `setup` for runner/CLI.
 - Never commit secrets. Before pushing, `git status` must show no `.env`,
-  `.dev.vars`, or `worker-configuration.d.ts` (all gitignored).
+  `.dev.vars`, `worker-configuration.d.ts`, or `apps/seats/wrangler.jsonc`
+  (all gitignored).
+- Dashboard-managed credentials (GitHub App key + client secret, webhook
+  secret) are AES-GCM encrypted with the same key ladder as repo secrets
+  before landing in `app_settings`.
 
 ## Verification
 

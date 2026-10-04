@@ -28,21 +28,68 @@ npm run runner
 ```
 
 Keep it alive with a service manager — a bare terminal dies with your
-session and queued jobs just sit there. Copy-paste examples:
+session and queued jobs just sit there. Copy-paste units:
+
+### Linux (systemd user unit)
+
+```ini
+# ~/.config/systemd/user/flare-runner.service
+[Unit]
+Description=Flare Actions runner
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/flare-actions
+Environment=FLARE_ACTIONS_URL=https://<your-worker>.workers.dev
+Environment=RUNNER_TOKEN=<runner token from the dashboard>
+Environment=FLARE_LABELS=docker
+ExecStart=/usr/bin/env npm run runner
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
 
 ```bash
-# macOS (launchd): ~/Library/LaunchAgents/com.flare.runner.plist
-# RunAtLoad + KeepAlive, FLARE_* vars in EnvironmentVariables, then:
-launchctl load ~/Library/LaunchAgents/com.flare.runner.plist
-
-# Linux (systemd user unit): ~/.config/systemd/user/flare-runner.service
-# [Service] ExecStart=/usr/bin/npm run runner, WorkingDirectory=<repo>,
-# Environment=FLARE_ACTIONS_URL=… RUNNER_TOKEN=…, Restart=always, then:
-systemctl --user enable --now flare-runner
-
-# Windows: Task Scheduler "at startup" trigger, or NSSM service wrapper.
-# Anywhere else: tmux new -d -s flare 'npm run runner' survives SSH drops.
+systemctl --user daemon-reload && systemctl --user enable --now flare-runner
+loginctl enable-linger "$USER"   # keep running without an open session
 ```
+
+### macOS (launchd)
+
+```xml
+<!-- ~/Library/LaunchAgents/com.flare.runner.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.flare.runner</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string><string>npm</string><string>run</string><string>runner</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/you/flare-actions</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FLARE_ACTIONS_URL</key><string>https://&lt;your-worker&gt;.workers.dev</string>
+    <key>RUNNER_TOKEN</key><string>&lt;runner token&gt;</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.flare.runner.plist
+```
+
+### Windows and anywhere else
+
+Task Scheduler with an "at startup" trigger, or NSSM to wrap
+`npm run runner` as a service. No service manager? `tmux new -d -s flare
+'npm run runner'` survives SSH drops.
 
 ## macOS (Apple Silicon builds)
 
