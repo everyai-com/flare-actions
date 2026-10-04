@@ -8,7 +8,7 @@ import {
   type JobClient,
   type JobSpec,
   type RunJobResult,
-} from "@flare-actions/runner-sdk";
+} from "flare-actions-runner-sdk";
 import { parsePipeline, type PipelineJob } from "../../worker/src/pipeline.ts";
 
 // `cli local`: run flare.yml in the current working tree, on this

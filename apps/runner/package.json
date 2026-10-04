@@ -9,6 +9,6 @@
     "start": "node --experimental-strip-types src/index.ts"
   },
   "dependencies": {
-    "@flare-actions/runner-sdk": "0.1.0"
+    "flare-actions-runner-sdk": "0.1.0"
   }
 }

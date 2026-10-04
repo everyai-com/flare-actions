@@ -1,13 +1,21 @@
 # Changelog
 
 All notable changes to this project are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
-deploys from `main` and does not cut versioned releases yet.
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); releases are
+tagged on `main` (`v0.1.0` is the first).
 
-## [Unreleased]
+## [0.1.0] - 2026-10-04
 
 ### Added
 
+- One-click deploy actually works now: the Deploy to Cloudflare button
+  reads a root `wrangler.jsonc` deploy contract and auto-provisions D1,
+  R2, queues, and Workers AI.
+- npm packages prepared: `flare-actions-runner-sdk` and the `flare-actions`
+  CLI (with a `flare` bin) ship TypeScript sources for Node's type
+  stripping.
+- `docs/OPERATIONS.md`: updating, D1 backup/restore, secret rotation,
+  monitoring, and troubleshooting for self-hosters.
 - Password reset: self-serve, single-use 1-hour email link, throttled,
   generic responses (no account enumeration); completing a reset drops
   every session for the account.

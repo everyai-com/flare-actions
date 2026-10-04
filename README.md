@@ -1,5 +1,9 @@
 # Flare Actions
 
+[![CI](https://github.com/everyai-com/flare-actions/actions/workflows/ci.yml/badge.svg)](https://github.com/everyai-com/flare-actions/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node >=22.6](https://img.shields.io/badge/node-%3E%3D22.6-brightgreen.svg)](https://nodejs.org)
+
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/everyai-com/flare-actions)
 
 Open-source GitHub Actions alternative you host on your own Cloudflare account.
@@ -26,20 +30,28 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
 - `apps/seats` — managed executor worker (seat DO + container image)
 - `docs/` — [pipeline reference](docs/PIPELINES.md),
   [runners](docs/RUNNERS.md), [MCP](docs/MCP.md),
-  [roadmap](docs/ROADMAP.md), [economics](docs/ECONOMICS.md)
+  [operations](docs/OPERATIONS.md), [roadmap](docs/ROADMAP.md),
+  [economics](docs/ECONOMICS.md)
 
 ## Quickstart
 
-**One click (no terminal):** hit **Deploy to Cloudflare** above, then open
-`https://&lt;your-worker&gt;/dashboard`:
+**One click (no terminal):** hit **Deploy to Cloudflare** above. Cloudflare
+clones the repo into your account, reads the root `wrangler.jsonc`, and
+auto-provisions the Worker's D1 database, R2 bucket, queues, and Workers AI
+binding. When it finishes, open `https://&lt;your-worker&gt;/dashboard`:
 
 1. Open the dashboard and **create your admin account** (email +
    password) — first signup claims admin.
 2. Hit **Connect GitHub** (one click, no naming — the App name is
    automatic), install the App on your repos, and push. Prefer GitHub
    login? Connect first, then Login with GitHub instead. Invite
-   teammates by email from the Access tab; managed seats need nothing
-   else, and runner tokens are only for BYO machines.
+   teammates by email from the Access tab; runner tokens are only for
+   BYO machines.
+
+That is the whole core loop. Everything else is optional and additive:
+your own machine as a runner (`npm run runner`), managed seats
+(`npm run setup` on a machine with docker), a notification sender, and
+scheduled runs.
 
 **From source:**
 
@@ -119,7 +131,7 @@ and queues from production — via Cloudflare Worker Previews:
 
 ```bash
 git checkout -b my-feature
-npx wrangler preview --config apps/worker/wrangler.jsonc
+npx wrangler preview
 # → https://my-feature-flare-actions.<you>.workers.dev
 ```
 

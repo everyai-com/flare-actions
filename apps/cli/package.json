@@ -1,14 +1,29 @@
 {
-  "name": "@flare-actions/cli",
+  "name": "flare-actions",
   "version": "0.1.0",
-  "private": true,
-  "description": "Minimal CLI for Flare Actions",
+  "description": "CLI for Flare Actions: run pipelines locally, verify on the server in one call, and inspect runs, logs, and flakes.",
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "flare": "./bin/flare.mjs"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "engines": {
+    "node": ">=22.6"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/everyai-com/flare-actions.git",
+    "directory": "apps/cli"
+  },
+  "homepage": "https://github.com/everyai-com/flare-actions#readme",
   "scripts": {
     "start": "node --experimental-strip-types src/index.ts"
   },
   "dependencies": {
-    "@flare-actions/runner-sdk": "0.1.0"
+    "flare-actions-runner-sdk": "0.1.0"
   }
 }

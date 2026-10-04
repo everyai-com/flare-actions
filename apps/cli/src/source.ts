@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { FlareClient } from "@flare-actions/runner-sdk";
+import type { FlareClient } from "flare-actions-runner-sdk";
 import { parsePipeline } from "../../worker/src/pipeline.ts";
 
 // Source dispatch from the CLI: tar the working tree (no commit, no

@@ -9,7 +9,7 @@ import {
   loadEnv,
   parseJobSpec,
   runJob,
-} from "@flare-actions/runner-sdk";
+} from "flare-actions-runner-sdk";
 
 loadEnv();
 const baseUrl = process.env["FLARE_ACTIONS_URL"];

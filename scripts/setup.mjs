@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { applyMigrationsWithReconcile } from "./migrate-reconcile.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const config = "apps/worker/wrangler.jsonc";
+const config = "wrangler.jsonc";
 const dryRun = process.argv.includes("--dry-run");
 
 function run(cmd, args, opts = {}) {

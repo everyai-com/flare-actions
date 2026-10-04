@@ -5,7 +5,7 @@ import {
   isImportSuccess,
   loadEnv,
   type FlareRunDigest,
-} from "@flare-actions/runner-sdk";
+} from "flare-actions-runner-sdk";
 import { runLocal } from "./local.ts";
 import { dispatchSource } from "./source.ts";
 

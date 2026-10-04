@@ -62,6 +62,25 @@ conventions — read it before touching the Worker. The short version:
 Please don't report vulnerabilities in public issues — see
 [`SECURITY.md`](SECURITY.md).
 
+## Publishing to npm
+
+The runner SDK (`flare-actions-runner-sdk`) and CLI (`flare-actions`) ship
+as TypeScript sources and run under Node's type stripping (engines:
+`>=22.6`) — no build step, no generated artifacts to drift. Both names are
+claimed in this repo's package manifests and were unpublished at v0.1.0.
+
+```bash
+npm login
+npm publish --dry-run --workspace packages/runner-sdk   # inspect the file list
+npm publish --workspace packages/runner-sdk
+npm publish --workspace apps/cli                        # depends on the SDK version above
+```
+
+Bump `version` in both manifests together (the CLI pins the SDK version),
+and tag the release (`vX.Y.Z`). The CLI exposes a `flare` bin; after
+publishing, users can `npx flare runs` / `npx flare local` without
+cloning.
+
 ## License
 
 By contributing you agree your work is licensed under the repo's

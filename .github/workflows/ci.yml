@@ -48,7 +48,7 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         run: |
           NAME=$(echo "${{ github.head_ref }}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | sed 's/^-//;s/-$//' | head -c 60)
-          OUT=$(npx wrangler preview --name "$NAME" --config apps/worker/wrangler.jsonc 2>&1)
+          OUT=$(npx wrangler preview --name "$NAME" 2>&1)
           echo "$OUT"
           URL=$(echo "$OUT" | grep -oE 'https://[^ ]*\.workers\.dev' | head -n 1)
           echo "preview_url=$URL" >> "$GITHUB_OUTPUT"

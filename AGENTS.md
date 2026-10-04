@@ -219,7 +219,7 @@ gaps so one-click deploys need zero `wrangler secret` commands.
 
 ## Secrets
 
-- Local: `apps/worker/.dev.vars` (gitignored). Remote: `wrangler secret put`
+- Local: `.dev.vars` at the repo root (gitignored). Remote: `wrangler secret put`
   via stdin pipe — never secret values in argv, never printed. `.env` (root,
   gitignored) is written by `setup` for runner/CLI.
 - Never commit secrets. Before pushing, `git status` must show no `.env`,
@@ -242,12 +242,14 @@ gaps so one-click deploys need zero `wrangler secret` commands.
 
 ## Preview environments
 
-- `wrangler.jsonc` has a `previews` block: staging D1
+- `wrangler.jsonc` at the repo root is the deploy contract (the Deploy to
+  Cloudflare button reads it, so `main` points into `apps/worker/` and
+  `migrations_dir` into `apps/worker/migrations`): staging D1
   (`flare-actions-staging`, bound by id) + staging queues (bound by name),
   shared by all previews and isolated from prod. Only Durable Objects and
   Containers auto-isolate per preview; D1/queues do not.
-- Branch flow: `git checkout -b feat && npx wrangler preview --config
-  apps/worker/wrangler.jsonc` → `https://<branch>-flare-actions.<sub>.workers.dev`.
+- Branch flow: `git checkout -b feat && npx wrangler preview`
+  → `https://<branch>-flare-actions.<sub>.workers.dev`.
   Delete with `wrangler preview delete --name <branch>`.
 - Preview base secrets (values distinct from prod) are set once via
   `wrangler preview base-config secret put NAME`; new previews inherit them.
