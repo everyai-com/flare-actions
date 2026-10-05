@@ -71,6 +71,7 @@ function toSpec(job: PipelineJob): JobSpec {
       ...(job.artifacts.name ? { name: job.artifacts.name } : {}),
     };
   }
+  if (job.testReports) spec.testReports = { paths: job.testReports.paths };
   if (job.timeoutMinutes !== undefined) spec.timeoutMinutes = job.timeoutMinutes;
   return spec;
 }
@@ -95,6 +96,13 @@ function localClient(cacheDir: string, artifactsDir: string, jobSlug: string): J
       const dir = join(artifactsDir, jobSlug);
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, name), data);
+    },
+    uploadTestReport: async (_jobId, xml) => {
+      const dir = join(artifactsDir, jobSlug);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "junit.xml"), xml);
+      const total = (xml.match(/<testcase\b/g) ?? []).length;
+      return { total, passed: total, failed: 0, errors: 0, skipped: 0, truncated: false };
     },
   };
 }

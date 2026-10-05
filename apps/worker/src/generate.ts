@@ -1,5 +1,4 @@
-import type { AiBinding } from "./triage";
-import { TRIAGE_MODEL } from "./triage";
+import { TRIAGE_MODEL, gatewayOptions, type AiBinding } from "./triage";
 
 export const GENERATE_MAX_TOKENS = 1024;
 export const GENERATE_MAX_PROMPT_CHARS = 2000;
@@ -26,12 +25,20 @@ export function extractYaml(text: string): string {
   return body.slice(0, 16384);
 }
 
-export async function runGenerate(ai: AiBinding, prompt: string): Promise<string | null> {
+export async function runGenerate(
+  ai: AiBinding,
+  prompt: string,
+  opts: { gatewayId?: string } = {},
+): Promise<string | null> {
   try {
-    const out = (await ai.run(TRIAGE_MODEL, {
-      messages: buildGenerateMessages(prompt),
-      max_tokens: GENERATE_MAX_TOKENS,
-    })) as { response?: unknown };
+    const out = (await ai.run(
+      TRIAGE_MODEL,
+      {
+        messages: buildGenerateMessages(prompt),
+        max_tokens: GENERATE_MAX_TOKENS,
+      },
+      gatewayOptions(opts.gatewayId),
+    )) as { response?: unknown };
     if (typeof out?.response !== "string" || !out.response.trim()) return null;
     const yaml = extractYaml(out.response);
     return yaml.includes("jobs:") ? yaml : null;

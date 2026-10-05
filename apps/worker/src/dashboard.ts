@@ -4,42 +4,33 @@ export const DASHBOARD_HTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Flare Actions dashboard: CI runs, job logs, access tokens, and GitHub App settings.">
-<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231c2330'/%3E%3Ctext x='16' y='23' font-family='system-ui,sans-serif' font-size='19' font-weight='800' fill='white' text-anchor='middle'%3EF%3C/text%3E%3C/svg%3E">
+<meta name="theme-color" content="#161616">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234124fb'/%3E%3Ctext x='16' y='23' font-family='system-ui,sans-serif' font-size='19' font-weight='800' fill='white' text-anchor='middle'%3EF%3C/text%3E%3C/svg%3E">
 <title>Flare Actions</title>
 <style>
-:root { color-scheme: light; --bg: #f6f7f9; --card: #ffffff; --line: #e3e6eb; --ink: #1c2330; --muted: #687182; --accent: #2563eb; --accent-ink: #1d4ed8; --danger: #dc2626; --ok: #15803d; --hover: #f0f3f8; --input-bg: #ffffff; }
-@media (prefers-color-scheme: dark) {
-:root { color-scheme: dark; --bg: #0d1117; --card: #161b22; --line: #2d333b; --ink: #e6e9ef; --muted: #9aa4b2; --accent: #4d7cfe; --accent-ink: #9db9ff; --danger: #f26d6d; --ok: #3fb950; --hover: #1c2128; --input-bg: #0d1117; }
-.pill.queued { background: #2d333b; color: var(--muted); }
-.pill.running { background: #1c2c52; color: #9db9ff; }
-.pill.success { background: #12341f; color: #3fb950; }
-.pill.failure, .pill.error { background: #3d1d1d; color: #f26d6d; }
-.pill.blocked { background: #3a2c12; color: #d29922; }
-.pill.cancelled, .pill.skipped { background: #2d333b; color: var(--muted); }
-div.triage { background: var(--hover); }
-}
+:root { color-scheme: dark; --bg: #161616; --card: #1b1d20; --sidebar: #171717; --line: #232323; --line-strong: #393939; --ink: #f9fbff; --soft: #a4a4a4; --muted: #7f7f7f; --faint: #454545; --accent: #4124fb; --accent-hover: #4b30ff; --accent-ink: #b7aee9; --danger: #f97373; --ok: #22c55e; --warn: #fbbf24; --hover: #222222; --input-bg: #161616; --ring: #676767; }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 10; }
-header h1 { font-size: 16px; margin: 0; font-weight: 700; letter-spacing: -0.01em; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+header { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: var(--sidebar); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 10; }
+header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 main { max-width: 960px; margin: 0 auto; padding: 20px 20px 40px; }
-section.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
-h2 { margin: 0 0 10px; font-size: 15px; font-weight: 650; letter-spacing: -0.005em; }
+section.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+h2 { margin: 0 0 10px; font-size: 16px; font-weight: 600; line-height: 1.2; letter-spacing: -0.005em; }
 h2:not(:first-child) { margin-top: 24px; }
-h3 { margin: 16px 0 6px; font-size: 13.5px; font-weight: 650; }
+h3 { margin: 16px 0 6px; font-size: 14px; font-weight: 600; line-height: 1.2; }
 .muted { color: var(--muted); }
 .err { color: var(--danger); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
-input, select, button { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--input-bg); color: var(--ink); }
-button { background: var(--accent); color: #fff; border: none; cursor: pointer; font-weight: 600; transition: filter 160ms ease, transform 60ms ease; }
-button:hover:not(:disabled) { filter: brightness(1.08); }
-button:active:not(:disabled) { transform: translateY(1px); }
-button.ghost { background: var(--hover); color: var(--ink); }
-button.danger { background: var(--danger); }
+input, select { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--input-bg); color: var(--ink); }
+input::placeholder { color: var(--faint); }
+button { font: inherit; font-size: 14px; font-weight: 500; line-height: 1; padding: 9px 16px; border-radius: 999px; border: none; background: var(--accent); color: #fff; cursor: pointer; box-shadow: 0 0 0 1px #0e0e0e, inset 0 4px 6px 0 rgba(255,255,255,0.2), inset 0 0 0 1px rgba(255,255,255,0.15), inset 0 -8px 14px 0 rgba(0,0,0,0.15); transition: background-color 150ms ease; }
+button:hover:not(:disabled) { background: var(--accent-hover); }
+button.ghost { background: #232323; color: var(--ink); box-shadow: 0 0 0 1px #333333; }
+button.ghost:hover:not(:disabled) { background: #2a2a2a; }
+button.danger { background: #3e1d1e; color: #febfc6; box-shadow: inset 0 0 0 1px #4c2324; }
+button.danger:hover:not(:disabled) { background: #4c2324; }
 button:disabled { opacity: 0.5; cursor: default; }
-button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { button { transition: none; } }
 #runsFilterForm { margin-bottom: 6px; }
 #dispatchBox { margin-bottom: 12px; }
@@ -48,63 +39,64 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .secret-row { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
 #secretNames { margin: 4px 0 8px; }
 #runsCount { margin: 0 0 8px; font-size: 12.5px; }
-a { color: var(--accent); }
-nav.tabs { display: flex; gap: 8px; margin-bottom: 16px; }
-nav.tabs button { background: var(--card); color: var(--ink); border: 1px solid var(--line); }
-nav.tabs button.active { background: var(--ink); color: var(--bg); border-color: var(--ink); }
-.table-scroll { overflow-x: auto; }
+a { color: var(--accent-ink); }
+nav.tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+nav.tabs button { background: transparent; color: var(--muted); box-shadow: none; border-radius: 8px; font-weight: 500; }
+nav.tabs button:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: var(--ink); }
+nav.tabs button.active { background: #2a2a2a; color: var(--ink); box-shadow: 0 0 0 1px rgba(0,0,0,0.4), inset 0 1px 0 0 rgba(255,255,255,0.1), inset 0 0 0 1px rgba(255,255,255,0.06); }
+.table-scroll { overflow-x: auto; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.2) transparent; }
 table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
-th { font-size: 12px; font-weight: 650; color: var(--muted); letter-spacing: 0.01em; white-space: nowrap; }
+th { font-size: 12px; font-weight: 500; color: var(--muted); letter-spacing: 0.01em; white-space: nowrap; }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr.clickable { cursor: pointer; }
-tbody tr.clickable:hover { background: var(--hover); }
-.pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
-.pill.queued { background: #eef1f5; color: var(--muted); }
-.pill.running { background: #dbeafe; color: #1d4ed8; }
-.pill.success { background: #dcfce7; color: var(--ok); }
-.pill.failure, .pill.error { background: #fee2e2; color: var(--danger); }
-.pill.blocked { background: #fef3c7; color: #92400e; }
-.pill.cancelled, .pill.skipped { background: #eef1f5; color: var(--muted); text-decoration: line-through; }
-pre.log { background: #0f1520; color: #d7e0ee; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 12.5px; }
-div.triage { border: 1px solid var(--line); background: var(--hover); padding: 10px 12px; border-radius: 8px; margin: 8px 0; white-space: pre-wrap; font-size: 13px; }
-div.triage-label { font-size: 12px; font-weight: 700; color: var(--accent-ink); margin-bottom: 2px; }
+tbody tr.clickable:hover { background: rgba(255,255,255,0.04); }
+.pill { display: inline-flex; align-items: center; height: 22px; padding: 0 10px; border-radius: 999px; border: 1px solid; font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; }
+.pill.queued { background: #2a2a2a; border-color: #363636; color: #cfcfcf; }
+.pill.running { background: #1d2b3e; border-color: #23354c; color: #bfdbfe; }
+.pill.success { background: #1f3a2d; border-color: #275137; color: #b1ebc5; }
+.pill.failure, .pill.error { background: #3e1d1e; border-color: #4c2324; color: #febfc6; }
+.pill.blocked { background: #31221b; border-color: #6c4830; color: #fed7aa; }
+.pill.cancelled, .pill.skipped { background: #2a2a2a; border-color: #363636; color: #cfcfcf; text-decoration: line-through; }
+pre.log { background: #101214; border: 1px solid var(--line); color: #d0d4dd; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 12.5px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.2) transparent; }
+div.triage { border: 1px solid #23354c; background: #1d2b3e; padding: 10px 12px; border-radius: 8px; margin: 8px 0; white-space: pre-wrap; font-size: 13px; color: #d0d4dd; }
+div.triage-label { font-size: 12px; font-weight: 600; color: #bfdbfe; margin-bottom: 2px; }
 div.empty { padding: 26px 8px; }
 div.empty h3 { margin: 0 0 4px; font-size: 14px; }
 div.empty p { margin: 0; color: var(--muted); font-size: 13px; max-width: 60ch; }
-div.notice { border: 1px solid var(--line); background: var(--hover); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+div.notice { border: 1px solid var(--line); background: var(--hover); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
 div.notice h3 { margin: 0 0 2px; font-size: 14px; }
 div.notice p { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
-.run-row { display: flex; gap: 12px; align-items: center; padding: 11px 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.run-row { display: flex; gap: 12px; align-items: center; padding: 11px 10px; border-bottom: 1px solid var(--line); cursor: pointer; border-radius: 8px; }
 .run-row:last-child { border-bottom: none; }
-.run-row:hover, .run-row.selected { background: var(--hover); }
+.run-row:hover, .run-row.selected { background: rgba(255,255,255,0.04); }
 .run-main { flex: 1; min-width: 0; }
-.run-repo { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.run-meta { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.run-time { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.run-repo { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-meta { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
 details.step { border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; }
 details.step summary { cursor: pointer; padding: 8px 10px; }
 details.step summary code { margin: 0 4px; }
-details.step pre.log { margin: 0; border-top: 1px solid var(--line); border-radius: 0 0 8px 8px; }
+details.step pre.log { margin: 0; border: none; border-top: 1px solid var(--line); border-radius: 0 0 8px 8px; }
 details.fulllog { margin-top: 10px; }
 details.fulllog summary { cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 header h1.brand-head { display: flex; align-items: center; gap: 8px; }
-code.token { display: block; background: #0f1520; color: #d7e0ee; padding: 12px; border-radius: 8px; word-break: break-all; font-size: 12.5px; }
+code.token { display: block; background: #101214; border: 1px solid var(--line); color: #d0d4dd; padding: 12px; border-radius: 8px; word-break: break-all; font-size: 12.5px; }
 form.inline { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 form.inline input { flex: 1; min-width: 180px; }
 .auth-card { padding: 28px; }
 .auth-narrow { max-width: 420px; margin: 0 auto; }
 .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-.brand-mark { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; background: var(--ink); color: #fff; font-weight: 800; font-size: 17px; }
-.brand-name { font-weight: 700; font-size: 16px; }
+.brand-mark { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 800; font-size: 17px; box-shadow: 0 0 0 1px #0e0e0e, inset 0 2px 4px 0 rgba(255,255,255,0.25); }
+.brand-name { font-weight: 600; font-size: 16px; }
 #connectBox, #githubBox { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 12px; }
 #emailBox h2, #connectBox h2 { margin: 0 0 4px; font-size: 16px; }
 .auth-form { display: flex; flex-direction: column; gap: 12px; margin: 12px 0 4px; }
 .field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; }
 .field input { width: 100%; }
-.btn-block { width: 100%; padding: 10px; font-weight: 600; }
-.btn-github { background: #111418; color: #fff; border: none; cursor: pointer; border-radius: 8px; font: inherit; padding: 10px; }
-.btn-github:hover { background: #000; }
+.btn-block { width: 100%; padding: 10px; }
+.btn-github { background: #232323; color: #fff; border: none; cursor: pointer; border-radius: 999px; font: inherit; padding: 10px; box-shadow: 0 0 0 1px #333333; }
+.btn-github:hover { background: #2a2a2a; }
 </style>
 </head>
 <body>
@@ -123,6 +115,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <label class="field"><span>Email</span><input id="emailInput" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254"></label>
 <label class="field"><span>Password</span><input id="emailPw" type="password" placeholder="Password" autocomplete="current-password"></label>
 <label class="field" id="emailPw2Wrap" hidden><span>Confirm password</span><input id="emailPw2" type="password" placeholder="Confirm password" autocomplete="new-password"></label>
+<div id="tsEmail"></div>
 <button type="submit" id="emailBtn" class="btn-block">Log in</button>
 </form>
 <p id="emailErr" class="err"></p>
@@ -160,6 +153,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <form id="inviteForm" class="auth-form">
 <label class="field"><span>New password</span><input id="invitePw1" type="password" placeholder="8+ characters" autocomplete="new-password"></label>
 <label class="field"><span>Confirm password</span><input id="invitePw2" type="password" placeholder="Confirm password" autocomplete="new-password"></label>
+<div id="tsInvite"></div>
 <button type="submit" class="btn-block">Create account</button>
 </form>
 <p id="inviteErr" class="err"></p>
@@ -172,6 +166,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <p class="muted">If that account exists, we'll email a single-use reset link (1 hour).</p>
 <form id="resetRequestForm" class="auth-form">
 <label class="field"><span>Email</span><input id="resetEmailInput" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254"></label>
+<div id="tsReset"></div>
 <button type="submit" class="btn-block">Send reset link</button>
 </form>
 <p id="resetRequestErr" class="err"></p>
@@ -264,6 +259,9 @@ form.inline input { flex: 1; min-width: 180px; }
 <div class="table-scroll"><table><thead><tr><th>Email</th><th>Role</th><th></th></tr></thead><tbody id="emailUsersBody"></tbody></table></div>
 <h2>Pending invites</h2>
 <div class="table-scroll"><table><thead><tr><th>Email</th><th>Expires</th></tr></thead><tbody id="invitesBody"></tbody></table></div>
+<h2>Audit log</h2>
+<p class="muted">Who did what, most recent first (last 100 entries).</p>
+<div class="table-scroll"><table><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th></tr></thead><tbody id="auditBody"></tbody></table></div>
 </section>
 <section id="settingsPane" class="card" hidden>
 <h2>Settings</h2>
@@ -298,6 +296,26 @@ form.inline input { flex: 1; min-width: 180px; }
 </form>
 <p id="badgeErr" class="err"></p>
 <p id="badgeOk"></p>
+<h2>Bot protection (Turnstile)</h2>
+<p class="muted" id="turnstileInfo"></p>
+<form id="turnstileForm" class="inline">
+<input id="turnstileSiteInput" placeholder="Site key (public)" maxlength="128">
+<input id="turnstileSecretInput" type="password" placeholder="Secret key (write-only, blank keeps current)" maxlength="512">
+<button type="submit">Save Turnstile</button>
+</form>
+<p id="turnstileErr" class="err"></p>
+<p id="turnstileOk"></p>
+<h2>Scheduling and AI</h2>
+<p class="muted" id="schedInfo"></p>
+<form id="schedForm" class="inline">
+<input id="fairShareInput" placeholder="fair share per repo (0 = off)" maxlength="3" size="8">
+<input id="gatewayInput" placeholder="AI gateway id (blank = direct)" maxlength="64">
+<label><input type="checkbox" id="writeConfirmCheck"> MCP write-confirm</label>
+<label><input type="checkbox" id="webSearchCheck"> triage web search</label>
+<button type="submit">Save</button>
+</form>
+<p id="schedErr" class="err"></p>
+<p id="schedOk"></p>
 <h2>Schedules</h2>
 <p class="muted">Run a repo on a cron schedule (UTC). &quot;last&quot; shows the most recent dispatch attempt, so a schedule that silently stops is visible instead of invisible.</p>
 <form id="scheduleForm" class="inline">
@@ -308,6 +326,21 @@ form.inline input { flex: 1; min-width: 180px; }
 </form>
 <p id="scheduleErr" class="err"></p>
 <div id="scheduleList"></div>
+<h2>Monitors</h2>
+<p class="muted">Rule-based alerts to the chat webhook (or a per-monitor URL): consecutive failing results, log text, or jobs running past a duration. Empty branch/job matches everything; job accepts * and ? globs.</p>
+<form id="monitorForm" class="inline">
+<input id="monitorRepoInput" placeholder="owner/repo" maxlength="100">
+<input id="monitorBranchInput" placeholder="branch (optional)" maxlength="128">
+<input id="monitorJobInput" placeholder="job glob (optional)" maxlength="128">
+<select id="monitorTriggerSelect"><option value="result">result</option><option value="duration">duration</option></select>
+<select id="monitorResultSelect"><option value="failure">failure</option><option value="error">error</option><option value="cancelled">cancelled</option><option value="skipped">skipped</option><option value="success">success</option></select>
+<input id="monitorNInput" placeholder="consecutive (1-100)" maxlength="3" size="6">
+<input id="monitorDurInput" placeholder="seconds (60+, duration only)" maxlength="5" size="8">
+<input id="monitorPatternInput" placeholder="log text (optional)" maxlength="200">
+<button type="submit">Add monitor</button>
+</form>
+<p id="monitorErr" class="err"></p>
+<div id="monitorList"></div>
 <h2>Repository secrets</h2>
 <p class="muted">Write-only values for &#36;{{ secrets.NAME }} in steps and env. Only names are ever listed back; values decrypt inside job claims only.</p>
 <form id="secretLoadForm" class="inline">
@@ -377,6 +410,45 @@ form.inline input { flex: 1; min-width: 180px; }
   }
   function pill(status) { var s = el("span", status); s.className = "pill " + status; return s; }
 
+  // Turnstile widgets render lazily per auth pane (the site key arrives
+  // with /v1/admin/status, and hidden panes break widget execution).
+  var turnstileWidgets = {};
+  function ensureTurnstileScript(cb) {
+    if (window.turnstile) { cb(); return; }
+    if (document.getElementById("turnstileScript")) {
+      setTimeout(function () { ensureTurnstileScript(cb); }, 300);
+      return;
+    }
+    var s = document.createElement("script");
+    s.id = "turnstileScript";
+    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+    s.async = true;
+    s.defer = true;
+    s.onload = cb;
+    document.head.appendChild(s);
+  }
+  function ensureTurnstile(id) {
+    var siteKey = lastStatus && lastStatus.turnstileSiteKey;
+    if (!siteKey || turnstileWidgets[id] !== undefined) return;
+    var target = document.getElementById(id);
+    if (!target) return;
+    ensureTurnstileScript(function () {
+      if (turnstileWidgets[id] !== undefined || !window.turnstile) return;
+      try {
+        turnstileWidgets[id] = window.turnstile.render("#" + id, { sitekey: siteKey });
+      } catch (e) {
+        turnstileWidgets[id] = null;
+      }
+    });
+  }
+  function turnstileToken(id) {
+    try {
+      var wid = turnstileWidgets[id];
+      if (window.turnstile && wid !== undefined && wid !== null) return window.turnstile.getResponse(wid) || "";
+    } catch (e) { /* widget failed; server reports the missing token */ }
+    return "";
+  }
+
   var authPane = document.getElementById("authPane");
   var invitePane = document.getElementById("invitePane");
   var appPane = document.getElementById("appPane");
@@ -391,12 +463,14 @@ form.inline input { flex: 1; min-width: 180px; }
   function showInvite() {
     invitePane.hidden = false; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
     resetPane.hidden = true; resetConfirmPane.hidden = true;
+    ensureTurnstile("tsInvite");
   }
 
   function showReset() {
     resetPane.hidden = false; resetConfirmPane.hidden = true; invitePane.hidden = true; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
     document.getElementById("resetRequestOk").textContent = "";
     document.getElementById("resetRequestErr").textContent = "";
+    ensureTurnstile("tsReset");
   }
 
   function showResetConfirm(token) {
@@ -422,6 +496,7 @@ form.inline input { flex: 1; min-width: 180px; }
     } else {
       installBox.hidden = true;
     }
+    ensureTurnstile("tsEmail");
   }
   var isAdmin = false;
   function showApp(actor, admin, githubConnected) {
@@ -472,7 +547,7 @@ form.inline input { flex: 1; min-width: 180px; }
     if (st.user) {
       showApp(st.user.actor, st.user.admin, st.githubConnected);
       loadRuns();
-      if (st.user.admin) { loadTokens(); loadUsers(); }
+      if (st.user.admin) { loadTokens(); loadUsers(); loadAudit(); }
     } else {
       showAuth(st);
     }
@@ -480,6 +555,7 @@ form.inline input { flex: 1; min-width: 180px; }
 
   function boot() {
     fetch("/v1/admin/status").then(function (res) { return res.json(); }).then(function (st) {
+      lastStatus = st;
       var q = new URLSearchParams(window.location.search);
       var g = q.get("github");
       var inv = q.get("invite");
@@ -524,7 +600,7 @@ form.inline input { flex: 1; min-width: 180px; }
     if (bootstrap) {
       var pw2 = document.getElementById("emailPw2").value;
       if (pw !== pw2) { err.textContent = "Passwords do not match."; return; }
-      fetch("/v1/admin/bootstrap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email, password: pw }) })
+      fetch("/v1/admin/bootstrap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email, password: pw, turnstileToken: turnstileToken("tsEmail") }) })
         .then(function (res) {
           if (!res.ok) throw new Error("bad");
           document.getElementById("emailInput").value = "";
@@ -535,7 +611,7 @@ form.inline input { flex: 1; min-width: 180px; }
         .catch(function () { err.textContent = "Could not create account (valid email, 8+ char password)."; });
       return;
     }
-    fetch("/v1/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email, password: pw }) })
+    fetch("/v1/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email, password: pw, turnstileToken: turnstileToken("tsEmail") }) })
       .then(function (res) {
         if (!res.ok) throw new Error("bad");
         document.getElementById("emailPw").value = "";
@@ -560,7 +636,7 @@ form.inline input { flex: 1; min-width: 180px; }
     var ok = document.getElementById("resetRequestOk");
     err.textContent = ""; ok.textContent = "";
     var email = document.getElementById("resetEmailInput").value.trim();
-    fetch("/v1/admin/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email }) })
+    fetch("/v1/admin/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email, turnstileToken: turnstileToken("tsReset") }) })
       .then(function (res) {
         if (!res.ok) throw new Error("bad");
         document.getElementById("resetEmailInput").value = "";
@@ -595,7 +671,7 @@ form.inline input { flex: 1; min-width: 180px; }
     var a = document.getElementById("invitePw1").value;
     var b = document.getElementById("invitePw2").value;
     if (a !== b) { err.textContent = "Passwords do not match."; return; }
-    fetch("/v1/admin/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: inviteToken, password: a }) })
+    fetch("/v1/admin/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: inviteToken, password: a, turnstileToken: turnstileToken("tsInvite") }) })
       .then(function (res) {
         if (!res.ok) throw new Error("bad");
         document.getElementById("invitePw1").value = "";
@@ -705,7 +781,7 @@ form.inline input { flex: 1; min-width: 180px; }
     if (!box.hidden && back) back.click();
   });
   tabRuns.addEventListener("click", function () { selectTab("runs"); loadRuns(); });
-  tabAccess.addEventListener("click", function () { selectTab("access"); loadTokens(); loadUsers(); });
+  tabAccess.addEventListener("click", function () { selectTab("access"); loadTokens(); loadUsers(); loadAudit(); });
   tabSettings.addEventListener("click", function () { selectTab("settings"); loadSettings(); });
 
   var selectedRunId = null;
@@ -796,6 +872,38 @@ form.inline input { flex: 1; min-width: 180px; }
         box.appendChild(el("p", data.summary.finishedJobs + "/" + data.summary.jobs + " jobs finished, " +
           data.summary.computeMinutes + " compute-min (~$" + data.summary.actionsListUsd + " at Actions list price)"));
       }
+      var testsBox = document.createElement("div");
+      box.appendChild(testsBox);
+      (function renderTests(runId) {
+        api("/v1/runs/" + encodeURIComponent(runId) + "/tests").then(function (t) {
+          if (!t || !t.totals || !t.totals.total) return;
+          testsBox.appendChild(el("h3", "Tests: " + t.totals.passed + " passed, " + t.totals.failed + " failed, " +
+            t.totals.errors + " errors, " + t.totals.skipped + " skipped"));
+          (t.failing || []).forEach(function (f) {
+            var line = el("p");
+            var where = [f.jobName, f.suite].filter(function (x) { return !!x; }).join(" / ");
+            line.appendChild(el("code", String(f.name)));
+            if (where) line.appendChild(el("span", " — " + where));
+            testsBox.appendChild(line);
+            if (f.message) {
+              var msg = el("div", String(f.message).slice(0, 300));
+              msg.className = "muted";
+              testsBox.appendChild(msg);
+            }
+          });
+        }).catch(function () {});
+      })(data.run.id);
+      var egressBox = document.createElement("div");
+      box.appendChild(egressBox);
+      (function renderEgress(runId) {
+        api("/v1/runs/" + encodeURIComponent(runId) + "/egress").then(function (e) {
+          if (!e || !e.totals || (e.totals.reqBytes === 0 && e.totals.respBytes === 0)) return;
+          egressBox.appendChild(el("h3", "Egress: " + e.totals.reqBytes + "b up, " + e.totals.respBytes + "b down"));
+          (e.jobs || []).slice(0, 20).forEach(function (r) {
+            egressBox.appendChild(el("p", String(r.jobId).slice(0, 8) + " " + r.host + ": " + r.reqBytes + "b up / " + r.respBytes + "b down"));
+          });
+        }).catch(function () {});
+      })(data.run.id);
       (data.jobs || []).forEach(function (j) {
         var jhead = el("h3");
         jhead.appendChild(el("span", "Job " + (j.name ? j.name + " " : "") + j.id.slice(0, 8) + " "));
@@ -849,6 +957,11 @@ form.inline input { flex: 1; min-width: 180px; }
           var tlabel = el("div", "AI triage"); tlabel.className = "triage-label"; tri.appendChild(tlabel);
           tri.appendChild(document.createTextNode("\\n" + j.triage));
           box.appendChild(tri);
+        }
+        if (j.retained_until) {
+          var ret = el("p", "Retained for debugging until " + j.retained_until + " (seat job-" + j.id + ").");
+          ret.className = "muted";
+          box.appendChild(ret);
         }
         var fdet = document.createElement("details"); fdet.className = "fulllog";
         if (!hasSteps) fdet.open = true;
@@ -999,6 +1112,23 @@ form.inline input { flex: 1; min-width: 180px; }
       .catch(function () { err.textContent = "Could not create token (name required; repos must be owner/name entries)."; });
   });
 
+  function loadAudit() {
+    var body = document.getElementById("auditBody");
+    stateRow(body, 4, "Loading audit log…", "muted");
+    api("/v1/admin/audit").then(function (data) {
+      body.textContent = "";
+      (data.entries || []).forEach(function (e) {
+        var tr = el("tr");
+        tr.appendChild(timeCell(e.created_at));
+        tr.appendChild(el("td", e.actor));
+        tr.appendChild(el("td", e.action));
+        tr.appendChild(el("td", e.target || "—"));
+        body.appendChild(tr);
+      });
+      if (!body.children.length) stateRow(body, 4, "No audit entries yet.", "muted");
+    }).catch(function () { stateRow(body, 4, "Could not load audit log.", "err"); });
+  }
+
   function loadUsers() {
     stateRow(document.getElementById("usersBody"), 2, "Loading…", "muted");
     stateRow(document.getElementById("emailUsersBody"), 3, "Loading…", "muted");
@@ -1109,7 +1239,27 @@ form.inline input { flex: 1; min-width: 180px; }
       document.getElementById("notifyWebhookOk").textContent = "";
       document.getElementById("badgeHiddenInput").value = s.badgeHiddenRepos || "";
       document.getElementById("badgeOk").textContent = "";
+      document.getElementById("turnstileInfo").textContent =
+        "Bot check on login, register, bootstrap, and reset: " +
+        (s.turnstileSiteSource === "env" ? "managed via environment." :
+          s.turnstileSiteKey ? ("site key set" + (s.turnstileSecretSet ? " + secret set." : ", secret missing.")) : "off.");
+      document.getElementById("turnstileSiteInput").value = s.turnstileSiteKey || "";
+      document.getElementById("turnstileSecretInput").value = "";
+      document.getElementById("turnstileForm").style.display = s.turnstileSiteSource === "env" ? "none" : "flex";
+      document.getElementById("turnstileOk").textContent = "";
+      document.getElementById("schedInfo").textContent =
+        "Fair share caps concurrently running jobs per repo for the shared poll pool. " +
+        "The AI gateway fronts triage/generate (unified billing/logs)" +
+        (s.aiGatewaySource === "env" ? ", managed via environment." : ".") +
+        " Web search grounds triage in live results (bills gateway credits).";
+      document.getElementById("fairShareInput").value = String(s.fairSharePerRepo ?? 0);
+      document.getElementById("gatewayInput").value = s.aiGatewayId || "";
+      document.getElementById("gatewayInput").disabled = s.aiGatewaySource === "env";
+      document.getElementById("writeConfirmCheck").checked = !!s.mcpWriteConfirm;
+      document.getElementById("webSearchCheck").checked = !!s.triageWebSearch;
+      document.getElementById("schedOk").textContent = "";
       loadSchedules();
+      loadMonitors();
       var g = s.githubApp || { source: "none", installUrl: null };
       document.getElementById("githubInfo").textContent =
         "GitHub App: " + (g.source === "none" ? "not connected." : "connected via " + g.source + ".");
@@ -1201,6 +1351,48 @@ form.inline input { flex: 1; min-width: 180px; }
       .catch(function () { err.textContent = "Could not save (entries must be owner/name)."; });
   });
 
+  document.getElementById("turnstileForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("turnstileErr");
+    var ok = document.getElementById("turnstileOk");
+    err.textContent = ""; ok.textContent = "";
+    var payload = { turnstileSiteKey: document.getElementById("turnstileSiteInput").value.trim() };
+    var secret = document.getElementById("turnstileSecretInput").value;
+    if (secret) payload.turnstileSecretKey = secret;
+    api("/v1/admin/settings", { method: "POST", body: JSON.stringify(payload) })
+      .then(function () {
+        ok.textContent = "Saved.";
+        loadSettings();
+      })
+      .catch(function () { err.textContent = "Could not save (site key required to enable)."; });
+  });
+
+  document.getElementById("schedForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("schedErr");
+    var ok = document.getElementById("schedOk");
+    err.textContent = ""; ok.textContent = "";
+    var cap = parseInt(document.getElementById("fairShareInput").value.trim(), 10);
+    if (isNaN(cap) || cap < 0 || cap > 100) {
+      err.textContent = "Fair share must be an integer 0-100.";
+      return;
+    }
+    var payload = {
+      fairSharePerRepo: cap,
+      mcpWriteConfirm: document.getElementById("writeConfirmCheck").checked,
+      triageWebSearch: document.getElementById("webSearchCheck").checked,
+    };
+    if (!document.getElementById("gatewayInput").disabled) {
+      payload.aiGatewayId = document.getElementById("gatewayInput").value.trim();
+    }
+    api("/v1/admin/settings", { method: "POST", body: JSON.stringify(payload) })
+      .then(function () {
+        ok.textContent = "Saved.";
+        loadSettings();
+      })
+      .catch(function () { err.textContent = "Could not save (gateway id must be a 1-64 char slug)."; });
+  });
+
   function scheduleAction(path, method, body) {
     var err = document.getElementById("scheduleErr");
     err.textContent = "";
@@ -1262,6 +1454,87 @@ form.inline input { flex: 1; min-width: 180px; }
       })
       .catch(function () {
         err.textContent = "Could not add schedule (owner/name, branch or tag, and a valid 5-field UTC cron required).";
+      });
+  });
+
+  function monitorAction(path, method, body) {
+    var err = document.getElementById("monitorErr");
+    err.textContent = "";
+    api(path, { method: method, body: body ? JSON.stringify(body) : undefined })
+      .then(loadMonitors)
+      .catch(function () { err.textContent = "Could not update the monitor."; });
+  }
+
+  function loadMonitors() {
+    return api("/v1/admin/monitors").then(function (data) {
+      var list = document.getElementById("monitorList");
+      list.textContent = "";
+      var rows = data.monitors || [];
+      if (rows.length === 0) {
+        var empty = el("p", "No monitors yet.");
+        empty.className = "muted";
+        list.appendChild(empty);
+        return;
+      }
+      rows.forEach(function (m) {
+        var row = el("div");
+        row.className = "inline";
+        var desc = m.repo + (m.branch ? "@" + m.branch : "") + (m.job ? " job:" + m.job : "") + "  " +
+          (m.trigger === "duration" ? "over " + m.durationSeconds + "s" : m.result + " x" + m.consecutive) +
+          (m.logPattern ? " log:" + m.logPattern : "") + (m.enabled ? "" : " (disabled)") +
+          (m.mutedUntil && Date.parse(m.mutedUntil) > Date.now() ? " (muted)" : "");
+        var info = el("span", (m.name ? m.name + ": " : "") + desc);
+        info.className = "muted";
+        var last = el("span", m.lastFiredAt ? "fired " + fmtAgo(m.lastFiredAt) : "never fired");
+        last.className = "muted";
+        var toggle = el("button", m.enabled ? "Disable" : "Enable");
+        toggle.type = "button";
+        toggle.addEventListener("click", function () {
+          monitorAction("/v1/admin/monitors/" + encodeURIComponent(m.id), "POST", { enabled: !m.enabled });
+        });
+        var mute = el("button", "Mute 1h");
+        mute.type = "button";
+        mute.addEventListener("click", function () {
+          monitorAction("/v1/admin/monitors/" + encodeURIComponent(m.id), "POST", { muteMinutes: 60 });
+        });
+        var del = el("button", "Delete");
+        del.type = "button";
+        del.addEventListener("click", function () {
+          monitorAction("/v1/admin/monitors/" + encodeURIComponent(m.id), "DELETE");
+        });
+        row.appendChild(info);
+        row.appendChild(last);
+        row.appendChild(toggle);
+        row.appendChild(mute);
+        row.appendChild(del);
+        list.appendChild(row);
+      });
+    }).catch(function () {
+      document.getElementById("monitorErr").textContent = "Could not load monitors.";
+    });
+  }
+
+  document.getElementById("monitorForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("monitorErr");
+    err.textContent = "";
+    var payload = {
+      repo: document.getElementById("monitorRepoInput").value.trim(),
+      branch: document.getElementById("monitorBranchInput").value.trim(),
+      job: document.getElementById("monitorJobInput").value.trim(),
+      trigger: document.getElementById("monitorTriggerSelect").value,
+      result: document.getElementById("monitorResultSelect").value,
+      consecutive: parseInt(document.getElementById("monitorNInput").value.trim() || "1", 10),
+      durationSeconds: parseInt(document.getElementById("monitorDurInput").value.trim() || "0", 10),
+      logPattern: document.getElementById("monitorPatternInput").value
+    };
+    api("/v1/admin/monitors", { method: "POST", body: JSON.stringify(payload) })
+      .then(function () {
+        document.getElementById("monitorForm").reset();
+        loadMonitors();
+      })
+      .catch(function () {
+        err.textContent = "Could not add monitor (owner/name required; duration needs 60+ seconds).";
       });
   });
 

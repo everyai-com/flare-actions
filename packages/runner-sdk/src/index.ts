@@ -83,6 +83,82 @@ export interface FlareFlakyStat {
   rate: number;
 }
 
+export interface FlareTestTotals {
+  total: number;
+  passed: number;
+  failed: number;
+  errors: number;
+  skipped: number;
+}
+
+export interface FlareTestJob extends FlareTestTotals {
+  jobId: string;
+  jobName: string;
+  durationMs: number;
+  truncated: boolean;
+}
+
+export interface FlareFailingTest {
+  jobId: string;
+  jobName: string;
+  suite: string;
+  name: string;
+  classname: string;
+  status: string;
+  message: string;
+}
+
+export interface FlareRunTests {
+  runId: string;
+  totals: FlareTestTotals;
+  jobs: FlareTestJob[];
+  failing: FlareFailingTest[];
+}
+
+export interface FlareEgressRow {
+  jobId: string;
+  host: string;
+  reqBytes: number;
+  respBytes: number;
+}
+
+export interface FlareRunEgress {
+  runId: string;
+  totals: { reqBytes: number; respBytes: number };
+  jobs: FlareEgressRow[];
+}
+
+export interface FlareCacheEntry {
+  key: string;
+  size: number;
+  uploaded: string;
+}
+
+export interface FlareQueuedJob {
+  id: string;
+  runId: string;
+  name: string;
+  repo: string;
+  priority: number;
+  labels: string;
+  createdAt: string;
+}
+
+export interface FlareQueue {
+  fairSharePerRepo: number;
+  jobs: FlareQueuedJob[];
+}
+
+export interface FlareUsage {
+  days: number;
+  runs: number;
+  runsByStatus: Record<string, number>;
+  jobs: number;
+  computeMinutes: number;
+  actionsListUsd: number;
+  topRepos: { repo: string; jobs: number; computeMinutes: number }[];
+}
+
 export interface FlareDigestStep {
   command: string;
   exitCode: number;
@@ -208,6 +284,64 @@ export class FlareClient {
       body: data as unknown as BodyInit,
     }, 300000);
     if (!res.ok) throw new Error(`uploadArtifact failed: ${res.status}`);
+  }
+
+  async uploadTestReport(
+    jobId: string,
+    xml: string,
+  ): Promise<{ total: number; passed: number; failed: number; errors: number; skipped: number; truncated: boolean }> {
+    const res = await this.call(`/v1/jobs/${jobId}/tests`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/xml" },
+      body: xml,
+    });
+    if (!res.ok) throw new Error(`uploadTestReport failed: ${res.status}`);
+    return (await res.json()) as {
+      total: number;
+      passed: number;
+      failed: number;
+      errors: number;
+      skipped: number;
+      truncated: boolean;
+    };
+  }
+
+  async getRunTests(runId: string): Promise<FlareRunTests> {
+    const res = await this.call(`/v1/runs/${runId}/tests`);
+    if (!res.ok) throw new Error(`getRunTests failed: ${res.status}`);
+    return (await res.json()) as FlareRunTests;
+  }
+
+  async getRunEgress(runId: string): Promise<FlareRunEgress> {
+    const res = await this.call(`/v1/runs/${runId}/egress`);
+    if (!res.ok) throw new Error(`getRunEgress failed: ${res.status}`);
+    return (await res.json()) as FlareRunEgress;
+  }
+
+  async listCache(prefix = "", limit = 100): Promise<FlareCacheEntry[]> {
+    const res = await this.call(`/v1/admin/cache?prefix=${encodeURIComponent(prefix)}&limit=${limit}`);
+    if (!res.ok) throw new Error(`listCache failed: ${res.status}`);
+    const data = (await res.json()) as { entries: FlareCacheEntry[] };
+    return data.entries;
+  }
+
+  async purgeCache(prefix = ""): Promise<{ deleted: number; truncated: boolean }> {
+    const res = await this.call(`/v1/admin/cache?prefix=${encodeURIComponent(prefix)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`purgeCache failed: ${res.status}`);
+    return (await res.json()) as { deleted: number; truncated: boolean };
+  }
+
+  async listQueue(limit = 200): Promise<FlareQueue> {
+    const res = await this.call(`/v1/admin/queue?limit=${limit}`);
+    if (!res.ok) throw new Error(`listQueue failed: ${res.status}`);
+    return (await res.json()) as FlareQueue;
+  }
+
+  async getUsage(days = 30, repo?: string): Promise<FlareUsage> {
+    const qs = `days=${days}${repo ? `&repo=${encodeURIComponent(repo)}` : ""}`;
+    const res = await this.call(`/v1/usage?${qs}`);
+    if (!res.ok) throw new Error(`getUsage failed: ${res.status}`);
+    return (await res.json()) as FlareUsage;
   }
 
   async listArtifacts(runId: string): Promise<FlareArtifact[]> {

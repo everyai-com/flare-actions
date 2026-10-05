@@ -6,10 +6,12 @@ import {
   claimNextJob,
   claimWebhookDelivery,
   createJob,
+  createMonitor,
   createRun,
   createSchedule,
   createToken,
   createUser,
+  deleteMonitor,
   deleteRepoSecret,
   deleteSchedule,
   deleteSession,
@@ -19,7 +21,10 @@ import {
   flakyStats,
   getJob,
   getJobsForRun,
+  getMonitor,
   getRun,
+  getRunEgress,
+  getRunTestJobs,
   getSession,
   getSetting,
   getUser,
@@ -29,6 +34,9 @@ import {
   latestInstallationId,
   latestRunStatus,
   listAudit,
+  listFailingTests,
+  listMonitors,
+  listQueuedJobs,
   listRepoSecretNames,
   listRuns,
   listSchedules,
@@ -40,6 +48,9 @@ import {
   rerunJob,
   revokeToken,
   rollupRunStatus,
+  saveTestReport,
+  setMonitorEnabled,
+  setMonitorMutedUntil,
   setRepoSecret,
   setRunPrComment,
   setScheduleEnabled,
@@ -48,6 +59,7 @@ import {
   touchJob,
   touchScheduleRun,
   updateRunningJob,
+  usageStats,
 } from "./db";
 import {
   bytesEqual,
@@ -67,7 +79,7 @@ import {
   validateSecretName,
   validateSecretValue,
 } from "./secrets";
-import { SETTING_KEYS, isBadgeHiddenRepo, parseBadgeHiddenRepos, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateWebhookSecret } from "./settings";
+import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseFairSharePerRepo, parseMcpWriteConfirm, parseTriageWebSearch, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
 import {
   addAllowedUser,
   beginOAuth,
@@ -121,13 +133,23 @@ import { hashToken, newTokenValue, normalizeRepos, normalizeScopes, parseRepos, 
 import { badgeSvg } from "./badge";
 import { jobDurationMs, summarizeRunCost } from "./cost";
 import { runGenerate } from "./generate";
-import { handleCacheGet, handleCachePut } from "./cache";
+import { handleCacheGet, handleCachePut, listCacheEntries, purgeCachePrefix } from "./cache";
 import { deleteJobArtifacts, handleArtifactGet, handleArtifactPut, listRunArtifacts, pruneOldCache } from "./artifacts";
 import { cronMatches, validateCron } from "./cron";
 import { reportJobCheck } from "./checks";
+import {
+  evaluateDurationMonitors,
+  evaluateResultMonitors,
+  MAX_MONITORS,
+  muteUntilIso,
+  validateMonitorInput,
+} from "./monitors";
+import { MAX_JUNIT_BYTES, parseJUnit } from "./junit";
 import { upsertPrComment } from "./prcomment";
 import { deleteSource, handleSourceGet, handleSourcePut, pruneOldSources, SOURCE_ID_RE } from "./sources";
 import { buildRunDigest } from "./digest";
+import { annotateSpan, recordSpanException } from "./trace";
+import { checkTurnstile, getTurnstileSiteKey } from "./turnstile";
 import { waitForRunTerminal } from "./wait";
 import { handleMcpMessage, mcpDiscovery } from "./mcp";
 import {
@@ -160,6 +182,16 @@ interface WorkerSecrets {
   // Base64 32-byte data key for repo secrets; when absent a D1-held
   // key is auto-generated (works out of the box, weaker at-rest story).
   SECRETS_KEY?: string;
+  // Turnstile bot defense for the auth endpoints; D1 settings fill
+  // the gap (env wins, like every other credential). Unset = off.
+  TURNSTILE_SITE_KEY?: string;
+  TURNSTILE_SECRET_KEY?: string;
+  // AI Gateway id fronting Workers AI calls (triage/generate); D1
+  // ai_gateway_id fills the gap (env wins). Unset = direct inference.
+  AI_GATEWAY_ID?: string;
+  // "1" forces Web Search grounding for triage on (D1 triage_web_search
+  // decides otherwise; anything else = D1 decides).
+  TRIAGE_WEB_SEARCH?: string;
   // R2 bucket for cache + artifacts; absent on forks that skipped it.
   CACHE?: R2Bucket;
   // No seats binding here by design: wakes travel over the SEAT_QUEUE
@@ -524,7 +556,11 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
           const pruned = await pruneOldRuns(env.DB);
           if (pruned.runs > 0) {
             let artifacts = 0;
-            for (const jobId of pruned.jobIds) artifacts += await deleteJobArtifacts(env.CACHE, jobId);
+            for (const jobId of pruned.jobIds) {
+              artifacts += await deleteJobArtifacts(env.CACHE, jobId);
+              // (D1 test rows go with the run inside pruneOldRuns.)
+              if (env.CACHE) await env.CACHE.delete(`test-reports/${jobId}.xml`).catch(() => undefined);
+            }
             for (const source of pruned.sources) await deleteSource(env.CACHE, source);
             log("info", "pruned old runs", { pruned: pruned.runs, artifacts, sources: pruned.sources.length });
           }
@@ -547,6 +583,7 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
       })(),
     );
     log("info", "run queued", { runId, jobCount: jobIds.length, blocked, repo, sha, event });
+    ctx.waitUntil(annotateSpan({ "run.id": runId, repo, "event": event }));
     for (const jobId of queuedIds) await wakeSeat(env, jobId);
     const creds = await getAppCreds(env);
     ctx.waitUntil(
@@ -618,9 +655,13 @@ async function handleStatusCallback(
       })(),
     );
     log("info", "status updated", { runId, jobId, status: body.status });
+    ctx.waitUntil(annotateSpan({ "run.id": runId, "job.id": jobId, status: body.status }));
     if (isTerminal(body.status)) {
       const promoted = await promoteBlockedJobs(env.DB, env.RUN_QUEUE, run.repo, (job) => wakeSeat(env, job.jobId));
       if (promoted.length > 0) log("info", "blocked jobs promoted", { runId, promoted });
+      // Result monitors ride the terminal transition (best-effort, never blocking).
+      const finishedJob = await getJob(env.DB, jobId);
+      if (finishedJob) ctx.waitUntil(evaluateResultMonitors(env.DB, env, run, finishedJob));
     }
     // Notify on the transition into terminal (re-checked after promote, so
     // skip-terminalized runs mail too). A callback on an already-terminal
@@ -636,6 +677,7 @@ async function handleStatusCallback(
           ctx.waitUntil(
             (async () => {
               const jobs = await getJobsForRun(env.DB, runId);
+              const failing = await listFailingTests(env.DB, runId, 15).catch(() => []);
               const id = await upsertPrComment(
                 {
                   appId: creds?.appId,
@@ -648,6 +690,7 @@ async function handleStatusCallback(
                 },
                 finalRun,
                 jobs,
+                failing.map((f) => ({ jobName: f.job_name, suite: f.suite, name: f.name, message: f.message })),
               );
               if (id && !run.pr_comment_id) await setRunPrComment(env.DB, runId, id).catch(() => undefined);
             })(),
@@ -699,7 +742,12 @@ async function handleStatusCallback(
     if (body.status === "failure" || body.status === "error") {
       const jobs = await getJobsForRun(env.DB, runId);
       const jobName = jobs.find((j) => j.id === jobId)?.name ?? "";
-      ctx.waitUntil(triageAndStore(env.DB, env.AI, run, jobId, jobName, cappedLog, result));
+      ctx.waitUntil(
+        triageAndStore(env.DB, env.AI, run, jobId, jobName, cappedLog, result, {
+          gatewayId: env.AI_GATEWAY_ID,
+          webSearch: env.TRIAGE_WEB_SEARCH === "1" ? true : undefined,
+        }),
+      );
     }
     return json({ ok: true });
   } catch (err) {
@@ -918,6 +966,12 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       notifyMode?: unknown;
       notifyWebhookUrl?: unknown;
       badgeHiddenRepos?: unknown;
+      turnstileSiteKey?: unknown;
+      turnstileSecretKey?: unknown;
+      fairSharePerRepo?: unknown;
+      aiGatewayId?: unknown;
+      mcpWriteConfirm?: unknown;
+      triageWebSearch?: unknown;
     };
     try {
       body = (await request.json()) as typeof body;
@@ -929,7 +983,16 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
     const hasNotifyMode = body.notifyMode !== undefined;
     const hasNotifyWebhook = body.notifyWebhookUrl !== undefined;
     const hasBadgeHidden = body.badgeHiddenRepos !== undefined;
-    if (!hasWebhook && !hasNotifyFrom && !hasNotifyMode && !hasNotifyWebhook && !hasBadgeHidden) {
+    const hasTurnstileSite = body.turnstileSiteKey !== undefined;
+    const hasTurnstileSecret = body.turnstileSecretKey !== undefined;
+    const hasFairShare = body.fairSharePerRepo !== undefined;
+    const hasGateway = body.aiGatewayId !== undefined;
+    const hasWriteConfirm = body.mcpWriteConfirm !== undefined;
+    const hasWebSearch = body.triageWebSearch !== undefined;
+    if (
+      !hasWebhook && !hasNotifyFrom && !hasNotifyMode && !hasNotifyWebhook && !hasBadgeHidden &&
+      !hasTurnstileSite && !hasTurnstileSecret && !hasFairShare && !hasGateway && !hasWriteConfirm && !hasWebSearch
+    ) {
       return json({ error: "no settings provided" }, 400);
     }
     if (hasWebhook) {
@@ -979,6 +1042,74 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       if ("error" in parsed) return json({ error: parsed.error }, 400);
       await setSetting(env.DB, SETTING_KEYS.badgeHiddenRepos, parsed.repos.join(","));
       await audit(env.DB, ident.actor, "settings.badge_hidden", String(parsed.repos.length));
+    }
+    if (hasTurnstileSite) {
+      if (env.TURNSTILE_SITE_KEY) {
+        return json({ error: "turnstile site key managed via environment" }, 409);
+      }
+      const value = body.turnstileSiteKey;
+      if (value === null || value === "") {
+        await setSetting(env.DB, SETTING_KEYS.turnstileSiteKey, "");
+        await audit(env.DB, ident.actor, "settings.turnstile_site", "cleared");
+      } else {
+        const err = validateTurnstileSiteKey(value);
+        if (err) return json({ error: err }, 400);
+        await setSetting(env.DB, SETTING_KEYS.turnstileSiteKey, (value as string).trim());
+        await audit(env.DB, ident.actor, "settings.turnstile_site", "set");
+      }
+    }
+    if (hasTurnstileSecret) {
+      if (env.TURNSTILE_SECRET_KEY) {
+        return json({ error: "turnstile secret managed via environment" }, 409);
+      }
+      const value = body.turnstileSecretKey;
+      if (value === null || value === "") {
+        await setSetting(env.DB, SETTING_KEYS.turnstileSecretKey, "");
+        await audit(env.DB, ident.actor, "settings.turnstile_secret", "cleared");
+      } else {
+        const err = validateTurnstileSecretKey(value);
+        if (err) return json({ error: err }, 400);
+        const key = await resolveSecretsKey(env.DB, env.SECRETS_KEY);
+        await setSetting(env.DB, SETTING_KEYS.turnstileSecretKey, await encryptSettingValue(key, value as string));
+        await audit(env.DB, ident.actor, "settings.turnstile_secret", "set");
+      }
+    }
+    if (hasFairShare) {
+      const parsed = parseFairSharePerRepo(body.fairSharePerRepo);
+      if ("error" in parsed) return json({ error: parsed.error }, 400);
+      await setSetting(env.DB, SETTING_KEYS.fairSharePerRepo, String(parsed.cap));
+      await audit(env.DB, ident.actor, "settings.fair_share", String(parsed.cap));
+    }
+    if (hasGateway) {
+      // Env-managed gateway wins over D1, like every other credential.
+      if (env.AI_GATEWAY_ID) {
+        return json({ error: "AI gateway managed via environment" }, 409);
+      }
+      const value = body.aiGatewayId;
+      if (value === null || value === "") {
+        await setSetting(env.DB, SETTING_KEYS.aiGatewayId, "");
+        await audit(env.DB, ident.actor, "settings.ai_gateway", "cleared");
+      } else {
+        const parsed = parseAiGatewayId(value);
+        if ("error" in parsed) return json({ error: parsed.error }, 400);
+        await setSetting(env.DB, SETTING_KEYS.aiGatewayId, parsed.id);
+        await audit(env.DB, ident.actor, "settings.ai_gateway", parsed.id);
+      }
+    }
+    if (hasWriteConfirm) {
+      const parsed = parseMcpWriteConfirm(body.mcpWriteConfirm);
+      if ("error" in parsed) return json({ error: parsed.error }, 400);
+      await setSetting(env.DB, SETTING_KEYS.mcpWriteConfirm, parsed.on ? "1" : "0");
+      await audit(env.DB, ident.actor, "settings.mcp_write_confirm", parsed.on ? "on" : "off");
+    }
+    if (hasWebSearch) {
+      if (env.TRIAGE_WEB_SEARCH === "1") {
+        return json({ error: "triage web search managed via environment" }, 409);
+      }
+      const parsed = parseTriageWebSearch(body.triageWebSearch);
+      if ("error" in parsed) return json({ error: parsed.error }, 400);
+      await setSetting(env.DB, SETTING_KEYS.triageWebSearch, parsed.on ? "1" : "0");
+      await audit(env.DB, ident.actor, "settings.triage_web_search", parsed.on ? "on" : "off");
     }
     return json({ ok: true });
   } catch (e) {
@@ -1036,6 +1167,8 @@ export default {
           db: env.DB,
           ai: env.AI,
           canWrite: ident.scope === "admin" || ident.scope === "runner",
+          gatewayId: env.AI_GATEWAY_ID,
+          agent: request.headers.get("X-Flare-Agent") ?? request.headers.get("User-Agent") ?? undefined,
           dispatchRun: async (input) => {
             if (!repoAllowed(ident, input.repo)) throw new Error("token is not scoped to that repo");
             const out = await dispatchRun(env, { repo: input.repo, sha: input.sha, ref: input.ref ?? "", pipeline: input.pipeline });
@@ -1071,6 +1204,7 @@ export default {
           const out = await dispatchRun(env, valid);
           await audit(env.DB, ident.actor, "run.dispatch", out.runId);
           for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
+          ctx.waitUntil(annotateSpan({ "run.id": out.runId, "repo": valid.repo, "actor": ident.actor }));
           return json({ runId: out.runId, jobIds: out.jobIds }, 202);
         } catch (err) {
           return json({ error: String(err instanceof Error ? err.message : err) }, 400);
@@ -1152,7 +1286,10 @@ export default {
           .split(",")
           .map((l) => l.trim())
           .filter(Boolean);
-        const job = await claimNextJob(env.DB, labels, ident.repos);
+        const fairShare = parseFairSharePerRepo(await getSetting(env.DB, SETTING_KEYS.fairSharePerRepo));
+        const job = await claimNextJob(env.DB, labels, ident.repos, {
+          fairSharePerRepo: "cap" in fairShare ? fairShare.cap : 0,
+        });
         if (!job) return json({ job: null }, 200);
         await rollupRunStatus(env.DB, job.run_id);
         // Secrets ride the authenticated claim only — never any read API.
@@ -1239,6 +1376,123 @@ export default {
         if (request.method === "PUT") return await handleArtifactPut(env.CACHE, env.DB, artifactMatch[1], name, request);
         return await handleArtifactGet(env.CACHE, artifactMatch[1], name);
       }
+      const testsMatch = /^\/v1\/jobs\/([^/]+)\/tests$/.exec(url.pathname);
+      if (testsMatch && request.method === "PUT") {
+        const ident = await requireScope(request, env, "run");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const testJob = await getJob(env.DB, testsMatch[1]);
+        if (!testJob) return json({ error: "job not found" }, 404);
+        const testRun = await getRun(env.DB, testJob.run_id);
+        if (!testRun || !repoAllowed(ident, testRun.repo)) return json({ error: "job not found" }, 404);
+        const declared = request.headers.get("content-length");
+        if (declared && Number(declared) > MAX_JUNIT_BYTES) return json({ error: "test report too large" }, 413);
+        const xml = await request.text().catch(() => "");
+        if (!xml) return json({ error: "empty body" }, 400);
+        if (xml.length > MAX_JUNIT_BYTES) return json({ error: "test report too large" }, 413);
+        const parsed = parseJUnit(xml);
+        if ("error" in parsed) return json({ error: parsed.error }, 400);
+        // Raw XML is the audit trail; parsed rows are the product. A
+        // missing bucket still stores parsed rows.
+        if (env.CACHE) {
+          await env.CACHE.put(`test-reports/${testsMatch[1]}.xml`, xml, {
+            httpMetadata: { contentType: "application/xml" },
+          }).catch(() => undefined);
+        }
+        await saveTestReport(env.DB, {
+          jobId: testsMatch[1],
+          runId: testRun.id,
+          passed: parsed.passed,
+          failed: parsed.failed,
+          errors: parsed.errors,
+          skipped: parsed.skipped,
+          total: parsed.total,
+          durationMs: parsed.durationMs,
+          truncated: parsed.truncated,
+          cases: parsed.cases,
+        });
+        log("info", "test report stored", {
+          jobId: testsMatch[1],
+          total: parsed.total,
+          failed: parsed.failed,
+          errors: parsed.errors,
+        });
+        return json({
+          ok: true,
+          jobId: testsMatch[1],
+          total: parsed.total,
+          passed: parsed.passed,
+          failed: parsed.failed,
+          errors: parsed.errors,
+          skipped: parsed.skipped,
+          truncated: parsed.truncated,
+        });
+      }
+      const runTestsMatch = /^\/v1\/runs\/([^/]+)\/tests$/.exec(url.pathname);
+      if (runTestsMatch && request.method === "GET") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const testsRun = await getRun(env.DB, runTestsMatch[1]);
+        if (!testsRun || !repoAllowed(ident, testsRun.repo)) return json({ error: "run not found" }, 404);
+        const jobs = await getRunTestJobs(env.DB, runTestsMatch[1]);
+        const totals = { total: 0, passed: 0, failed: 0, errors: 0, skipped: 0 };
+        for (const j of jobs) {
+          totals.total += j.total;
+          totals.passed += j.passed;
+          totals.failed += j.failed;
+          totals.errors += j.errors;
+          totals.skipped += j.skipped;
+        }
+        const failing = totals.failed + totals.errors > 0 ? await listFailingTests(env.DB, runTestsMatch[1], 50) : [];
+        return json({
+          runId: runTestsMatch[1],
+          totals,
+          jobs: jobs.map((j) => ({
+            jobId: j.job_id,
+            jobName: j.job_name,
+            total: j.total,
+            passed: j.passed,
+            failed: j.failed,
+            errors: j.errors,
+            skipped: j.skipped,
+            durationMs: j.duration_ms,
+            truncated: j.truncated === 1,
+          })),
+          failing: failing.map((f) => ({
+            jobId: f.job_id,
+            jobName: f.job_name,
+            suite: f.suite,
+            name: f.name,
+            classname: f.classname,
+            status: f.status,
+            message: f.message,
+          })),
+        });
+      }
+      // Per-job egress accounting (measured R2 transfers + interface
+      // deltas; true per-domain rows arrive with outbound interception).
+      const runEgressMatch = /^\/v1\/runs\/([^/]+)\/egress$/.exec(url.pathname);
+      if (runEgressMatch && request.method === "GET") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const egressRun = await getRun(env.DB, runEgressMatch[1]);
+        if (!egressRun || !repoAllowed(ident, egressRun.repo)) return json({ error: "run not found" }, 404);
+        const rows = await getRunEgress(env.DB, runEgressMatch[1]);
+        const totals = { reqBytes: 0, respBytes: 0 };
+        for (const r of rows) {
+          totals.reqBytes += r.req_bytes;
+          totals.respBytes += r.resp_bytes;
+        }
+        return json({
+          runId: runEgressMatch[1],
+          totals,
+          jobs: rows.map((r) => ({
+            jobId: r.job_id,
+            host: r.host,
+            reqBytes: r.req_bytes,
+            respBytes: r.resp_bytes,
+          })),
+        });
+      }
       if (request.method === "GET" && url.pathname === "/v1/badge.svg") {
         const repo = url.searchParams.get("repo") ?? "";
         const branch = url.searchParams.get("branch") ?? undefined;
@@ -1250,6 +1504,61 @@ export default {
         return new Response(badgeSvg(status), {
           headers: { "Content-Type": "image/svg+xml", "Cache-Control": "max-age=60" },
         });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/admin/cache") {
+        if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
+        const prefix = url.searchParams.get("prefix") ?? "";
+        if (prefix && !/^[\w.\-/]{0,100}$/.test(prefix)) return json({ error: "invalid prefix" }, 400);
+        const limit = Number(url.searchParams.get("limit") ?? "100");
+        if (!Number.isFinite(limit) || limit < 1 || limit > 500) return json({ error: "limit must be 1-500" }, 400);
+        const entries = await listCacheEntries(env.CACHE, prefix, Math.floor(limit));
+        if (!entries) return json({ error: "cache storage not configured" }, 501);
+        return json({ entries });
+      }
+      if (request.method === "DELETE" && url.pathname === "/v1/admin/cache") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const prefix = url.searchParams.get("prefix") ?? "";
+        if (prefix && !/^[\w.\-/]{0,100}$/.test(prefix)) return json({ error: "invalid prefix" }, 400);
+        const out = await purgeCachePrefix(env.CACHE, prefix);
+        if (!out) return json({ error: "cache storage not configured" }, 501);
+        await audit(env.DB, ident.actor, "cache.purge", `${prefix || "(all)"} ${out.deleted}`);
+        log("info", "cache purged", { prefix, deleted: out.deleted, truncated: out.truncated });
+        return json(out);
+      }
+      // Live queue in claim order, plus the active fair-share cap —
+      // the fairness simulator's input (see fairness.ts / cli queue).
+      if (request.method === "GET" && url.pathname === "/v1/admin/queue") {
+        if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
+        const limit = Number(url.searchParams.get("limit") ?? "200");
+        if (!Number.isFinite(limit) || limit < 1 || limit > 500) return json({ error: "limit must be 1-500" }, 400);
+        const fairShare = parseFairSharePerRepo(await getSetting(env.DB, SETTING_KEYS.fairSharePerRepo));
+        const jobs = await listQueuedJobs(env.DB, Math.floor(limit));
+        return json({
+          fairSharePerRepo: "cap" in fairShare ? fairShare.cap : 0,
+          jobs: jobs.map((j) => ({
+            id: j.id,
+            runId: j.run_id,
+            name: j.name,
+            repo: j.repo,
+            priority: j.priority,
+            labels: j.labels,
+            createdAt: j.created_at,
+          })),
+        });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/usage") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const days = Number(url.searchParams.get("days") ?? "30");
+        if (!Number.isFinite(days) || days < 1 || days > 365) return json({ error: "days must be 1-365" }, 400);
+        const repo = url.searchParams.get("repo") ?? "";
+        if (repo) {
+          if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
+          if (!repoAllowed(ident, repo)) return json({ error: "token is not scoped to that repo" }, 403);
+          return json(await usageStats(env.DB, Math.floor(days), [repo]));
+        }
+        return json(await usageStats(env.DB, Math.floor(days), ident.repos));
       }
       if (request.method === "GET" && url.pathname === "/v1/flaky") {
         const ident = await requireScope(request, env, "read");
@@ -1286,6 +1595,8 @@ export default {
           githubConnected: connected,
           installUrl: slug ? installUrl(slug) : null,
           user: ident ? { actor: ident.actor, admin: ident.scope === "admin" } : null,
+          // Public widget key (safe pre-login); null hides the widget.
+          turnstileSiteKey: await getTurnstileSiteKey(env.DB, env),
           // Deployment hardening detail: admins only, not the pre-login page.
           ...(ident?.scope === "admin" ? { breakGlass: !!env.ADMIN_TOKEN } : {}),
         });
@@ -1416,7 +1727,7 @@ export default {
         return json({ email: invite.email });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/register") {
-        const body = (await request.json().catch(() => ({}))) as { token?: unknown; password?: unknown };
+        const body = (await request.json().catch(() => ({}))) as { token?: unknown; password?: unknown; turnstileToken?: unknown };
         const keys = await authThrottleKeys(request);
         if (await authThrottleBlocked(env.DB, keys)) {
           return json({ error: "too many attempts — try again later" }, 429);
@@ -1425,6 +1736,8 @@ export default {
           await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
           return res;
         };
+        const captchaErr = await checkTurnstile(env.DB, env, body.turnstileToken, request.headers.get("cf-connecting-ip") ?? undefined);
+        if (captchaErr) return await fail(json({ error: captchaErr }, 400));
         if (typeof body.token !== "string" || !body.token) return await fail(json({ error: "invite required" }, 400));
         const pwErr = validatePassword(body.password);
         if (pwErr) return await fail(json({ error: pwErr }, 400));
@@ -1447,7 +1760,7 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/bootstrap") {
         if (await isClaimed(env)) return json({ error: "already claimed" }, 403);
-        const body = (await request.json().catch(() => ({}))) as { email?: unknown; password?: unknown };
+        const body = (await request.json().catch(() => ({}))) as { email?: unknown; password?: unknown; turnstileToken?: unknown };
         const keys = await authThrottleKeys(request, typeof body.email === "string" ? normalizeEmail(body.email) : undefined);
         if (await authThrottleBlocked(env.DB, keys)) {
           return json({ error: "too many attempts — try again later" }, 429);
@@ -1456,6 +1769,8 @@ export default {
           await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
           return res;
         };
+        const captchaErr = await checkTurnstile(env.DB, env, body.turnstileToken, request.headers.get("cf-connecting-ip") ?? undefined);
+        if (captchaErr) return await fail(json({ error: captchaErr }, 400));
         const emailErr = validateEmail(body.email);
         if (emailErr) return await fail(json({ error: emailErr }, 400));
         const pwErr = validatePassword(body.password);
@@ -1484,7 +1799,7 @@ export default {
         });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/login") {
-        const body = (await request.json().catch(() => ({}))) as { email?: unknown; password?: unknown };
+        const body = (await request.json().catch(() => ({}))) as { email?: unknown; password?: unknown; turnstileToken?: unknown };
         if (validateEmail(body.email) || typeof body.password !== "string") {
           return json({ error: "invalid email or password" }, 401);
         }
@@ -1493,6 +1808,11 @@ export default {
         if (await authThrottleBlocked(env.DB, keys)) {
           log("warn", "login throttled", { email });
           return json({ error: "too many attempts — try again later" }, 429);
+        }
+        const captchaErr = await checkTurnstile(env.DB, env, body.turnstileToken, request.headers.get("cf-connecting-ip") ?? undefined);
+        if (captchaErr) {
+          await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
+          return json({ error: captchaErr }, 400);
         }
         const user = await getUser(env.DB, email);
         const ok = await verifyPassword(body.password, user?.password_hash ?? dummyPasswordHash());
@@ -1514,7 +1834,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/v1/admin/reset") {
         // Self-serve reset: generic 200 always (no account-enumeration
         // oracle), delivered only when a sender + EMAIL binding exist.
-        const body = (await request.json().catch(() => ({}))) as { email?: unknown };
+        const body = (await request.json().catch(() => ({}))) as { email?: unknown; turnstileToken?: unknown };
         const emailErr = validateEmail(body.email);
         const email = emailErr === null ? normalizeEmail(body.email as string) : "";
         const ipKey = await ipThrottleKey(request);
@@ -1522,6 +1842,8 @@ export default {
         if (await authThrottleBlocked(env.DB, keys)) {
           return json({ error: "too many attempts — try again later" }, 429);
         }
+        const captchaErr = await checkTurnstile(env.DB, env, body.turnstileToken, request.headers.get("cf-connecting-ip") ?? undefined);
+        if (captchaErr) return json({ error: captchaErr }, 400);
         if (emailErr !== null) return json({ error: emailErr }, 400);
         // Spam brake: every request counts against its windows.
         await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
@@ -1594,6 +1916,15 @@ export default {
           : (await getSetting(env.DB, SETTING_KEYS.notifyFromEmail)) !== null
             ? "d1"
             : "none";
+        const turnstileSource = env.TURNSTILE_SITE_KEY
+          ? "env"
+          : (await getSetting(env.DB, SETTING_KEYS.turnstileSiteKey)) !== null
+            ? "d1"
+            : "none";
+        const fairShareParsed = parseFairSharePerRepo(await getSetting(env.DB, SETTING_KEYS.fairSharePerRepo));
+        const gatewaySource = env.AI_GATEWAY_ID ? "env" : ((await getSetting(env.DB, SETTING_KEYS.aiGatewayId)) ? "d1" : "none");
+        const writeConfirmParsed = parseMcpWriteConfirm(await getSetting(env.DB, SETTING_KEYS.mcpWriteConfirm));
+        const webSearchParsed = parseTriageWebSearch(await getSetting(env.DB, SETTING_KEYS.triageWebSearch));
         return json({
           adminGithubUser: await getSetting(env.DB, SETTING_KEYS.adminGithubUser),
           adminEmail: await getSetting(env.DB, SETTING_KEYS.adminEmail),
@@ -1605,6 +1936,14 @@ export default {
           notifyMode: (await getSetting(env.DB, SETTING_KEYS.notifyMode)) ?? "all",
           notifyWebhookSet: !!(await getSetting(env.DB, SETTING_KEYS.notifyWebhookUrl)),
           badgeHiddenRepos: (await getSetting(env.DB, SETTING_KEYS.badgeHiddenRepos)) ?? "",
+          turnstileSiteKey: env.TURNSTILE_SITE_KEY ?? (await getSetting(env.DB, SETTING_KEYS.turnstileSiteKey)) ?? "",
+          turnstileSiteSource: turnstileSource,
+          turnstileSecretSet: !!env.TURNSTILE_SECRET_KEY || !!(await getSetting(env.DB, SETTING_KEYS.turnstileSecretKey)),
+          fairSharePerRepo: "cap" in fairShareParsed ? fairShareParsed.cap : 0,
+          aiGatewayId: env.AI_GATEWAY_ID ?? (await getSetting(env.DB, SETTING_KEYS.aiGatewayId)) ?? "",
+          aiGatewaySource: gatewaySource,
+          mcpWriteConfirm: "on" in writeConfirmParsed ? writeConfirmParsed.on : false,
+          triageWebSearch: env.TRIAGE_WEB_SEARCH === "1" ? true : "on" in webSearchParsed ? webSearchParsed.on : false,
         });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/github/connect") {
@@ -1709,6 +2048,85 @@ export default {
         await audit(env.DB, ident.actor, "schedule.delete", scheduleMatch[1]);
         return json({ ok: true });
       }
+      if (request.method === "GET" && url.pathname === "/v1/admin/monitors") {
+        if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
+        const monitors = await listMonitors(env.DB);
+        return json({
+          monitors: monitors.map((m) => ({
+            id: m.id,
+            name: m.name,
+            repo: m.repo,
+            branch: m.branch,
+            job: m.job,
+            trigger: m.trigger,
+            result: m.result,
+            consecutive: m.consecutive,
+            durationSeconds: m.duration_seconds,
+            logPattern: m.log_pattern,
+            webhookSet: m.webhook_url !== "",
+            enabled: m.enabled === 1,
+            mutedUntil: m.muted_until,
+            streak: m.streak,
+            lastFiredAt: m.last_fired_at,
+            createdAt: m.created_at,
+          })),
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/monitors") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const valid = validateMonitorInput(body);
+        if ("error" in valid) return json({ error: valid.error }, 400);
+        if (!repoAllowed(ident, valid.repo)) return json({ error: "token is not scoped to that repo" }, 403);
+        if ((await listMonitors(env.DB)).length >= MAX_MONITORS) {
+          return json({ error: `monitor limit reached (${MAX_MONITORS})` }, 400);
+        }
+        const id = crypto.randomUUID();
+        let webhookUrl = "";
+        if (valid.webhookUrl) {
+          const key = await resolveSecretsKey(env.DB, env.SECRETS_KEY);
+          webhookUrl = await encryptSettingValue(key, valid.webhookUrl);
+        }
+        await createMonitor(env.DB, { id, ...valid, webhookUrl });
+        await audit(env.DB, ident.actor, "monitor.create", `${id} ${valid.repo} ${valid.trigger}`);
+        log("info", "monitor created", { id, repo: valid.repo, trigger: valid.trigger });
+        return json({ id }, 201);
+      }
+      const monitorMatch = /^\/v1\/admin\/monitors\/([^/]+)$/.exec(url.pathname);
+      if (monitorMatch && request.method === "POST") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const existing = await getMonitor(env.DB, monitorMatch[1]);
+        if (!existing) return json({ error: "monitor not found" }, 404);
+        if (!repoAllowed(ident, existing.repo)) return json({ error: "token is not scoped to that repo" }, 403);
+        const body = (await request.json().catch(() => ({}))) as { enabled?: unknown; muteMinutes?: unknown };
+        if (body.enabled !== undefined) {
+          if (typeof body.enabled !== "boolean") return json({ error: "enabled must be a boolean" }, 400);
+          await setMonitorEnabled(env.DB, monitorMatch[1], body.enabled);
+        }
+        if (body.muteMinutes !== undefined) {
+          if (
+            body.muteMinutes !== null &&
+            (typeof body.muteMinutes !== "number" || !Number.isInteger(body.muteMinutes) || body.muteMinutes < 0)
+          ) {
+            return json({ error: "muteMinutes must be a non-negative integer or null" }, 400);
+          }
+          await setMonitorMutedUntil(env.DB, monitorMatch[1], muteUntilIso(body.muteMinutes));
+        }
+        await audit(env.DB, ident.actor, "monitor.toggle", monitorMatch[1]);
+        return json({ ok: true });
+      }
+      if (monitorMatch && request.method === "DELETE") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const existing = await getMonitor(env.DB, monitorMatch[1]);
+        if (!existing) return json({ error: "monitor not found" }, 404);
+        if (!repoAllowed(ident, existing.repo)) return json({ error: "token is not scoped to that repo" }, 403);
+        await deleteMonitor(env.DB, monitorMatch[1]);
+        await audit(env.DB, ident.actor, "monitor.delete", monitorMatch[1]);
+        return json({ ok: true });
+      }
       if (request.method === "POST" && url.pathname === "/v1/admin/generate") {
         const ident = await authIdentity(request, env);
         if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
@@ -1717,7 +2135,9 @@ export default {
         if (typeof body.prompt !== "string" || !body.prompt.trim() || body.prompt.length > 2000) {
           return json({ error: "prompt is required (max 2000 chars)" }, 400);
         }
-        const yaml = await runGenerate(env.AI, body.prompt);
+        const yaml = await runGenerate(env.AI, body.prompt, {
+          gatewayId: env.AI_GATEWAY_ID ?? (await getSetting(env.DB, SETTING_KEYS.aiGatewayId)) ?? undefined,
+        });
         if (!yaml) return json({ error: "generation failed" }, 502);
         await audit(env.DB, ident.actor, "pipeline.generate", body.prompt.slice(0, 80));
         return json({ yaml });
@@ -1725,6 +2145,7 @@ export default {
       return json({ error: "not found" }, 404);
     } catch (err) {
       log("error", "request failed", { path: url.pathname, error: String(err) });
+      ctx.waitUntil(recordSpanException(err));
       return json({ error: "internal error" }, 500);
     }
   },
@@ -1756,6 +2177,7 @@ export default {
       // Previews share the staging database; only production dispatches.
       if (env.ENVIRONMENT !== "production") return;
       const now = new Date(controller.scheduledTime);
+      await evaluateDurationMonitors(env.DB, env);
       const schedules = await listSchedules(env.DB);
       for (const s of schedules) {
         if (s.enabled !== 1 || !cronMatches(s.cron, now)) continue;

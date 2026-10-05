@@ -52,16 +52,46 @@ export function buildTriageMessages(input: TriageInput): TriageMessage[] {
   ];
 }
 
-export interface AiBinding {
-  run(model: string, input: unknown): Promise<unknown>;
+export interface AiRunOptions {
+  gateway?: { id: string };
 }
 
-export async function runTriage(ai: AiBinding, input: TriageInput): Promise<string | null> {
+export interface AiBinding {
+  run(model: string, input: unknown, options?: AiRunOptions): Promise<unknown>;
+  // Present on the real AI binding; absent on fakes and older runtimes.
+  websearch?(request: { gatewayId: string; query: string; limit?: number; provider?: string }): Promise<Response>;
+}
+
+// Gateway options for an inference call. Centralized so triage and
+// generate front AI Gateway identically (unified billing, logging,
+// cost attribution); unset id = direct inference, zero-config default.
+export function gatewayOptions(gatewayId: string | undefined): AiRunOptions | undefined {
+  const id = gatewayId?.trim();
+  return id ? { gateway: { id } } : undefined;
+}
+
+export async function runTriage(
+  ai: AiBinding,
+  input: TriageInput,
+  opts: { gatewayId?: string; searchContext?: string } = {},
+): Promise<string | null> {
   try {
-    const out = (await ai.run(TRIAGE_MODEL, {
-      messages: buildTriageMessages(input),
-      max_tokens: TRIAGE_MAX_TOKENS,
-    })) as { response?: unknown };
+    const messages = buildTriageMessages(input);
+    // Live web context grounds the model past its training cutoff; the
+    // failing output stays primary (read first), the web section is
+    // explicitly secondary so a stale snippet cannot override evidence.
+    if (opts.searchContext?.trim()) {
+      const last = messages[messages.length - 1];
+      last.content += `\n\nLive web context (secondary — failing output above wins conflicts):\n${opts.searchContext.trim().slice(0, 1500)}`;
+    }
+    const out = (await ai.run(
+      TRIAGE_MODEL,
+      {
+        messages,
+        max_tokens: TRIAGE_MAX_TOKENS,
+      },
+      gatewayOptions(opts.gatewayId),
+    )) as { response?: unknown };
     if (typeof out?.response !== "string" || !out.response.trim()) return null;
     return out.response.trim().slice(0, TRIAGE_MAX_STORED_CHARS);
   } catch {

@@ -9,6 +9,7 @@ import {
   pruneWebhookDeliveries,
   releaseAdminMarker,
   updateRunningJob,
+  usageStats,
 } from "./db";
 
 function jobRow(over: Partial<JobRow & { repo: string; sha: string }> = {}): JobRow & { repo: string; sha: string } {
@@ -26,6 +27,7 @@ function jobRow(over: Partial<JobRow & { repo: string; sha: string }> = {}): Job
     attempts: 0,
     started_at: null,
     finished_at: null,
+    retained_until: null,
     created_at: "2026-10-02T10:00:00.000Z",
     updated_at: "2026-10-02T10:00:00.000Z",
     repo: "o/r",
@@ -50,6 +52,13 @@ class QueueDb implements Db {
           if (norm.startsWith("SELECT j.*, r.repo, r.sha, r.source FROM jobs")) {
             this.selects += 1;
             return { results: this.select(norm, values) as T[] };
+          }
+          if (norm.startsWith("SELECT r.repo AS repo, COUNT(*)")) {
+            const counts = new Map<string, number>();
+            for (const j of this.jobs) {
+              if (j.status === "running") counts.set(j.repo, (counts.get(j.repo) ?? 0) + 1);
+            }
+            return { results: [...counts].map(([repo, c]) => ({ repo, c })) as T[] };
           }
           throw new Error(`unrouted all: ${norm}`);
         },
@@ -210,6 +219,18 @@ describe("claimNextJob", () => {
     // 200-scan budget at 25 per page: 8 selects, not the whole backlog.
     expect(db.selects).toBeLessThanOrEqual(8);
   });
+
+  it("skips repos at their fair-share running cap", async () => {
+    const jobs = () => [
+      jobRow({ id: "job-busy", repo: "o/a", status: "running", created_at: "2026-10-02T09:00:00.000Z" }),
+      jobRow({ id: "job-a", repo: "o/a", created_at: "2026-10-02T09:30:00.000Z" }),
+      jobRow({ id: "job-b", repo: "o/b", created_at: "2026-10-02T10:00:00.000Z" }),
+    ];
+    // Cap 1 with o/a already running: the older o/a job waits, o/b flows.
+    expect((await claimNextJob(new QueueDb(jobs()), [], [], { fairSharePerRepo: 1 }))?.id).toBe("job-b");
+    // Cap 0 (default) keeps strict oldest-first across repos.
+    expect((await claimNextJob(new QueueDb(jobs()), [], []))?.id).toBe("job-a");
+  });
 });
 
 describe("updateRunningJob", () => {
@@ -357,5 +378,69 @@ describe("claimWebhookDelivery", () => {
     expect(await pruneWebhookDeliveries(db, 24)).toBe(1);
     expect(db.store.has("old")).toBe(false);
     expect(db.store.has("new")).toBe(true);
+  });
+});
+
+class UsageDb implements Db {
+  constructor(
+    public statuses: { status: string; n: number }[],
+    public jobAgg: { n: number; secs: number },
+    public top: { repo: string; n: number; secs: number }[],
+  ) {}
+
+  prepare(sql: string) {
+    const norm = sql.replace(/\s+/g, " ").trim();
+    return {
+      bind: (..._values: unknown[]) => ({
+        all: async <T,>() => {
+          if (norm.startsWith("SELECT status, COUNT(*)")) return { results: this.statuses as T[] };
+          if (norm.startsWith("SELECT r.repo AS repo")) return { results: this.top as T[] };
+          throw new Error(`unrouted all: ${norm}`);
+        },
+        first: async <T,>() => {
+          if (norm.startsWith("SELECT COUNT(*) AS n")) return this.jobAgg as T;
+          throw new Error(`unrouted first: ${norm}`);
+        },
+        run: async () => {
+          throw new Error(`unrouted run: ${norm}`);
+        },
+      }),
+    };
+  }
+}
+
+describe("usageStats", () => {
+  it("aggregates runs, jobs, minutes, and top repos", async () => {
+    const db = new UsageDb(
+      [
+        { status: "success", n: 8 },
+        { status: "failure", n: 2 },
+      ],
+      { n: 20, secs: 3600 },
+      [
+        { repo: "o/big", n: 15, secs: 3000 },
+        { repo: "o/small", n: 5, secs: 600 },
+      ],
+    );
+    const out = await usageStats(db, 30);
+    expect(out).toEqual({
+      days: 30,
+      runs: 10,
+      runsByStatus: { success: 8, failure: 2 },
+      jobs: 20,
+      computeMinutes: 60,
+      actionsListUsd: 0.48,
+      topRepos: [
+        { repo: "o/big", jobs: 15, computeMinutes: 50 },
+        { repo: "o/small", jobs: 5, computeMinutes: 10 },
+      ],
+    });
+  });
+
+  it("handles empty windows", async () => {
+    const out = await usageStats(new UsageDb([], { n: 0, secs: 0 }, []), 7);
+    expect(out.runs).toBe(0);
+    expect(out.computeMinutes).toBe(0);
+    expect(out.topRepos).toEqual([]);
   });
 });

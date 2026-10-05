@@ -4,6 +4,7 @@ import {
   FAILED_STATUSES,
   getJobsForRun,
   getJobWithRun,
+  getSetting,
   hasActiveGroupJob,
   isTerminal,
   listBlockedJobsInRepo,
@@ -17,6 +18,8 @@ import {
 import { getInstallationToken, mintAppJwt, postCommitStatus } from "./github";
 import { readJobSpec, readRetryPolicy } from "./pipeline";
 import { runTriage, type AiBinding, type TriageStep } from "./triage";
+import { SETTING_KEYS } from "./settings";
+import { buildErrorQuery, formatSearchContext, webSearch } from "./websearch";
 
 // Shared post-execution flow for both executors (BYO runners via the
 // main worker, managed seats via the seats worker): promote unblocked
@@ -86,17 +89,32 @@ export async function triageAndStore(
   jobName: string,
   logText: string | undefined,
   result: string | undefined,
+  opts: { gatewayId?: string; webSearch?: boolean } = {},
 ): Promise<void> {
   try {
     // Forks without the AI binding simply skip triage.
     if (!ai) return;
-    const text = await runTriage(ai, {
+    // Env-provided gateway id wins; D1 fills the gap; unset = direct.
+    const gatewayId = opts.gatewayId ?? (await getSetting(db, SETTING_KEYS.aiGatewayId)) ?? undefined;
+    const triageInput = {
       repo: run.repo,
       sha: run.sha,
       jobName,
       steps: parseReportedSteps(result),
       logTail: (logText ?? "").slice(-4000),
-    });
+    };
+    // Grounding is opt-in (search calls bill gateway credits) and needs a
+    // gateway; anything missing degrades to ungrounded triage.
+    let searchContext: string | undefined;
+    const webSearchOn = opts.webSearch ?? ((await getSetting(db, SETTING_KEYS.triageWebSearch)) === "1");
+    if (webSearchOn && gatewayId) {
+      const query = buildErrorQuery(triageInput);
+      if (query) {
+        const items = await webSearch(ai, gatewayId, query);
+        if (items.length > 0) searchContext = formatSearchContext(items);
+      }
+    }
+    const text = await runTriage(ai, triageInput, { gatewayId, searchContext });
     if (!text) return;
     await setJobTriage(db, jobId, text);
   } catch (err) {

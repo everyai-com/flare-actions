@@ -35,6 +35,7 @@ function jobRow(over: Partial<JobRow> = {}): JobRow {
     attempts: 0,
     started_at: "2026-10-02T10:00:10.000Z",
     finished_at: "2026-10-02T10:01:00.000Z",
+    retained_until: null,
     created_at: "2026-10-02T10:00:00.000Z",
     updated_at: "2026-10-02T10:01:00.000Z",
     ...over,
@@ -45,6 +46,7 @@ class DigestDb implements Db {
   constructor(
     public run: RunRow | null,
     public jobs: JobRow[] = [],
+    public egress: { job_id: string; run_id: string; host: string; req_bytes: number; resp_bytes: number }[] = [],
   ) {}
 
   prepare(sql: string) {
@@ -54,6 +56,9 @@ class DigestDb implements Db {
         all: async <T,>() => {
           if (norm.startsWith("SELECT * FROM jobs WHERE run_id")) {
             return { results: this.jobs.filter((j) => j.run_id === values[0]) as T[] };
+          }
+          if (norm.startsWith("SELECT * FROM job_egress WHERE run_id")) {
+            return { results: this.egress.filter((e) => e.run_id === values[0]) as T[] };
           }
           throw new Error(`unrouted all: ${norm}`);
         },
@@ -114,5 +119,31 @@ describe("buildRunDigest", () => {
 
   it("returns null for a missing run", async () => {
     expect(await buildRunDigest(new DigestDb(null), "nope")).toBeNull();
+  });
+
+  it("carries retain deadlines and an egress summary", async () => {
+    const failed = jobRow({ retained_until: "2026-10-02T10:31:00.000Z" });
+    const digest = await buildRunDigest(
+      new DigestDb(runRow(), [failed], [
+        { job_id: "job-1", run_id: "run-1", host: "r2:cache", req_bytes: 13, resp_bytes: 7 },
+        { job_id: "job-1", run_id: "run-1", host: "(interface)", req_bytes: 7000, resp_bytes: 4000 },
+      ]),
+      "run-1",
+    );
+    expect(digest?.jobs[0].retainedUntil).toBe("2026-10-02T10:31:00.000Z");
+    expect(digest?.egress).toEqual({
+      reqBytes: 7013,
+      respBytes: 4007,
+      topHosts: [
+        { host: "r2:cache", reqBytes: 13, respBytes: 7 },
+        { host: "(interface)", reqBytes: 7000, respBytes: 4000 },
+      ],
+    });
+  });
+
+  it("omits egress when no rows exist", async () => {
+    const digest = await buildRunDigest(new DigestDb(runRow(), [jobRow()]), "run-1");
+    expect(digest?.egress).toBeUndefined();
+    expect(digest?.jobs[0].retainedUntil).toBeUndefined();
   });
 });

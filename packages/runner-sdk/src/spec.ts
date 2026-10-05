@@ -18,6 +18,10 @@ export interface JobArtifactsSpec {
   name?: string;
 }
 
+export interface JobTestReportsSpec {
+  paths: string[];
+}
+
 export interface JobSpec {
   steps: { run: string; continueOnError?: boolean; if?: string; timeoutMinutes?: number; shell?: string }[];
   base?: string;
@@ -27,7 +31,11 @@ export interface JobSpec {
   services?: Record<string, JobServiceSpec>;
   cache?: JobCacheSpec;
   artifacts?: JobArtifactsSpec;
+  testReports?: JobTestReportsSpec;
   timeoutMinutes?: number;
+  // Managed seats only: keep the failed container alive for debugging
+  // instead of destroying it (BYO runners ignore this).
+  retainOnFailure?: boolean;
 }
 
 // Step conditionals: the bounded GitHub subset that covers cleanup and
@@ -190,6 +198,16 @@ export function parseJobSpec(definition: string): JobSpec | null {
   if (parsed.timeoutMinutes !== undefined) {
     if (typeof parsed.timeoutMinutes !== "number" || parsed.timeoutMinutes < 1) return null;
     spec.timeoutMinutes = Math.floor(parsed.timeoutMinutes);
+  }
+  if (parsed.testReports !== undefined) {
+    if (!isRecord(parsed.testReports)) return null;
+    const paths = strList(parsed.testReports.paths);
+    if (!paths) return null;
+    spec.testReports = { paths };
+  }
+  if (parsed.retainOnFailure !== undefined) {
+    if (typeof parsed.retainOnFailure !== "boolean") return null;
+    if (parsed.retainOnFailure) spec.retainOnFailure = true;
   }
   return spec;
 }

@@ -25,6 +25,7 @@ function jobRow(over: Partial<JobRow> = {}): JobRow {
     attempts: 0,
     started_at: null,
     finished_at: null,
+    retained_until: null,
     created_at: "2026-10-02T10:00:00.000Z",
     updated_at: "2026-10-02T10:00:00.000Z",
     ...over,

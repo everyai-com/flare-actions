@@ -8,6 +8,7 @@ import {
 } from "flare-actions-runner-sdk";
 import { runLocal } from "./local.ts";
 import { dispatchSource } from "./source.ts";
+import { simulateDrain } from "../../worker/src/fairness.ts";
 
 loadEnv();
 
@@ -27,6 +28,12 @@ function usage(): never {
       "  cli dispatch <repo> <sha|branch|tag> [ref]  trigger a run without waiting",
       "  cli rerun <runId> <jobId>                   reset a finished job to queued",
       "  cli flaky <repo> [days]                     per-job failure rates, worst first",
+      "  cli tests <runId>                           per-test results and failing tests",
+      "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
+      "  cli queue [labels]                        live queue + projected claim order (admin)",
+      "  cli cache list [prefix]                     list cache entries (admin)",
+      "  cli cache purge [prefix]                    delete cache entries (admin)",
+      "  cli usage [days] [repo]                     runs, jobs, compute-minutes for billing",
       "  cli artifacts <runId>                       list a run's artifacts",
       "  cli badge <repo> [branch]                   print badge markdown + url",
       "  cli import <workflow.yml>                   convert a GitHub Actions workflow to flare.yml",
@@ -188,6 +195,69 @@ try {
     for (const s of stats) {
       console.log(`${(s.rate * 100).toFixed(1)}%\t${s.failures}/${s.runs}\t${s.job}`);
     }
+  } else if (cmd === "tests" && rest[0]) {
+    const t = await client().getRunTests(rest[0]);
+    console.log(
+      `${t.totals.total} tests: ${t.totals.passed} passed, ${t.totals.failed} failed, ${t.totals.errors} errors, ${t.totals.skipped} skipped`,
+    );
+    for (const j of t.jobs) {
+      console.log(`  ${j.jobName}: ${j.passed}/${j.total} passed${j.truncated ? " (truncated)" : ""}`);
+    }
+    for (const f of t.failing) {
+      console.log(`  FAIL ${f.name}${f.suite ? ` (${f.suite})` : ""} [${f.jobName}]`);
+      if (f.message) console.log(`       ${f.message.split("\n")[0]?.slice(0, 200)}`);
+    }
+  } else if (cmd === "egress" && rest[0]) {
+    const e = await client().getRunEgress(rest[0]);
+    console.log(`up ${e.totals.reqBytes}b / down ${e.totals.respBytes}b`);
+    for (const j of e.jobs) {
+      console.log(`  ${j.jobId} ${j.host}: up ${j.reqBytes}b / down ${j.respBytes}b`);
+    }
+  } else if (cmd === "queue") {
+    const q = await client().listQueue();
+    const labels = (rest[0] ?? "").split(",").map((l) => l.trim()).filter(Boolean);
+    console.log(`${q.jobs.length} queued (fair-share cap: ${q.fairSharePerRepo === 0 ? "off" : `${q.fairSharePerRepo}/repo`})`);
+    for (const j of q.jobs) {
+      console.log(`  p${j.priority} ${j.repo} ${j.name} [${j.labels || "any"}] ${j.id}`);
+    }
+    const claims = simulateDrain(
+      q.jobs.map((j) => ({ id: j.id, repo: j.repo, priority: j.priority, createdAt: j.createdAt, labels: j.labels })),
+      [{ id: "you", labels }],
+      q.fairSharePerRepo,
+    );
+    console.log(`projected order for [${labels.join(",") || "unlabeled-only"}]:`);
+    for (const c of claims) {
+      console.log(`  ${c.jobId} (${c.repo})`);
+    }
+  } else if (cmd === "cache" && rest[0] === "list") {
+    const entries = await client().listCache(rest[1] ?? "");
+    for (const e of entries) {
+      console.log(`${e.key}\t${e.size}b\t${e.uploaded}`);
+    }
+  } else if (cmd === "cache" && rest[0] === "purge") {
+    const out = await client().purgeCache(rest[1] ?? "");
+    console.log(JSON.stringify(out));
+  } else if (cmd === "usage") {
+    let days = 30;
+    let repo: string | undefined;
+    if (rest[0] !== undefined) {
+      if (rest[0].includes("/")) {
+        repo = rest[0];
+      } else {
+        days = Number(rest[0]);
+        repo = rest[1];
+      }
+    }
+    if (!Number.isInteger(days) || days < 1 || days > 365) {
+      console.error("days must be an integer 1-365");
+      process.exit(2);
+    }
+    const u = await client().getUsage(days, repo);
+    console.log(
+      `${u.days}d: ${u.runs} runs, ${u.jobs} finished jobs, ${u.computeMinutes} compute-min (~$${u.actionsListUsd} at Actions list price)`,
+    );
+    for (const [status, n] of Object.entries(u.runsByStatus)) console.log(`  ${status}: ${n}`);
+    for (const r of u.topRepos) console.log(`  ${r.repo}: ${r.jobs} jobs, ${r.computeMinutes} compute-min`);
   } else if (cmd === "artifacts" && rest[0]) {
     const artifacts = await client().listArtifacts(rest[0]);
     for (const a of artifacts) {

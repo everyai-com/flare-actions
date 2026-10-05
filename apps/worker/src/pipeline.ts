@@ -40,6 +40,10 @@ export interface PipelineArtifacts {
   paths: string[];
 }
 
+export interface PipelineTestReports {
+  paths: string[];
+}
+
 // Extended keys are optional and only set when the document defines
 // them, so minimal pipelines still parse to exactly { name, steps }.
 export interface PipelineJob {
@@ -54,6 +58,7 @@ export interface PipelineJob {
   services?: Record<string, PipelineService>;
   cache?: PipelineCache;
   artifacts?: PipelineArtifacts;
+  testReports?: PipelineTestReports;
   needs?: string[];
   group?: string;
   cancelInProgress?: boolean;
@@ -65,6 +70,9 @@ export interface PipelineJob {
   // context is needs — `always()`/`failure()` still run after a failed
   // need, `success()` (default) skips.
   if?: string;
+  // Managed seats only: keep the failed container for debugging (BYO
+  // runners ignore it). YAML key: `retain-on-failure`.
+  retainOnFailure?: boolean;
 }
 
 export const MAX_JOBS = 32;
@@ -80,6 +88,7 @@ export const MAX_ENV_VARS = 32;
 export const MAX_SERVICES = 8;
 export const MAX_CACHE_PATHS = 16;
 export const MAX_ARTIFACT_PATHS = 32;
+export const MAX_TEST_REPORT_PATHS = 16;
 export const MAX_GROUP_LENGTH = 128;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -164,12 +173,14 @@ interface RawJob {
   services?: Record<string, PipelineService>;
   cache?: PipelineCache;
   artifacts?: PipelineArtifacts;
+  testReports?: PipelineTestReports;
   needs: string[];
   group?: string;
   cancelInProgress: boolean;
   timeoutMinutes?: number;
   retry?: number;
   if?: string;
+  retainOnFailure?: boolean;
 }
 
 function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<string, string[]> }) | null {
@@ -262,6 +273,12 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     }
     job.artifacts = artifacts;
   }
+  if (def["test-reports"] !== undefined) {
+    if (!isRecord(def["test-reports"])) return null;
+    const paths = asStringArray(def["test-reports"].paths, MAX_TEST_REPORT_PATHS, 256);
+    if (!paths) return null;
+    job.testReports = { paths };
+  }
   if (def.needs !== undefined) {
     const needs = asStringArray(def.needs, MAX_JOBS, 64);
     if (!needs) return null;
@@ -297,6 +314,10 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     const cond = normalizeStepCondition(def.if);
     if (!cond) return null;
     job.if = cond;
+  }
+  if (def["retain-on-failure"] !== undefined) {
+    if (typeof def["retain-on-failure"] !== "boolean") return null;
+    if (def["retain-on-failure"]) job.retainOnFailure = true;
   }
   if (def.strategy !== undefined) {
     if (!isRecord(def.strategy) || def.strategy.matrix === undefined) return null;
@@ -374,12 +395,14 @@ export function parsePipeline(text: string): PipelineJob[] | null {
       if (r.services) job.services = r.services;
       if (r.cache) job.cache = r.cache;
       if (r.artifacts) job.artifacts = r.artifacts;
+      if (r.testReports) job.testReports = r.testReports;
       if (r.needs.length > 0) job.needs = r.needs;
       if (r.group) job.group = r.group;
       if (r.cancelInProgress) job.cancelInProgress = true;
       if (r.timeoutMinutes !== undefined) job.timeoutMinutes = r.timeoutMinutes;
       if (r.retry !== undefined) job.retry = r.retry;
       if (r.if !== undefined) job.if = r.if;
+      if (r.retainOnFailure !== undefined) job.retainOnFailure = r.retainOnFailure;
       out.push(job);
     }
   }
@@ -400,11 +423,13 @@ export function serializeDefinition(job: PipelineJob, baseName: string): string 
     services: job.services,
     cache: job.cache,
     artifacts: job.artifacts,
+    testReports: job.testReports,
     needs: job.needs,
     group: job.group,
     timeoutMinutes: job.timeoutMinutes,
     retry: job.retry,
     if: job.if,
+    retainOnFailure: job.retainOnFailure,
   });
 }
 

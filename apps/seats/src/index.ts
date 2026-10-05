@@ -1,7 +1,7 @@
-import { ContainerSeat, type SeatsEnv } from "./seat-do";
+import { ContainerSeat, ContainerSeatV2, type SeatsEnv } from "./seat-do";
 import { seatTokenAuthorized } from "./seat";
 
-export { ContainerSeat };
+export { ContainerSeat, ContainerSeatV2 };
 
 export default {
   async fetch(request: Request, env: SeatsEnv): Promise<Response> {
@@ -23,7 +23,9 @@ export default {
         return Response.json({ error: "jobId required" }, { status: 400 });
       }
       console.log(JSON.stringify({ level: "info", msg: "seat run accepted", jobId: body.jobId }));
-      const stub = env.SEATS.get(env.SEATS.idFromName(`job-${body.jobId}`));
+      // V2 (durable_object policy) serves new jobs; in-flight V1 jobs
+      // finish on V1. Rollback: point these two stubs at env.SEATS.
+      const stub = env.SEATS_V2.get(env.SEATS_V2.idFromName(`job-${body.jobId}`));
       return stub.fetch(
         new Request("https://seat/run", {
           method: "POST",
@@ -48,7 +50,7 @@ export default {
             msg.ack();
             return;
           }
-          const stub = env.SEATS.get(env.SEATS.idFromName(`job-${jobId}`));
+          const stub = env.SEATS_V2.get(env.SEATS_V2.idFromName(`job-${jobId}`));
           await stub.fetch(
             new Request("https://seat/run", {
               method: "POST",

@@ -2,19 +2,25 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { collectArtifactFiles, runJob, sanitizeArtifactName, type JobClient } from "./job";
+import { collectArtifactFiles, collectTestReportXml, runJob, sanitizeArtifactName, type JobClient } from "./job";
 
-function fakeClient(store = new Map<string, Uint8Array>()): JobClient & { store: Map<string, Uint8Array>; artifacts: Map<string, Uint8Array> } {
+function fakeClient(store = new Map<string, Uint8Array>()): JobClient & { store: Map<string, Uint8Array>; artifacts: Map<string, Uint8Array>; reports: string[] } {
   const artifacts = new Map<string, Uint8Array>();
+  const reports: string[] = [];
   return {
     store,
     artifacts,
+    reports,
     getCache: async (k: string) => store.get(k) ?? null,
     putCache: async (k: string, v: Uint8Array) => {
       store.set(k, v);
     },
     uploadArtifact: async (_job: string, name: string, v: Uint8Array) => {
       artifacts.set(name, v);
+    },
+    uploadTestReport: async (_job: string, xml: string) => {
+      reports.push(xml);
+      return { total: 1, passed: 1, failed: 0, errors: 0, skipped: 0, truncated: false };
     },
   };
 }
@@ -212,6 +218,79 @@ describe("artifact helpers", () => {
       expect(collectArtifactFiles(dir, ["f"]).files).toHaveLength(1);
       expect(collectArtifactFiles(dir, ["../escape"]).files).toHaveLength(0);
       expect(collectArtifactFiles(dir, ["missing"]).files).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+const JUNIT = `<testsuite name="s"><testcase name="t" time="0.1"/></testsuite>`;
+
+describe("collectTestReportXml", () => {
+  it("collects explicit paths and conventional defaults", () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-tests-"));
+    try {
+      mkdirSync(join(dir, "custom"), { recursive: true });
+      writeFileSync(join(dir, "custom", "out.xml"), JUNIT);
+      writeFileSync(join(dir, "junit.xml"), JUNIT);
+      writeFileSync(join(dir, "notes.xml"), "<note>not junit</note>");
+      writeFileSync(join(dir, "junit.txt"), JUNIT);
+      const { xml, files } = collectTestReportXml(dir, ["custom/out.xml", "notes.xml"]);
+      expect(files.sort()).toEqual(["custom/out.xml", "junit.xml"]);
+      expect(xml).toContain('<testsuite name="s">');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("scans directories for xml and rejects traversal", () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-tests-"));
+    try {
+      mkdirSync(join(dir, "reports"), { recursive: true });
+      writeFileSync(join(dir, "reports", "a.xml"), JUNIT);
+      writeFileSync(join(dir, "reports", "b.json"), "{}");
+      const { files } = collectTestReportXml(dir, ["reports", "../escape", "missing.xml"]);
+      expect(files).toEqual(["reports/a.xml"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns empty when nothing matches", () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-tests-"));
+    try {
+      expect(collectTestReportXml(dir, undefined)).toEqual({ xml: "", files: [] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("runJob test reports", () => {
+  it("uploads discovered reports on success and failure", async () => {
+    for (const cmd of ["true", "false"]) {
+      const dir = mkdtempSync(join(tmpdir(), "flare-job-testup-"));
+      try {
+        writeFileSync(join(dir, "junit.xml"), JUNIT);
+        const client = fakeClient();
+        const res = await runJob({ steps: [{ run: cmd }] }, { cwd: dir, env: { ...process.env }, client, jobId: "j1" });
+        expect(res.success).toBe(cmd === "true");
+        expect(client.reports).toHaveLength(1);
+        expect(client.reports[0]).toContain("testsuite");
+        expect(res.log).toContain("[tests] uploaded 1 report(s)");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("uploads nothing and stays quiet without reports", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-testup-"));
+    try {
+      const client = fakeClient();
+      const res = await runJob({ steps: [{ run: "true" }] }, { cwd: dir, env: { ...process.env }, client, jobId: "j1" });
+      expect(client.reports).toHaveLength(0);
+      expect(res.log).not.toContain("[tests]");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

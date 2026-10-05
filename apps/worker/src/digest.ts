@@ -1,4 +1,4 @@
-import { getJobsForRun, getRun, type Db } from "./db";
+import { getJobsForRun, getRun, getRunEgress, type Db } from "./db";
 import { jobDurationMs } from "./cost";
 
 // Token-efficient run digest for agents: failures first-class, bounded
@@ -20,6 +20,17 @@ export interface DigestJob {
   stepCount: number;
   failing?: DigestStep;
   triage?: string;
+  // Retain-on-failure: the failed seat container is still alive for
+  // debugging until this deadline (absent when not retained).
+  retainedUntil?: string;
+}
+
+export interface DigestEgress {
+  reqBytes: number;
+  respBytes: number;
+  // Top hosts by download bytes (bounded); r2:<area> rows are measured
+  // seat transfers, (interface) is the container NIC delta.
+  topHosts: { host: string; reqBytes: number; respBytes: number }[];
 }
 
 export interface RunDigest {
@@ -33,6 +44,7 @@ export interface RunDigest {
   totalJobs: number;
   failedJobs: number;
   jobs: DigestJob[];
+  egress?: DigestEgress;
 }
 
 const FAILED_STATUSES = ["failure", "error", "cancelled"];
@@ -75,8 +87,18 @@ export async function buildRunDigest(db: Db, runId: string): Promise<RunDigest |
     };
     if (failing) job.failing = failing;
     if (j.triage) job.triage = j.triage.slice(0, 800);
+    if (j.retained_until) job.retainedUntil = j.retained_until;
     return job;
   });
+  const egressRows = await getRunEgress(db, runId);
+  const egress: DigestEgress | undefined =
+    egressRows.length > 0
+      ? {
+          reqBytes: egressRows.reduce((n, r) => n + r.req_bytes, 0),
+          respBytes: egressRows.reduce((n, r) => n + r.resp_bytes, 0),
+          topHosts: egressRows.slice(0, 10).map((r) => ({ host: r.host, reqBytes: r.req_bytes, respBytes: r.resp_bytes })),
+        }
+      : undefined;
   const a = Date.parse(run.created_at);
   const b = Date.parse(run.updated_at);
   const durationMs = Number.isFinite(a) && Number.isFinite(b) && b >= a ? b - a : null;
@@ -91,5 +113,6 @@ export async function buildRunDigest(db: Db, runId: string): Promise<RunDigest |
     totalJobs: digestJobs.length,
     failedJobs: digestJobs.filter((j) => FAILED_STATUSES.includes(j.status)).length,
     jobs: digestJobs,
+    ...(egress ? { egress } : {}),
   };
 }

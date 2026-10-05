@@ -47,6 +47,7 @@ const JOB = {
   attempts: 0,
   started_at: "2026-01-01T00:00:00.000Z",
   finished_at: "2026-01-01T00:01:00.000Z",
+  retained_until: null,
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-01T00:01:00.000Z",
 };
@@ -233,5 +234,87 @@ describe("mcp", () => {
     expect(mcpDiscovery().tools).toContain("dispatch_run");
     expect(mcpDiscovery().tools).toContain("run_and_wait");
     expect(mcpDiscovery().tools).toContain("get_run_digest");
+    expect(mcpDiscovery().protocolVersions).toContain("2024-11-05");
+    expect((mcpDiscovery().toolRisk as Record<string, string>).dispatch_run).toBe("contained-write");
+    expect((mcpDiscovery().toolRisk as Record<string, string>).list_runs).toBe("read");
+  });
+
+  it("negotiates protocol versions and serves server/discover", async () => {
+    const init = async (params: unknown) =>
+      (await handleMcpMessage({ jsonrpc: "2.0", id: 1, method: "initialize", params }, deps())).body as {
+        result: { protocolVersion: string };
+      };
+    expect((await init({ protocolVersion: "2024-11-05" })).result.protocolVersion).toBe("2024-11-05");
+    expect((await init({ protocolVersion: "2026-07-28" })).result.protocolVersion).toBe("2026-07-28");
+    expect((await init({})).result.protocolVersion).toBe("2026-07-28");
+    expect((await init({ protocolVersion: "1999-01-01" })).result.protocolVersion).toBe("2026-07-28");
+    const disc = (await handleMcpMessage({ jsonrpc: "2.0", id: 2, method: "server/discover" }, deps())).body as {
+      result: { tools: string[] };
+    };
+    expect(disc.result.tools).toContain("dispatch_run");
+  });
+
+  it("confirm-gates write tools only when the setting is on", async () => {
+    const call = (db: Db, args: Record<string, unknown>) =>
+      handleMcpMessage(
+        { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "rerun_job", arguments: args } },
+        deps({ db }),
+      );
+    const on = fakeDb({ first: { value: "1" } });
+    const blocked = await call(on, { runId: "r", jobId: "j" });
+    expect(((blocked.body as { error: { message: string } }).error.message)).toContain("confirm");
+    const confirmed = await call(on, { runId: "r", jobId: "j", confirm: true });
+    expect(JSON.parse(((confirmed.body as { result: { content: { text: string }[] } }).result.content[0].text)).ok).toBe(true);
+    const off = await call(fakeDb({ first: null }), { runId: "r", jobId: "j" });
+    expect(JSON.parse(((off.body as { result: { content: { text: string }[] } }).result.content[0].text)).ok).toBe(true);
+  });
+
+  it("audits write-tier calls with attribution and identifiers only", async () => {
+    const runs: { sql: string; values: unknown[] }[] = [];
+    const db: Db = {
+      prepare(sql: string) {
+        return {
+          bind(...values: unknown[]) {
+            return {
+              all: async <T,>() => ({ results: [] as T[] }),
+              first: async <T,>() => null as T | null,
+              run: async () => {
+                runs.push({ sql, values });
+                return {};
+              },
+            };
+          },
+        };
+      },
+    };
+    await handleMcpMessage(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "dispatch_run",
+          arguments: { repo: "o/r", sha: "abc", pipeline: "jobs:\n env:\n  TOKEN: s3cret-value" },
+        },
+      },
+      deps({ db, agent: "agent-x" }),
+    );
+    const audits = runs.filter((r) => r.sql.startsWith("INSERT INTO audit_log"));
+    expect(audits).toHaveLength(1);
+    expect(audits[0].values[1]).toBe("agent-x");
+    expect(audits[0].values[2]).toBe("mcp.dispatch_run");
+    const target = audits[0].values[3] as string;
+    expect(target).toContain("ok");
+    expect(target).toContain("o/r");
+    expect(target).not.toContain("s3cret-value");
+    expect(target).not.toContain("pipeline");
+
+    // Read-tier calls leave no audit rows.
+    runs.length = 0;
+    await handleMcpMessage(
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_runs", arguments: {} } },
+      deps({ db, agent: "agent-x" }),
+    );
+    expect(runs.filter((r) => r.sql.startsWith("INSERT INTO audit_log"))).toHaveLength(0);
   });
 });

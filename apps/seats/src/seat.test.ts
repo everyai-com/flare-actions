@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  egressHostForKey,
+  parseNetDev,
   runSeatJob,
   seatTokenAuthorized,
   type ContainerCtl,
+  type ContainerSnapshot,
   type ContainerStartOptions,
   type ExecHandle,
   type ExecOptions,
@@ -21,6 +24,12 @@ class MemDb implements Db {
   jobs = new Map<string, Row>();
   runs = new Map<string, Row>();
   failClaims = false;
+  monitors: Row[] = [];
+  testReports = new Map<string, Row>();
+  testCases: Row[] = [];
+  snapshots = new Map<string, Row>();
+  egress: Row[] = [];
+  settings = new Map<string, { value: string }>();
 
   prepare(sql: string) {
     const norm = sql.replace(/\s+/g, " ").trim();
@@ -42,6 +51,12 @@ class MemDb implements Db {
       const run = this.runs.get(job.run_id as string);
       return { ...job, repo: run?.repo, sha: run?.sha } as Row;
     }
+    if (norm.startsWith("SELECT * FROM seat_snapshots WHERE image")) {
+      return this.snapshots.get(`${values[0] as string}|${values[1] as string}`) ?? null;
+    }
+    if (norm.startsWith("SELECT value FROM app_settings WHERE key")) {
+      return (this.settings.get(values[0] as string) as Row | undefined) ?? null;
+    }
     throw new Error(`unrouted first: ${norm}`);
   }
 
@@ -49,6 +64,7 @@ class MemDb implements Db {
     if (norm.startsWith("SELECT * FROM jobs WHERE run_id")) {
       return [...this.jobs.values()].filter((j) => j.run_id === values[0]);
     }
+    if (norm.startsWith("SELECT * FROM monitors ORDER BY")) return this.monitors;
     if (norm.includes("status = 'blocked'")) return [];
     if (norm.startsWith("SELECT j.definition, j.name")) return [];
     if (norm.includes("status IN ('queued', 'running', 'blocked')")) return [];
@@ -106,9 +122,56 @@ class MemDb implements Db {
       if (job) job.triage = values[0];
       return {};
     }
+    if (norm.startsWith("UPDATE jobs SET retained_until")) {
+      const job = this.jobs.get(values[2] as string);
+      if (job) job.retained_until = values[0];
+      return {};
+    }
+    if (norm.startsWith("INSERT INTO seat_snapshots")) {
+      this.snapshots.set(`${values[0] as string}|${values[1] as string}`, {
+        image: values[0], repo: values[1], snapshot_id: values[2], job_id: values[3], created_at: values[4], last_used_at: values[5],
+      });
+      return {};
+    }
+    if (norm.startsWith("UPDATE seat_snapshots SET last_used_at")) {
+      const row = this.snapshots.get(`${values[1] as string}|${values[2] as string}`);
+      if (row) row.last_used_at = values[0];
+      return {};
+    }
+    if (norm.startsWith("DELETE FROM seat_snapshots WHERE image")) {
+      this.snapshots.delete(`${values[0] as string}|${values[1] as string}`);
+      return {};
+    }
+    if (norm.startsWith("DELETE FROM job_egress WHERE job_id")) {
+      this.egress = this.egress.filter((e) => e.job_id !== values[0]);
+      return {};
+    }
+    if (norm.startsWith("INSERT INTO job_egress")) {
+      for (let i = 0; i + 4 < values.length; i += 5) {
+        this.egress.push({ job_id: values[i], run_id: values[i + 1], host: values[i + 2], req_bytes: values[i + 3], resp_bytes: values[i + 4] });
+      }
+      return {};
+    }
     if (norm.startsWith("UPDATE runs SET status")) {
       const run = this.runs.get(values[2] as string);
       if (run) run.status = values[0];
+      return {};
+    }
+    if (norm.startsWith("DELETE FROM test_results WHERE job_id")) {
+      this.testCases = this.testCases.filter((c) => c.job_id !== values[0]);
+      return {};
+    }
+    if (norm.startsWith("INSERT INTO test_reports")) {
+      this.testReports.set(values[0] as string, {
+        job_id: values[0], run_id: values[1], passed: values[2], failed: values[3], errors: values[4],
+        skipped: values[5], total: values[6],
+      });
+      return {};
+    }
+    if (norm.startsWith("INSERT INTO test_results")) {
+      for (let i = 0; i + 7 < values.length; i += 8) {
+        this.testCases.push({ job_id: values[i], run_id: values[i + 1], suite: values[i + 2], name: values[i + 3] });
+      }
       return {};
     }
     throw new Error(`unrouted run: ${norm}`);
@@ -153,10 +216,23 @@ class FakeContainer implements ContainerCtl {
   // Popped per step-run exec (["sh","-c","sh -s > ..."]); default EXIT:0.
   stepExits: number[] = [];
   checkoutExit = 0;
+  // Test-report scan listing (one absolute path per line) and the bytes
+  // served for cat calls that hit those paths.
+  testScan = "";
+  testXml = new Map<string, string>();
+  netDevSamples: string[] = [];
+  tailBytes = "step-output";
 
-  start(opts?: ContainerStartOptions): void {
+  snapshots: (string | undefined)[] = [];
+
+  async start(opts?: ContainerStartOptions): Promise<void> {
     this.starts += 1;
     this.startOpts.push(opts);
+  }
+
+  async snapshot(name?: string): Promise<ContainerSnapshot> {
+    this.snapshots.push(name);
+    return { id: `snap-${this.snapshots.length}`, size: 1 };
   }
 
   destroy(): void {
@@ -186,12 +262,25 @@ class FakeContainer implements ContainerCtl {
       const code = this.stepExits.length > 0 ? (this.stepExits.shift() as number) : 0;
       return { exitCode: 0, stdout: bytes(`EXIT:${code}`) };
     }
-    if (cmd[0] === "tail") return { exitCode: 0, stdout: bytes("step-output") };
+    if (cmd[0] === "tail") return { exitCode: 0, stdout: bytes(this.tailBytes) };
     if (cmd[0] === "tar") return { exitCode: 0 };
     if (cmd[0] === "stat") return { exitCode: 0, stdout: bytes("12") };
-    if (cmd[0] === "cat") return { exitCode: 0, stdout: bytes("blob-bytes-12") };
+    if (cmd[0] === "cat" && cmd[1] === "/proc/net/dev") {
+      const sample = this.netDevSamples.length > 0 ? (this.netDevSamples.shift() as string) : "";
+      return { exitCode: 0, stdout: bytes(sample) };
+    }
+    if (cmd[0] === "cat") {
+      const hit = this.testXml.get(cmd[1] ?? "");
+      return { exitCode: 0, stdout: bytes(hit ?? "blob-bytes-12") };
+    }
+    if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("for p in ")) {
+      return { exitCode: 0, stdout: bytes(this.testScan) };
+    }
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("rm -rf")) return { exitCode: 0 };
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("test -f")) return { exitCode: 0 };
+    if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("cat /sys/fs/cgroup")) {
+      return { exitCode: 0, stdout: bytes("123456") };
+    }
     if (cmd[0] === "sleep-forever") return { exitCode: 0, hang: true };
     throw new Error(`unrouted exec: ${JSON.stringify(cmd)} stdin=${String(opts?.stdin).slice(0, 60)}`);
   }
@@ -267,6 +356,25 @@ describe("runSeatJob", () => {
     expect(checkoutCall?.opts?.stdin as string).toContain("git checkout -q FETCH_HEAD");
   });
 
+  it("collects and stores JUnit reports from the container", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ testReports: { paths: ["custom"] } }));
+    const container = new FakeContainer();
+    container.testScan = "/work/custom/out.xml\n/etc/passwd\n";
+    container.testXml.set(
+      "/work/custom/out.xml",
+      `<testsuite name="s"><testcase name="t1" time="0.1"/><testcase name="t2"><failure message="bad"/></testcase></testsuite>`,
+    );
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.testReports.get("j1")).toMatchObject({ total: 2, passed: 1, failed: 1 });
+    expect(db.testCases.map((c) => c.name)).toEqual(["t1", "t2"]);
+    expect(db.jobs.get("j1")?.log as string).toContain("[seat] tests: 2 tests, 1 failed");
+    const scan = container.calls.find((c) => c.cmd[2]?.startsWith("for p in "));
+    expect(scan?.cmd[2]).toContain("/work/custom");
+    expect(scan?.cmd[2]).toContain("/work/junit.xml");
+  });
+
   it("fails fast and triages", async () => {
     const db = new MemDb();
     seed(db, JSON.stringify({ steps: [{ run: "a" }, { run: "b" }, { run: "c" }], base: "t" }));
@@ -310,13 +418,250 @@ describe("runSeatJob", () => {
     const container = new FakeContainer();
     container.running = false;
     const origStart = container.start.bind(container);
-    container.start = (opts?: ContainerStartOptions) => {
-      origStart(opts);
+    container.start = async (opts?: ContainerStartOptions) => {
+      await origStart(opts);
       container.running = true;
     };
     const out = await runSeatJob(deps(db, container), "j1");
     expect(out.status).toBe("completed");
     expect(container.startOpts).toEqual([{ enableInternet: true }]);
+  });
+
+  it("merges V2 containerStart (image/instance/snapshot) into the boot call", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    container.running = false;
+    const origStart = container.start.bind(container);
+    container.start = async (opts?: ContainerStartOptions) => {
+      await origStart(opts);
+      container.running = true;
+    };
+    const out = await runSeatJob(
+      deps(db, container, {
+        containerStart: { image: "registry.example/seat@sha256:abc", entrypoint: ["sleep", "infinity"], instance: "standard-1" },
+      }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    expect(container.startOpts).toEqual([
+      { enableInternet: true, image: "registry.example/seat@sha256:abc", entrypoint: ["sleep", "infinity"], instance: "standard-1" },
+    ]);
+
+    // Snapshot restore replaces the image on the start call.
+    const db2 = new MemDb();
+    seed(db2, DEF());
+    const snap = new FakeContainer();
+    snap.running = false;
+    const origSnapStart = snap.start.bind(snap);
+    snap.start = async (opts?: ContainerStartOptions) => {
+      await origSnapStart(opts);
+      snap.running = true;
+    };
+    const out2 = await runSeatJob(deps(db2, snap, { containerStart: { snapshotId: "snap-9" } }), "j1");
+    expect(out2.status).toBe("completed");
+    expect(snap.startOpts).toEqual([{ enableInternet: true, snapshotId: "snap-9" }]);
+  });
+
+  it("restores a fresh snapshot on V2 boot and touches it", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    db.snapshots.set("img1|o/r", {
+      image: "img1", repo: "o/r", snapshot_id: "snap-aaa", job_id: "j0",
+      created_at: new Date().toISOString(), last_used_at: new Date().toISOString(),
+    });
+    const container = new FakeContainer();
+    container.running = false;
+    const origStart = container.start.bind(container);
+    container.start = async (opts?: ContainerStartOptions) => {
+      await origStart(opts);
+      container.running = true;
+    };
+    const out = await runSeatJob(
+      deps(db, container, {
+        containerStart: { image: "img1" },
+        timing: { startWaitMs: 5, startAttempts: 1, startPollMs: 1, stepMs: 100, blobMs: 100 },
+      }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    expect(container.startOpts[0]).toEqual({ enableInternet: true, snapshotId: "snap-aaa" });
+    expect(db.jobs.get("j1")?.log as string).toContain("[seat] snapshot restored (snap-aaa…)");
+    // A successful job replaces the restored snapshot with a fresh one.
+    expect(container.snapshots).toHaveLength(1);
+    expect(db.snapshots.get("img1|o/r")?.snapshot_id).toBe("snap-1");
+  });
+
+  it("deletes a degraded snapshot and falls through to a fresh boot", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    db.snapshots.set("img1|o/r", {
+      image: "img1", repo: "o/r", snapshot_id: "snap-bad", job_id: "j0",
+      created_at: new Date().toISOString(), last_used_at: new Date().toISOString(),
+    });
+    const container = new FakeContainer();
+    container.running = false;
+    // Restore starts never come up; fresh starts do.
+    container.start = async (opts?: ContainerStartOptions) => {
+      container.starts += 1;
+      container.startOpts.push(opts);
+      if (!opts?.snapshotId) container.running = true;
+    };
+    const out = await runSeatJob(
+      deps(db, container, {
+        containerStart: { image: "img1" },
+        timing: { startWaitMs: 5, startAttempts: 2, startPollMs: 1, stepMs: 100, blobMs: 100 },
+      }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    expect(container.startOpts[0]).toEqual({ enableInternet: true, snapshotId: "snap-bad" });
+    expect(container.startOpts[1]).toEqual({ enableInternet: true, image: "img1" });
+    expect(db.snapshots.has("img1|o/r")).toBe(true); // deleted, then re-saved on success
+    expect(db.snapshots.get("img1|o/r")?.snapshot_id).toBe("snap-1");
+    expect(db.jobs.get("j1")?.log as string).toContain("[seat] snapshot degraded, deleted; fresh boot");
+  });
+
+  it("ignores stale snapshots and never snapshots on V1 or failure", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    db.snapshots.set("img1|o/r", {
+      image: "img1", repo: "o/r", snapshot_id: "snap-old", job_id: "j0",
+      created_at: new Date(Date.now() - 30 * 86400000).toISOString(),
+      last_used_at: new Date(Date.now() - 30 * 86400000).toISOString(),
+    });
+    const container = new FakeContainer();
+    container.running = false;
+    const origStart = container.start.bind(container);
+    container.start = async (opts?: ContainerStartOptions) => {
+      await origStart(opts);
+      container.running = true;
+    };
+    const out = await runSeatJob(
+      deps(db, container, {
+        containerStart: { image: "img1" },
+        timing: { startWaitMs: 5, startAttempts: 1, startPollMs: 1, stepMs: 100, blobMs: 100 },
+      }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    expect(container.startOpts).toEqual([{ enableInternet: true, image: "img1" }]);
+
+    // V1 (no containerStart): no snapshot traffic at all.
+    const db2 = new MemDb();
+    seed(db2, DEF());
+    const v1 = new FakeContainer();
+    await runSeatJob(deps(db2, v1), "j1");
+    expect(v1.snapshots).toHaveLength(0);
+    expect(db2.snapshots.size).toBe(0);
+
+    // Failures never save: a failed build's state must not be inherited.
+    const db3 = new MemDb();
+    seed(db3, JSON.stringify({ steps: [{ run: "boom" }], base: "t" }));
+    const fail = new FakeContainer();
+    fail.stepExits = [1];
+    const out3 = await runSeatJob(deps(db3, fail, { containerStart: { image: "img1" } }), "j1");
+    expect(out3.status).toBe("completed");
+    expect(fail.snapshots).toHaveLength(0);
+    expect(db3.snapshots.size).toBe(0);
+  });
+
+  it("retains failed V2 containers when retain-on-failure is set", async () => {
+    const db = new MemDb();
+    seed(db, JSON.stringify({ steps: [{ run: "boom" }], base: "t", retainOnFailure: true }));
+    const container = new FakeContainer();
+    container.stepExits = [1];
+    const out = await runSeatJob(deps(db, container, { containerStart: { image: "img1" } }), "j1");
+    expect(out.status).toBe("retained");
+    expect((out as { retainedUntil: string }).retainedUntil).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(container.destroys).toBe(0);
+    expect(db.jobs.get("j1")?.status).toBe("failure");
+    expect(db.jobs.get("j1")?.retained_until as string).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(db.jobs.get("j1")?.log as string).toContain("[seat] retained for debugging until");
+
+    // V1 ignores retain-on-failure (no alarm to enforce the deadline).
+    const db2 = new MemDb();
+    seed(db2, JSON.stringify({ steps: [{ run: "boom" }], base: "t", retainOnFailure: true }));
+    const v1 = new FakeContainer();
+    v1.stepExits = [1];
+    const out2 = await runSeatJob(deps(db2, v1), "j1");
+    expect(out2.status).toBe("completed");
+    expect(v1.destroys).toBe(1);
+    expect(db2.jobs.get("j1")?.retained_until).toBeUndefined();
+
+    // Successes are never retained.
+    const db3 = new MemDb();
+    seed(db3, DEF({ retainOnFailure: true }));
+    const ok = new FakeContainer();
+    const out3 = await runSeatJob(deps(db3, ok, { containerStart: { image: "img1" } }), "j1");
+    expect(out3.status).toBe("completed");
+    expect(ok.destroys).toBe(1);
+  });
+
+  it("caps stored logs and results like the BYO route", async () => {
+    const steps = Array.from({ length: 20 }, (_, i) => ({ run: `echo ${i}` }));
+    const db = new MemDb();
+    seed(db, JSON.stringify({ steps, base: "t" }));
+    const container = new FakeContainer();
+    container.tailBytes = "x".repeat(32768);
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("completed");
+    expect((db.jobs.get("j1")?.log as string).length).toBeLessThanOrEqual(262144);
+    expect((db.jobs.get("j1")?.result as string).length).toBeLessThanOrEqual(65536);
+  });
+
+  it("records peak RSS in the seat result", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    await runSeatJob(deps(db, container), "j1");
+    const result = JSON.parse(db.jobs.get("j1")?.result as string) as { peakRssBytes?: number };
+    expect(result.peakRssBytes).toBe(123456);
+  });
+
+  it("parses /proc/net/dev across interfaces, skipping loopback and garbage", () => {
+    expect(parseNetDev("")).toEqual({ rx: 0, tx: 0 });
+    expect(parseNetDev("not counters\neth0: nope")).toEqual({ rx: 0, tx: 0 });
+    expect(
+      parseNetDev(
+        "Inter-|   Receive                                                |  Transmit\n" +
+          " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo frame compressed multicast\n" +
+          "    lo: 100 0 0 0 0 0 0 0 200 0 0 0 0 0 0 0\n" +
+          "  eth0: 1000 0 0 0 0 0 0 0 2000 0 0 0 0 0 0 0\n" +
+          "  eth1: 500 0 0 0 0 0 0 0 700 0 0 0 0 0 0 0\n",
+      ),
+    ).toEqual({ rx: 1500, tx: 2700 });
+    expect(egressHostForKey("cache/k")).toBe("r2:cache");
+    expect(egressHostForKey("artifacts/j1/a")).toBe("r2:artifacts");
+    expect(egressHostForKey("sources/u")).toBe("r2:sources");
+    expect(egressHostForKey("test-reports/j1.xml")).toBe("r2:test-reports");
+    expect(egressHostForKey("mystery/x")).toBe("r2:other");
+  });
+
+  it("records measured R2 transfers and the interface delta as job egress", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ cache: { key: "k", paths: ["node_modules"] } }));
+    const container = new FakeContainer();
+    container.netDevSamples = [
+      "  eth0: 1000 0 0 0 0 0 0 0 2000 0 0 0 0 0 0 0\n",
+      "  eth0: 5000 0 0 0 0 0 0 0 9000 0 0 0 0 0 0 0\n",
+    ];
+    const store = new Map<string, Uint8Array>([["cache/k", bytes("old-tar")]]);
+    const d = deps(db, container);
+    d.cache = {
+      get: async (k: string) => {
+        const v = store.get(k);
+        if (!v) return null;
+        return { size: v.byteLength, arrayBuffer: async () => v.buffer as ArrayBuffer };
+      },
+      put: async (k: string, v: Uint8Array) => {
+        store.set(k, v);
+      },
+    };
+    const out = await runSeatJob(d, "j1");
+    expect(out.status).toBe("completed");
+    expect(db.egress).toContainEqual({ job_id: "j1", run_id: "r1", host: "r2:cache", req_bytes: 13, resp_bytes: 7 });
+    expect(db.egress).toContainEqual({ job_id: "j1", run_id: "r1", host: "(interface)", req_bytes: 7000, resp_bytes: 4000 });
   });
 
   it("releases on checkout failure and on boot failure", async () => {
@@ -333,7 +678,7 @@ describe("runSeatJob", () => {
     seed(db2, DEF());
     const dead = new FakeContainer();
     dead.running = false;
-    dead.start = () => {
+    dead.start = async () => {
       dead.starts += 1;
     };
     const out2 = await runSeatJob(
@@ -350,7 +695,7 @@ describe("runSeatJob", () => {
     seed(fresh, DEF());
     const dead = new FakeContainer();
     dead.running = false;
-    dead.start = () => {
+    dead.start = async () => {
       dead.starts += 1;
     };
     const wakes: { msg: { jobId: string }; opts?: { delaySeconds?: number } }[] = [];
@@ -380,7 +725,7 @@ describe("runSeatJob", () => {
     (stale.runs.get("r1") as Row).created_at = new Date(Date.now() - 3600000).toISOString();
     const old = new FakeContainer();
     old.running = false;
-    old.start = () => {
+    old.start = async () => {
       old.starts += 1;
     };
     const staleWakes: unknown[] = [];
@@ -401,7 +746,7 @@ describe("runSeatJob", () => {
     seed(db, DEF());
     const dead = new FakeContainer();
     dead.running = false;
-    dead.start = () => {
+    dead.start = async () => {
       dead.starts += 1;
     };
     const out = await runSeatJob(
@@ -420,7 +765,7 @@ describe("runSeatJob", () => {
     seed(db, DEF());
     const flaky = new FakeContainer();
     flaky.running = false;
-    flaky.start = () => {
+    flaky.start = async () => {
       throw new Error("boom");
     };
     const out = await runSeatJob(
@@ -442,7 +787,11 @@ describe("runSeatJob", () => {
     const db = new MemDb();
     seed(db, DEF());
     const hung = new FakeContainer();
-    hung.exec = () => new Promise<ExecHandle>(() => undefined);
+    const origHungExec = hung.exec.bind(hung);
+    // Only the checkout call wedges; fast metadata reads (NIC sample)
+    // still answer, as they would on a real slow-but-alive container.
+    hung.exec = (cmd: string[], opts?: ExecOptions) =>
+      cmd[0] === "sh" && cmd[1] === "-s" ? new Promise<ExecHandle>(() => undefined) : origHungExec(cmd, opts);
     const out = await runSeatJob(
       deps(db, hung, {
         timing: { startWaitMs: 5, startAttempts: 1, startPollMs: 1, stepMs: 30, blobMs: 100, checkoutMs: 30 },

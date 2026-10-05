@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Db, JobRow, StaleJobRow } from "./db";
-import { jobConditionSatisfied, maybeRetryJob, promoteBlockedJobs, requeueStaleJobs } from "./finish";
+import { jobConditionSatisfied, maybeRetryJob, promoteBlockedJobs, requeueStaleJobs, triageAndStore } from "./finish";
 
 function jobRow(over: Partial<JobRow> = {}): JobRow {
   return {
@@ -17,6 +17,7 @@ function jobRow(over: Partial<JobRow> = {}): JobRow {
     attempts: 0,
     started_at: "2026-10-02T10:00:00.000Z",
     finished_at: null,
+    retained_until: null,
     created_at: "2026-10-02T10:00:00.000Z",
     updated_at: "2026-10-02T10:00:00.000Z",
     ...over,
@@ -29,6 +30,7 @@ class MemDb implements Db {
   jobs = new Map<string, JobRow>();
   runStatus = new Map<string, string>();
   releaseChanges = 1;
+  settings = new Map<string, string>();
 
   prepare(sql: string) {
     const norm = sql.replace(/\s+/g, " ").trim();
@@ -54,6 +56,10 @@ class MemDb implements Db {
             const job = this.jobs.get(values[0] as string);
             if (!job) return null;
             return { ...job, repo: "o/r", sha: "abc123" } as unknown as T;
+          }
+          if (norm.startsWith("SELECT value FROM app_settings WHERE key")) {
+            const value = this.settings.get(values[0] as string);
+            return (value !== undefined ? { value } : null) as unknown as T | null;
           }
           throw new Error(`unrouted first: ${norm}`);
         },
@@ -84,6 +90,11 @@ class MemDb implements Db {
           }
           if (norm.startsWith("UPDATE runs SET status")) {
             this.runStatus.set(values[2] as string, values[0] as string);
+            return {};
+          }
+          if (norm.startsWith("UPDATE jobs SET triage")) {
+            const job = this.jobs.get(values[2] as string);
+            if (job) job.triage = values[0] as string;
             return {};
           }
           throw new Error(`unrouted run: ${norm}`);
@@ -249,5 +260,64 @@ describe("maybeRetryJob", () => {
     db.releaseChanges = 0;
     expect(await maybeRetryJob(db, { send: async () => undefined }, "job-1")).toBe(false);
     expect(db.jobs.get("job-1")?.attempts).toBe(0);
+  });
+});
+
+describe("triageAndStore", () => {
+  const result = JSON.stringify({ steps: [{ command: "npm test", exitCode: 1, durationMs: 5, output: "Error: boom" }] });
+
+  it("triages through the gateway and stores the text", async () => {
+    const db = new MemDb();
+    db.jobs.set("job-1", jobRow());
+    db.settings.set("ai_gateway_id", "gw-d1");
+    const seen: unknown[] = [];
+    const ai = {
+      run: async (_m: string, _i: unknown, o?: unknown) => {
+        seen.push(o);
+        return { response: "Cause: boom." };
+      },
+    };
+    await triageAndStore(db, ai, { repo: "o/r", sha: "abc" }, "job-1", "test", "log", result, { gatewayId: "gw-env" });
+    expect(seen).toEqual([{ gateway: { id: "gw-env" } }]);
+    expect(db.jobs.get("job-1")?.triage).toBe("Cause: boom.");
+  });
+
+  it("falls back to the D1 gateway and grounds with web search when on", async () => {
+    const db = new MemDb();
+    db.jobs.set("job-1", jobRow());
+    db.settings.set("ai_gateway_id", "gw-d1");
+    db.settings.set("triage_web_search", "1");
+    const seen: { opts?: unknown; prompt?: string } = {};
+    const ai = {
+      run: async (_m: string, i: unknown, o?: unknown) => {
+        seen.opts = o;
+        seen.prompt = JSON.stringify(i);
+        return { response: "Cause: boom." };
+      },
+      websearch: async () => new Response(JSON.stringify({ items: [{ url: "https://x.example", title: "T", description: "D" }] })),
+    };
+    await triageAndStore(db, ai, { repo: "o/r", sha: "abc" }, "job-1", "test", "log", result);
+    expect(seen.opts).toEqual({ gateway: { id: "gw-d1" } });
+    expect(seen.prompt).toContain("Live web context");
+    expect(seen.prompt).toContain("https://x.example");
+  });
+
+  it("skips search without a gateway and never throws", async () => {
+    const db = new MemDb();
+    db.jobs.set("job-1", jobRow());
+    db.settings.set("triage_web_search", "1");
+    let searched = false;
+    const ai = {
+      run: async () => ({ response: "Cause: boom." }),
+      websearch: async () => {
+        searched = true;
+        return new Response("{}");
+      },
+    };
+    await triageAndStore(db, ai, { repo: "o/r", sha: "abc" }, "job-1", "test", "log", result);
+    expect(searched).toBe(false);
+    await triageAndStore(db, undefined, { repo: "o/r", sha: "abc" }, "job-1", "test", "log", result);
+    await triageAndStore(db, { run: async () => { throw new Error("down"); } }, { repo: "o/r", sha: "abc" }, "job-1", "test", "log", result);
+    expect(db.jobs.get("job-1")?.triage).toBe("Cause: boom.");
   });
 });

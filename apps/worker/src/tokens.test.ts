@@ -83,7 +83,11 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("/v1/runs");
     expect(DASHBOARD_HTML).toContain('rel="icon"');
     expect(DASHBOARD_HTML).toContain("theme-color");
-    expect(DASHBOARD_HTML).toContain("prefers-color-scheme");
+    expect(DASHBOARD_HTML).toContain("color-scheme: dark");
+    expect(DASHBOARD_HTML).toContain("--accent: #4124fb");
+    expect(DASHBOARD_HTML).toContain("--bg: #161616");
+    expect(DASHBOARD_HTML).toContain("--card: #1b1d20");
+    expect(DASHBOARD_HTML).not.toContain("prefers-color-scheme");
     expect(DASHBOARD_HTML).toContain("table-scroll");
     expect(DASHBOARD_HTML).toContain('id="runsList"');
     expect(DASHBOARD_HTML).toContain("run-row");
@@ -112,6 +116,9 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain('id="forgotBtn"');
     expect(DASHBOARD_HTML).toContain("/v1/admin/reset");
     expect(DASHBOARD_HTML).toContain('id="tokenRepos"');
+    expect(DASHBOARD_HTML).toContain('id="auditBody"');
+    expect(DASHBOARD_HTML).toContain("/v1/admin/audit");
+    expect(DASHBOARD_HTML).toContain("loadAudit");
     expect(DASHBOARD_HTML).toContain("just now");
     expect(DASHBOARD_HTML).not.toContain("${");
   });

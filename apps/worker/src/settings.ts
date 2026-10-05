@@ -13,6 +13,12 @@ export const SETTING_KEYS = {
   notifyWebhookUrl: "notify_webhook_url",
   secretsKey: "secrets_key",
   badgeHiddenRepos: "badge_hidden_repos",
+  turnstileSiteKey: "turnstile_site_key",
+  turnstileSecretKey: "turnstile_secret_key",
+  fairSharePerRepo: "fair_share_per_repo",
+  aiGatewayId: "ai_gateway_id",
+  mcpWriteConfirm: "mcp_write_confirm",
+  triageWebSearch: "triage_web_search",
 } as const;
 
 export function validateWebhookSecret(secret: unknown): string | null {
@@ -76,4 +82,57 @@ export function isBadgeHiddenRepo(raw: string | null, repo: string): boolean {
   if (!raw) return false;
   const needle = repo.toLowerCase();
   return raw.split(",").some((r) => r.trim().toLowerCase() === needle);
+}
+
+// Turnstile (bot defense for login/register/bootstrap/reset). The site
+// key is public (shipped to the dashboard); the secret key encrypts at
+// rest like the webhook secret. Either may come from env instead.
+export function validateTurnstileSiteKey(key: unknown): string | null {
+  if (typeof key !== "string" || !key.trim() || key.length > 128) {
+    return "turnstile site key must be a non-empty string (max 128 chars)";
+  }
+  return null;
+}
+
+export function validateTurnstileSecretKey(key: unknown): string | null {
+  if (typeof key !== "string" || key.length < 16 || key.length > 512) {
+    return "turnstile secret key must be 16-512 characters";
+  }
+  return null;
+}
+
+// Scheduling fairness: max concurrently running jobs per repo for the
+// shared poll pool (0 = off, the default). Accepts the D1 string form
+// and the admin API number form; anything else is an error.
+export function parseFairSharePerRepo(value: unknown): { cap: number } | { error: string } {
+  const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+  if (!Number.isInteger(n) || n < 0 || n > 100) return { error: "fairSharePerRepo must be an integer 0-100 (0 disables)" };
+  return { cap: n };
+}
+
+// AI Gateway id fronting inference (unified billing/logging/attribution).
+// Gateway ids are URL slugs; empty clears back to direct inference.
+export function parseAiGatewayId(value: unknown): { id: string } | { error: string } {
+  if (typeof value !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(value.trim())) {
+    return { error: "aiGatewayId must be a 1-64 char slug ([a-z0-9_-])" };
+  }
+  return { id: value.trim() };
+}
+
+// MCP write-confirm gate (WriteGuard): when on, contained-write+ tools
+// require confirm: true. Accepts booleans and "1"/"0".
+export function parseMcpWriteConfirm(value: unknown): { on: boolean } | { error: string } {
+  if (typeof value === "boolean") return { on: value };
+  if (value === "1" || value === "true") return { on: true };
+  if (value === "0" || value === "false" || value === "" || value === null || value === undefined) return { on: false };
+  return { error: "mcpWriteConfirm must be a boolean" };
+}
+
+// Web Search grounding for triage (off by default — each failure costs a
+// search call against gateway credits). Same boolean shape as above.
+export function parseTriageWebSearch(value: unknown): { on: boolean } | { error: string } {
+  if (typeof value === "boolean") return { on: value };
+  if (value === "1" || value === "true") return { on: true };
+  if (value === "0" || value === "false" || value === "" || value === null || value === undefined) return { on: false };
+  return { error: "triageWebSearch must be a boolean" };
 }

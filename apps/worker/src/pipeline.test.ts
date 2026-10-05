@@ -164,6 +164,15 @@ describe("parsePipeline v2 keys", () => {
     expect(parsePipeline("jobs:\n  a:\n    cache:\n      key: '../x'\n      paths: [y]\n    steps:\n      - run: echo\n")).toBeNull();
     expect(parsePipeline("jobs:\n  a:\n    timeout-minutes: 0\n    steps:\n      - run: echo\n")).toBeNull();
   });
+
+  it("parses test-reports paths and rejects bad shapes", () => {
+    const jobs = parsePipeline(
+      "jobs:\n  a:\n    test-reports:\n      paths: [junit.xml, reports]\n    steps:\n      - run: echo\n",
+    );
+    expect(jobs?.[0].testReports).toEqual({ paths: ["junit.xml", "reports"] });
+    expect(parsePipeline("jobs:\n  a:\n    test-reports:\n      paths: []\n    steps:\n      - run: echo\n")).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    test-reports: junit.xml\n    steps:\n      - run: echo\n")).toBeNull();
+  });
 });
 
 describe("matrix helpers", () => {
@@ -193,6 +202,22 @@ describe("job definition serialization", () => {
   it("tolerates legacy definitions", () => {
     expect(readJobSpec(JSON.stringify({ steps: [{ run: "echo" }] }), "main")).toEqual({ base: "main", needs: [] });
     expect(readJobSpec("bogus", "main")).toEqual({ base: "main", needs: [] });
+  });
+
+  it("serializes test-reports into the definition", () => {
+    const def = serializeDefinition(
+      { name: "a", steps: [{ run: "echo" }], testReports: { paths: ["junit.xml"] } },
+      "a",
+    );
+    expect(JSON.parse(def).testReports).toEqual({ paths: ["junit.xml"] });
+  });
+
+  it("parses retain-on-failure and serializes it into the definition", () => {
+    const jobs = parsePipeline("jobs:\n  a:\n    retain-on-failure: true\n    steps:\n      - run: echo\n");
+    expect(jobs?.[0].retainOnFailure).toBe(true);
+    expect(parsePipeline("jobs:\n  a:\n    retain-on-failure: yes-please\n    steps:\n      - run: echo\n")).toBeNull();
+    const def = serializeDefinition({ name: "a", steps: [{ run: "echo" }], retainOnFailure: true }, "a");
+    expect(JSON.parse(def).retainOnFailure).toBe(true);
   });
 });
 

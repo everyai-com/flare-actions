@@ -105,6 +105,77 @@ export const SCHEMA_STATEMENTS = [
     last_run_at TEXT,
     created_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS monitors (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    repo TEXT NOT NULL,
+    branch TEXT NOT NULL DEFAULT '',
+    job TEXT NOT NULL DEFAULT '',
+    trigger TEXT NOT NULL,
+    result TEXT NOT NULL DEFAULT '',
+    consecutive INTEGER NOT NULL DEFAULT 1,
+    duration_seconds INTEGER NOT NULL DEFAULT 0,
+    log_pattern TEXT NOT NULL DEFAULT '',
+    webhook_url TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    muted_until TEXT,
+    streak INTEGER NOT NULL DEFAULT 0,
+    last_fired_at TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_monitors_repo ON monitors(repo)`,
+  `CREATE TABLE IF NOT EXISTS monitor_fires (
+    monitor_id TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    fired_at TEXT NOT NULL,
+    PRIMARY KEY (monitor_id, job_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_monitor_fires_fired ON monitor_fires(fired_at)`,
+  `CREATE TABLE IF NOT EXISTS test_reports (
+    job_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    passed INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    errors INTEGER NOT NULL DEFAULT 0,
+    skipped INTEGER NOT NULL DEFAULT 0,
+    total INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    truncated INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_test_reports_run ON test_reports(run_id)`,
+  `CREATE TABLE IF NOT EXISTS test_results (
+    id INTEGER PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    suite TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    classname TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    duration_ms INTEGER,
+    message TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_test_results_run_status ON test_results(run_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_test_results_job ON test_results(job_id)`,
+  `CREATE TABLE IF NOT EXISTS seat_snapshots (
+    image TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT NOT NULL,
+    PRIMARY KEY (image, repo)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_seat_snapshots_used ON seat_snapshots(last_used_at)`,
+  `CREATE TABLE IF NOT EXISTS job_egress (
+    job_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    req_bytes INTEGER NOT NULL DEFAULT 0,
+    resp_bytes INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (job_id, host)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_job_egress_run ON job_egress(run_id)`,
 ];
 
 // Additive columns for databases created before the matching migration.
@@ -122,6 +193,7 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE jobs ADD COLUMN started_at TEXT`,
   `ALTER TABLE jobs ADD COLUMN finished_at TEXT`,
   `ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'github'`,
+  `ALTER TABLE jobs ADD COLUMN retained_until TEXT`,
 ];
 
 let schemaPromise: Promise<void> | null = null;

@@ -122,7 +122,9 @@ issue named tokens in the Access tab.
   (`repos: owner/name, …`); unscoped tokens see everything. Each token
   is shown once at creation; revoke any token and it stops working
   immediately. Email users can reset their own password from the login
-  screen when a mail sender is configured.
+  screen when a mail sender is configured. The tab also shows the
+  audit log — who dispatched, reran, or changed settings, most recent
+  first.
 
 ## Preview environments
 

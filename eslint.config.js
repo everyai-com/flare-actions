@@ -8,6 +8,7 @@ export default tseslint.config(
       "**/node_modules/**",
       "**/worker-configuration.d.ts",
       "**/wrangler.jsonc",
+      ".wrangler/**",
       "coverage/**",
     ],
   },

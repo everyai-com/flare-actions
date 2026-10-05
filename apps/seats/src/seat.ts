@@ -1,12 +1,19 @@
 import {
   appendJobLog,
   claimJob,
+  deleteSeatSnapshot,
   getJob,
   getJobsForRun,
   getRun,
+  getSeatSnapshot,
   isTerminal,
+  markJobRetained,
   releaseJob,
   rollupRunStatus,
+  saveJobEgress,
+  saveSeatSnapshot,
+  saveTestReport,
+  touchSeatSnapshot,
   updateRunningJob,
   type Db,
 } from "../../worker/src/db";
@@ -20,6 +27,8 @@ import {
 import { bytesEqual, getInstallationToken, mintAppJwt } from "../../worker/src/github";
 import { reportJobCheck } from "../../worker/src/checks";
 import { notifyRunCompleted, type NotifyMailEnv } from "../../worker/src/notify";
+import { evaluateResultMonitors } from "../../worker/src/monitors";
+import { MAX_JUNIT_BYTES, parseJUnit } from "../../worker/src/junit";
 import { seatEligible } from "../../worker/src/pipeline";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
 import type { AiBinding } from "../../worker/src/triage";
@@ -53,15 +62,38 @@ export interface ExecOptions {
 
 // Minimal surface of ctx.container used by seats; the DO wrapper adapts
 // the real API, tests inject fakes.
+// MicroVM sizes accepted by container start (mirrors the platform
+// union; custom vcpu/memoryMib resources stay a Phase 2 addition).
+export type ContainerInstanceSize = "lite" | "standard-1" | "standard-2" | "standard-3" | "standard-4";
+
 export interface ContainerStartOptions {
   enableInternet?: boolean;
+  // Durable-object-policy start config (V2 seats only; the V1 adapter
+  // drops everything but enableInternet). image is the digest-pinned
+  // ref from ctx.container.images; snapshotId restores a saved
+  // filesystem instead of the image; instance sizes the microVM.
+  image?: string;
+  entrypoint?: string[];
+  env?: Record<string, string>;
+  instance?: ContainerInstanceSize;
+  snapshotId?: string;
+}
+
+export interface ContainerSnapshot {
+  id: string;
+  size: number;
+  name?: string;
 }
 
 export interface ContainerCtl {
   readonly running: boolean;
-  start(opts?: ContainerStartOptions): void;
+  start(opts?: ContainerStartOptions): Promise<void>;
   destroy(): void;
   exec(cmd: string[], opts?: ExecOptions): Promise<ExecHandle>;
+  // Filesystem snapshot of the running instance (V2 only). The caller
+  // stores the returned id (D1/DO storage, 30-day expiry) and passes
+  // it back as snapshotId on a later start.
+  snapshot(name?: string): Promise<ContainerSnapshot>;
 }
 
 export interface SeatBlobStore {
@@ -76,6 +108,7 @@ export interface SeatTiming {
   stepMs: number;
   blobMs: number;
   checkoutMs?: number;
+  snapshotMs?: number;
 }
 
 export const DEFAULT_TIMING: SeatTiming = {
@@ -111,6 +144,14 @@ export interface SeatDeps {
   mail?: NotifyMailEnv;
   // Raw SECRETS_KEY env passthrough; absent means D1-held data key.
   secretsKey?: string;
+  // V2 start config (image/entrypoint/instance/snapshot), merged into
+  // the boot start call. Absent on V1 (image comes from config).
+  containerStart?: ContainerStartOptions;
+  // AI Gateway id fronting triage inference (env-provided; D1 fills the
+  // gap inside triageAndStore). Unset = direct inference.
+  gatewayId?: string;
+  // Forces Web Search grounding for triage on (D1 decides when unset).
+  webSearch?: boolean;
 }
 
 export type SeatOutcome =
@@ -118,11 +159,61 @@ export type SeatOutcome =
   | { status: "released"; jobId: string; detail: string }
   | { status: "skipped"; jobId: string; detail: string }
   | { status: "failed"; jobId: string; detail: string }
+  | { status: "retained"; jobId: string; retainedUntil: string }
   | { status: "retrying"; jobId: string; detail: string };
 
 export const SEAT_BLOB_CAP = 50 * 1024 * 1024;
+// Terminal report caps, mirroring the BYO /status route (index.ts):
+// D1 rows top out at 2MB, so both executors bound what they store.
+export const SEAT_LOG_CAP = 262144;
+export const SEAT_RESULT_CAP = 65536;
 const STEP_OUTPUT_CAP = 32768;
 export const WORKDIR = "/work";
+// Zero-config conventional report locations, scanned alongside any
+// explicit test-reports paths (mirrors runner-sdk DEFAULT_TEST_REPORT_PATHS).
+const SEAT_TEST_DEFAULTS = ["junit.xml", "test-results.xml", "test-results/junit.xml", "reports/junit.xml"];
+const SEAT_TEST_MAX_FILES = 10;
+// Snapshots idle longer than this are never restored: the platform TTL is
+// 30 days, and the 5-day margin keeps boots from chasing ghosts.
+const SNAPSHOT_MAX_AGE_MS = 25 * 86400000;
+// Retain-on-failure debug window: the seat DO alarm destroys the kept
+// container at this deadline (grace while a session is active is a
+// documented Phase 2 follow-up, not this change).
+const RETAIN_TTL_MS = 30 * 60000;
+
+// Per-job egress accounting. Two namespaces, both measured (never
+// estimated): `r2:<area>` rows for the transfers the seat performs on
+// the job's behalf (cache/artifacts/sources/test-reports), and one
+// `(interface)` row for the container NIC delta across the job. True
+// per-domain breakdown needs outbound interception (the roadmap's next
+// egress step); these rows already answer "R2 vs internet".
+export interface EgressTally {
+  host: string;
+  reqBytes: number;
+  respBytes: number;
+}
+
+export function egressHostForKey(key: string): string {
+  const area = key.split("/")[0];
+  return area === "cache" || area === "artifacts" || area === "sources" || area === "test-reports" ? `r2:${area}` : "r2:other";
+}
+
+// /proc/net/dev: `iface: rxBytes ... txBytes ...` (tx is the 9th field).
+// Loopback excluded; unparseable input yields zeros, never throws.
+export function parseNetDev(text: string): { rx: number; tx: number } {
+  let rx = 0;
+  let tx = 0;
+  for (const line of text.split("\n")) {
+    const m = /^\s*([^:]+):\s*(.+)$/.exec(line);
+    if (!m || m[1].trim() === "lo") continue;
+    const fields = m[2].trim().split(/\s+/).map(Number);
+    if (fields.length >= 9 && fields.every((n) => Number.isFinite(n))) {
+      rx += fields[0];
+      tx += fields[8];
+    }
+  }
+  return { rx, tx };
+}
 
 // Constant-time seat token gate, shared by the seats worker fetch route.
 // Digest-then-compare so the check never leaks prefix length.
@@ -207,6 +298,34 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     logParts.push("[seat] warning: repo secrets unavailable (decrypt failed), placeholders render empty");
   }
   const records: StepRecord[] = [];
+
+  // Egress tally: every R2 transfer on the job's behalf is measured here
+  // (uploads count as req bytes, downloads as resp bytes). The wrapper
+  // delegates to the real store; a missing store means no transfers.
+  const egress: EgressTally[] = [];
+  const tally = (host: string, req: number, resp: number): void => {
+    const row = egress.find((e) => e.host === host);
+    if (row) {
+      row.reqBytes += req;
+      row.respBytes += resp;
+    } else {
+      egress.push({ host, reqBytes: req, respBytes: resp });
+    }
+  };
+  const blob = deps.cache;
+  const cache: SeatBlobStore | undefined = blob
+    ? {
+        get: async (key: string) => {
+          const entry = await blob.get(key);
+          if (entry) tally(egressHostForKey(key), 0, entry.size);
+          return entry;
+        },
+        put: async (key: string, data: Uint8Array) => {
+          tally(egressHostForKey(key), data.byteLength, 0);
+          return blob.put(key, data);
+        },
+      }
+    : undefined;
 
   // Mirror a line to the job row immediately (the terminal updateRunningJob later
   // replaces the log with the full story, so nothing duplicates).
@@ -296,17 +415,93 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     }
   }
 
+  // Bounded snapshot: a hung snapshotContainer must not hold the seat
+  // past its usefulness. Errors propagate (the caller logs); a timeout
+  // resolves null.
+  async function snapshotBounded(name: string, timeoutMs: number): Promise<ContainerSnapshot | null> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs);
+    });
+    try {
+      return await Promise.race([deps.container.snapshot(name), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  // Container NIC counters for the (interface) egress row. Null when the
+  // container hides /proc — the R2 rows still stand on their own.
+  async function sampleIface(): Promise<{ rx: number; tx: number } | null> {
+    try {
+      const r = await execBounded(["cat", "/proc/net/dev"], {}, 15000);
+      if (!r.timedOut && r.exitCode === 0) return parseNetDev(decode(r.stdout));
+    } catch {
+      // Best effort.
+    }
+    return null;
+  }
+
+  // Snapshot restore pre-pass (V2 only — the image ref comes from the
+  // DO adapter, and V1's policy cannot create snapshots). Keyed by image
+  // lineage, so a changed seat image never restores a stale filesystem.
+  // One attempt only: a degraded snapshot must never cost more than one
+  // boot window (a miss beats a ten-minute fetch). Restored state is warm
+  // deps/toolchains only — checkout below still resets the workdir to the
+  // job's sha, so a restore can never run the wrong code.
+  const v2Image = deps.containerStart?.image;
+  let started = false;
+  let restored = false;
+  if (v2Image && !deps.containerStart?.snapshotId && !run.source) {
+    try {
+      const row = await getSeatSnapshot(deps.db, v2Image, run.repo);
+      if (row && Date.now() - Date.parse(row.last_used_at) < SNAPSHOT_MAX_AGE_MS && !deps.container.running) {
+        try {
+          await deps.container.start({ enableInternet: true, snapshotId: row.snapshot_id });
+        } catch (err) {
+          await note(`[seat] snapshot start error: ${String(err).slice(0, 200)}`);
+        }
+        const restoreUntil = Date.now() + timing.startWaitMs;
+        while (Date.now() < restoreUntil && !started) {
+          try {
+            started = deps.container.running;
+          } catch {
+            started = false;
+          }
+          if (!started) await sleep(timing.startPollMs);
+        }
+        if (started) {
+          restored = true;
+          try {
+            await touchSeatSnapshot(deps.db, v2Image, run.repo);
+          } catch {
+            // Best effort.
+          }
+          await note(`[seat] snapshot restored (${row.snapshot_id.slice(0, 12)}…)`);
+        } else {
+          try {
+            await deleteSeatSnapshot(deps.db, v2Image, run.repo);
+          } catch {
+            // Best effort.
+          }
+          await note("[seat] snapshot degraded, deleted; fresh boot");
+        }
+      }
+    } catch {
+      // Snapshot lookup never blocks a boot.
+    }
+  }
+
   // Boot (bounded retries for cold starts and capacity). Both start()
   // and the running probe are throw-tolerant: a transient control-plane
   // error must not abort the window while the container may still boot.
-  let started = false;
   let startAttempt = 0;
   for (let attempt = 1; attempt <= timing.startAttempts && !started; attempt++) {
     startAttempt = attempt;
     try {
       // Seats must reach github.com (checkout) and pypi/npm mirrors;
       // containers boot offline unless internet is enabled.
-      if (!deps.container.running) deps.container.start({ enableInternet: true });
+      if (!deps.container.running) await deps.container.start({ enableInternet: true, ...deps.containerStart });
     } catch (err) {
       await note(`[seat] start attempt ${attempt} error: ${String(err).slice(0, 200)}`);
     }
@@ -327,13 +522,14 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     if (!started) await note(`[seat] start attempt ${attempt} timed out`);
   }
   if (!started) return release("container did not start", true);
-  await note(`[seat] container running (attempt ${startAttempt})`);
+  if (!restored) await note(`[seat] container running (attempt ${startAttempt})`);
+  const ifaceStart = await sampleIface();
 
   try {
     if (run.source) {
       // Source dispatch: unpack the uploaded working tree (guarded —
       // list first, reject absolute/.. members, then extract).
-      const entry = deps.cache ? await deps.cache.get(`sources/${run.source}`) : null;
+      const entry = cache ? await cache.get(`sources/${run.source}`) : null;
       if (!entry) return release("source tarball missing (expired, or artifact storage not configured)");
       if (entry.size > SEAT_BLOB_CAP) return release(`source tarball too large (>${SEAT_BLOB_CAP}b)`);
       const blob = new Uint8Array(await entry.arrayBuffer());
@@ -381,7 +577,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     // Cache restore.
     let cacheHit = false;
     if (spec.cache) {
-      const entry = deps.cache ? await deps.cache.get(`cache/${spec.cache.key}`) : null;
+      const entry = cache ? await cache.get(`cache/${spec.cache.key}`) : null;
       if (!entry) {
         logParts.push(`[seat] cache miss: ${spec.cache.key}`);
       } else if (entry.size > SEAT_BLOB_CAP) {
@@ -476,7 +672,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     }
 
     // Cache save (success only, bounded).
-    if (spec.cache && success && deps.cache) {
+    if (spec.cache && success && cache) {
       const safe = safeRelPaths(spec.cache.paths);
       if (!safe) {
         logParts.push("[seat] cache save skipped (unsafe paths)");
@@ -488,7 +684,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
           if (Number.isFinite(bytes) && bytes <= SEAT_BLOB_CAP) {
             const blob = await execBounded(["cat", "/tmp/cache.tgz"], {}, timing.blobMs);
             if (!blob.timedOut && blob.exitCode === 0) {
-              await deps.cache.put(`cache/${spec.cache.key}`, blob.stdout);
+              await cache.put(`cache/${spec.cache.key}`, blob.stdout);
               logParts.push(`[seat] cache saved ${spec.cache.key} (${blob.stdout.byteLength}b)`);
             }
           } else {
@@ -504,7 +700,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       const safe = safeRelPaths(spec.artifacts.paths);
       if (!safe) {
         logParts.push("[seat] artifacts skipped (unsafe paths)");
-      } else if (deps.cache) {
+      } else if (cache) {
         try {
           if (safe.length === 1 && !spec.artifacts.name) {
             const isFile = await execBounded(["sh", "-c", `test -f ${JSON.stringify(`${WORKDIR}/${safe[0]}`)}`], {}, 30000);
@@ -516,7 +712,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
                 if (!blob.timedOut && blob.exitCode === 0) {
                   const base = safe[0].split("/").pop() ?? "artifact";
                   const name = sanitizeName(base);
-                  await deps.cache.put(`artifacts/${jobId}/${name}`, blob.stdout);
+                  await cache.put(`artifacts/${jobId}/${name}`, blob.stdout);
                   uploaded.push(name);
                   logParts.push(`[seat] artifact uploaded ${safe[0]} as ${name}`);
                 }
@@ -532,7 +728,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
                 const blob = await execBounded(["cat", "/tmp/art.tgz"], {}, timing.blobMs);
                 if (!blob.timedOut && blob.exitCode === 0) {
                   const name = `${sanitizeName(spec.artifacts.name ?? "artifacts")}.tar.gz`;
-                  await deps.cache.put(`artifacts/${jobId}/${name}`, blob.stdout);
+                  await cache.put(`artifacts/${jobId}/${name}`, blob.stdout);
                   uploaded.push(name);
                   logParts.push(`[seat] artifacts uploaded as ${name}`);
                 }
@@ -546,15 +742,102 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       }
     }
 
+    // Test reports (JUnit): one listing exec, then one cat per file.
+    // Parsed and stored directly — the seat has the D1 binding, so no
+    // HTTP round-trip to the main worker is needed.
+    try {
+      const safe = safeRelPaths([...(spec.testReports?.paths ?? []), ...SEAT_TEST_DEFAULTS]);
+      if (safe) {
+        const quoted = [...new Set(safe)].map((p) => JSON.stringify(`${WORKDIR}/${p}`)).join(" ");
+        const scan = await execBounded(
+          [
+            "sh",
+            "-c",
+            `for p in ${quoted}; do if [ -d "$p" ] && [ ! -L "$p" ]; then find "$p" -maxdepth 1 -not -lname '*' -name '*.xml' -size -1024k; elif [ -f "$p" ] && [ ! -L "$p" ]; then case "$p" in *.xml) sz=$(stat -c%s "$p" 2>/dev/null || echo 0); if [ "$sz" -gt 0 ] && [ "$sz" -le ${MAX_JUNIT_BYTES} ]; then echo "$p"; fi;; esac; fi; done`,
+          ],
+          {},
+          30000,
+        );
+        if (!scan.timedOut && scan.exitCode === 0) {
+          const found = decode(scan.stdout)
+            .split("\n")
+            .map((l) => l.trim())
+            .filter((l) => l.startsWith(`${WORKDIR}/`))
+            .slice(0, SEAT_TEST_MAX_FILES);
+          const parts: string[] = [];
+          for (const file of found) {
+            const blob = await execBounded(["cat", file], {}, 30000);
+            if (blob.timedOut || blob.exitCode !== 0) continue;
+            const text = decode(blob.stdout);
+            if (!text.slice(0, 1024).includes("<testsuite")) continue;
+            parts.push(text);
+          }
+          if (parts.length > 0) {
+            const xml = parts.join("\n").slice(0, MAX_JUNIT_BYTES);
+            const parsed = parseJUnit(xml);
+            if ("error" in parsed) {
+              logParts.push(`[seat] tests: parse failed (${parsed.error})`);
+            } else {
+              await saveTestReport(deps.db, {
+                jobId,
+                runId: run.id,
+                passed: parsed.passed,
+                failed: parsed.failed,
+                errors: parsed.errors,
+                skipped: parsed.skipped,
+                total: parsed.total,
+                durationMs: parsed.durationMs,
+                truncated: parsed.truncated,
+                cases: parsed.cases,
+              });
+              if (cache) {
+                await cache.put(`test-reports/${jobId}.xml`, new TextEncoder().encode(xml)).catch(() => undefined);
+              }
+              logParts.push(`[seat] tests: ${parsed.total} tests, ${parsed.failed + parsed.errors} failed`);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logParts.push(`[seat] tests failed: ${String(err).slice(0, 200)}`);
+    }
+
+    // Peak RSS via cgroupfs (v2, falling back to v1). Best-effort:
+    // feeds right-sizing hints; a missing cgroupfs never fails the job.
+    let peakRssBytes = 0;
+    try {
+      const mem = await execBounded(
+        ["sh", "-c", "cat /sys/fs/cgroup/memory.peak 2>/dev/null || cat /sys/fs/cgroup/memory/memory.max_usage_in_bytes 2>/dev/null || echo 0"],
+        {},
+        15000,
+      );
+      if (!mem.timedOut && mem.exitCode === 0) {
+        const n = Number(decode(mem.stdout).trim().split("\n").pop());
+        if (Number.isFinite(n) && n > 0) peakRssBytes = Math.floor(n);
+      }
+    } catch {
+      // Best effort.
+    }
+
     // Report terminal status like a runner would. Once the row is final,
     // the rest is best-effort post-processing: it must never route into
     // the catch-all release, which would stamp a "released" line on a
-    // finished job.
+    // finished job. Caps match the BYO /status route exactly (D1's 2MB
+    // row limit is uncomfortably close to 100 steps × 32KB tails).
     const status = success ? "success" : "failure";
-    const resultJson = mask(JSON.stringify({ steps: records, cacheHit, artifacts: uploaded, executor: "seat" }));
+    const resultJson = mask(
+      JSON.stringify({
+        steps: records,
+        cacheHit,
+        artifacts: uploaded,
+        executor: "seat",
+        ...(peakRssBytes > 0 ? { peakRssBytes } : {}),
+      }),
+    ).slice(0, SEAT_RESULT_CAP);
+    const finalLog = mask(logParts.join("\n")).slice(0, SEAT_LOG_CAP);
     const recorded = await updateRunningJob(deps.db, jobId, {
       status,
-      log: mask(logParts.join("\n")),
+      log: finalLog,
       result: resultJson,
     });
     if (!recorded) {
@@ -567,6 +850,11 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     }
     await rollupRunStatus(deps.db, job.run_id);
     try {
+      await evaluateResultMonitors(deps.db, deps.mail ?? {}, run, {
+        ...job,
+        status,
+        log: finalLog,
+      });
       const promoted = await promoteBlockedJobs(deps.db, deps.queue, run.repo, (p) => deps.spawn?.(p.jobId));
       if (promoted.length > 0) await note(`[seat] promoted ${promoted.length} job(s)`);
       if (deps.mail) {
@@ -600,10 +888,57 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       if (status === "failure") {
         const jobs = await getJobsForRun(deps.db, job.run_id);
         const jobName = jobs.find((j) => j.id === job.id)?.name ?? "";
-        await triageAndStore(deps.db, deps.ai, run, job.id, jobName, mask(logParts.join("\n")), resultJson);
+        await triageAndStore(deps.db, deps.ai, run, job.id, jobName, mask(logParts.join("\n")), resultJson, {
+          gatewayId: deps.gatewayId,
+          webSearch: deps.webSearch,
+        });
       }
     } catch (err) {
       console.log(JSON.stringify({ level: "warn", msg: "seat post-processing failed", jobId, error: String(err) }));
+    }
+
+    // Egress accounting, success and failure alike (retried attempts
+    // record nothing — only the final attempt lands in job_egress).
+    try {
+      const end = await sampleIface();
+      if (ifaceStart && end) {
+        const dTx = Math.max(0, end.tx - ifaceStart.tx);
+        const dRx = Math.max(0, end.rx - ifaceStart.rx);
+        if (dTx > 0 || dRx > 0) tally("(interface)", dTx, dRx);
+      }
+      if (egress.length > 0) await saveJobEgress(deps.db, jobId, job.run_id, egress);
+    } catch {
+      // Best effort.
+    }
+
+    // Snapshot the warm filesystem for the next job (V2, success only —
+    // a failed build's state is exactly what you must not inherit).
+    if (v2Image && status === "success" && !run.source) {
+      try {
+        const snap = await snapshotBounded(`${run.repo}@${run.sha.slice(0, 7)}`, timing.snapshotMs ?? 120000);
+        if (snap) {
+          await saveSeatSnapshot(deps.db, { image: v2Image, repo: run.repo, snapshotId: snap.id, jobId });
+          await note(`[seat] snapshot saved (${snap.id.slice(0, 12)}…)`);
+        } else {
+          await note("[seat] snapshot timed out; skipped");
+        }
+      } catch (err) {
+        await note(`[seat] snapshot skipped: ${String(err).slice(0, 160)}`);
+      }
+    }
+
+    // Retain-on-failure (V2 only — the seat DO alarm enforces the
+    // destroy deadline, and V1 has no alarm). The job row is already
+    // terminal; the container simply stays up for debugging.
+    if (status === "failure" && spec.retainOnFailure && v2Image) {
+      const until = new Date(Date.now() + RETAIN_TTL_MS).toISOString();
+      try {
+        await markJobRetained(deps.db, jobId, until);
+      } catch {
+        // Discovery only; the DO alarm still enforces the deadline.
+      }
+      await note(`[seat] retained for debugging until ${until} (seat job-${jobId})`);
+      return { status: "retained", jobId, retainedUntil: until };
     }
     try {
       deps.container.destroy();

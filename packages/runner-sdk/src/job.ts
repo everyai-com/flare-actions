@@ -9,8 +9,18 @@ import { matrixEnv, type JobServiceSpec, type JobSpec } from "./spec.ts";
 // Full per-job orchestration: services up -> cache restore -> steps ->
 // cache save -> artifacts upload -> services down, inside a job timeout.
 
+export interface TestReportSummary {
+  total: number;
+  passed: number;
+  failed: number;
+  errors: number;
+  skipped: number;
+  truncated: boolean;
+}
+
 export interface JobClient extends CacheClient {
   uploadArtifact(jobId: string, name: string, data: Uint8Array): Promise<void>;
+  uploadTestReport(jobId: string, xml: string): Promise<TestReportSummary>;
 }
 
 export interface RunJobOptions {
@@ -39,6 +49,18 @@ export interface RunJobResult {
 
 export const MAX_ARTIFACT_FILES = 1000;
 export const MAX_ARTIFACT_BYTES = 400 * 1024 * 1024;
+export const MAX_TEST_REPORT_FILES = 10;
+export const MAX_TEST_REPORT_BYTES = 1024 * 1024;
+// Zero-config conventional locations, scanned when the job has no
+// explicit test-reports paths (or in addition to them).
+export const DEFAULT_TEST_REPORT_PATHS = [
+  "junit.xml",
+  "test-results.xml",
+  "test-results/junit.xml",
+  "test-results/test-results.xml",
+  "reports/junit.xml",
+  "reports/test-results.xml",
+];
 const DEFAULT_TIMEOUT_MINUTES = 30;
 
 export function sanitizeArtifactName(raw: string): string {
@@ -128,6 +150,71 @@ async function uploadArtifacts(
   return uploaded;
 }
 
+// JUnit collection: explicit test-reports paths plus conventional
+// filenames. Only *.xml files that smell like JUnit (a <testsuite
+// tag in the first kilobyte) are sent; multiple files concatenate —
+// the server parser scans sections, so joined documents parse as one.
+export function collectTestReportXml(cwd: string, specPaths: string[] | undefined): { xml: string; files: string[] } {
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  for (const p of [...(specPaths ?? []), ...DEFAULT_TEST_REPORT_PATHS]) {
+    const abs = resolveWithin(cwd, p);
+    if (!abs || seen.has(abs)) continue;
+    seen.add(abs);
+    candidates.push(abs);
+  }
+  const parts: string[] = [];
+  const files: string[] = [];
+  let bytes = 0;
+  for (const abs of candidates) {
+    if (files.length >= MAX_TEST_REPORT_FILES || bytes >= MAX_TEST_REPORT_BYTES) break;
+    let entries: string[] = [];
+    try {
+      const st = statSync(abs);
+      if (st.isDirectory()) {
+        entries = readdirSync(abs)
+          .filter((e) => e.endsWith(".xml"))
+          .map((e) => join(abs, e));
+      } else if (st.isFile() && abs.endsWith(".xml")) {
+        entries = [abs];
+      }
+    } catch {
+      continue;
+    }
+    for (const file of entries) {
+      if (files.length >= MAX_TEST_REPORT_FILES || bytes >= MAX_TEST_REPORT_BYTES) break;
+      let text: string;
+      try {
+        if (statSync(file).size > MAX_TEST_REPORT_BYTES) continue;
+        text = readFileSync(file, "utf8");
+      } catch {
+        continue;
+      }
+      if (!text.slice(0, 1024).includes("<testsuite")) continue;
+      parts.push(text);
+      bytes += text.length;
+      files.push(relative(cwd, file).split(sep).join("/"));
+    }
+  }
+  return { xml: parts.join("\n"), files };
+}
+
+async function uploadTestReports(
+  client: JobClient,
+  jobId: string,
+  cwd: string,
+  specPaths: string[] | undefined,
+  logParts: string[],
+): Promise<void> {
+  const { xml, files } = collectTestReportXml(cwd, specPaths);
+  if (files.length === 0) return;
+  const summary = await client.uploadTestReport(jobId, xml.slice(0, MAX_TEST_REPORT_BYTES));
+  logParts.push(
+    `[tests] uploaded ${files.length} report(s) (${files.join(", ")}): ` +
+      `${summary.total} tests, ${summary.failed + summary.errors} failed${summary.truncated ? " (truncated)" : ""}`,
+  );
+}
+
 export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJobResult> {
   const ctl = opts.servicesCtl ?? dockerServicesCtl;
   const secrets = opts.secrets ?? {};
@@ -213,6 +300,13 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
         } catch (err) {
           logParts.push(`[artifacts] upload failed: ${String(err)}`);
         }
+      }
+      // Test reports upload on pass and fail alike: a failing suite's
+      // per-test breakdown is the whole point.
+      try {
+        await uploadTestReports(opts.client, opts.jobId, opts.cwd, spec.testReports?.paths, logParts);
+      } catch (err) {
+        logParts.push(`[tests] upload failed: ${String(err)}`);
       }
       return {
         success: outcome.success,

@@ -58,6 +58,21 @@ describe("parseJobSpec", () => {
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], container: 42 }))).toBeNull();
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], cache: { key: "k" } }))).toBeNull();
   });
+
+  it("keeps test-reports paths and rejects malformed shapes", () => {
+    expect(
+      parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], testReports: { paths: ["junit.xml", "reports"] } }))?.testReports,
+    ).toEqual({ paths: ["junit.xml", "reports"] });
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], testReports: { paths: [] } }))).toBeNull();
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], testReports: [] }))).toBeNull();
+  });
+
+  it("keeps retain-on-failure and rejects non-boolean shapes", () => {
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], retainOnFailure: true }))?.retainOnFailure).toBe(true);
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], retainOnFailure: false }))?.retainOnFailure).toBeUndefined();
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }]}))?.retainOnFailure).toBeUndefined();
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], retainOnFailure: "yes" }))).toBeNull();
+  });
 });
 
 describe("stepRuns", () => {

@@ -1,15 +1,33 @@
-import { flakyStats, getJobsForRun, getRun, listRuns, type Db } from "./db";
+import { audit, flakyStats, getJobsForRun, getRun, getSetting, listRuns, type Db } from "./db";
 import { jobDurationMs } from "./cost";
 import type { RunDigest } from "./digest";
 import { runGenerate } from "./generate";
+import { SETTING_KEYS } from "./settings";
 import type { AiBinding } from "./triage";
 
 // MCP server over Streamable HTTP: POST JSON-RPC to /mcp. Stateless —
 // no session ids — with Bearer auth mapped onto the existing scopes:
 // read tools need `read`, dispatch/rerun/generate need `run`.
 
-export const MCP_PROTOCOL_VERSION = "2024-11-05";
-export const MCP_SERVER_VERSION = "0.1.0";
+export const MCP_PROTOCOL_VERSION = "2026-07-28";
+export const MCP_PROTOCOL_VERSIONS = ["2026-07-28", "2024-11-05"];
+export const MCP_SERVER_VERSION = "0.2.0";
+
+// WriteGuard risk tiers: read tools are side-effect free, contained-write
+// tools mutate runs/jobs (reversible, token-scoped), critical is reserved
+// for destructive tools (none exist yet — deleting runs/jobs has no MCP
+// surface). Tiers drive audit + the optional write-confirm gate.
+export type McpToolRisk = "read" | "contained-write" | "critical";
+export const MCP_TOOL_RISK: Record<string, McpToolRisk> = {
+  list_runs: "read",
+  get_run: "read",
+  get_run_digest: "read",
+  get_flaky: "read",
+  generate_pipeline: "read",
+  dispatch_run: "contained-write",
+  run_and_wait: "contained-write",
+  rerun_job: "contained-write",
+};
 
 export interface McpToolDef {
   name: string;
@@ -39,6 +57,7 @@ export const MCP_TOOLS: McpToolDef[] = [
         ref: { type: "string", description: "optional branch label" },
         pipeline: { type: "string", description: "optional inline flare.yml (else fetched at sha)" },
         priority: { type: "number", description: "0-10; higher jumps queued batch work (agent fast lane)" },
+        confirm: { type: "boolean", description: "required true when the server's write-confirm gate is on" },
       },
       required: ["repo", "sha"],
     },
@@ -56,6 +75,7 @@ export const MCP_TOOLS: McpToolDef[] = [
         pipeline: { type: "string", description: "optional inline flare.yml (else fetched at sha)" },
         priority: { type: "number", description: "0-10; higher jumps queued batch work (agent fast lane)" },
         timeoutSeconds: { type: "number", description: "How long to block, 1-90 (default 45)" },
+        confirm: { type: "boolean", description: "required true when the server's write-confirm gate is on" },
       },
       required: ["repo", "sha"],
     },
@@ -71,7 +91,11 @@ export const MCP_TOOLS: McpToolDef[] = [
     description: "Reset a finished job to queued so a runner picks it up again. Needs run scope.",
     inputSchema: {
       type: "object",
-      properties: { runId: { type: "string" }, jobId: { type: "string" } },
+      properties: {
+        runId: { type: "string" },
+        jobId: { type: "string" },
+        confirm: { type: "boolean", description: "required true when the server's write-confirm gate is on" },
+      },
       required: ["runId", "jobId"],
     },
   },
@@ -103,6 +127,11 @@ export interface McpDeps {
   db: Db;
   ai?: AiBinding;
   canWrite: boolean;
+  // Env-provided AI Gateway id for generate_pipeline (D1 fills the gap
+  // inside the tool). Unset = direct inference.
+  gatewayId?: string;
+  // Agent attribution for the audit trail (X-Flare-Agent or User-Agent).
+  agent?: string;
   dispatchRun: (input: McpDispatchInput) => Promise<{ runId: string; jobIds: string[] }>;
   rerunJob: (runId: string, jobId: string) => Promise<{ ok: boolean; error?: string }>;
   // Blocking wait until terminal (or timeout); `timedOut` tells the agent
@@ -155,7 +184,47 @@ function summarizeSteps(result: string): { command: string; exitCode: number; du
   }
 }
 
+// WriteGuard wrapper: the run-scope check inside execTool is the
+// always-on server-side block; on top, write-tier calls are confirm-gated
+// when the admin enables mcp_write_confirm, and every write-tier call is
+// audit-logged with agent attribution. Audit detail is identifiers only
+// (never free text like pipeline YAML), so secrets cannot leak into it.
+const AUDIT_ARG_KEYS = ["repo", "sha", "ref", "runId", "jobId", "priority", "timeoutSeconds", "limit", "days"];
+
+function auditTarget(name: string, args: Record<string, unknown>, agent: string | undefined): string {
+  const picked: Record<string, unknown> = {};
+  for (const k of AUDIT_ARG_KEYS) {
+    const v = args[k];
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") picked[k] = v;
+  }
+  return `${name} ${JSON.stringify(picked)} agent:${agent ?? "?"}`.slice(0, 500);
+}
+
+async function writeConfirmOn(deps: McpDeps): Promise<boolean> {
+  try {
+    return (await getSetting(deps.db, SETTING_KEYS.mcpWriteConfirm)) === "1";
+  } catch {
+    return false;
+  }
+}
+
 async function callTool(name: string, args: Record<string, unknown>, deps: McpDeps, id: JsonRpcId): Promise<McpResult> {
+  const tier = MCP_TOOL_RISK[name] ?? "read";
+  if (tier !== "read") {
+    if ((await writeConfirmOn(deps)) && args.confirm !== true) {
+      return fail(id, -32602, `${name} needs confirm: true (write-confirm is on)`);
+    }
+  }
+  const res = await execTool(name, args, deps, id);
+  if (tier !== "read") {
+    const body = res.body as { error?: unknown; result?: { isError?: boolean } } | undefined;
+    const outcome = body?.error || body?.result?.isError ? "error" : "ok";
+    await audit(deps.db, deps.agent ?? "mcp", `mcp.${name}`, `${outcome} ${auditTarget(name, args, deps.agent)}`).catch(() => undefined);
+  }
+  return res;
+}
+
+async function execTool(name: string, args: Record<string, unknown>, deps: McpDeps, id: JsonRpcId): Promise<McpResult> {
   switch (name) {
     case "list_runs": {
       const limit = args.limit === undefined ? 10 : num(args.limit);
@@ -270,7 +339,9 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
       const prompt = str(args.prompt);
       if (!prompt || prompt.length > 2000) return fail(id, -32602, "prompt is required (max 2000 chars)");
       if (!deps.ai) return toolResult(id, { error: "AI not configured" }, true);
-      const yaml = await runGenerate(deps.ai, prompt);
+      const yaml = await runGenerate(deps.ai, prompt, {
+        gatewayId: deps.gatewayId ?? (await getSetting(deps.db, SETTING_KEYS.aiGatewayId)) ?? undefined,
+      });
       if (!yaml) return toolResult(id, { error: "generation failed" }, true);
       return toolResult(id, { yaml });
     }
@@ -293,12 +364,20 @@ export async function handleMcpMessage(msg: unknown, deps: McpDeps): Promise<Mcp
   const normId: JsonRpcId = typeof id === "string" || typeof id === "number" ? id : null;
   try {
     switch (rec.method) {
-      case "initialize":
+      case "initialize": {
+        // Version negotiation: serve old + new stateless clients from one
+        // route during migration; unknown versions get the newest.
+        const params = (rec.params ?? {}) as { protocolVersion?: unknown };
+        const asked = typeof params.protocolVersion === "string" ? params.protocolVersion : "";
+        const negotiated = (MCP_PROTOCOL_VERSIONS as string[]).includes(asked) ? asked : MCP_PROTOCOL_VERSION;
         return ok(normId, {
-          protocolVersion: MCP_PROTOCOL_VERSION,
+          protocolVersion: negotiated,
           capabilities: { tools: {} },
           serverInfo: { name: "flare-actions", version: MCP_SERVER_VERSION },
         });
+      }
+      case "server/discover":
+        return ok(normId, mcpDiscovery());
       case "notifications/initialized":
       case "notifications/cancelled":
         return { status: 202 };
@@ -332,8 +411,10 @@ export function mcpDiscovery(): Record<string, unknown> {
     version: MCP_SERVER_VERSION,
     protocol: "mcp-streamable-http",
     protocolVersion: MCP_PROTOCOL_VERSION,
+    protocolVersions: MCP_PROTOCOL_VERSIONS,
     endpoint: "/mcp",
     auth: "Authorization: Bearer <token> (readonly for reads, runner for dispatch/rerun/generate)",
     tools: MCP_TOOLS.map((t) => t.name),
+    toolRisk: MCP_TOOL_RISK,
   };
 }

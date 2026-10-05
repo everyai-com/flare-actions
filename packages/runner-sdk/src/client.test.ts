@@ -148,4 +148,79 @@ describe("FlareClient", () => {
     expect(run.status).toBe("failure");
     expect(jobs[0].triage).toBe("cause");
   });
+
+  it("uploads test reports as xml and parses the summary", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({ ok: true, jobId: "job-1", total: 3, passed: 2, failed: 1, errors: 0, skipped: 0, truncated: false }),
+    );
+    const summary = await new FlareClient("https://x", "t").uploadTestReport("job-1", "<testsuite/>");
+    expect(summary).toMatchObject({ total: 3, passed: 2, failed: 1, errors: 0, skipped: 0, truncated: false });
+    expect(calls[0].url).toBe("https://x/v1/jobs/job-1/tests");
+    expect(calls[0].init?.method).toBe("PUT");
+    expect(String(calls[0].init?.body)).toBe("<testsuite/>");
+  });
+
+  it("fetches run test summaries with failing tests", async () => {
+    stubFetch(() =>
+      jsonResponse({
+        runId: "run-1",
+        totals: { total: 1, passed: 0, failed: 1, errors: 0, skipped: 0 },
+        jobs: [],
+        failing: [{ jobId: "job-1", jobName: "test", suite: "s", name: "t", classname: "", status: "failed", message: "m" }],
+      }),
+    );
+    const tests = await new FlareClient("https://x", "t").getRunTests("run-1");
+    expect(tests.totals.failed).toBe(1);
+    expect(tests.failing[0].name).toBe("t");
+  });
+
+  it("fetches run egress rows with totals", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({
+        runId: "run-1",
+        totals: { reqBytes: 8, respBytes: 9 },
+        jobs: [{ jobId: "job-1", host: "r2:cache", reqBytes: 8, respBytes: 9 }],
+      }),
+    );
+    const egress = await new FlareClient("https://x", "t").getRunEgress("run-1");
+    expect(calls[0].url).toBe("https://x/v1/runs/run-1/egress");
+    expect(egress.totals).toEqual({ reqBytes: 8, respBytes: 9 });
+    expect(egress.jobs[0].host).toBe("r2:cache");
+  });
+
+  it("lists and purges cache entries", async () => {
+    const calls = stubFetch((url, init) =>
+      init?.method === "DELETE"
+        ? jsonResponse({ deleted: 2, truncated: false })
+        : jsonResponse({ entries: [{ key: "k", size: 1, uploaded: "u" }] }),
+    );
+    const client = new FlareClient("https://x", "t");
+    expect(await client.listCache("pre", 10)).toEqual([{ key: "k", size: 1, uploaded: "u" }]);
+    expect(calls[0].url).toBe("https://x/v1/admin/cache?prefix=pre&limit=10");
+    expect(await client.purgeCache("pre")).toEqual({ deleted: 2, truncated: false });
+    expect(calls[1].init?.method).toBe("DELETE");
+  });
+
+  it("lists the queue with the fair-share cap", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({
+        fairSharePerRepo: 2,
+        jobs: [{ id: "j", runId: "r", name: "n", repo: "o/a", priority: 1, labels: "", createdAt: "c" }],
+      }),
+    );
+    const q = await new FlareClient("https://x", "t").listQueue(50);
+    expect(calls[0].url).toBe("https://x/v1/admin/queue?limit=50");
+    expect(q.fairSharePerRepo).toBe(2);
+    expect(q.jobs[0].repo).toBe("o/a");
+  });
+
+  it("fetches usage with optional repo scope", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({ days: 7, runs: 1, runsByStatus: { success: 1 }, jobs: 2, computeMinutes: 3, actionsListUsd: 0.024, topRepos: [] }),
+    );
+    const client = new FlareClient("https://x", "t");
+    const u = await client.getUsage(7, "o/r");
+    expect(u.jobs).toBe(2);
+    expect(calls[0].url).toBe("https://x/v1/usage?days=7&repo=o%2Fr");
+  });
 });

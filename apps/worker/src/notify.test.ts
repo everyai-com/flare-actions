@@ -45,6 +45,7 @@ const job: JobRow = {
   attempts: 0,
   started_at: "2026-10-01T09:00:00.000Z",
   finished_at: "2026-10-01T09:02:00.000Z",
+  retained_until: null,
   created_at: "2026-10-01T09:00:00.000Z",
   updated_at: "2026-10-01T09:02:00.000Z",
 };

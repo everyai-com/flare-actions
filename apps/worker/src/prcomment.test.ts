@@ -40,6 +40,7 @@ function jobRow(over: Partial<JobRow> = {}): JobRow {
     attempts: 0,
     started_at: "2026-10-02T10:00:10.000Z",
     finished_at: "2026-10-02T10:01:00.000Z",
+    retained_until: null,
     created_at: "2026-10-02T10:00:00.000Z",
     updated_at: "2026-10-02T10:01:00.000Z",
     ...over,
@@ -72,6 +73,17 @@ describe("buildPrComment", () => {
     );
     expect(text).toContain("**Flare passed**");
     expect(text).not.toContain("dashboard");
+  });
+
+  it("lists failing tests with locations and messages", () => {
+    const text = buildPrComment(runRow(), [jobRow()], "", [
+      { jobName: "test", suite: "test_auth", name: "test_logout", message: "assert False" },
+      { jobName: "", suite: "", name: "test_flake", message: "" },
+    ]);
+    expect(text).toContain("#### Failing tests (2 shown)");
+    expect(text).toContain("`test_logout` — test / test_auth");
+    expect(text).toContain("> assert False");
+    expect(text).toContain("`test_flake`");
   });
 });
 

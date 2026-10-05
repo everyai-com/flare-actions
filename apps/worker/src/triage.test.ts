@@ -66,4 +66,34 @@ describe("runTriage", () => {
       ),
     ).resolves.toBeNull();
   });
+
+  it("fronts AI Gateway when a gateway id is set, direct otherwise", async () => {
+    const seen: unknown[] = [];
+    const fake = {
+      run: async (_m: string, _i: unknown, o?: unknown) => {
+        seen.push(o);
+        return { response: "Cause: x." };
+      },
+    };
+    await runTriage(fake, input, { gatewayId: "prod" });
+    await runTriage(fake, input);
+    await runTriage(fake, input, { gatewayId: "  " });
+    expect(seen).toEqual([{ gateway: { id: "prod" } }, undefined, undefined]);
+  });
+
+  it("appends live web context as secondary evidence", async () => {
+    let sent: { messages?: { role: string; content: string }[] } = {};
+    const fake = {
+      run: async (_m: string, i: unknown) => {
+        sent = i as typeof sent;
+        return { response: "Cause: x." };
+      },
+    };
+    await runTriage(fake, input, { searchContext: "1. Fix X (https://a.example/x)" });
+    const user = sent.messages?.[1]?.content ?? "";
+    expect(user).toContain("Failing output (read first)");
+    expect(user).toContain("Live web context (secondary");
+    expect(user).toContain("https://a.example/x");
+    expect(user.indexOf("Failing output")).toBeLessThan(user.indexOf("Live web context"));
+  });
 });

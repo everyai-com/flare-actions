@@ -29,4 +29,16 @@ describe("generate", () => {
     );
     expect(throwing).toBeNull();
   });
+
+  it("fronts AI Gateway when a gateway id is set", async () => {
+    let seen: unknown;
+    const fake = {
+      run: async (_m: string, _i: unknown, o?: unknown) => {
+        seen = o;
+        return { response: "jobs:\n  a: {}\n" };
+      },
+    };
+    await runGenerate(fake, "x", { gatewayId: "prod" });
+    expect(seen).toEqual({ gateway: { id: "prod" } });
+  });
 });

@@ -21,7 +21,19 @@ function runDurationMs(run: RunRow): number | null {
   return Number.isFinite(a) && Number.isFinite(b) && b >= a ? b - a : null;
 }
 
-export function buildPrComment(run: RunRow, jobs: JobRow[], origin: string): string {
+export interface FailingTestSnippet {
+  jobName: string;
+  suite: string;
+  name: string;
+  message: string;
+}
+
+export function buildPrComment(
+  run: RunRow,
+  jobs: JobRow[],
+  origin: string,
+  failingTests: FailingTestSnippet[] = [],
+): string {
   const summary = summarizeRunCost(jobs);
   const duration = runDurationMs(run);
   const head = `**Flare ${run.status === "success" ? "passed" : `failed (${run.status})`}** — \`${run.repo}@${run.sha.slice(0, 7)}\` (${run.branch || "-"})`;
@@ -55,6 +67,14 @@ export function buildPrComment(run: RunRow, jobs: JobRow[], origin: string): str
     }
     if (job.triage) lines.push("", `> ${job.triage.slice(0, 600).replace(/\n/g, "\n> ")}`);
   }
+  if (failingTests.length > 0) {
+    lines.push("", `#### Failing tests (${failingTests.length} shown)`, "");
+    for (const t of failingTests.slice(0, 15)) {
+      const where = [t.jobName, t.suite].filter(Boolean).join(" / ");
+      lines.push(`- \`${t.name.slice(0, 160)}\`${where ? ` — ${where.slice(0, 120)}` : ""}`);
+      if (t.message.trim()) lines.push(`  > ${t.message.slice(0, 300).replace(/\n/g, " ")}`);
+    }
+  }
   if (origin) {
     lines.push("", `[Open the run in the dashboard](${origin.replace(/\/$/, "")}/dashboard)`);
   }
@@ -74,13 +94,18 @@ export interface PrCommentEnv {
 
 // Returns the comment id on success (existing or freshly created), null
 // on any failure — never throws into the status callback.
-export async function upsertPrComment(env: PrCommentEnv, run: RunRow, jobs: JobRow[]): Promise<number | null> {
+export async function upsertPrComment(
+  env: PrCommentEnv,
+  run: RunRow,
+  jobs: JobRow[],
+  failingTests: FailingTestSnippet[] = [],
+): Promise<number | null> {
   try {
     if (!env.appId || !env.privateKey || !env.installationId || !env.prNumber) return null;
     const jwt = await mintAppJwt(env.appId, env.privateKey);
     const token = await getInstallationToken(jwt, env.installationId);
     if (!token) return null;
-    const body = JSON.stringify({ body: buildPrComment(run, jobs, env.origin) });
+    const body = JSON.stringify({ body: buildPrComment(run, jobs, env.origin, failingTests) });
     const headers = {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",

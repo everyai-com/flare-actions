@@ -19,7 +19,7 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `npm test` — vitest, colocated `*.test.ts`, must pass
 - `npm run deploy` / `npm run deploy:dry` — deploy / validate only
 - `npm run runner` — external pull-runner (reads `.env` automatically)
-- `npm run cli -- <runs|logs|dispatch|rerun|flaky|artifacts|badge|import|mcp-config>`
+- `npm run cli -- <runs|logs|local|run|watch|cancel|dispatch|rerun|flaky|artifacts|badge|import|mcp-config|tests|cache|usage|egress|queue>`
   — CLI (reads `.env` automatically)
 
 ## Architecture
@@ -84,7 +84,17 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   ≤4KB text in `jobs.triage`, surfaced in dashboard + CLI. Missing AI
   binding or model errors must degrade to skip, never to 500. Prompts
   lead with failing-step tails plus a one-line step map, and forbid
-  generic advice.
+  generic advice. Inference optionally fronts AI Gateway (`AI_GATEWAY_ID`
+  env or D1 `ai_gateway_id`, off by default) and grounds in Web Search
+  (`websearch.ts`, opt-in `triage_web_search`, needs a gateway).
+- Scheduling fairness (`fairness.ts`, dependency-free — the CLI imports it
+  directly): `claimNextJob` takes an optional per-repo running cap (D1
+  `fair_share_per_repo`, 0 = off); `simulateDrain` replays claim order
+  deterministically for `cli queue` (live queue: `GET /v1/admin/queue`).
+- MCP (`mcp.ts`): stateless Streamable HTTP, Bearer [REDACTED] Protocol
+  negotiates `2026-07-28`/`2024-11-05`; WriteGuard tiers per tool
+  (`MCP_TOOL_RISK`), attributed audit rows for write-tier calls, optional
+  write-confirm gate (D1 `mcp_write_confirm`).
 - Step env always includes `CI=true` (GitHub parity: tool retries,
   non-interactive modes); runner process env or job `env` may override.
 - Run notifications (`notify.ts`): on the transition into terminal rollup,
@@ -133,7 +143,13 @@ exhaustion) → runner polls `GET /v1/jobs/next?labels=` → executes →
   job) orchestrates via `exec` (`seat.ts`, testable with fakes;
   `seat-do.ts` holds the `cloudflare:workers` import so vitest never
   touches it). Shares worker modules (`db`, `finish`, `pipeline`,
-  `github`, `triage`) by relative import — bundled by wrangler.
+  `github`, `triage`) by relative import — bundled by wrangler. V2
+  (`ContainerSeatV2` + `SEATS_V2` binding, `durable_object` scheduling
+  policy) serves new jobs; V1 finishes in-flight ones. V2-only: snapshot
+  caches (`seat_snapshots`, image-lineage keyed), `retain-on-failure`
+  YAML key (30-min TTL alarm, SSH enabled), per-job egress
+  (`job_egress`, `GET /v1/runs/:id/egress`), peak-RSS sampling. Seat
+  reports cap at 256KB log / 64KB result like BYO (D1 2MB rows).
 - Wakes travel the `flare-actions-seats` queue (main produces, seats
   consumes; DLQ `flare-actions-seats-dlq`). Never worker→workers.dev
   HTTPS (edge error 1042) and never a service binding (deploy-time
@@ -262,7 +278,9 @@ gaps so one-click deploys need zero `wrangler secret` commands.
   supported CLI. Cloudflare's new `cf` CLI + `cloudflare.config.ts`
   (open beta since 2026-09-28) was evaluated: promising for agent
   workflows (JSON-first, `cf cli search`) but requires interactive login
-  and is too new to be the primary path. Revisit after GA.
+  and is too new to be the primary path. Wrangler gets a final major +
+  18 months maintenance after the cf beta ends, so migration is tracked
+  in ROADMAP.md Phase 1, not urgent.
 - For Cloudflare API access, agents/CI should use a least-privilege token:
   per-Worker Editor role on the Worker plus D1/Queues edit — never
   account-wide credentials.
