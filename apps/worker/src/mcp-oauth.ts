@@ -32,6 +32,13 @@ export const MCP_OAUTH_SCOPE_DESCRIPTIONS: Record<string, string> = {
   [MCP_OAUTH_SCOPE_OFFLINE]: "Stay connected (refresh tokens)",
 };
 
+// Human-readable scope list for the grants APIs (consent page and
+// dashboard share these strings); unknown scopes pass through raw
+// rather than vanishing.
+export function describeScope(scope: string[]): string[] {
+  return scope.map((s) => MCP_OAUTH_SCOPE_DESCRIPTIONS[s] ?? s);
+}
+
 // The identity a validated token carries into the MCP tools, identical
 // for OAuth grants and legacy API tokens: an audit actor plus a repo
 // allowlist ([] = every repo).

@@ -9,6 +9,7 @@ import {
   grantedScope,
   handleAuthorizeGet,
   handleAuthorizePost,
+  describeScope,
   listOAuthGrants,
   listUserOAuthGrants,
   MCP_OAUTH_SCOPE_OFFLINE,
@@ -356,5 +357,15 @@ describe("mcp-oauth", () => {
     }
     expect((await listUserOAuthGrants(kv, "u", 3)).map((g) => g.grantId).sort()).toEqual(["g0", "g1", "g2"]);
     expect(await listUserOAuthGrants(kv, "u")).toHaveLength(5);
+  });
+
+  it("describes scopes, passing unknown ones through", () => {
+    expect(describeScope([MCP_OAUTH_SCOPE_READ, MCP_OAUTH_SCOPE_RUN, MCP_OAUTH_SCOPE_OFFLINE])).toEqual([
+      "Read runs, jobs, logs, and flaky stats",
+      "Dispatch and rerun jobs, generate pipelines",
+      "Stay connected (refresh tokens)",
+    ]);
+    expect(describeScope(["flare:future"])).toEqual(["flare:future"]);
+    expect(describeScope([])).toEqual([]);
   });
 });

@@ -64,6 +64,8 @@ import { commitFilesToNewBranch, getDefaultBranch, getInstallationToken, getRepo
 import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
 import { DASHBOARD_HTML } from "./dashboard";
+import { apiDocsPage } from "./apidocs";
+import { OPENAPI_YAML } from "./openapi-spec";
 import { ensureSchema } from "./schema";
 import {
   decryptSettingValue,
@@ -163,6 +165,7 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import type { OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
 import { buildMcpServer, mcpDiscovery } from "./mcp";
 import {
+  describeScope,
   handleAuthorizeGet,
   handleAuthorizePost,
   listOAuthGrants,
@@ -1303,6 +1306,18 @@ export default {
       if (request.method === "GET" && url.pathname === "/dashboard") {
         return dashboardResponse();
       }
+      // The API serves its own contract (generated module, CI-synced)
+      // plus an interactive Redoc reference over it.
+      if (request.method === "GET" && url.pathname === "/openapi.yaml") {
+        return new Response(OPENAPI_YAML, {
+          headers: { "Content-Type": "text/yaml; charset=utf-8", "Cache-Control": "public, max-age=3600" },
+        });
+      }
+      if (request.method === "GET" && url.pathname === "/docs") {
+        return new Response(apiDocsPage(), {
+          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" },
+        });
+      }
       if (request.method === "POST" && url.pathname === "/webhooks/github") {
         return await handleWebhook(request, env, ctx);
       }
@@ -1813,7 +1828,7 @@ export default {
         const out = [];
         for (const grant of grants) {
           const client = await api.lookupClient(grant.clientId).catch(() => null);
-          out.push({ ...grant, clientName: client?.clientName ?? null });
+          out.push({ ...grant, clientName: client?.clientName ?? null, scopeDescriptions: describeScope(grant.scope) });
         }
         return json({ grants: out });
       }
@@ -1842,7 +1857,7 @@ export default {
         const grants = [];
         for (const grant of page.grants) {
           const client = await api.lookupClient(grant.clientId).catch(() => null);
-          grants.push({ ...grant, clientName: client?.clientName ?? null });
+          grants.push({ ...grant, clientName: client?.clientName ?? null, scopeDescriptions: describeScope(grant.scope) });
         }
         return json({ grants, cursor: page.cursor ?? null, list_complete: page.list_complete });
       }

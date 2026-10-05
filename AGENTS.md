@@ -278,6 +278,9 @@ gaps so one-click deploys need zero `wrangler secret` commands.
 
 - After Worker edits: `npm run types`, `npm run typecheck`, `npm test`,
   `npm run deploy:dry`.
+- After route changes: `node scripts/check-openapi.mjs` (spec coverage),
+  `npm run lint:openapi` (Redocly validity), `npm run openapi:gen` (sync
+  the served `openapi-spec.ts` module) — all three run in CI.
 - After behavior changes: drive the real flow with `wrangler dev` (fresh
   `--persist-to` dir for first-run paths) or the deployed worker; keep
   throwaway probe scripts in `/tmp`, out of the repo.

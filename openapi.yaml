@@ -7,6 +7,9 @@ openapi: 3.0.3
 info:
   title: Flare Actions API
   version: 1.0.0
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
   description: |-
     GitHub Actions alternative on Cloudflare. Token scopes: `admin`
     (everything), `runner` (run + read), `readonly` (read). Tokens
@@ -2249,6 +2252,12 @@ paths:
             schema:
               type: object
       responses:
+        '200':
+          description: HTML error page (expired transaction, bad decision)
+          content:
+            text/html:
+              schema:
+                type: string
         '302':
           description: Redirect back to the client
   /oauth/token:
@@ -2341,6 +2350,32 @@ paths:
       responses:
         '200':
           description: Dashboard HTML
+          content:
+            text/html:
+              schema:
+                type: string
+  /openapi.yaml:
+    get:
+      tags: [admin]
+      operationId: openapiSpec
+      summary: This API contract, served live
+      security: []
+      responses:
+        '200':
+          description: The OpenAPI YAML
+          content:
+            text/yaml:
+              schema:
+                type: string
+  /docs:
+    get:
+      tags: [admin]
+      operationId: apiDocs
+      summary: Interactive API reference (Redoc over /openapi.yaml)
+      security: []
+      responses:
+        '200':
+          description: Reference HTML
           content:
             text/html:
               schema:
@@ -2464,6 +2499,10 @@ components:
           type: string
           nullable: true
         scope:
+          type: array
+          items:
+            type: string
+        scopeDescriptions:
           type: array
           items:
             type: string

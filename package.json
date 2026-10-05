@@ -33,6 +33,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "bench": "node scripts/bench.mjs",
+    "lint:openapi": "npx -y @redocly/cli lint --config .redocly.yaml openapi.yaml",
+    "openapi:gen": "node scripts/gen-openapi-ts.mjs",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"
   },

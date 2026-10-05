@@ -1265,7 +1265,7 @@ form.inline input { flex: 1; min-width: 180px; }
       (data.grants || []).forEach(function (g) {
         var tr = el("tr");
         tr.appendChild(el("td", g.clientName || g.clientId));
-        tr.appendChild(el("td", (g.scope || []).join(" ")));
+        tr.appendChild(el("td", (g.scopeDescriptions || g.scope || []).join("; ")));
         tr.appendChild(g.createdAt ? timeCell(new Date(g.createdAt * 1000).toISOString()) : el("td", "—"));
         var tdBtn = el("td");
         var btn = el("button", "Revoke");
@@ -1291,7 +1291,7 @@ form.inline input { flex: 1; min-width: 180px; }
         var tr = el("tr");
         tr.appendChild(el("td", g.clientName || g.clientId));
         tr.appendChild(el("td", g.userId));
-        tr.appendChild(el("td", (g.scope || []).join(" ")));
+        tr.appendChild(el("td", (g.scopeDescriptions || g.scope || []).join("; ")));
         tr.appendChild(g.createdAt ? timeCell(new Date(g.createdAt * 1000).toISOString()) : el("td", "—"));
         var tdBtn = el("td");
         var btn = el("button", "Revoke");
