@@ -8,6 +8,8 @@ import {
 } from "flare-actions-runner-sdk";
 import { runLocal } from "./local.ts";
 import { dispatchSource } from "./source.ts";
+import { BoxManager } from "./devbox.ts";
+import { runDevboxMcpServer } from "./mcp-serve.ts";
 import { simulateDrain } from "../../worker/src/fairness.ts";
 
 loadEnv();
@@ -34,10 +36,20 @@ function usage(): never {
       "  cli cache list [prefix]                     list cache entries (admin)",
       "  cli cache purge [prefix]                    delete cache entries (admin)",
       "  cli usage [days] [repo]                     runs, jobs, compute-minutes for billing",
+      "  cli search <query...>                       search all job logs (branch:main level:error ...)",
       "  cli artifacts <runId>                       list a run's artifacts",
       "  cli badge <repo> [branch]                   print badge markdown + url",
       "  cli import <workflow.yml>                   convert a GitHub Actions workflow to flare.yml",
       "  cli mcp-config                              print MCP client config for this server",
+      "  cli devbox create <name> [--image img]      create a persistent warm dev box (local docker)",
+      "  cli devbox exec <name> -- <cmd...>           run a command in the box (/work)",
+      "  cli devbox sync <name> [--dir D] [paths..]  tar local paths into the box workdir",
+      "  cli devbox fetch <name> <path> [dir]        copy a workdir-relative path out of the box",
+      "  cli devbox snapshot <name> [tag]            commit the box filesystem to a local image tag",
+      "  cli devbox restore <name> <tag>             recreate the box from a snapshot tag",
+      "  cli devbox list                             list dev boxes",
+      "  cli devbox destroy <name>                   remove the box (snapshot images kept)",
+      "  cli mcp-serve                               stdio MCP server for dev boxes (local agents)",
       "",
       "run/dispatch accept --priority N (0-10): higher jumps queued batch work.",
       "cli local reads FLARE_SECRET_<NAME> for ${{ secrets.NAME }} placeholders.",
@@ -221,7 +233,7 @@ try {
       console.log(`  p${j.priority} ${j.repo} ${j.name} [${j.labels || "any"}] ${j.id}`);
     }
     const claims = simulateDrain(
-      q.jobs.map((j) => ({ id: j.id, repo: j.repo, priority: j.priority, createdAt: j.createdAt, labels: j.labels })),
+      q.jobs.map((j) => ({ id: j.id, repo: j.repo, priority: j.priority, priorMs: j.priorMs ?? 0, createdAt: j.createdAt, labels: j.labels })),
       [{ id: "you", labels }],
       q.fairSharePerRepo,
     );
@@ -234,6 +246,15 @@ try {
     for (const e of entries) {
       console.log(`${e.key}\t${e.size}b\t${e.uploaded}`);
     }
+  } else if (cmd === "search") {
+    const query = rest.join(" ").trim();
+    if (!query) usage();
+    const hits = await client().searchLogs(query);
+    for (const h of hits) {
+      console.log(`${h.created_at} ${h.repo}@${h.branch || "-"} [${h.level}] (${h.run_id.slice(0, 8)}/${h.job_id.slice(0, 8)})`);
+      console.log(`  ${h.line}`);
+    }
+    if (hits.length === 0) console.log("No matching log lines.");
   } else if (cmd === "cache" && rest[0] === "purge") {
     const out = await client().purgeCache(rest[1] ?? "");
     console.log(JSON.stringify(out));
@@ -252,12 +273,22 @@ try {
       console.error("days must be an integer 1-365");
       process.exit(2);
     }
-    const u = await client().getUsage(days, repo);
+    const c = client();
+    const u = await c.getUsage(days, repo);
     console.log(
       `${u.days}d: ${u.runs} runs, ${u.jobs} finished jobs, ${u.computeMinutes} compute-min (~$${u.actionsListUsd} at Actions list price)`,
     );
     for (const [status, n] of Object.entries(u.runsByStatus)) console.log(`  ${status}: ${n}`);
     for (const r of u.topRepos) console.log(`  ${r.repo}: ${r.jobs} jobs, ${r.computeMinutes} compute-min`);
+    // Real Cloudflare dollars when the caller is admin and billing is
+    // configured; readonly tokens and outages print nothing extra.
+    if (!repo) {
+      const billable = await c.getBillableUsage(days).catch(() => null);
+      if (billable?.configured && typeof billable.totalCost === "number") {
+        const fams = (billable.families ?? []).slice(0, 5).map((f) => `${f.family} $${f.cost}`).join(", ");
+        console.log(`  Cloudflare billable (${billable.from}..${billable.to}): $${billable.totalCost} ${billable.currency ?? "USD"}${fams ? ` (${fams})` : ""}`);
+      }
+    }
   } else if (cmd === "artifacts" && rest[0]) {
     const artifacts = await client().listArtifacts(rest[0]);
     for (const a of artifacts) {
@@ -277,6 +308,65 @@ try {
     }
     for (const w of res.warnings) console.error(`warn: ${w}`);
     process.stdout.write(res.yaml);
+  } else if (cmd === "devbox") {
+    const boxes = new BoxManager();
+    const [sub, ...dargs] = rest;
+    const takeFlag = (flag: string): string | undefined => {
+      const i = dargs.indexOf(flag);
+      if (i === -1) return undefined;
+      const v = dargs[i + 1];
+      if (!v) {
+        console.error(`${flag} needs a value`);
+        process.exit(2);
+      }
+      dargs.splice(i, 2);
+      return v;
+    };
+    if (sub === "create" && dargs[0]) {
+      const image = takeFlag("--image");
+      const created = await boxes.create(dargs[0], { image });
+      console.log(`created ${created.name} (${created.container}, ${created.image})`);
+    } else if (sub === "exec" && dargs[0]) {
+      const sep = dargs.indexOf("--");
+      const command = (sep === -1 ? dargs.slice(1) : dargs.slice(sep + 1)).filter((a) => a !== "--");
+      if (command.length === 0) {
+        console.error("usage: cli devbox exec <name> -- <cmd...>");
+        process.exit(2);
+      }
+      const res = await boxes.exec(dargs[0], command);
+      if (res.stdout) process.stdout.write(res.stdout.endsWith("\n") ? res.stdout : `${res.stdout}\n`);
+      if (res.stderr) process.stderr.write(res.stderr.endsWith("\n") ? res.stderr : `${res.stderr}\n`);
+      process.exitCode = res.exitCode;
+    } else if (sub === "sync" && dargs[0]) {
+      const dir = takeFlag("--dir") ?? process.cwd();
+      const paths = dargs.slice(1);
+      const res = await boxes.sync(dargs[0], dir, paths.length > 0 ? paths : ["."]);
+      console.log(`synced ${res.bytes} bytes (${res.paths.join(", ")}) into ${dargs[0]}:/work`);
+    } else if (sub === "fetch" && dargs[0] && dargs[1]) {
+      const res = await boxes.fetch(dargs[0], dargs[1], dargs[2] ?? process.cwd());
+      console.log(`fetched ${res.path} (${res.bytes} bytes) from ${dargs[0]} into ${dargs[2] ?? process.cwd()}`);
+    } else if (sub === "snapshot" && dargs[0]) {
+      const snap = await boxes.snapshot(dargs[0], dargs[1]);
+      console.log(`snapshot ${dargs[0]}:${snap.tag}`);
+    } else if (sub === "restore" && dargs[0] && dargs[1]) {
+      const restored = await boxes.restore(dargs[0], dargs[1]);
+      console.log(`restored ${dargs[0]} from ${dargs[1]} (${restored.image})`);
+    } else if (sub === "list") {
+      const list = boxes.list();
+      if (list.length === 0) console.log("no dev boxes");
+      for (const b of list) {
+        console.log(`${b.name}\t${b.image}\t${b.workdir}\tsnapshots:${b.snapshots.map((s) => s.tag).join(",") || "-"}\t${b.createdAt}`);
+      }
+    } else if (sub === "destroy" && dargs[0]) {
+      const destroyed = await boxes.destroy(dargs[0]);
+      console.log(`destroyed ${destroyed.name}`);
+      for (const img of destroyed.imagesKept) console.log(`  kept image ${img}`);
+    } else {
+      console.error("usage: cli devbox <create|exec|sync|fetch|snapshot|restore|list|destroy> ...");
+      process.exit(2);
+    }
+  } else if (cmd === "mcp-serve") {
+    await runDevboxMcpServer(new BoxManager());
   } else if (cmd === "mcp-config") {
     const baseUrl = process.env["FLARE_ACTIONS_URL"];
     const token = process.env["RUNNER_TOKEN"];
@@ -293,7 +383,7 @@ try {
               headers: { Authorization: "Bearer <runner-or-readonly-token>" },
             },
           },
-          note: "Replace <runner-or-readonly-token> with a dashboard token (readonly reads, runner also dispatches).",
+          note: "Easiest: paste just the URL into Claude/ChatGPT/Cursor and connect with your dashboard login (OAuth). Or set Authorization to a dashboard API token (readonly reads, runner also dispatches).",
         },
         null,
         2,

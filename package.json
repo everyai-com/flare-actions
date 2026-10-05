@@ -22,12 +22,14 @@
   ],
   "scripts": {
     "setup": "node scripts/setup.mjs",
+    "token:mint": "node scripts/mint-token.mjs",
+    "eval:models": "esbuild scripts/model-eval.mjs --bundle --platform=node --format=esm --outfile=/tmp/model-eval.bundle.mjs --log-level=error && node /tmp/model-eval.bundle.mjs",
     "runner": "npm --workspace apps/runner start",
     "cli": "npm --workspace apps/cli start",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "deploy:dry": "wrangler deploy --dry-run",
-    "types": "wrangler types apps/worker/src/worker-configuration.d.ts",
+    "types": "wrangler types --include-runtime=false apps/worker/src/worker-configuration.d.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "bench": "node scripts/bench.mjs",
@@ -35,8 +37,10 @@
     "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
+    "@cloudflare/workers-oauth-provider": "^1.2.1",
     "@cloudflare/workers-types": "^5.20260926.1",
     "@eslint/js": "^9.39.5",
+    "@modelcontextprotocol/server": "^2.0.0",
     "@types/node": "^22.20.4",
     "@vitest/coverage-v8": "^2.1.9",
     "eslint": "^9.39.5",
@@ -44,9 +48,11 @@
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.71.0",
     "vitest": "^2.1.0",
-    "wrangler": "^4.135.0"
+    "wrangler": "^4.135.0",
+    "zod": "^4.6.5"
   },
   "dependencies": {
+    "@cloudflare/puppeteer": "^1.4.0",
     "yaml": "^2.9.1"
   }
 }

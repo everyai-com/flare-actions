@@ -144,3 +144,104 @@ export async function postCommitStatus(
   });
   return res.ok;
 }
+
+function githubHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "Content-Type": "application/json",
+    "User-Agent": "flare-actions",
+  };
+}
+
+async function githubJson(token: string, path: string, init?: RequestInit): Promise<unknown> {
+  const res = await fetch(`https://api.github.com${path}`, {
+    ...init,
+    headers: githubHeaders(token),
+  });
+  if (!res.ok) return null;
+  return res.json().catch(() => null);
+}
+
+// Blob paths at a commit (recursive tree, truncated): the file menu
+// the heal model picks repair targets from. Empty on any failure —
+// healing degrades to triage-plus-tail context, never throws.
+export async function getRepoTreePaths(token: string, repo: string, sha: string, limit = 300): Promise<string[]> {
+  const data = (await githubJson(token, `/repos/${repo}/git/trees/${sha}?recursive=1`)) as {
+    tree?: { path?: unknown; type?: unknown }[];
+    truncated?: unknown;
+  } | null;
+  if (!data || !Array.isArray(data.tree)) return [];
+  const out: string[] = [];
+  for (const entry of data.tree) {
+    if (out.length >= limit) break;
+    if (entry?.type === "blob" && typeof entry.path === "string" && entry.path.length <= 200) out.push(entry.path);
+  }
+  return out;
+}
+
+export async function getDefaultBranch(token: string, repo: string): Promise<string> {
+  const data = (await githubJson(token, `/repos/${repo}`)) as { default_branch?: unknown } | null;
+  return typeof data?.default_branch === "string" && data.default_branch ? data.default_branch : "main";
+}
+
+// Commit full-file replacements to a NEW branch via the Git Data API
+// (base tree → blobs → tree → commit → ref). Never touches an
+// existing branch: the heal branch name is unique per run.
+export async function commitFilesToNewBranch(
+  token: string,
+  repo: string,
+  baseSha: string,
+  branch: string,
+  files: { path: string; content: string }[],
+  message: string,
+): Promise<boolean> {
+  if (files.length === 0) return false;
+  const base = (await githubJson(token, `/repos/${repo}/git/commits/${baseSha}`)) as {
+    tree?: { sha?: unknown };
+  } | null;
+  const baseTree = base?.tree && typeof base.tree.sha === "string" ? base.tree.sha : null;
+  if (!baseTree) return false;
+  const tree: { path: string; mode: string; type: string; sha: string }[] = [];
+  for (const file of files) {
+    const blob = (await githubJson(token, `/repos/${repo}/git/blobs`, {
+      method: "POST",
+      body: JSON.stringify({ content: file.content, encoding: "utf-8" }),
+    })) as { sha?: unknown } | null;
+    if (!blob || typeof blob.sha !== "string") return false;
+    tree.push({ path: file.path, mode: "100644", type: "blob", sha: blob.sha });
+  }
+  const newTree = (await githubJson(token, `/repos/${repo}/git/trees`, {
+    method: "POST",
+    body: JSON.stringify({ base_tree: baseTree, tree }),
+  })) as { sha?: unknown } | null;
+  if (!newTree || typeof newTree.sha !== "string") return false;
+  const commit = (await githubJson(token, `/repos/${repo}/git/commits`, {
+    method: "POST",
+    body: JSON.stringify({ message, tree: newTree.sha, parents: [baseSha] }),
+  })) as { sha?: unknown } | null;
+  if (!commit || typeof commit.sha !== "string") return false;
+  const ref = (await githubJson(token, `/repos/${repo}/git/refs`, {
+    method: "POST",
+    body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: commit.sha }),
+  })) as { ref?: unknown } | null;
+  return !!ref && typeof ref.ref === "string";
+}
+
+// Draft PR for a heal branch (human review is mandatory — heals never
+// merge themselves). Returns the PR URL, or null when the PR API
+// refuses (missing scope, branch collision, rate limit).
+export async function openDraftPullRequest(
+  token: string,
+  repo: string,
+  base: string,
+  head: string,
+  title: string,
+  body: string,
+): Promise<string | null> {
+  const data = (await githubJson(token, `/repos/${repo}/pulls`, {
+    method: "POST",
+    body: JSON.stringify({ title, head, base, body, draft: true }),
+  })) as { html_url?: unknown } | null;
+  return typeof data?.html_url === "string" ? data.html_url : null;
+}

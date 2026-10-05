@@ -73,6 +73,20 @@ describe("parseJobSpec", () => {
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }]}))?.retainOnFailure).toBeUndefined();
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], retainOnFailure: "yes" }))).toBeNull();
   });
+
+  it("keeps browser-checks and rejects malformed shapes", () => {
+    const good = [{ name: "home", url: "https://example.com/", expectTitle: "Example", screenshot: false }];
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], browserChecks: good }))?.browserChecks).toEqual(good);
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }] }))?.browserChecks).toBeUndefined();
+    const bad = (checks: unknown) => parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], browserChecks: checks }));
+    expect(bad([])).toBeNull();
+    expect(bad([{ name: "home", url: "http://example.com/", expectTitle: "x" }])).toBeNull();
+    expect(bad([{ name: "home", url: "https://example.com/" }])).toBeNull();
+    expect(bad([{ name: "dup", url: "https://example.com/", expectTitle: "x" }, { name: "dup", url: "https://example.com/", expectTitle: "x" }])).toBeNull();
+    expect(
+      bad(Array.from({ length: 11 }, (_, i) => ({ name: `c${i}`, url: "https://example.com/", expectTitle: "x" }))),
+    ).toBeNull();
+  });
 });
 
 describe("stepRuns", () => {

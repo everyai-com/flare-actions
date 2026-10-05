@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   egressHostForKey,
   parseNetDev,
+  renderMirrorRemote,
   runSeatJob,
   seatTokenAuthorized,
+  type BrowserDriver,
   type ContainerCtl,
   type ContainerSnapshot,
   type ContainerStartOptions,
@@ -12,6 +14,7 @@ import {
   type SeatDeps,
 } from "./seat";
 import type { Db } from "../../worker/src/db";
+import { EGRESS_LOG_PATH, EGRESS_SHIM_PATH } from "./egress";
 
 // In-memory Db routing the exact queries runSeatJob issues. Anything
 // unrouted throws loudly so SQL drift fails tests, not prod.
@@ -216,12 +219,19 @@ class FakeContainer implements ContainerCtl {
   // Popped per step-run exec (["sh","-c","sh -s > ..."]); default EXIT:0.
   stepExits: number[] = [];
   checkoutExit = 0;
+  // Mirror-checkout answer (stdin containing the artifacts host) and
+  // the stderr served for checkout scripts (token-scrub tests).
+  mirrorExit = 0;
+  coStderr = "";
   // Test-report scan listing (one absolute path per line) and the bytes
   // served for cat calls that hit those paths.
   testScan = "";
   testXml = new Map<string, string>();
   netDevSamples: string[] = [];
   tailBytes = "step-output";
+  // Egress-shim probe answer: false keeps every existing test on the
+  // no-shim path (steps run, no domain rows).
+  shimPresent = false;
 
   snapshots: (string | undefined)[] = [];
 
@@ -237,6 +247,24 @@ class FakeContainer implements ContainerCtl {
 
   destroy(): void {
     this.destroys += 1;
+  }
+
+  // Resolves when stopNow() is called (or immediately when stopOnBoot);
+  // never resolves by default so jobs run normally.
+  stopOnBoot = false;
+  private stopWaiters: (() => void)[] = [];
+  // Deferred monitor promise shared across calls, like the real API's
+  // single stop signal per instance.
+  private stopPromise: Promise<void> | null = null;
+
+  stopNow(): void {
+    for (const w of this.stopWaiters.splice(0)) w();
+  }
+
+  async monitor(): Promise<void> {
+    if (this.stopOnBoot) return;
+    if (!this.stopPromise) this.stopPromise = new Promise<void>((resolve) => this.stopWaiters.push(resolve));
+    return this.stopPromise;
   }
 
   exec(cmd: string[], opts?: ExecOptions): Promise<ExecHandle> {
@@ -257,7 +285,12 @@ class FakeContainer implements ContainerCtl {
   }
 
   private route(cmd: string[], opts?: ExecOptions): Scripted {
-    if (cmd[0] === "sh" && cmd[1] === "-s") return { exitCode: this.checkoutExit };
+    if (cmd[0] === "sh" && cmd[1] === "-s") {
+      const stdin = opts?.stdin;
+      const text = typeof stdin === "string" ? stdin : stdin ? new TextDecoder().decode(stdin) : "";
+      const mirror = text.includes("artifacts.cloudflare.net");
+      return { exitCode: mirror ? this.mirrorExit : this.checkoutExit, stderr: bytes(this.coStderr) };
+    }
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("sh -s >")) {
       const code = this.stepExits.length > 0 ? (this.stepExits.shift() as number) : 0;
       return { exitCode: 0, stdout: bytes(`EXIT:${code}`) };
@@ -277,7 +310,9 @@ class FakeContainer implements ContainerCtl {
       return { exitCode: 0, stdout: bytes(this.testScan) };
     }
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("rm -rf")) return { exitCode: 0 };
+    if (cmd[0] === "rm") return { exitCode: 0 };
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("test -f")) return { exitCode: 0 };
+    if (cmd[0] === "test" && cmd[1] === "-x") return { exitCode: this.shimPresent ? 0 : 1 };
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("cat /sys/fs/cgroup")) {
       return { exitCode: 0, stdout: bytes("123456") };
     }
@@ -311,6 +346,46 @@ function deps(db: MemDb, container: FakeContainer, over: Partial<SeatDeps> = {})
 const DEF = (extra = {}) =>
   JSON.stringify({ steps: [{ run: "echo one" }, { run: "echo two" }], base: "test", ...extra });
 
+const MIRROR_TEMPLATE = "https://a54b12fe3ef06df16ff0041d79c18fc0.artifacts.cloudflare.net/git/mirrors/{repo}.git";
+
+function stdinText(call: { opts?: ExecOptions }): string {
+  const s = call.opts?.stdin;
+  return typeof s === "string" ? s : s ? new TextDecoder().decode(s) : "";
+}
+
+function fakeBrowser(
+  pages: Record<string, { title: string; text?: string; shot?: boolean; throws?: string }>,
+): BrowserDriver & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    check: async (url, opts) => {
+      calls.push(url);
+      const p = pages[url];
+      if (!p) throw new Error(`unexpected url ${url}`);
+      if (p.throws) throw new Error(p.throws);
+      return {
+        title: p.title,
+        text: p.text ?? "",
+        screenshot: opts.screenshot && p.shot === true ? new TextEncoder().encode("png-bytes") : null,
+      };
+    },
+  };
+}
+
+function spyCache(): { puts: Map<string, Uint8Array>; cache: SeatDeps["cache"] } {
+  const puts = new Map<string, Uint8Array>();
+  return {
+    puts,
+    cache: {
+      get: async (_k: string) => null,
+      put: async (k: string, v: Uint8Array) => {
+        puts.set(k, v);
+      },
+    },
+  };
+}
+
 describe("seatTokenAuthorized", () => {
   it("accepts only the exact bearer token", async () => {
     const req = new Request("https://seat/run", { headers: { Authorization: "Bearer sekrit" } });
@@ -328,6 +403,19 @@ describe("seatTokenAuthorized", () => {
       await seatTokenAuthorized(new Request("https://seat/run", { headers: { Authorization: "Bearer sekrit" } }), undefined),
     ).toBe(false);
     expect(await seatTokenAuthorized(new Request("https://seat/run", { headers: { Authorization: "Bearer " } }), "")).toBe(false);
+  });
+});
+
+describe("renderMirrorRemote", () => {
+  it("renders per-repo remotes and fails closed", () => {
+    expect(renderMirrorRemote(MIRROR_TEMPLATE, "o/r")).toBe(
+      "https://a54b12fe3ef06df16ff0041d79c18fc0.artifacts.cloudflare.net/git/mirrors/o-r.git",
+    );
+    // No placeholder, wrong host, non-hex account, unsafe name.
+    expect(renderMirrorRemote("https://example.com/x.git", "o/r")).toBeNull();
+    expect(renderMirrorRemote("https://evil.example/{repo}.git", "o/r")).toBeNull();
+    expect(renderMirrorRemote("https://short.artifacts.cloudflare.net/git/m/{repo}.git", "o/r")).toBeNull();
+    expect(renderMirrorRemote(MIRROR_TEMPLATE, "o /r")).toBeNull();
   });
 });
 
@@ -664,6 +752,54 @@ describe("runSeatJob", () => {
     expect(db.egress).toContainEqual({ job_id: "j1", run_id: "r1", host: "(interface)", req_bytes: 7000, resp_bytes: 4000 });
   });
 
+  it("injects the egress shim env only when the image carries it", async () => {
+    const stepEnvs = (container: FakeContainer): Record<string, string>[] =>
+      container.calls
+        .filter((c) => c.cmd[0] === "sh" && c.cmd[1] === "-c" && c.cmd[2]?.startsWith("sh -s >"))
+        .map((c) => c.opts?.env ?? {});
+    // Absent shim: steps run with no preload, no domain rows.
+    const db = new MemDb();
+    seed(db, DEF());
+    const plain = new FakeContainer();
+    expect((await runSeatJob(deps(db, plain), "j1")).status).toBe("completed");
+    expect(plain.calls.some((c) => c.cmd[0] === "test" && c.cmd[1] === "-x")).toBe(true);
+    for (const env of stepEnvs(plain)) expect(env["LD_PRELOAD"]).toBeUndefined();
+    expect(db.egress.some((e) => e.host === "example.com")).toBe(false);
+
+    // Present shim: preload + log path on every step, chaining a
+    // job-supplied LD_PRELOAD instead of clobbering it.
+    const db2 = new MemDb();
+    seed(db2, DEF({ env: { LD_PRELOAD: "/usr/lib/libtcmalloc.so" } }));
+    const shimmed = new FakeContainer();
+    shimmed.shimPresent = true;
+    shimmed.testXml.set(EGRESS_LOG_PATH, "DNS 93.184.216.34 example.com\nOUT 93.184.216.34 10\nIN 93.184.216.34 20\n");
+    expect((await runSeatJob(deps(db2, shimmed), "j1")).status).toBe("completed");
+    const envs = stepEnvs(shimmed);
+    expect(envs.length).toBeGreaterThan(0);
+    for (const env of envs) {
+      expect(env["LD_PRELOAD"]).toBe(`${EGRESS_SHIM_PATH} /usr/lib/libtcmalloc.so`);
+      expect(env["FLARE_EGRESS_LOG"]).toBe(EGRESS_LOG_PATH);
+    }
+    expect(db2.egress).toContainEqual({ job_id: "j1", run_id: "r1", host: "example.com", req_bytes: 10, resp_bytes: 20 });
+    expect(db2.jobs.get("j1")?.log).toContain("[seat] domain egress: 1 domains");
+    // The previous job's log is removed before the first step, so a
+    // snapshot-restored container never leaks rows across jobs.
+    const rmIdx = shimmed.calls.findIndex((c) => c.cmd[0] === "rm" && c.cmd.includes(EGRESS_LOG_PATH));
+    const firstStep = shimmed.calls.findIndex((c) => c.cmd[0] === "sh" && c.cmd[1] === "-c" && c.cmd[2]?.startsWith("sh -s >"));
+    expect(rmIdx).toBeGreaterThanOrEqual(0);
+    expect(rmIdx).toBeLessThan(firstStep);
+  });
+
+  it("treats a malformed shim log as no rows, not a failure", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    container.shimPresent = true;
+    container.testXml.set(EGRESS_LOG_PATH, "garbage\nOUT nope\n");
+    expect((await runSeatJob(deps(db, container), "j1")).status).toBe("completed");
+    expect(db.egress.some((e) => !String(e.host).startsWith("r2:") && e.host !== "(interface)")).toBe(false);
+  });
+
   it("releases on checkout failure and on boot failure", async () => {
     const db = new MemDb();
     seed(db, DEF());
@@ -802,6 +938,227 @@ describe("runSeatJob", () => {
     expect(out.status).toBe("released");
     expect((out as { detail: string }).detail).toContain("checkout failed");
     expect(db.jobs.get("j1")?.log as string).toContain("[seat] released: checkout failed");
+  });
+
+  it("checks out from the artifacts mirror when configured", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    const out = await runSeatJob(
+      deps(db, container, { mirrorRemote: MIRROR_TEMPLATE, mirrorToken: "mirror-secret" }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    const checkouts = container.calls.filter((c) => c.cmd[0] === "sh" && c.cmd[1] === "-s");
+    expect(checkouts).toHaveLength(1);
+    expect(stdinText(checkouts[0])).toContain("artifacts.cloudflare.net/git/mirrors/o-r.git");
+    expect(db.jobs.get("j1")?.log as string).toContain("[seat] checkout ok (mirror)");
+  });
+
+  it("falls back to github when the mirror fails", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    container.mirrorExit = 128;
+    const out = await runSeatJob(
+      deps(db, container, { mirrorRemote: MIRROR_TEMPLATE, mirrorToken: "mirror-secret" }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    const checkouts = container.calls.filter((c) => c.cmd[0] === "sh" && c.cmd[1] === "-s");
+    expect(checkouts).toHaveLength(2);
+    expect(stdinText(checkouts[0])).toContain("artifacts.cloudflare.net");
+    expect(stdinText(checkouts[1])).toContain("github.com/o/r.git");
+    const log = db.jobs.get("j1")?.log as string;
+    expect(log).toContain("[seat] mirror unavailable, trying github");
+    expect(log).toContain("[seat] checkout ok");
+    expect(log).not.toContain("(mirror)");
+  });
+
+  it("goes straight to github on an invalid mirror template", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    const out = await runSeatJob(
+      deps(db, container, { mirrorRemote: "https://evil.example/{repo}.git", mirrorToken: "mirror-secret" }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    const checkouts = container.calls.filter((c) => c.cmd[0] === "sh" && c.cmd[1] === "-s");
+    expect(checkouts).toHaveLength(1);
+    expect(stdinText(checkouts[0])).not.toContain("artifacts");
+  });
+
+  it("scrubs both tokens when checkout fails everywhere", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    container.mirrorExit = 128;
+    container.checkoutExit = 128;
+    container.coStderr = "fatal: https://x-access-token:mirror-secret@host/git/mirrors/o-r.git: auth failed";
+    const out = await runSeatJob(
+      deps(db, container, { mirrorRemote: MIRROR_TEMPLATE, mirrorToken: "mirror-secret" }),
+      "j1",
+    );
+    expect(out.status).toBe("released");
+    const detail = (out as { detail: string }).detail;
+    expect(detail).toContain("checkout failed (mirror:");
+    expect(detail).toContain("[redacted]");
+    expect(detail).not.toContain("mirror-secret");
+    expect(db.jobs.get("j1")?.log as string).not.toContain("mirror-secret");
+  });
+
+  it("URL-encodes expiring mirror tokens and scrubs the encoded form", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    container.mirrorExit = 128;
+    container.checkoutExit = 128;
+    // git echoes the URL as embedded: with the token URL-encoded.
+    container.coStderr = "fatal: https://x-access-token:abc%3Fexpires%3D1@host/git/mirrors/o-r.git: auth failed";
+    const out = await runSeatJob(
+      deps(db, container, { mirrorRemote: MIRROR_TEMPLATE, mirrorToken: "abc?expires=1" }),
+      "j1",
+    );
+    expect(out.status).toBe("released");
+    const checkouts = container.calls.filter((c) => c.cmd[0] === "sh" && c.cmd[1] === "-s");
+    expect(stdinText(checkouts[0])).toContain("x-access-token:abc%3Fexpires%3D1@");
+    const detail = (out as { detail: string }).detail;
+    expect(detail).toContain("[redacted]");
+    expect(detail).not.toContain("abc%3Fexpires%3D1");
+    expect(detail).not.toContain("abc?expires=1");
+  });
+
+  it("runs browser checks after successful steps and stores screenshots", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ browserChecks: [{ name: "home", url: "https://example.com/", expectTitle: "Example" }] }));
+    const container = new FakeContainer();
+    const browser = fakeBrowser({ "https://example.com/": { title: "Example Domain", shot: true } });
+    const spy = spyCache();
+    const d = deps(db, container, { browser });
+    d.cache = spy.cache;
+    const out = await runSeatJob(d, "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("success");
+    expect(browser.calls).toEqual(["https://example.com/"]);
+    expect(spy.puts.get("artifacts/j1/browser-home.png")).toEqual(new TextEncoder().encode("png-bytes"));
+    expect(db.jobs.get("j1")?.log as string).toContain("--- browser home: https://example.com/ ---");
+  });
+
+  it("fails the job when a browser assertion misses", async () => {
+    const db = new MemDb();
+    seed(
+      db,
+      DEF({
+        browserChecks: [
+          { name: "home", url: "https://example.com/", expectTitle: "Nope" },
+          { name: "docs", url: "https://example.com/docs", expectText: "missing-bit" },
+        ],
+      }),
+    );
+    const container = new FakeContainer();
+    const browser = fakeBrowser({
+      "https://example.com/": { title: "Example Domain", text: "hello" },
+      "https://example.com/docs": { title: "Docs", text: "hello" },
+    });
+    const out = await runSeatJob(deps(db, container, { browser }), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("failure");
+    const log = db.jobs.get("j1")?.log as string;
+    expect(log).toContain("missing");
+    // Both checks run (full signal), not just the first failure.
+    expect(browser.calls).toEqual(["https://example.com/", "https://example.com/docs"]);
+  });
+
+  it("fails closed without the BROWSER binding", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ browserChecks: [{ name: "home", url: "https://example.com/", expectTitle: "Example" }] }));
+    const out = await runSeatJob(deps(db, new FakeContainer()), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("failure");
+    expect(db.jobs.get("j1")?.log as string).toContain("need the BROWSER binding");
+  });
+
+  it("skips browser checks when steps fail and honors screenshot:false", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ browserChecks: [{ name: "home", url: "https://example.com/", expectTitle: "Example" }] }));
+    const container = new FakeContainer();
+    container.stepExits = [1];
+    const browser = fakeBrowser({ "https://example.com/": { title: "Example Domain" } });
+    const out = await runSeatJob(deps(db, container, { browser }), "j1");
+    expect(db.jobs.get("j1")?.status).toBe("failure");
+    expect(db.jobs.get("j1")?.log as string).toContain("browser checks skipped");
+    expect(browser.calls).toEqual([]);
+    expect(out.status).toBe("completed");
+
+    const db2 = new MemDb();
+    seed(db2, DEF({ browserChecks: [{ name: "home", url: "https://example.com/", expectTitle: "Example", screenshot: false }] }));
+    const container2 = new FakeContainer();
+    const browser2 = fakeBrowser({ "https://example.com/": { title: "Example Domain", shot: true } });
+    const spy = spyCache();
+    const d2 = deps(db2, container2, { browser: browser2 });
+    d2.cache = spy.cache;
+    expect((await runSeatJob(d2, "j1")).status).toBe("completed");
+    expect(db2.jobs.get("j1")?.status).toBe("success");
+    expect([...spy.puts.keys()]).toEqual([]);
+  });
+
+  it("treats driver errors as check failures", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ browserChecks: [{ name: "home", url: "https://example.com/", expectTitle: "Example" }] }));
+    const container = new FakeContainer();
+    const browser = fakeBrowser({ "https://example.com/": { title: "", throws: "session limit reached" } });
+    const out = await runSeatJob(deps(db, container, { browser }), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("failure");
+    expect(db.jobs.get("j1")?.log as string).toContain("browser error: session limit reached");
+  });
+
+  it("releases fast when the container stops mid-checkout (monitor race)", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const stopped = new FakeContainer();
+    stopped.stopOnBoot = true;
+    // A dead container never answers exec: hang the checkout call so
+    // only the stop signal can settle the race (checkoutMs is generous
+    // to prove the monitor, not the clock, ended it).
+    const origExec = stopped.exec.bind(stopped);
+    stopped.exec = (cmd: string[], opts?: ExecOptions) =>
+      cmd[0] === "sh" && cmd[1] === "-s"
+        ? Promise.resolve({ pid: 1, output: () => new Promise<never>(() => undefined), kill: () => undefined })
+        : origExec(cmd, opts);
+    const out = await runSeatJob(
+      deps(db, stopped, {
+        timing: { startWaitMs: 5, startAttempts: 1, startPollMs: 1, stepMs: 60000, blobMs: 100, checkoutMs: 60000 },
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      }),
+      "j1",
+    );
+    expect(out.status).toBe("released");
+    expect((out as { detail: string }).detail).toContain("container stopped unexpectedly");
+  });
+
+  it("fails the job when the container stops mid-step", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const dying = new FakeContainer();
+    const origExec = dying.exec.bind(dying);
+    let steps = 0;
+    dying.exec = (cmd: string[], opts?: ExecOptions) => {
+      if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("sh -s >")) {
+        steps += 1;
+        if (steps === 2) {
+          dying.stopNow();
+          return Promise.resolve({ pid: 1, output: () => new Promise<never>(() => undefined), kill: () => undefined });
+        }
+      }
+      return origExec(cmd, opts);
+    };
+    const out = await runSeatJob(deps(db, dying), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("failure");
+    expect(db.jobs.get("j1")?.log as string).toContain("[seat] container stopped unexpectedly");
+    expect(db.jobs.get("j1")?.log as string).toContain("(exit 125");
   });
 
   it("restores and saves cache through tar", async () => {

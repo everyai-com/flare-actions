@@ -1,17 +1,30 @@
+import { McpServer, ProtocolError, SUPPORTED_PROTOCOL_VERSIONS, type CallToolResult } from "@modelcontextprotocol/server";
+import { z } from "zod";
 import { audit, flakyStats, getJobsForRun, getRun, getSetting, listRuns, type Db } from "./db";
+import { MCP_OAUTH_SCOPE_OFFLINE, MCP_OAUTH_SCOPE_READ, MCP_OAUTH_SCOPE_RUN } from "./mcp-oauth";
 import { jobDurationMs } from "./cost";
 import type { RunDigest } from "./digest";
-import { runGenerate } from "./generate";
+import { runGenerateWithStatus } from "./generate";
 import { SETTING_KEYS } from "./settings";
 import type { AiBinding } from "./triage";
 
 // MCP server over Streamable HTTP: POST JSON-RPC to /mcp. Stateless —
 // no session ids — with Bearer auth mapped onto the existing scopes:
-// read tools need `read`, dispatch/rerun/generate need `run`.
+// read tools need `read`, dispatch/rerun/generate need `run`. One server
+// instance is built per request by buildMcpServer and served by the MCP
+// SDK's stateless handler (modern 2026-07-28 plus the SDK's legacy era).
+//
+// Transport notes (SDK v2 behavior, verified by spike 2026-10-05):
+// - Clients MUST send `Accept: application/json, text/event-stream`
+//   (both); anything else is a 406. Responses are SSE `data:` frames.
+// - Zod input schemas are shape-only (all fields optional): the SDK
+//   demotes schema failures to isError tool results, while this server's
+//   contract is -32602 protocol errors with stable messages — so the tool
+//   bodies below keep doing all validation, exactly as before.
 
 export const MCP_PROTOCOL_VERSION = "2026-07-28";
-export const MCP_PROTOCOL_VERSIONS = ["2026-07-28", "2024-11-05"];
-export const MCP_SERVER_VERSION = "0.2.0";
+export const MCP_PROTOCOL_VERSIONS = ["2026-07-28", ...SUPPORTED_PROTOCOL_VERSIONS];
+export const MCP_SERVER_VERSION = "0.3.0";
 
 // WriteGuard risk tiers: read tools are side-effect free, contained-write
 // tools mutate runs/jobs (reversible, token-scoped), critical is reserved
@@ -32,86 +45,67 @@ export const MCP_TOOL_RISK: Record<string, McpToolRisk> = {
 export interface McpToolDef {
   name: string;
   description: string;
-  inputSchema: { type: "object"; properties: Record<string, unknown>; required?: string[] };
 }
 
+// Shape-only input schemas (see header note): every field optional so the
+// SDK never rejects ahead of the tool body; descriptions spell out the real
+// requirements that the tool body enforces with stable -32602 messages.
+const repoField = z.string().describe("owner/name (required)").optional();
+const shaField = z.string().describe("commit sha, branch, or tag (required)").optional();
+const runIdField = z.string().describe("Run id (required)").optional();
+
+const TOOL_SCHEMAS = {
+  list_runs: z.object({ limit: z.number().describe("Max runs, 1-50 (default 10)").optional() }),
+  get_run: z.object({ runId: runIdField }),
+  dispatch_run: z.object({
+    repo: repoField,
+    sha: shaField,
+    ref: z.string().describe("optional branch label").optional(),
+    pipeline: z.string().describe("optional inline flare.yml (else fetched at sha)").optional(),
+    priority: z.number().describe("0-10; higher jumps queued batch work (agent fast lane)").optional(),
+    confirm: z.boolean().describe("required true when the server's write-confirm gate is on").optional(),
+  }),
+  run_and_wait: z.object({
+    repo: repoField,
+    sha: shaField,
+    ref: z.string().describe("optional branch label").optional(),
+    pipeline: z.string().describe("optional inline flare.yml (else fetched at sha)").optional(),
+    priority: z.number().describe("0-10; higher jumps queued batch work (agent fast lane)").optional(),
+    timeoutSeconds: z.number().describe("How long to block, 1-90 (default 45)").optional(),
+    confirm: z.boolean().describe("required true when the server's write-confirm gate is on").optional(),
+  }),
+  get_run_digest: z.object({ runId: runIdField }),
+  rerun_job: z.object({
+    runId: runIdField,
+    jobId: z.string().describe("Job id (required)").optional(),
+    confirm: z.boolean().describe("required true when the server's write-confirm gate is on").optional(),
+  }),
+  get_flaky: z.object({
+    repo: repoField,
+    days: z.number().describe("1-365 (default 30)").optional(),
+  }),
+  generate_pipeline: z.object({ prompt: z.string().describe("Natural-language pipeline description (required)").optional() }),
+};
+
 export const MCP_TOOLS: McpToolDef[] = [
-  {
-    name: "list_runs",
-    description: "List recent CI runs (newest first).",
-    inputSchema: { type: "object", properties: { limit: { type: "number", description: "Max runs, 1-50 (default 10)" } } },
-  },
-  {
-    name: "get_run",
-    description: "Get a run with per-job status, step results, log tails, and AI triage.",
-    inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] },
-  },
-  {
-    name: "dispatch_run",
-    description: "Trigger a run for repo@sha. Needs run scope.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo: { type: "string", description: "owner/name" },
-        sha: { type: "string", description: "commit sha or branch" },
-        ref: { type: "string", description: "optional branch label" },
-        pipeline: { type: "string", description: "optional inline flare.yml (else fetched at sha)" },
-        priority: { type: "number", description: "0-10; higher jumps queued batch work (agent fast lane)" },
-        confirm: { type: "boolean", description: "required true when the server's write-confirm gate is on" },
-      },
-      required: ["repo", "sha"],
-    },
-  },
+  { name: "list_runs", description: "List recent CI runs (newest first)." },
+  { name: "get_run", description: "Get a run with per-job status, step results, log tails, and AI triage." },
+  { name: "dispatch_run", description: "Trigger a run for repo@sha. Needs run scope." },
   {
     name: "run_and_wait",
     description:
       "Dispatch a run and block until it finishes, returning a compact digest (status, failing step commands/exit codes, bounded output tails, triage). The one-call verify loop: edit → run_and_wait → fix. Needs run scope.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo: { type: "string", description: "owner/name" },
-        sha: { type: "string", description: "commit sha or branch" },
-        ref: { type: "string", description: "optional branch label" },
-        pipeline: { type: "string", description: "optional inline flare.yml (else fetched at sha)" },
-        priority: { type: "number", description: "0-10; higher jumps queued batch work (agent fast lane)" },
-        timeoutSeconds: { type: "number", description: "How long to block, 1-90 (default 45)" },
-        confirm: { type: "boolean", description: "required true when the server's write-confirm gate is on" },
-      },
-      required: ["repo", "sha"],
-    },
   },
   {
     name: "get_run_digest",
     description:
       "Compact, token-efficient run result: per-job status, failing step command/exit code, bounded output tail, and AI triage. Prefer this over get_run for verification loops.",
-    inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] },
   },
-  {
-    name: "rerun_job",
-    description: "Reset a finished job to queued so a runner picks it up again. Needs run scope.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        runId: { type: "string" },
-        jobId: { type: "string" },
-        confirm: { type: "boolean", description: "required true when the server's write-confirm gate is on" },
-      },
-      required: ["runId", "jobId"],
-    },
-  },
-  {
-    name: "get_flaky",
-    description: "Per-job failure rates for a repo over the trailing window, worst first.",
-    inputSchema: {
-      type: "object",
-      properties: { repo: { type: "string" }, days: { type: "number", description: "1-365 (default 30)" } },
-      required: ["repo"],
-    },
-  },
+  { name: "rerun_job", description: "Reset a finished job to queued so a runner picks it up again. Needs run scope." },
+  { name: "get_flaky", description: "Per-job failure rates for a repo over the trailing window, worst first." },
   {
     name: "generate_pipeline",
     description: "Generate a flare.yml pipeline from a natural-language description. Needs run scope.",
-    inputSchema: { type: "object", properties: { prompt: { type: "string" } }, required: ["prompt"] },
   },
 ];
 
@@ -147,16 +141,21 @@ export interface McpResult {
 
 type JsonRpcId = string | number | null;
 
-function ok(id: JsonRpcId, result: unknown): McpResult {
-  return { status: 200, body: { jsonrpc: "2.0", id, result } };
-}
-
+// Internal result envelope (not on the wire anymore — the SDK owns the
+// JSON-RPC framing; adaptTool unwraps these into SDK results/errors).
 function fail(id: JsonRpcId, code: number, message: string): McpResult {
   return { status: 200, body: { jsonrpc: "2.0", id, error: { code, message } } };
 }
 
 function toolResult(id: JsonRpcId, data: unknown, isError = false): McpResult {
-  return ok(id, { content: [{ type: "text", text: JSON.stringify(data) }], ...(isError ? { isError: true } : {}) });
+  return {
+    status: 200,
+    body: {
+      jsonrpc: "2.0",
+      id,
+      result: { content: [{ type: "text", text: JSON.stringify(data) }], ...(isError ? { isError: true } : {}) },
+    },
+  };
 }
 
 function str(v: unknown): string | null {
@@ -339,70 +338,52 @@ async function execTool(name: string, args: Record<string, unknown>, deps: McpDe
       const prompt = str(args.prompt);
       if (!prompt || prompt.length > 2000) return fail(id, -32602, "prompt is required (max 2000 chars)");
       if (!deps.ai) return toolResult(id, { error: "AI not configured" }, true);
-      const yaml = await runGenerate(deps.ai, prompt, {
+      const outcome = await runGenerateWithStatus(deps.ai, prompt, {
         gatewayId: deps.gatewayId ?? (await getSetting(deps.db, SETTING_KEYS.aiGatewayId)) ?? undefined,
       });
-      if (!yaml) return toolResult(id, { error: "generation failed" }, true);
-      return toolResult(id, { yaml });
+      if (outcome.status === "busy") return toolResult(id, { error: "model busy, retry later", retryable: true }, true);
+      if (outcome.status !== "ok") return toolResult(id, { error: "generation failed" }, true);
+      return toolResult(id, { yaml: outcome.yaml });
     }
     default:
       return fail(id, -32602, `unknown tool: ${name}`);
   }
 }
 
-export async function handleMcpMessage(msg: unknown, deps: McpDeps): Promise<McpResult> {
-  if (msg === null || typeof msg !== "object" || Array.isArray(msg)) {
-    return fail(null, -32600, "invalid request");
+// Adapter: the tool bodies above speak the internal McpResult envelope
+// (kept so WriteGuard, audit, and every validation message stay byte
+// identical); the SDK speaks CallToolResult or a thrown ProtocolError,
+// which it maps to an isError tool result carrying the message verbatim.
+async function adaptTool(name: string, args: Record<string, unknown>, deps: McpDeps): Promise<CallToolResult> {
+  const res = await callTool(name, args, deps, 0);
+  const body = res.body as { result?: CallToolResult; error?: { code: number; message: string } } | undefined;
+  if (body?.error) throw new ProtocolError(body.error.code, body.error.message);
+  if (!body?.result) {
+    console.log(JSON.stringify({ level: "error", msg: "mcp tool returned no result", tool: name }));
+    throw new ProtocolError(-32603, "internal error");
   }
-  const rec = msg as Record<string, unknown>;
-  const id = rec.id === undefined ? undefined : (rec.id as JsonRpcId);
-  if (rec.jsonrpc !== "2.0" || typeof rec.method !== "string") {
-    return fail(typeof id === "string" || typeof id === "number" ? id : null, -32600, "invalid request");
-  }
-  // Notifications (no id) get no response body.
-  if (id === undefined) return { status: 202 };
-  const normId: JsonRpcId = typeof id === "string" || typeof id === "number" ? id : null;
-  try {
-    switch (rec.method) {
-      case "initialize": {
-        // Version negotiation: serve old + new stateless clients from one
-        // route during migration; unknown versions get the newest.
-        const params = (rec.params ?? {}) as { protocolVersion?: unknown };
-        const asked = typeof params.protocolVersion === "string" ? params.protocolVersion : "";
-        const negotiated = (MCP_PROTOCOL_VERSIONS as string[]).includes(asked) ? asked : MCP_PROTOCOL_VERSION;
-        return ok(normId, {
-          protocolVersion: negotiated,
-          capabilities: { tools: {} },
-          serverInfo: { name: "flare-actions", version: MCP_SERVER_VERSION },
-        });
+  return body.result;
+}
+
+// One server per request (the SDK's stateless factory shape). Scope and
+// validation failures stay -32602 protocol errors with the pre-migration
+// messages; unexpected throws become -32603 without leaking internals.
+export function buildMcpServer(deps: McpDeps): McpServer {
+  const server = new McpServer({ name: "flare-actions", version: MCP_SERVER_VERSION });
+  for (const tool of MCP_TOOLS) {
+    const schema = TOOL_SCHEMAS[tool.name as keyof typeof TOOL_SCHEMAS];
+    server.registerTool(tool.name, { description: tool.description, inputSchema: schema }, async (args: Record<string, unknown>) => {
+      try {
+        return await adaptTool(tool.name, args, deps);
+      } catch (err) {
+        // Never echo internal error text to clients; the log keeps detail.
+        if (err instanceof ProtocolError) throw err;
+        console.log(JSON.stringify({ level: "error", msg: "mcp request failed", error: String(err) }));
+        throw new ProtocolError(-32603, "internal error");
       }
-      case "server/discover":
-        return ok(normId, mcpDiscovery());
-      case "notifications/initialized":
-      case "notifications/cancelled":
-        return { status: 202 };
-      case "tools/list":
-        return ok(normId, { tools: MCP_TOOLS });
-      case "tools/call": {
-        const params = (rec.params ?? {}) as Record<string, unknown>;
-        if (typeof params !== "object" || params === null || typeof params.name !== "string") {
-          return fail(normId, -32602, "tool name is required");
-        }
-        const args = (params.arguments ?? {}) as Record<string, unknown>;
-        if (typeof args !== "object" || args === null || Array.isArray(args)) {
-          return fail(normId, -32602, "arguments must be an object");
-        }
-        return await callTool(params.name, args, deps, normId);
-      }
-      default:
-        if (rec.method.startsWith("notifications/")) return { status: 202 };
-        return fail(normId, -32601, `method not found: ${rec.method}`);
-    }
-  } catch (err) {
-    // Never echo internal error text to clients; the log keeps the detail.
-    console.log(JSON.stringify({ level: "error", msg: "mcp request failed", error: String(err) }));
-    return fail(normId, -32603, "internal error");
+    });
   }
+  return server;
 }
 
 export function mcpDiscovery(): Record<string, unknown> {
@@ -413,7 +394,14 @@ export function mcpDiscovery(): Record<string, unknown> {
     protocolVersion: MCP_PROTOCOL_VERSION,
     protocolVersions: MCP_PROTOCOL_VERSIONS,
     endpoint: "/mcp",
-    auth: "Authorization: Bearer <token> (readonly for reads, runner for dispatch/rerun/generate)",
+    accept: "application/json, text/event-stream (both required; responses are SSE data frames)",
+    oauth: {
+      authorizeEndpoint: "/authorize",
+      tokenEndpoint: "/oauth/token",
+      registrationEndpoint: "/oauth/register",
+      scopes: [MCP_OAUTH_SCOPE_READ, MCP_OAUTH_SCOPE_RUN, MCP_OAUTH_SCOPE_OFFLINE],
+    },
+    auth: "Authorization: Bearer <oauth access token or API token> (flare:read for reads, flare:run for dispatch/rerun/generate)",
     tools: MCP_TOOLS.map((t) => t.name),
     toolRisk: MCP_TOOL_RISK,
   };

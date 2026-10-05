@@ -223,4 +223,23 @@ describe("FlareClient", () => {
     expect(u.jobs).toBe(2);
     expect(calls[0].url).toBe("https://x/v1/usage?days=7&repo=o%2Fr");
   });
+
+  it("fetches billable usage and degrades on 401/502", async () => {
+    const calls = stubFetch(() => jsonResponse({ configured: true, totalCost: 4.5, families: [] }));
+    const b = await new FlareClient("https://x", "t").getBillableUsage(7);
+    expect(b?.totalCost).toBe(4.5);
+    expect(calls[0].url).toBe("https://x/v1/usage/billable?days=7");
+    stubFetch(() => jsonResponse({ error: "unauthorized" }, 401));
+    await expect(new FlareClient("https://x", "t").getBillableUsage()).resolves.toBeNull();
+    stubFetch(() => jsonResponse({ error: "unavailable" }, 502));
+    await expect(new FlareClient("https://x", "t").getBillableUsage()).resolves.toBeNull();
+  });
+
+  it("searches logs with an encoded query", async () => {
+    const hit = { job_id: "j", run_id: "r", repo: "o/r", branch: "main", level: "error", line: "boom", created_at: "c" };
+    const calls = stubFetch(() => jsonResponse({ hits: [hit] }));
+    const hits = await new FlareClient("https://x", "t").searchLogs("branch:main boom", 10);
+    expect(hits).toEqual([hit]);
+    expect(calls[0].url).toBe("https://x/v1/search/logs?q=branch%3Amain%20boom&limit=10");
+  });
 });

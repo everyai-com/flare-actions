@@ -19,6 +19,7 @@ import { getInstallationToken, mintAppJwt, postCommitStatus } from "./github";
 import { readJobSpec, readRetryPolicy } from "./pipeline";
 import { runTriage, type AiBinding, type TriageStep } from "./triage";
 import { SETTING_KEYS } from "./settings";
+import type { BasinSink } from "./basin";
 import { buildErrorQuery, formatSearchContext, webSearch } from "./websearch";
 
 // Shared post-execution flow for both executors (BYO runners via the
@@ -84,19 +85,22 @@ export function parseReportedSteps(result: unknown): TriageStep[] {
 export async function triageAndStore(
   db: Db,
   ai: AiBinding | undefined,
-  run: { repo: string; sha: string },
+  run: { id: string; repo: string; sha: string },
   jobId: string,
   jobName: string,
   logText: string | undefined,
   result: string | undefined,
-  opts: { gatewayId?: string; webSearch?: boolean } = {},
+  opts: { gatewayId?: string; webSearch?: boolean; model?: string } = {},
 ): Promise<void> {
   try {
     // Forks without the AI binding simply skip triage.
     if (!ai) return;
     // Env-provided gateway id wins; D1 fills the gap; unset = direct.
     const gatewayId = opts.gatewayId ?? (await getSetting(db, SETTING_KEYS.aiGatewayId)) ?? undefined;
+    const model = opts.model ?? (await getSetting(db, SETTING_KEYS.triageModel)) ?? undefined;
     const triageInput = {
+      runId: run.id,
+      jobId,
       repo: run.repo,
       sha: run.sha,
       jobName,
@@ -114,7 +118,7 @@ export async function triageAndStore(
         if (items.length > 0) searchContext = formatSearchContext(items);
       }
     }
-    const text = await runTriage(ai, triageInput, { gatewayId, searchContext });
+    const text = await runTriage(ai, triageInput, { gatewayId, searchContext, model });
     if (!text) return;
     await setJobTriage(db, jobId, text);
   } catch (err) {
@@ -159,6 +163,8 @@ export async function promoteBlockedJobs(
   queue: QueueSender,
   repo: string,
   onQueued?: (job: { runId: string; jobId: string }) => unknown,
+  analytics?: AnalyticsEngineDataset,
+  basin?: BasinSink,
 ): Promise<string[]> {
   const blocked = await listBlockedJobsInRepo(db, repo);
   const promoted: string[] = [];
@@ -182,14 +188,14 @@ export async function promoteBlockedJobs(
       const anyFailed = spec.needs.some((n) => (byBase.get(n) ?? []).some((st) => FAILED_STATUSES.includes(st)));
       if (!jobConditionSatisfied(spec.if, anyFailed)) {
         await setJobStatus(db, job.id, "skipped");
-        await rollupRunStatus(db, job.run_id);
+        await rollupRunStatus(db, job.run_id, analytics, basin);
         runJobsCache.delete(job.run_id);
         continue;
       }
     }
     if (spec.group && (await hasActiveGroupJob(db, repo, spec.group))) continue;
     await setJobStatus(db, job.id, "queued");
-    await rollupRunStatus(db, job.run_id);
+    await rollupRunStatus(db, job.run_id, analytics, basin);
     await queue.send({ runId: job.run_id, jobId: job.id, repo: job.repo, sha: job.sha });
     await onQueued?.({ runId: job.run_id, jobId: job.id });
     promoted.push(job.id);

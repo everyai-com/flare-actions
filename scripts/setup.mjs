@@ -10,6 +10,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyMigrationsWithReconcile } from "./migrate-reconcile.mjs";
+import { permissionHint } from "./api-tokens.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const config = "wrangler.jsonc";
@@ -24,6 +25,10 @@ function run(cmd, args, opts = {}) {
 
 function fail(msg) {
   console.error(`setup failed: ${msg}`);
+  // Enriched 403s link the missing permission: surface the fix, not
+  // just the stack, and steer toward least-privilege tokens.
+  const hint = permissionHint(msg);
+  if (hint) console.error(`\n${hint}`);
   process.exit(1);
 }
 
@@ -63,7 +68,35 @@ for (const q of ["flare-actions-runs", "flare-actions-dlq", "flare-actions-seats
   if (/already (exists|taken)/i.test(out)) console.log("R2 flare-actions-cache already exists, reusing");
 }
 
-// 5. Migrations (reconciles databases the worker already self-healed)
+// 5. Basin stream for long-term CI analytics (optional, paid plan).
+// Best-effort: free-plan accounts fail here, which is fine — the
+// worker skips Basin emission without a CI_EVENTS binding, and
+// Analytics Engine still records everything. The binding itself is
+// never patched into the committed wrangler.jsonc (setup leaves no
+// dirty tree); the stream id prints below for a one-line add.
+let basinStreamId = null;
+{
+  const r = run("npx", ["wrangler", "pipelines", "streams", "create", "flare-ci-events"]);
+  const out = r.stdout + r.stderr;
+  if (dryRun) {
+    console.log("(dry-run) would create the flare-ci-events Basin stream");
+  } else if (r.status !== 0 && !/already (exists|taken)/i.test(out)) {
+    console.log("Basin stream not provisioned (optional, paid plan) — continuing without cold analytics.");
+    console.log(`(pipelines error, first line: ${(out.trim().split("\n")[0] ?? "").slice(0, 160)})`);
+  } else {
+    if (/already (exists|taken)/i.test(out)) console.log("Basin stream flare-ci-events already exists, reusing");
+    const g = run("npx", ["wrangler", "pipelines", "streams", "get", "flare-ci-events"]);
+    const m = /"id"\s*:\s*"([^"]+)"/.exec(g.stdout) ?? /["']id["']:\s*(\S+)/.exec(g.stdout);
+    if (m) {
+      basinStreamId = m[1];
+      console.log(`Basin stream id: ${basinStreamId}`);
+    } else {
+      console.log("Basin stream ready but the id could not be parsed — run `npx wrangler pipelines streams get flare-ci-events` (see docs/ANALYTICS.md).");
+    }
+  }
+}
+
+// 6. Migrations (reconciles databases the worker already self-healed)
 {
   try {
     applyMigrationsWithReconcile({
@@ -77,7 +110,7 @@ for (const q of ["flare-actions-runs", "flare-actions-dlq", "flare-actions-seats
   }
 }
 
-// 6. Secrets (piped via stdin; values never appear in commands). Only the
+// 7. Secrets (piped via stdin; values never appear in commands). Only the
 // runner token: the admin password is created on first dashboard open
 // (normal login, no token paste), and Connect GitHub manages the
 // webhook secret + App credentials in D1 — env values would block it.
@@ -87,7 +120,7 @@ for (const [name, value] of [["RUNNER_TOKEN", runnerToken]]) {
   if (r.status !== 0 && !dryRun) fail(`secret put ${name} failed:\n${r.stdout}\n${r.stderr}`);
 }
 
-// 7. Deploy
+// 8. Deploy
 let workerUrl = null;
 {
   const r = run("npx", ["wrangler", "deploy", "--config", config]);
@@ -96,7 +129,7 @@ let workerUrl = null;
   else if (!dryRun) fail(`deploy failed:\n${r.stdout}\n${r.stderr}`);
 }
 
-// 8. Managed seats worker (needs local docker; cleanly skipped otherwise —
+// 9. Managed seats worker (needs local docker; cleanly skipped otherwise —
 // BYO runners cover everything seats do, minus the zero-box experience).
 const seatsConfig = "apps/seats/wrangler.jsonc";
 let seatsUrl = null;
@@ -123,6 +156,10 @@ let seatsToken = null;
     const examplePath = join(root, "apps/seats/wrangler.jsonc.example");
     const seatsCfg = JSON.parse(readFileSync(examplePath, "utf8"));
     seatsCfg.containers[0].image = pushed[1];
+    if (basinStreamId) {
+      seatsCfg.pipelines = [{ binding: "CI_EVENTS", stream: basinStreamId }];
+      console.log("bound the Basin stream on the generated seats config");
+    }
     writeFileSync(join(root, seatsConfig), JSON.stringify(seatsCfg));
     console.log("generated apps/seats/wrangler.jsonc (gitignored) with the pushed image");
     // Token gates the seats public URL for direct debugging; the main
@@ -138,7 +175,7 @@ let seatsToken = null;
   }
 }
 
-// 9. Write .env (merge, preserve unknown lines)
+// 10. Write .env (merge, preserve unknown lines)
 if (!dryRun) {
   const path = join(root, ".env");
   const wanted = {
@@ -169,6 +206,11 @@ if (!dryRun) {
   console.log(`Webhook: ${workerUrl}/webhooks/github`);
   console.log(`Dashboard: ${workerUrl}/dashboard (create your admin password on first open)`);
   console.log(seatsUrl ? `Seats:    ${seatsUrl} (managed executor live)` : "Seats:    skipped (no docker — BYO runners cover execution)");
+  if (basinStreamId) {
+    console.log(`Basin:    stream ${basinStreamId} — add {"pipelines":[{"binding":"CI_EVENTS","stream":"${basinStreamId}"}]} to wrangler.jsonc and redeploy (see docs/ANALYTICS.md).`);
+  } else {
+    console.log("Basin:    skipped (optional, paid plan — Analytics Engine still records everything).");
+  }
   console.log("Next: Connect GitHub in the dashboard Settings tab, then `npm run runner` and `npm run cli -- runs`.");
   console.log("Note: the CLI uses the runner token above; issue readonly/runner/admin tokens for other machines in the Access tab.");
 }

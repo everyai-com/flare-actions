@@ -7,11 +7,25 @@ pipelines without touching the dashboard or CLI.
 
 ## Setup
 
+**OAuth (recommended):** paste just the server URL into Claude, ChatGPT,
+or Cursor:
+
+```
+https://<your-worker>/mcp
+```
+
+The client discovers OAuth from the `401` challenge, registers itself
+(`POST /oauth/register`), and opens the dashboard login + consent page
+(`GET /authorize`). No tokens to copy. Admins can grant `flare:read` +
+`flare:run`; everyone else grants `flare:read` only (mirroring dashboard
+privilege). Connected apps show in the dashboard Access tab and revoke
+immediately.
+
+**API tokens:** for headless clients:
+
 ```bash
 npm run cli -- mcp-config   # prints a paste-ready client config
 ```
-
-It prints:
 
 ```json
 {
@@ -24,17 +38,23 @@ It prints:
 }
 ```
 
-Paste into Claude Code / Cursor / any MCP client, replacing the token
-with one issued in the dashboard Access tab. `GET /mcp` (no auth) returns
-server metadata and the tool list for discovery.
+`GET /mcp` (no auth) returns server metadata, the tool list, and the
+OAuth endpoints for discovery.
 
 ## Auth
 
-The Bearer token maps onto existing scopes:
+OAuth scopes (granted on the consent page):
 
-- `readonly` — `list_runs`, `get_run`, `get_run_digest`, `get_flaky`
-- `runner` / admin — everything, including `run_and_wait`,
-  `dispatch_run`, `rerun_job`, `generate_pipeline`
+- `flare:read` — `list_runs`, `get_run`, `get_run_digest`, `get_flaky`
+- `flare:run` — everything, including `run_and_wait`, `dispatch_run`,
+  `rerun_job`, `generate_pipeline`
+- `offline_access` — refresh tokens (granted to everyone)
+
+Legacy API tokens keep working unchanged and map onto the same scopes:
+`readonly` → `flare:read`, `runner`/admin → `flare:read` + `flare:run`
+(repo allowlists still enforced). Same-origin browser requests may also
+carry the dashboard session cookie instead of a Bearer [REDACTED] is how the
+WebMCP pack and native page tools authenticate as the visitor.
 
 ## Tools
 
@@ -49,9 +69,33 @@ The Bearer token maps onto existing scopes:
 | `get_flaky` | `repo`, `days?` | Per-job failure rates, worst first |
 | `generate_pipeline` | `prompt` | Natural language → `flare.yml` |
 
-Responses are `tools/call` text payloads containing JSON. Unknown tools
-and bad arguments return JSON-RPC errors (`-32602`); tool-level misses
-(e.g. unknown run) return `{ error }` with `isError: true`.
+Responses are `tools/call` text payloads containing JSON. Tool failures
+(scope, validation, confirm gate, unknown run) return `{ error }` with
+`isError: true`; malformed requests return JSON-RPC errors (`-32700`,
+`-32600`, `-32601`, `-32602`).
+
+Clients must send `Accept: application/json, text/event-stream` (both);
+anything else is a `406`. Responses are SSE `data:` frames. Protocol:
+modern `2026-07-28` plus the SDK's legacy era (`2025-11-25` …
+`2024-11-05`), negotiated per request.
+
+## WebMCP (browser agents)
+
+Two layers, both authenticated as the visitor via the dashboard session
+cookie on same-origin requests:
+
+- **Native page tools** (works everywhere, no setup): the dashboard
+  registers `flare_list_runs`, `flare_get_run_digest`, `flare_get_flaky`
+  (everyone) plus `flare_dispatch_run`, `flare_rerun_job` (admins) on
+  `document`/`navigator.modelContext` when the browser supports WebMCP
+  (Chrome 146+, Cloudflare Browser Run). Feature-detected — other
+  browsers are unaffected.
+- **Site MCP Server pack** (custom domains behind the Cloudflare proxy):
+  Agent Readiness → WebMCP → enable the Site MCP Server pack. The
+  edge-injected bridge (`data-mcp-url="/mcp"`) discovers tools via
+  `tools/list` and proxies `tools/call` with `credentials: same-origin`,
+  which the session-cookie path on `POST /mcp` accepts. No origin
+  changes needed.
 
 ## The agent fast loop
 

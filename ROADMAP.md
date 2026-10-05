@@ -13,9 +13,12 @@ Shipped and tested (405 vitest, tsc clean, seats dry-run green):
   + `SEATS_V2` binding (additive; V1 keeps serving in-flight jobs, rollback
   is a binding swap), same-`migrations` declaration per the migration guide,
   alarm keep-alive, `snapshotContainer`/restore plumbing, SSH enabled,
-  `compatibility_date 2026-10-01`. Still open: Sandbox SDK 1.0 utils
-  (Files/S3Mount/DirectoryBackup), `container.monitor()` pending-I/O
-  keep-alive, Streamline local-Docker dev mode.
+  `compatibility_date 2026-10-01`. Shipped since: `container.monitor()`
+  pending-I/O keep-alive (lazy `docker wait` race, exit 125 fail-fast),
+  Streamline local-Docker dev mode (`apps/seats/src/local-docker.ts`),
+  warm dev boxes (`cli devbox` + `cli mcp-serve`, snapshot lineage via
+  `docker commit`). Still open: Sandbox SDK 1.0 utils
+  (Files/S3Mount/DirectoryBackup).
 - **Phase 1**: monitors, JUnit analytics, `cli cache`/`cli usage`,
   Turnstile, tracing, Issues flag, D1 free-tier audit
   (`docs/d1-free-tier-audit.md` — found and fixed seat report caps +
@@ -24,8 +27,9 @@ Shipped and tested (405 vitest, tsc clean, seats dry-run green):
 - **Phase 2**: snapshot-backed caches (image-lineage keyed, fail-fast
   degraded handling), retain-on-failure (`retain-on-failure` YAML key,
   30-min TTL alarm, SSH), per-job egress report (measured R2 transfers
-  + interface delta; `/v1/runs/:id/egress`, digest, dashboard,
-  `cli egress`), fair-share caps + deterministic simulator
+  + interface delta + LD_PRELOAD per-domain rows; `/v1/runs/:id/egress`,
+  digest, dashboard, `cli egress`), fair-share caps + deterministic
+  simulator
   (`fairness.ts`, `/v1/admin/queue`, `cli queue`), peak-RSS sampling,
   new admin settings UI. Still open: named warm dev boxes + file sync,
   per-domain outbound interception, Artifacts mirroring, runtime priors,
@@ -34,9 +38,15 @@ Shipped and tested (405 vitest, tsc clean, seats dry-run green):
   or D1, off by default), Web Search grounding for triage (opt-in
   `triage_web_search`, needs a gateway), MCP `2026-07-28` negotiation +
   `server/discover`, WriteGuard tiers + attributed audit + optional
-  write-confirm gate. Still open: model refresh evals, `createMcpHandler` /
-  OAuth Provider migration, WebMCP, CI analytics sinks, HealingAgent,
-  Forge, agent-traces, Workflows spike, grants application.
+  write-confirm gate. Shipped after: SDK `createMcpHandler` transport +
+  OAuth Provider v1 (dynamic clients, consent, dual-auth with legacy API
+  tokens, D1-backed store, no new infrastructure), WebMCP dashboard
+  tools (session-cookie path + 5 native page tools), CI analytics
+  sinks (Analytics Engine hot path + Basin cold path + SQL cookbook),
+  HealingAgent self-heal runs (opt-in toggle, draft PR + verify run),
+  evaluation spikes (K2/Forge/Workflows verdicts in `docs/SPIKES.md`).
+  Still open: model refresh evals, `openapi.yaml`, agent-traces,
+  grants application.
 
 ## Strategy note: @cloudflare/ci and where Flare wins
 
@@ -111,11 +121,11 @@ Ship while Phase 0 bakes. Pure Worker + D1 + R2 + cron:
   (`branch:main level:error (failure OR panic) -"econn refused"` compiled
   to SQL, materialized level column, row TTLs). Scale-out is Logpush (all
   plans, usage-based, Sept 30) → R2/Basin, or K2 streams (below).
-- **K2 event streams spike** (public beta Oct 1, Workers Paid, free during
-  beta): partitioned durable log on R2 with subscriptions + fan-out
-  consumers. Candidate backbone for the log/event pipeline (one stream,
-  many consumers: search index, analytics, webhooks). Queues stay the work
-  primitive (per-item retries/DLQ); K2 is for high-scale data movement.
+- **K2 event streams spike** (spiked 2026-10-05, see `docs/SPIKES.md`):
+  no adoption. K2 (public beta Oct 1, Paid only, ~1s p99 produce) is
+  Basin's ingestion layer; Flare's consumers all run in-Worker, Queues
+  keep the retry/DLQ semantics runners need, and the Basin binding
+  already rides K2. Revisit for external event consumers (webhooks).
 - **Turnstile on auth forms** (Spin GA): harden login/register/bootstrap
   alongside `ratelimit.ts`; Spin's agent-driven install fits our workflow.
 - **Workers tracing APIs** (Sept 25: `getActiveSpan`, `recordException`,
@@ -160,14 +170,21 @@ Needs Phase 0 done:
   UX: instant hostname, identity-keyed access (GitHub keys), grace period
   on teardown when a session is active.
 - **Per-job egress observability + policy**: Blacksmith built this with
-  eBPF + a DNS proxy; our equivalent is the Sandbox SDK outbound handler
-  (per-hostname Worker handling, allow/deny lists, credential injection
-  that never enters the sandbox). Ship a per-job domain+bytes egress
-  report first, then opt-in per-repo domain allowlists (their Part 2 is
-  still unannounced — we can ship first).
-- **Artifacts repo mirroring** (open beta Oct 1, Paid-only, billing
-  mid-Oct): mirror source repos into Git-speaking Artifacts repos; seats
-  fetch only new commits; evaluate push-event subscriptions
+  eBPF + a DNS proxy. Shipped the report first via a passive
+  `LD_PRELOAD` shim (`apps/seats/egress.c`, compiled into the seat
+  image): per-domain req/resp bytes in `job_egress` next to the `r2:*`
+  and `(interface)` rows — zero traffic-path change, staging-validated
+  across curl/Node/Python with byte-exact counts. Still open: opt-in
+  per-repo domain allowlists (their Part 2 is still unannounced — we
+  can ship first), via the Sandbox SDK outbound handler or shim-side
+  enforcement (needs staging validation either way).
+- **Artifacts repo mirroring** (private beta, Paid-only): shipped
+  seats-side mirror preference (`ARTIFACTS_MIRROR_REMOTE` template +
+  read-scoped token, mirror first with GitHub fallback, fail-closed
+  template check, encoded-token scrubbing) — staging-validated
+  (`mirror-canary-job-02/04`). Still manual: per-repo provisioning +
+  yearly token rotation. Still open: worker-minted per-job tokens via
+  the `ARTIFACTS` binding, push-event subscriptions
   (`cf.artifacts.repo.pushed` → queue → workflow) as a trigger source.
   Optional: enter the "next Git platform" competition (deadline Oct 14,
   MIT/Apache/BSD + demo video; first prize $25k credits + Connect stage).
@@ -180,14 +197,26 @@ Needs Phase 0 done:
   add per-org/repo concurrency shares so one tenant's burst can't starve
   others, and a deterministic simulator to validate policy changes
   (their words: "operating the software comes with few surprises").
-- **Workers VPC for seats** (open beta): private access to databases/internal
-  APIs as the Cloudflare-native answer where Blacksmith sells static IPs.
-  True static egress IPs have no Containers equivalent — that stays a
-  BYO-runner story.
-- **Browser-test jobs (later in phase)**: Browser Run + Kitesurf
-  (3–7x cheaper than Chromium on CPU/mem, CDP/Playwright/Puppeteer/MCP,
-  `env.BROWSER.quickAction()` binding) as the engine for screenshot/
-  e2e-test steps and for verifying our own preview deploys.
+- **Workers VPC for seats** (open beta, assessed Oct 5 2026 — blocked
+  on platform): `vpc_services`/`vpc_networks` are Worker bindings
+  (`env.BINDING.fetch()` via Tunnel/Mesh) with no container attachment;
+  seat containers egress independently, so steps cannot reach private
+  origins through it. Option when that lands: attach seats to the VPC
+  and staging-validate private checkout + step egress. Until then,
+  private origins stay a BYO-runner story (run the runner inside your
+  network), like static egress IPs, which have no Containers
+  equivalent.
+- **Browser-test jobs**: shipped `browser-checks` (seats-only YAML
+  key, max 10/job, https-only, ≥1 assertion required): the seat DO
+  drives Browser Rendering via the `BROWSER` binding
+  (`@cloudflare/puppeteer`) after successful steps, asserts
+  title/text substrings, stores `browser-<name>.png` screenshots as
+  artifacts, and fails the job on any miss. BYO runners and
+  `cli local` fail closed (never silent green); missing binding
+  fails with a configuration pointer. Staging-validated
+  (`browser-canary-job-02/03`, incl. a live assertion-miss and a
+  real PNG in R2). Still open: preview-deploy self-verification
+  jobs, richer actions (click/type/wait) if demand appears.
 
 ## Phase 3 — AI + agent surface + scale
 
@@ -208,14 +237,16 @@ Needs Phase 0 done:
 - **Web Search API** (beta Oct 2, via the AI binding or REST, list price,
   no markup, BYOK): ground triage and `generate` in live docs/error
   search instead of training cutoff.
-- **MCP upgrade**: protocol `2024-11-05` → `2026-07-28` (stateless, no
-  handshake; `Mcp-Method`/`Mcp-Name` headers; `server/discover`;
-  MRTR elicitation; CIMD preferred, DCR deprecated, removal after summer
-  2027) via `createMcpHandler` (Agents SDK, now in the official TS SDK,
-  Web Standards transport) + Workers OAuth Provider v1 (Oct 1) alongside
+- **MCP upgrade** (shipped 2026-10-05): protocol `2024-11-05` →
+  `2026-07-28` via the official TS SDK's `createMcpHandler` (stateless
+  per-request servers, Web Standards transport — the Agents SDK wrapper
+  was evaluated and skipped: DO sessions, `node:async_hooks`, and client
+  code add nothing for a stateless server) + Workers OAuth Provider v1
+  (role-based AS+RS, dynamic client registration, consent page,
+  `flare:read`/`flare:run`/`offline_access` scopes) alongside
   Bearer tokens. Serve old + new stateless clients from one route during
-  migration. MCP server portals GA (Sept 24) is the enterprise
-  distribution path.
+  migration on a D1-backed store (`oauth_kv`, zero new infrastructure).
+  MCP server portals GA (Sept 24) is the enterprise distribution path.
 - **WriteGuard pattern for our MCP tools**: risk tiers per tool
   (read-only vs `dispatch_run`/`rerun` as contained-write/critical),
   agent attribution on writes, async scrubbed audit events, server-side
@@ -226,34 +257,46 @@ Needs Phase 0 done:
   tool returns a small stable schema (field names + broad types), never
   raw unbounded payloads — digests already do this; extend to all tools
   so agents stop guessing fields.
-- **WebMCP for the dashboard**: the Site MCP Server pack proxies a site's
-  own `/mcp` endpoint to browser agents with zero code (dev preview).
-  Our dashboard + `/mcp` endpoint is a natural fit once deployed on CF.
-- **CI analytics**: Analytics Engine custom metrics from the worker,
-  queryable via the unified SQL API (beta) + native Worker binding for
-  customer-facing dashboards and billing workflows; Basin (GA Oct 1:
-  Pipelines → Catalog → SQL on Iceberg/R2, zero egress) as the
-  log/telemetry sink if D1 FTS outgrows; AI Search (GA Oct 1, billing
-  Nov 1, free embedding/rerank on default models) over run history as a
-  semantic-search experiment with a public `/mcp` endpoint option.
-- **Self-healing runs (HealingAgent pattern)**: on failure, optional
-  agent step that proposes a fix on a new branch (source run stays
-  failed; fix verified before surfacing). Triage is step one; this is
-  step two. Keep human review mandatory.
-- **Forge evaluation** (Apache-2.0, open source): generate CLI, SDK,
-  docs, and MCP surfaces from an OpenAPI spec of our API, with
-  per-PR preview builds. Our hand-rolled CLI/SDK/MCP triple is exactly
-  the drift Forge eliminates.
+- **WebMCP for the dashboard** (shipped 2026-10-05): session-cookie
+  path on `POST /mcp` for same-origin browser callers (the Site MCP
+  Server pack proxies with `credentials: same-origin`; CSRF gates hold)
+  plus five native `modelContext` page tools (reads for everyone,
+  dispatch/rerun for admins), feature-detected. Pack toggle documented
+  for custom domains; native tools work everywhere including workers.dev.
+- **CI analytics** (shipped 2026-10-05, see `docs/ANALYTICS.md`):
+  Analytics Engine hot path (`run.dispatched`/`run.terminal`/
+  `job.terminal`, documented slot schema + SQL cookbook) emitted by
+  both executors, plus a Basin Pipeline cold path (`CI_EVENTS` stream,
+  optional paid-plan binding provisioned best-effort by setup) landing
+  the same events as Iceberg rows for Basin SQL. AI Search evaluated
+  and deferred: it is a site/document RAG pipeline, not a metrics
+  sink — the future fit is retrieval over the triage/log corpus once
+  that corpus exists (billing from Nov 1).
+- **Self-healing runs (HealingAgent pattern)** (shipped 2026-10-05,
+  see `docs/HEALING.md`): opt-in `heal_on_failure` toggle; failures
+  file an atomic claim, the scheduled tick drains it (model proposes
+  full-file fixes, Git Data API pushes `flare-heal/*`, draft PR
+  opens, verification run dispatches with `source: heal:*`). Source
+  run stays failed; no heal loops; human merge mandatory. Needs App
+  `contents:write` (manifest bumped; older installs must re-accept).
+- **Forge evaluation** (spiked 2026-10-05, see `docs/SPIKES.md`):
+  spec first, pipeline later. Forge (Sept 28, Apache-2.0) is young
+  (`cf` CLI only in prod); Flare has no OpenAPI spec, and our
+  CLI/MCP surfaces are bespoke, not REST-mapped. Next: author
+  `openapi.yaml` for the v1 API (docs + validation + agent tools on
+  its own); re-evaluate Forge once the spec exists.
 - **Agent-traces for agent features**: emit OTel GenAI-convention spans
   (Agents view supports Think/Flue/AI SDK today, raw OTel soon) so warm
   boxes and heal-agents are replayable/debuggable.
 - **Handle busy-rejection**: Workers AI sync inference now rejects when
   busy (Sept 17) — confirm triage/generate degrade-to-skip covers it.
-- **Workflows as orchestration (spike, strengthened)**: exports-declared
-  workflows, `.subscribe()` events, 25k steps/instance, 50k concurrent
-  instances, Artifacts event triggers. The CI SDK proves the pattern;
-  our D1+queues machinery works — evaluate a Workflow-backed executor
-  path, don't adopt yet.
+- **Workflows as orchestration** (spiked 2026-10-05, see
+  `docs/SPIKES.md`): don't migrate the core. External executors
+  (BYO poll, seats DO+container) can't run Workflow steps, D1 is the
+  SQL read model the dashboard/CLI/API share, and free-tier steps
+  don't cover real CI. The `@cloudflare/ci` pattern fits
+  Artifacts-first pipelines, not GitHub-native YAML. Workflows stay
+  an option for future self-contained orchestration only.
 - **`@cloudflare/computer` watch** (early preview): isolate-first agent
   runtime (just-bash in Dynamic Workers, FUSE-synced SQLite workspace,
   container only when needed, <10% container goal). Long-term this could

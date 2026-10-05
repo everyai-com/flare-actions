@@ -37,6 +37,8 @@ const run: RunRow = {
   source: null,
   pr_number: null,
   pr_comment_id: null,
+  heal_branch: null,
+  heal_pr_url: null,
   status: "failure",
   created_at: "2026-10-01T09:00:00.000Z",
   updated_at: "2026-10-01T09:02:30.000Z",
@@ -58,6 +60,7 @@ function job(over: Partial<JobRow> = {}): JobRow {
     started_at: "2026-10-01T09:00:00.000Z",
     finished_at: "2026-10-01T09:02:00.000Z",
     retained_until: null,
+    prior_ms: 0,
     created_at: "2026-10-01T09:00:00.000Z",
     updated_at: "2026-10-01T09:02:00.000Z",
     ...over,
@@ -141,8 +144,6 @@ class MemDb implements Db {
             return { meta: { changes: 0 } };
           }
           if (norm.startsWith("DELETE FROM monitor_fires WHERE fired_at")) {
-            let n = 0;
-            void n;
             return { meta: { changes: 0 } };
           }
           if (norm.startsWith("DELETE FROM monitors")) {

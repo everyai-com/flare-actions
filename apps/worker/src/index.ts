@@ -17,7 +17,6 @@ import {
   deleteSession,
   deleteUser,
   deleteUserSessions,
-  findLiveToken,
   flakyStats,
   getJob,
   getJobsForRun,
@@ -61,13 +60,8 @@ import {
   updateRunningJob,
   usageStats,
 } from "./db";
-import {
-  bytesEqual,
-  getInstallationToken,
-  mintAppJwt,
-  resolveRefToSha,
-  verifyGitHubSignature,
-} from "./github";
+import { commitFilesToNewBranch, getDefaultBranch, getInstallationToken, getRepoTreePaths, mintAppJwt, openDraftPullRequest, resolveRefToSha, verifyGitHubSignature } from "./github";
+import { processHealClaims, requestHeal } from "./heal";
 import { DASHBOARD_HTML } from "./dashboard";
 import { ensureSchema } from "./schema";
 import {
@@ -79,7 +73,7 @@ import {
   validateSecretName,
   validateSecretValue,
 } from "./secrets";
-import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseFairSharePerRepo, parseMcpWriteConfirm, parseTriageWebSearch, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
+import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseFairSharePerRepo, parseHealOnFailure, parseMcpWriteConfirm, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
 import {
   addAllowedUser,
   beginOAuth,
@@ -129,10 +123,19 @@ import {
   ipThrottleKey,
   recordAuthFailure,
 } from "./ratelimit";
-import { hashToken, newTokenValue, normalizeRepos, normalizeScopes, parseRepos, parseScopes, scopesAllow } from "./tokens";
+import {
+  authIdentityFromToken,
+  hashToken,
+  newTokenValue,
+  normalizeRepos,
+  normalizeScopes,
+  type AuthScope,
+} from "./tokens";
 import { badgeSvg } from "./badge";
+import { emitJobTerminal, emitRunDispatched } from "./analytics";
+import { basinJobTerminal, basinRunDispatched, basinSink, sendBasin, type BasinSink } from "./basin";
 import { jobDurationMs, summarizeRunCost } from "./cost";
-import { runGenerate } from "./generate";
+import { runGenerateWithStatus } from "./generate";
 import { handleCacheGet, handleCachePut, listCacheEntries, purgeCachePrefix } from "./cache";
 import { deleteJobArtifacts, handleArtifactGet, handleArtifactPut, listRunArtifacts, pruneOldCache } from "./artifacts";
 import { cronMatches, validateCron } from "./cron";
@@ -145,13 +148,35 @@ import {
   validateMonitorInput,
 } from "./monitors";
 import { MAX_JUNIT_BYTES, parseJUnit } from "./junit";
+import { compileLogQuery, indexJobLog, searchLogs } from "./search";
+import { lookupPriorMs, recordRuntimePrior } from "./priors";
+import { billableWindow, fetchBillableUsage, summarizeBillableUsage } from "./billing";
+import { TRIAGE_MODEL } from "./triage";
 import { upsertPrComment } from "./prcomment";
 import { deleteSource, handleSourceGet, handleSourcePut, pruneOldSources, SOURCE_ID_RE } from "./sources";
 import { buildRunDigest } from "./digest";
 import { annotateSpan, recordSpanException } from "./trace";
 import { checkTurnstile, getTurnstileSiteKey } from "./turnstile";
 import { waitForRunTerminal } from "./wait";
-import { handleMcpMessage, mcpDiscovery } from "./mcp";
+import { createMcpHandler } from "@modelcontextprotocol/server";
+import type { OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
+import { buildMcpServer, mcpDiscovery } from "./mcp";
+import {
+  handleAuthorizeGet,
+  handleAuthorizePost,
+  listOAuthGrants,
+  oauthUserId,
+  principalFromCtx,
+  principalFromSession,
+  type AuthorizeContext,
+  type McpPrincipalProps,
+  type OAuthSession,
+} from "./mcp-oauth";
+import { D1KV } from "./oauth-kv";
+// oauth-server holds the provider runtime (`cloudflare:` modules), so it
+// loads lazily inside the OAuth routes — the static graph stays
+// runtime-free for vitest (same split as seat.ts/seat-do.ts).
+import type { OAuthEnv } from "./oauth-server";
 import {
   beginConnect,
   buildManifest,
@@ -165,41 +190,7 @@ import {
   validateAppName,
 } from "./connect";
 
-// Secrets are set via `wrangler secret put` / `.dev.vars`, never in
-// wrangler.jsonc. `wrangler types` may or may not include them in the
-// generated Env depending on whether `.dev.vars` exists, so intersect
-// as optional: this compiles in both cases. Run `npm run types` to
-// regenerate bindings after config changes.
-interface WorkerSecrets {
-  GITHUB_WEBHOOK_SECRET?: string;
-  RUNNER_TOKEN?: string;
-  ADMIN_TOKEN?: string;
-  GITHUB_APP_ID?: string;
-  GITHUB_PRIVATE_KEY?: string;
-  // Optional sender override for run emails; D1 notify_from_email fills
-  // the gap (env wins, like every other credential).
-  NOTIFY_FROM_EMAIL?: string;
-  // Base64 32-byte data key for repo secrets; when absent a D1-held
-  // key is auto-generated (works out of the box, weaker at-rest story).
-  SECRETS_KEY?: string;
-  // Turnstile bot defense for the auth endpoints; D1 settings fill
-  // the gap (env wins, like every other credential). Unset = off.
-  TURNSTILE_SITE_KEY?: string;
-  TURNSTILE_SECRET_KEY?: string;
-  // AI Gateway id fronting Workers AI calls (triage/generate); D1
-  // ai_gateway_id fills the gap (env wins). Unset = direct inference.
-  AI_GATEWAY_ID?: string;
-  // "1" forces Web Search grounding for triage on (D1 triage_web_search
-  // decides otherwise; anything else = D1 decides).
-  TRIAGE_WEB_SEARCH?: string;
-  // R2 bucket for cache + artifacts; absent on forks that skipped it.
-  CACHE?: R2Bucket;
-  // No seats binding here by design: wakes travel over the SEAT_QUEUE
-  // producer (a plain queue binding like RUN_QUEUE), so the main worker
-  // never couples — at deploy or runtime — to the seats worker.
-}
-
-type WorkerEnv = Env & WorkerSecrets;
+import type { WorkerEnv } from "./env";
 
 interface QueueJobMessage {
   runId: string;
@@ -224,17 +215,6 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
-async function timingSafeEqualStr(a: string, b: string): Promise<boolean> {
-  const enc = new TextEncoder();
-  const [da, db] = await Promise.all([
-    crypto.subtle.digest("SHA-256", enc.encode(a)),
-    crypto.subtle.digest("SHA-256", enc.encode(b)),
-  ]);
-  return bytesEqual(new Uint8Array(da), new Uint8Array(db));
-}
-
-type AuthScope = "admin" | "runner" | "readonly";
-
 function getBearer(request: Request): string | null {
   const header = request.headers.get("Authorization");
   if (!header || !header.startsWith("Bearer ")) return null;
@@ -249,20 +229,7 @@ function getBearer(request: Request): string | null {
 async function authIdentity(request: Request, env: WorkerEnv): Promise<{ scope: AuthScope; actor: string; repos: string[] } | null> {
   const bearer = getBearer(request);
   if (bearer) {
-    if (env.ADMIN_TOKEN && (await timingSafeEqualStr(bearer, env.ADMIN_TOKEN))) {
-      return { scope: "admin", actor: "break-glass", repos: [] };
-    }
-    if (env.RUNNER_TOKEN && (await timingSafeEqualStr(bearer, env.RUNNER_TOKEN))) {
-      return { scope: "runner", actor: "env:runner", repos: [] };
-    }
-    const row = await findLiveToken(env.DB, await hashToken(bearer));
-    if (!row) return null;
-    const scopes = parseScopes(row.scopes);
-    const repos = parseRepos(row.repos ?? "");
-    if (scopesAllow(scopes, "admin")) return { scope: "admin", actor: `token:${row.id}`, repos };
-    if (scopesAllow(scopes, "run")) return { scope: "runner", actor: `token:${row.id}`, repos };
-    if (scopesAllow(scopes, "read")) return { scope: "readonly", actor: `token:${row.id}`, repos };
-    return null;
+    return authIdentityFromToken(bearer, { db: env.DB, adminToken: env.ADMIN_TOKEN, runnerToken: env.RUNNER_TOKEN });
   }
   const sessionId = parseSessionCookie(request);
   if (!sessionId) return null;
@@ -287,6 +254,73 @@ async function authScope(request: Request, env: WorkerEnv): Promise<AuthScope | 
 async function isAdminRequest(request: Request, env: WorkerEnv): Promise<boolean> {
   return (await authScope(request, env)) === "admin";
 }
+
+// Dashboard session resolved for the OAuth consent page (logged-out
+// users get the login prompt, not an error).
+async function oauthSession(request: Request, env: WorkerEnv): Promise<OAuthSession | null> {
+  const sessionId = parseSessionCookie(request);
+  if (!sessionId) return null;
+  const session = await getSession(env.DB, sessionId);
+  if (!session || Date.parse(session.expires_at) <= Date.now()) return null;
+  const kind = session.kind === "email" ? "email" : "github";
+  return {
+    userId: oauthUserId(kind, session.github_user),
+    login: session.github_user,
+    actor: `${kind}:${session.github_user}`,
+    isAdmin: session.is_admin === 1,
+  };
+}
+
+// MCP serving for one validated principal (shared by the resource
+// server and the same-origin session-cookie path below).
+async function serveMcpRequest(
+  request: Request,
+  env: WorkerEnv,
+  props: McpPrincipalProps,
+  canWrite: boolean,
+  basin?: BasinSink,
+): Promise<Response> {
+  const handler = createMcpHandler(() =>
+    buildMcpServer({
+      db: env.DB,
+      ai: env.AI,
+      canWrite,
+      gatewayId: env.AI_GATEWAY_ID,
+      agent: request.headers.get("X-Flare-Agent") ?? request.headers.get("User-Agent") ?? undefined,
+      dispatchRun: async (input) => {
+        if (!repoAllowed({ repos: props.repos }, input.repo)) throw new Error("token is not scoped to that repo");
+        const out = await dispatchRun(env, { repo: input.repo, sha: input.sha, ref: input.ref ?? "", pipeline: input.pipeline }, basin);
+        await audit(env.DB, props.actor, "run.dispatch", out.runId);
+        for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
+        return { runId: out.runId, jobIds: out.jobIds };
+      },
+      rerunJob: async (runId, jobId) => {
+        const out = await rerunJobAndQueue(env, runId, jobId, basin);
+        if (out.ok) {
+          await audit(env.DB, props.actor, "job.rerun", jobId);
+          await wakeSeat(env, jobId);
+        }
+        return out;
+      },
+      waitForRun: async (runId, timeoutMs) => {
+        const out = await waitForRunTerminal(env.DB, runId, { timeoutMs });
+        return { timedOut: out ? out.timedOut : true };
+      },
+      digestRun: async (runId) => buildRunDigest(env.DB, runId),
+    }),
+  );
+  return handler.fetch(request);
+}
+
+// MCP tool handler behind the OAuth resource server: the Bearer token
+// (OAuth access token or legacy API token) arrives validated, with the
+// principal in ctx.props and its scopes in ctx.auth.
+const mcpApiHandler = {
+  async fetch(request: Request, env: OAuthEnv, ctx: OAuthResourceContext<McpPrincipalProps>): Promise<Response> {
+    const { props, canWrite } = principalFromCtx(ctx);
+    return serveMcpRequest(request, env, props, canWrite, basinSink(env, ctx));
+  },
+};
 
 // Claimed once the first admin of either kind exists; before that,
 // Connect and email bootstrap stay open so a fresh deploy can start
@@ -423,6 +457,7 @@ async function createRunAndFanOut(
     source?: string | null;
     prNumber?: number | null;
   },
+  basin?: BasinSink,
 ): Promise<{ runId: string; jobIds: string[]; queuedIds: string[]; blocked: number }> {
   const runId = crypto.randomUUID();
   await createRun(env.DB, {
@@ -442,7 +477,7 @@ async function createRunAndFanOut(
     const jobId = crypto.randomUUID();
     const base = job.base ?? job.name;
     if (job.group && job.cancelInProgress) {
-      const cancelled = await cancelGroupJobs(env.DB, input.repo, job.group, runId);
+      const cancelled = await cancelGroupJobs(env.DB, input.repo, job.group, runId, env.ANALYTICS, basin);
       if (cancelled.length > 0) log("info", "concurrency cancelled superseded jobs", { group: job.group, cancelled });
     }
     const needsBlocked = (job.needs?.length ?? 0) > 0;
@@ -450,12 +485,14 @@ async function createRunAndFanOut(
       !!job.group && !job.cancelInProgress && (await hasActiveGroupJob(env.DB, input.repo, job.group));
     const status = needsBlocked || groupBlocked ? "blocked" : "queued";
     if (status === "blocked") blocked += 1;
+    const priorMs = await lookupPriorMs(env.DB, input.repo, job.name).catch(() => 0);
     await createJob(env.DB, jobId, runId, {
       name: job.name,
       definition: serializeDefinition(job, base),
       labels: (job.labels ?? []).join(","),
       status,
       priority: input.priority ?? 0,
+      priorMs,
     });
     jobIds.push(jobId);
     if (status === "queued") {
@@ -463,7 +500,7 @@ async function createRunAndFanOut(
       await env.RUN_QUEUE.send({ runId, jobId, repo: input.repo, sha: input.sha } satisfies QueueJobMessage);
     }
   }
-  await rollupRunStatus(env.DB, runId);
+  await rollupRunStatus(env.DB, runId, env.ANALYTICS, basin);
   return { runId, jobIds, queuedIds, blocked };
 }
 
@@ -545,7 +582,7 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
       installationId,
       jobs,
       prNumber,
-    });
+    }, basinSink(env, ctx));
 
     // Post-response maintenance never blocks the webhook: bounded
     // retention prune plus the stuck-claim sweep (dead executors get
@@ -639,7 +676,7 @@ async function handleStatusCallback(
       log("warn", "status report dropped: job not running", { runId, jobId, status: body.status });
       return json({ ok: true, dropped: true });
     }
-    await rollupRunStatus(env.DB, runId);
+    await rollupRunStatus(env.DB, runId, env.ANALYTICS, basinSink(env, ctx));
     // Same post-response maintenance as webhooks: dispatch-driven
     // instances with no push traffic still sweep stuck claims.
     ctx.waitUntil(
@@ -657,11 +694,54 @@ async function handleStatusCallback(
     log("info", "status updated", { runId, jobId, status: body.status });
     ctx.waitUntil(annotateSpan({ "run.id": runId, "job.id": jobId, status: body.status }));
     if (isTerminal(body.status)) {
-      const promoted = await promoteBlockedJobs(env.DB, env.RUN_QUEUE, run.repo, (job) => wakeSeat(env, job.jobId));
+      const basin = basinSink(env, ctx);
+      const promoted = await promoteBlockedJobs(env.DB, env.RUN_QUEUE, run.repo, (job) => wakeSeat(env, job.jobId), env.ANALYTICS, basin);
       if (promoted.length > 0) log("info", "blocked jobs promoted", { runId, promoted });
       // Result monitors ride the terminal transition (best-effort, never blocking).
       const finishedJob = await getJob(env.DB, jobId);
-      if (finishedJob) ctx.waitUntil(evaluateResultMonitors(env.DB, env, run, finishedJob));
+      if (finishedJob) {
+        emitJobTerminal(env.ANALYTICS, {
+          repo: run.repo,
+          runId,
+          jobName: finishedJob.name,
+          status: body.status,
+          durationMs: jobDurationMs(finishedJob) ?? 0,
+          executor: "runner",
+          attempts: finishedJob.attempts,
+        });
+        if (basin) {
+          sendBasin(basin, basinJobTerminal({
+            repo: run.repo,
+            runId,
+            jobName: finishedJob.name,
+            status: body.status,
+            durationMs: jobDurationMs(finishedJob) ?? 0,
+            executor: "runner",
+            attempts: finishedJob.attempts,
+          }));
+        }
+        ctx.waitUntil(evaluateResultMonitors(env.DB, env, run, finishedJob));
+      }
+      if (finishedJob?.log) {
+        ctx.waitUntil(
+          indexJobLog(env.DB, {
+            jobId,
+            runId,
+            repo: run.repo,
+            branch: run.branch,
+            log: finishedJob.log,
+          }).catch((err: unknown) => log("warn", "log index failed", { runId, jobId, error: String(err) })),
+        );
+      }
+      // Runtime prior: fold real durations (success/failure only —
+      // cancels and infra errors carry no signal) into the hourly EMA.
+      if (finishedJob && (body.status === "success" || body.status === "failure")) {
+        const durationMs = jobDurationMs(finishedJob);
+        if (durationMs !== null && finishedJob.finished_at) {
+          const prior = { repo: run.repo, name: finishedJob.name, finishedAt: finishedJob.finished_at, durationMs };
+          ctx.waitUntil(recordRuntimePrior(env.DB, prior).catch(() => undefined));
+        }
+      }
     }
     // Notify on the transition into terminal (re-checked after promote, so
     // skip-terminalized runs mail too). A callback on an already-terminal
@@ -746,8 +826,13 @@ async function handleStatusCallback(
         triageAndStore(env.DB, env.AI, run, jobId, jobName, cappedLog, result, {
           gatewayId: env.AI_GATEWAY_ID,
           webSearch: env.TRIAGE_WEB_SEARCH === "1" ? true : undefined,
+          model: env.TRIAGE_MODEL,
         }),
       );
+      // Self-heal request: cheap guards + atomic claim; the scheduled
+      // tick drains the queue (inference + GitHub writes never ride
+      // the status callback).
+      ctx.waitUntil(requestHeal(env.DB, runId, jobId));
     }
     return json({ ok: true });
   } catch (err) {
@@ -811,6 +896,7 @@ export function validateScheduleInput(
 async function dispatchRun(
   env: WorkerEnv,
   input: { repo: string; sha: string; ref: string; pipeline?: string; event?: string; priority?: number; source?: string },
+  basin?: BasinSink,
 ): Promise<{ runId: string; jobIds: string[]; queuedIds: string[] }> {
   // Dispatch accepts a SHA, branch, or tag: non-SHA refs resolve to the
   // head commit (installation token when the repo has App history, else
@@ -862,8 +948,12 @@ async function dispatchRun(
     jobs,
     priority: input.priority ?? 0,
     source: input.source ?? null,
-  });
+  }, basin);
   log("info", "run dispatched", { runId, repo: input.repo, sha, event: input.event ?? "dispatch", source: input.source ?? null });
+  emitRunDispatched(env.ANALYTICS, { repo: input.repo, runId, event: input.event ?? "dispatch", jobCount: jobIds.length });
+  if (basin) {
+    sendBasin(basin, basinRunDispatched({ repo: input.repo, runId, event: input.event ?? "dispatch", jobCount: jobIds.length }));
+  }
   return { runId, jobIds, queuedIds };
 }
 
@@ -871,12 +961,13 @@ async function rerunJobAndQueue(
   env: WorkerEnv,
   runId: string,
   jobId: string,
+  basin?: BasinSink,
 ): Promise<{ ok: boolean; error?: string }> {
   const job = await getJob(env.DB, jobId);
   if (!job || job.run_id !== runId) return { ok: false, error: "job not found" };
   const reset = await rerunJob(env.DB, jobId);
   if (!reset) return { ok: false, error: "job not found" };
-  await rollupRunStatus(env.DB, runId);
+  await rollupRunStatus(env.DB, runId, env.ANALYTICS, basin);
   await env.RUN_QUEUE.send({ runId, jobId, repo: reset.repo, sha: reset.sha } satisfies QueueJobMessage);
   return { ok: true };
 }
@@ -972,6 +1063,10 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       aiGatewayId?: unknown;
       mcpWriteConfirm?: unknown;
       triageWebSearch?: unknown;
+      healOnFailure?: unknown;
+      billingApiToken?: unknown;
+      cloudflareAccountId?: unknown;
+      triageModel?: unknown;
     };
     try {
       body = (await request.json()) as typeof body;
@@ -989,9 +1084,14 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
     const hasGateway = body.aiGatewayId !== undefined;
     const hasWriteConfirm = body.mcpWriteConfirm !== undefined;
     const hasWebSearch = body.triageWebSearch !== undefined;
+    const hasHeal = body.healOnFailure !== undefined;
+    const hasBillingToken = body.billingApiToken !== undefined;
+    const hasAccountId = body.cloudflareAccountId !== undefined;
+    const hasTriageModel = body.triageModel !== undefined;
     if (
       !hasWebhook && !hasNotifyFrom && !hasNotifyMode && !hasNotifyWebhook && !hasBadgeHidden &&
-      !hasTurnstileSite && !hasTurnstileSecret && !hasFairShare && !hasGateway && !hasWriteConfirm && !hasWebSearch
+      !hasTurnstileSite && !hasTurnstileSecret && !hasFairShare && !hasGateway && !hasWriteConfirm && !hasWebSearch &&
+      !hasHeal && !hasBillingToken && !hasAccountId && !hasTriageModel
     ) {
       return json({ error: "no settings provided" }, 400);
     }
@@ -1111,6 +1211,59 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       await setSetting(env.DB, SETTING_KEYS.triageWebSearch, parsed.on ? "1" : "0");
       await audit(env.DB, ident.actor, "settings.triage_web_search", parsed.on ? "on" : "off");
     }
+    if (hasHeal) {
+      const parsed = parseHealOnFailure(body.healOnFailure);
+      if ("error" in parsed) return json({ error: parsed.error }, 400);
+      await setSetting(env.DB, SETTING_KEYS.healOnFailure, parsed.on ? "1" : "0");
+      await audit(env.DB, ident.actor, "settings.heal_on_failure", parsed.on ? "on" : "off");
+      log("info", "heal on failure toggled", { on: parsed.on });
+    }
+    if (hasBillingToken) {
+      if (env.BILLING_API_TOKEN) {
+        return json({ error: "billing token managed via environment" }, 409);
+      }
+      const value = body.billingApiToken;
+      if (value === null || value === "") {
+        await setSetting(env.DB, SETTING_KEYS.billingApiToken, "");
+        await audit(env.DB, ident.actor, "settings.billing_token", "cleared");
+      } else {
+        const err = validateBillingApiToken(value);
+        if (err) return json({ error: err }, 400);
+        const key = await resolveSecretsKey(env.DB, env.SECRETS_KEY);
+        await setSetting(env.DB, SETTING_KEYS.billingApiToken, await encryptSettingValue(key, value as string));
+        await audit(env.DB, ident.actor, "settings.billing_token", "set");
+      }
+    }
+    if (hasAccountId) {
+      if (env.CLOUDFLARE_ACCOUNT_ID) {
+        return json({ error: "account id managed via environment" }, 409);
+      }
+      const value = body.cloudflareAccountId;
+      if (value === null || value === "") {
+        await setSetting(env.DB, SETTING_KEYS.cloudflareAccountId, "");
+        await audit(env.DB, ident.actor, "settings.account_id", "cleared");
+      } else {
+        const err = validateCloudflareAccountId(value);
+        if (err) return json({ error: err }, 400);
+        await setSetting(env.DB, SETTING_KEYS.cloudflareAccountId, (value as string).trim().toLowerCase());
+        await audit(env.DB, ident.actor, "settings.account_id", "set");
+      }
+    }
+    if (hasTriageModel) {
+      if (env.TRIAGE_MODEL) {
+        return json({ error: "triage model managed via environment" }, 409);
+      }
+      const value = body.triageModel;
+      if (value === null || value === "") {
+        await setSetting(env.DB, SETTING_KEYS.triageModel, "");
+        await audit(env.DB, ident.actor, "settings.triage_model", "cleared");
+      } else {
+        const err = validateTriageModel(value);
+        if (err) return json({ error: err }, 400);
+        await setSetting(env.DB, SETTING_KEYS.triageModel, (value as string).trim());
+        await audit(env.DB, ident.actor, "settings.triage_model", (value as string).trim());
+      }
+    }
     return json({ ok: true });
   } catch (e) {
     log("error", "settings update failed", { error: String(e) });
@@ -1154,44 +1307,57 @@ export default {
       if (request.method === "GET" && url.pathname === "/mcp") {
         return json(mcpDiscovery());
       }
+      // MCP OAuth: the app-owned consent page. Per-request server
+      // instances keep the issuer correct on every origin.
+      if ((request.method === "GET" || request.method === "POST") && url.pathname === "/authorize") {
+        const session = await oauthSession(request, env);
+        const { createAuthServer, oauthEnv } = await import("./oauth-server");
+        const api = createAuthServer(url.origin).getOAuthApi(oauthEnv(env));
+        const context: AuthorizeContext = {
+          api,
+          session,
+          audit: (action, target) => audit(env.DB, session?.actor ?? "oauth-session:?", action, target),
+        };
+        return request.method === "GET" ? handleAuthorizeGet(request, context) : handleAuthorizePost(request, context);
+      }
+      // Authorization-server endpoints: metadata, token (issuance,
+      // refresh, revocation), and dynamic client registration.
+      if (
+        url.pathname === "/oauth/token" ||
+        url.pathname === "/oauth/register" ||
+        url.pathname === "/.well-known/oauth-authorization-server"
+      ) {
+        const { createAuthServer, oauthEnv } = await import("./oauth-server");
+        return createAuthServer(url.origin).fetch(request, oauthEnv(env), ctx);
+      }
+      // Protected-resource metadata for MCP client discovery.
+      if (
+        url.pathname === "/.well-known/oauth-protected-resource" ||
+        url.pathname.startsWith("/.well-known/oauth-protected-resource/")
+      ) {
+        const { createAuthServer, createResourceServer, oauthEnv } = await import("./oauth-server");
+        const authServer = createAuthServer(url.origin);
+        return createResourceServer(url.origin, authServer, mcpApiHandler).fetch(request, oauthEnv(env), ctx);
+      }
       if (request.method === "POST" && url.pathname === "/mcp") {
-        const ident = await authIdentity(request, env);
-        if (!ident) return json({ error: "unauthorized" }, 401);
-        let msg: unknown;
-        try {
-          msg = await request.json();
-        } catch {
-          return json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
+        // Same-origin browser callers (the Cloudflare Site MCP Server
+        // pack, native page tools) carry the dashboard session cookie
+        // instead of a Bearer [REDACTED] the global CSRF check above already
+        // rejected cross-origin cookie POSTs, so a valid session here is
+        // the visitor acting as themselves.
+        if (!getBearer(request)) {
+          const session = await oauthSession(request, env);
+          if (session) {
+            const { props, canWrite } = principalFromSession(session);
+            return serveMcpRequest(request, env, props, canWrite, basinSink(env, ctx));
+          }
         }
-        const res = await handleMcpMessage(msg, {
-          db: env.DB,
-          ai: env.AI,
-          canWrite: ident.scope === "admin" || ident.scope === "runner",
-          gatewayId: env.AI_GATEWAY_ID,
-          agent: request.headers.get("X-Flare-Agent") ?? request.headers.get("User-Agent") ?? undefined,
-          dispatchRun: async (input) => {
-            if (!repoAllowed(ident, input.repo)) throw new Error("token is not scoped to that repo");
-            const out = await dispatchRun(env, { repo: input.repo, sha: input.sha, ref: input.ref ?? "", pipeline: input.pipeline });
-            await audit(env.DB, ident.actor, "run.dispatch", out.runId);
-            for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
-            return { runId: out.runId, jobIds: out.jobIds };
-          },
-          rerunJob: async (runId, jobId) => {
-            const out = await rerunJobAndQueue(env, runId, jobId);
-            if (out.ok) {
-              await audit(env.DB, ident.actor, "job.rerun", jobId);
-              await wakeSeat(env, jobId);
-            }
-            return out;
-          },
-          waitForRun: async (runId, timeoutMs) => {
-            const out = await waitForRunTerminal(env.DB, runId, { timeoutMs });
-            return { timedOut: out ? out.timedOut : true };
-          },
-          digestRun: async (runId) => buildRunDigest(env.DB, runId),
-        });
-        if (res.status === 202) return new Response(null, { status: 202 });
-        return json(res.body);
+        // OAuth access tokens and legacy API tokens both validate here;
+        // missing credentials get the 401 + metadata challenge MCP
+        // clients use to discover OAuth.
+        const { createAuthServer, createResourceServer, oauthEnv } = await import("./oauth-server");
+        const authServer = createAuthServer(url.origin);
+        return createResourceServer(url.origin, authServer, mcpApiHandler).fetch(request, oauthEnv(env), ctx);
       }
       if (request.method === "POST" && url.pathname === "/v1/runs/dispatch") {
         const ident = await requireScope(request, env, "run");
@@ -1201,7 +1367,7 @@ export default {
         if ("error" in valid) return json({ error: valid.error }, 400);
         if (!repoAllowed(ident, valid.repo)) return json({ error: "token is not scoped to that repo" }, 403);
         try {
-          const out = await dispatchRun(env, valid);
+          const out = await dispatchRun(env, valid, basinSink(env, ctx));
           await audit(env.DB, ident.actor, "run.dispatch", out.runId);
           for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
           ctx.waitUntil(annotateSpan({ "run.id": out.runId, "repo": valid.repo, "actor": ident.actor }));
@@ -1279,6 +1445,25 @@ export default {
         if (!artifacts) return json({ error: "artifact storage not configured" }, 501);
         return json({ artifacts });
       }
+      // Global log search over the FTS5 index. Scoped tokens only see
+      // their repos (IN filter); an explicit repo: filter outside the
+      // scope is a 403, not an empty result.
+      if (request.method === "GET" && url.pathname === "/v1/search/logs") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const q = url.searchParams.get("q") ?? "";
+        if (!q.trim() || q.length > 500) return json({ error: "q must be 1-500 characters" }, 400);
+        const compiled = compileLogQuery(q);
+        if ("error" in compiled) return json({ error: compiled.error }, 400);
+        if (compiled.query.repo && !repoAllowed(ident, compiled.query.repo)) {
+          return json({ error: "token is not scoped to that repo" }, 403);
+        }
+        const limit = Number(url.searchParams.get("limit") ?? "50");
+        if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+          return json({ error: "limit must be an integer 1-200" }, 400);
+        }
+        return json({ hits: await searchLogs(env.DB, compiled.query, ident.repos, limit) });
+      }
       if (request.method === "GET" && url.pathname === "/v1/jobs/next") {
         const ident = await requireScope(request, env, "run");
         if (!ident) return json({ error: "unauthorized" }, 401);
@@ -1291,7 +1476,7 @@ export default {
           fairSharePerRepo: "cap" in fairShare ? fairShare.cap : 0,
         });
         if (!job) return json({ job: null }, 200);
-        await rollupRunStatus(env.DB, job.run_id);
+        await rollupRunStatus(env.DB, job.run_id, env.ANALYTICS, basinSink(env, ctx));
         // Secrets ride the authenticated claim only — never any read API.
         // Undecryptable rows fail open to empty (flagged) rather than
         // stranding the job in a claim loop.
@@ -1313,7 +1498,7 @@ export default {
         const run = await getRun(env.DB, runCancelMatch[1]);
         if (!run || !repoAllowed(ident, run.repo)) return json({ error: "run not found" }, 404);
         const cancelled = await cancelQueuedJobs(env.DB, run.id);
-        await rollupRunStatus(env.DB, run.id);
+        await rollupRunStatus(env.DB, run.id, env.ANALYTICS, basinSink(env, ctx));
         await audit(env.DB, ident.actor, "run.cancel", `${run.id} ${cancelled}`);
         log("info", "run cancelled", { runId: run.id, cancelled });
         return json({ ok: true, cancelled });
@@ -1339,7 +1524,7 @@ export default {
         if (!ident) return json({ error: "unauthorized" }, 401);
         const rerunRun = await getRun(env.DB, rerunMatch[1]);
         if (!rerunRun || !repoAllowed(ident, rerunRun.repo)) return json({ error: "job not found" }, 404);
-        const out = await rerunJobAndQueue(env, rerunMatch[1], rerunMatch[2]);
+        const out = await rerunJobAndQueue(env, rerunMatch[1], rerunMatch[2], basinSink(env, ctx));
         if (!out.ok) return json({ error: out.error ?? "rerun failed" }, 404);
         await audit(env.DB, ident.actor, "job.rerun", rerunMatch[2]);
         await wakeSeat(env, rerunMatch[2]);
@@ -1542,6 +1727,7 @@ export default {
             name: j.name,
             repo: j.repo,
             priority: j.priority,
+            priorMs: j.prior_ms ?? 0,
             labels: j.labels,
             createdAt: j.created_at,
           })),
@@ -1559,6 +1745,32 @@ export default {
           return json(await usageStats(env.DB, Math.floor(days), [repo]));
         }
         return json(await usageStats(env.DB, Math.floor(days), ident.repos));
+      }
+      // Real Cloudflare dollars from the Billable Usage API (admin-only:
+      // account spend). Unconfigured credentials degrade to
+      // {configured:false} so the CLI prints compute-only output.
+      if (request.method === "GET" && url.pathname === "/v1/usage/billable") {
+        if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
+        const days = Number(url.searchParams.get("days") ?? "30");
+        if (!Number.isFinite(days) || days < 1 || days > 365) return json({ error: "days must be 1-365" }, 400);
+        const accountId = env.CLOUDFLARE_ACCOUNT_ID ?? (await getSetting(env.DB, SETTING_KEYS.cloudflareAccountId));
+        let token = env.BILLING_API_TOKEN;
+        if (!token) {
+          const stored = await getSetting(env.DB, SETTING_KEYS.billingApiToken);
+          if (stored) {
+            const key = await resolveSecretsKey(env.DB, env.SECRETS_KEY);
+            token = await decryptSettingValue(key, stored).catch(() => "");
+          }
+        }
+        if (!token || !accountId) return json({ configured: false });
+        const { from, to } = billableWindow(Math.floor(days));
+        try {
+          const { rows, skippedRows } = await fetchBillableUsage(token, accountId, from, to);
+          return json({ configured: true, ...summarizeBillableUsage(rows, from, to), skippedRows });
+        } catch (err) {
+          log("warn", "billable usage fetch failed", { error: String(err) });
+          return json({ error: "billable usage unavailable" }, 502);
+        }
       }
       if (request.method === "GET" && url.pathname === "/v1/flaky") {
         const ident = await requireScope(request, env, "read");
@@ -1584,6 +1796,32 @@ export default {
         const ok = await revokeToken(env.DB, revokeMatch[1]);
         if (!ok) return json({ error: "token not found" }, 404);
         await audit(env.DB, ident.actor, "token.revoke", revokeMatch[1]);
+        return json({ ok: true });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/admin/oauth-grants") {
+        if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
+        const limit = Number(url.searchParams.get("limit") ?? "100");
+        const cursor = url.searchParams.get("cursor") ?? undefined;
+        const page = await listOAuthGrants(new D1KV(env.DB), { limit, cursor });
+        // Resolve client display names (bounded by the page size).
+        const { createAuthServer, oauthEnv } = await import("./oauth-server");
+        const api = createAuthServer(url.origin).getOAuthApi(oauthEnv(env));
+        const grants = [];
+        for (const grant of page.grants) {
+          const client = await api.lookupClient(grant.clientId).catch(() => null);
+          grants.push({ ...grant, clientName: client?.clientName ?? null });
+        }
+        return json({ grants, cursor: page.cursor ?? null, list_complete: page.list_complete });
+      }
+      if (request.method === "DELETE" && url.pathname === "/v1/admin/oauth-grants") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const grantId = url.searchParams.get("grantId") ?? "";
+        const userId = url.searchParams.get("userId") ?? "";
+        if (!grantId || !userId) return json({ error: "grantId and userId are required" }, 400);
+        const { createAuthServer, oauthEnv } = await import("./oauth-server");
+        await createAuthServer(url.origin).getOAuthApi(oauthEnv(env)).revokeGrant(grantId, userId);
+        await audit(env.DB, ident.actor, "oauth.revoke", `${userId} ${grantId}`);
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/status") {
@@ -1925,6 +2163,7 @@ export default {
         const gatewaySource = env.AI_GATEWAY_ID ? "env" : ((await getSetting(env.DB, SETTING_KEYS.aiGatewayId)) ? "d1" : "none");
         const writeConfirmParsed = parseMcpWriteConfirm(await getSetting(env.DB, SETTING_KEYS.mcpWriteConfirm));
         const webSearchParsed = parseTriageWebSearch(await getSetting(env.DB, SETTING_KEYS.triageWebSearch));
+        const healParsed = parseHealOnFailure(await getSetting(env.DB, SETTING_KEYS.healOnFailure));
         return json({
           adminGithubUser: await getSetting(env.DB, SETTING_KEYS.adminGithubUser),
           adminEmail: await getSetting(env.DB, SETTING_KEYS.adminEmail),
@@ -1944,6 +2183,11 @@ export default {
           aiGatewaySource: gatewaySource,
           mcpWriteConfirm: "on" in writeConfirmParsed ? writeConfirmParsed.on : false,
           triageWebSearch: env.TRIAGE_WEB_SEARCH === "1" ? true : "on" in webSearchParsed ? webSearchParsed.on : false,
+          healOnFailure: "on" in healParsed ? healParsed.on : false,
+          billingTokenSet: !!env.BILLING_API_TOKEN || !!(await getSetting(env.DB, SETTING_KEYS.billingApiToken)),
+          cloudflareAccountId: env.CLOUDFLARE_ACCOUNT_ID ?? (await getSetting(env.DB, SETTING_KEYS.cloudflareAccountId)) ?? "",
+          triageModel: env.TRIAGE_MODEL ?? (await getSetting(env.DB, SETTING_KEYS.triageModel)) ?? TRIAGE_MODEL,
+          triageModelSource: env.TRIAGE_MODEL ? "env" : ((await getSetting(env.DB, SETTING_KEYS.triageModel)) ? "d1" : "default"),
         });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/github/connect") {
@@ -2135,12 +2379,18 @@ export default {
         if (typeof body.prompt !== "string" || !body.prompt.trim() || body.prompt.length > 2000) {
           return json({ error: "prompt is required (max 2000 chars)" }, 400);
         }
-        const yaml = await runGenerate(env.AI, body.prompt, {
+        const outcome = await runGenerateWithStatus(env.AI, body.prompt, {
           gatewayId: env.AI_GATEWAY_ID ?? (await getSetting(env.DB, SETTING_KEYS.aiGatewayId)) ?? undefined,
         });
-        if (!yaml) return json({ error: "generation failed" }, 502);
+        if (outcome.status === "busy") {
+          return new Response(JSON.stringify({ error: "model busy, retry later" }), {
+            status: 503,
+            headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Retry-After": "30" },
+          });
+        }
+        if (outcome.status !== "ok") return json({ error: "generation failed" }, 502);
         await audit(env.DB, ident.actor, "pipeline.generate", body.prompt.slice(0, 80));
-        return json({ yaml });
+        return json({ yaml: outcome.yaml });
       }
       return json({ error: "not found" }, 404);
     } catch (err) {
@@ -2171,9 +2421,22 @@ export default {
 
   // Cron trigger (every minute): fire due schedules. last_run_at guards
   // against trigger redelivery and broken schedules hot-looping.
-  async scheduled(controller: ScheduledController, env: WorkerEnv, _ctx: ExecutionContext): Promise<void> {
+  async scheduled(controller: ScheduledController, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
     try {
       await ensureSchema(env.DB);
+      // OAuth hygiene runs on every database (the issuer is irrelevant to
+      // the purge — it only scans the store — so a dummy one is fine).
+      try {
+        const { createAuthServer, oauthEnv } = await import("./oauth-server");
+        const purged = await createAuthServer("https://oauth-purge.invalid").purgeExpiredData(oauthEnv(env), {
+          batchSize: 200,
+        });
+        if (purged.grantsPurged > 0 || purged.tokensPurged > 0) {
+          log("info", "oauth purge", { grantsPurged: purged.grantsPurged, tokensPurged: purged.tokensPurged });
+        }
+      } catch (err) {
+        log("warn", "oauth purge failed", { error: String(err) });
+      }
       // Previews share the staging database; only production dispatches.
       if (env.ENVIRONMENT !== "production") return;
       const now = new Date(controller.scheduledTime);
@@ -2183,7 +2446,7 @@ export default {
         if (s.enabled !== 1 || !cronMatches(s.cron, now)) continue;
         if (s.last_run_at && Date.now() - Date.parse(s.last_run_at) < 60000) continue;
         try {
-          const out = await dispatchRun(env, { repo: s.repo, sha: s.ref, ref: s.ref, event: "schedule" });
+          const out = await dispatchRun(env, { repo: s.repo, sha: s.ref, ref: s.ref, event: "schedule" }, basinSink(env, ctx));
           await touchScheduleRun(env.DB, s.id);
           await audit(env.DB, "schedule", "run.dispatch", `${s.id} ${out.runId}`);
           for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
@@ -2194,6 +2457,47 @@ export default {
           await touchScheduleRun(env.DB, s.id).catch(() => undefined);
           log("warn", "scheduled dispatch failed", { scheduleId: s.id, error: String(err) });
         }
+      }
+      // Self-heal drain: pending failure claims become draft PRs plus
+      // verification runs (bounded per tick; production only like
+      // everything above). The toggle lives behind the drain so an
+      // off toggle is one cheap indexed read.
+      try {
+        const creds = await getAppCreds(env);
+        if (creds && (await getSetting(env.DB, SETTING_KEYS.healOnFailure)) === "1") {
+          const { processed, healed } = await processHealClaims({
+            db: env.DB,
+            ai: env.AI,
+            installationToken: async (installationId: number) => {
+              const jwt = await mintAppJwt(creds.appId, creds.privateKey);
+              return getInstallationToken(jwt, installationId);
+            },
+            gh: {
+              treePaths: (token, repo, sha) => getRepoTreePaths(token, repo, sha),
+              commitFiles: (token, repo, baseSha, branch, files, message) =>
+                commitFilesToNewBranch(token, repo, baseSha, branch, files, message),
+              openDraftPr: (token, repo, base, head, title, body) =>
+                openDraftPullRequest(token, repo, base, head, title, body),
+              defaultBranch: (token, repo) => getDefaultBranch(token, repo),
+            },
+            verify: async (repo, branch, source) => {
+              try {
+                const out = await dispatchRun(env, { repo, sha: branch, ref: branch, event: "dispatch", source }, basinSink(env, ctx));
+                for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
+                await audit(env.DB, "heal", "run.dispatch", `${source} ${out.runId}`);
+                return out.runId;
+              } catch (err) {
+                log("warn", "heal verification dispatch failed", { repo, branch, error: String(err) });
+                return null;
+              }
+            },
+            model: env.TRIAGE_MODEL,
+            gatewayId: env.AI_GATEWAY_ID,
+          });
+          if (processed > 0) log("info", "heal drain finished", { processed, healed });
+        }
+      } catch (err) {
+        log("warn", "heal drain failed", { error: String(err) });
       }
     } catch (err) {
       log("error", "scheduled handler failed", { error: String(err) });

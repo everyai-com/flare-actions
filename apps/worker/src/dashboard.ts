@@ -189,6 +189,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <section id="appPane" hidden>
 <nav class="tabs">
 <button id="tabRuns" class="active">Runs</button>
+<button id="tabSearch">Search</button>
 <button id="tabAccess">Access</button>
 <button id="tabSettings">Settings</button>
 </nav>
@@ -236,6 +237,9 @@ form.inline input { flex: 1; min-width: 180px; }
 <p><button id="copyTokenBtn" class="ghost" type="button">Copy</button></p>
 </div>
 <div class="table-scroll"><table><thead><tr><th>Name</th><th>Scopes</th><th>Repos</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody id="tokensBody"></tbody></table></div>
+<h2>Connected apps</h2>
+<p class="muted">OAuth apps teammates authorized on the MCP endpoint (Claude, ChatGPT, Cursor, …). Revoking disconnects the app immediately.</p>
+<div class="table-scroll"><table><thead><tr><th>App</th><th>User</th><th>Scopes</th><th>Granted</th><th></th></tr></thead><tbody id="grantsBody"></tbody></table></div>
 <h2>GitHub users</h2>
 <p class="muted" id="usersInfo"></p>
 <form id="userForm" class="inline">
@@ -288,6 +292,16 @@ form.inline input { flex: 1; min-width: 180px; }
 <p class="muted" id="notifyWebhookInfo"></p>
 <p id="notifyWebhookErr" class="err"></p>
 <p id="notifyWebhookOk"></p>
+<h2>Cloudflare billing</h2>
+<p class="muted">A Billing-Read API token + account id lets <span class="mono">cli usage</span> show real Cloudflare dollars next to compute minutes. The token is write-only.</p>
+<form id="billingForm" class="inline">
+<input id="billingTokenInput" type="password" placeholder="Billing-Read API token (write-only)" maxlength="512" aria-label="Billing API token">
+<input id="billingAccountInput" placeholder="Account id (32 hex chars)" maxlength="32" aria-label="Cloudflare account id">
+<button type="submit">Save billing</button>
+</form>
+<p class="muted" id="billingInfo"></p>
+<p id="billingErr" class="err"></p>
+<p id="billingOk"></p>
 <h2>Status badges</h2>
 <p class="muted">Badge SVGs are public. Repos listed here (comma-separated owner/name) serve &quot;unknown&quot; instead, so private repositories never leak pass&#47;fail.</p>
 <form id="badgeHiddenForm" class="inline">
@@ -310,8 +324,10 @@ form.inline input { flex: 1; min-width: 180px; }
 <form id="schedForm" class="inline">
 <input id="fairShareInput" placeholder="fair share per repo (0 = off)" maxlength="3" size="8">
 <input id="gatewayInput" placeholder="AI gateway id (blank = direct)" maxlength="64">
+<input id="triageModelInput" placeholder="triage model (blank = default)" maxlength="128" size="30">
 <label><input type="checkbox" id="writeConfirmCheck"> MCP write-confirm</label>
 <label><input type="checkbox" id="webSearchCheck"> triage web search</label>
+<label><input type="checkbox" id="healCheck"> heal on failure (draft PR + verify run)</label>
 <button type="submit">Save</button>
 </form>
 <p id="schedErr" class="err"></p>
@@ -366,6 +382,16 @@ form.inline input { flex: 1; min-width: 180px; }
 <p><strong>App connected — install it on your repos to run pushes.</strong></p>
 <p><a id="githubInstallLink" href="#" target="_blank" rel="noopener">Install the GitHub App</a></p>
 </div>
+</section>
+<section id="searchPane" class="card" hidden>
+<h2>Log search</h2>
+<p class="muted">Terms, "phrases", (parens OR brackets), -negation, and repo: branch: level: run: job: filters. Example: branch:main level:error (failure OR panic) -flaky</p>
+<form id="searchForm" class="inline">
+<input id="searchInput" placeholder="search all job logs" maxlength="500" size="48" aria-label="Log search query">
+<button type="submit">Search</button>
+</form>
+<p id="searchErr" class="err"></p>
+<div id="searchList"></div>
 </section>
 </section>
 </main>
@@ -543,11 +569,74 @@ form.inline input { flex: 1; min-width: 180px; }
     });
   }
 
+  // WebMCP: expose dashboard actions to browser agents (Chrome 146+,
+  // Cloudflare Browser Run) via document/navigator.modelContext.
+  // Feature-detected progressive enhancement: no-ops on browsers without
+  // the API and for logged-out visitors. Tools call the same same-origin
+  // JSON APIs the page uses, so the visitor's session is the credential;
+  // write tools register for admins only.
+  var webMcpReadsDone = false;
+  var webMcpWritesDone = false;
+  function registerWebMcpTools(isAdmin) {
+    var mc = null;
+    try {
+      mc =
+        (typeof document !== "undefined" && document.modelContext) ||
+        (typeof navigator !== "undefined" && navigator.modelContext) ||
+        null;
+    } catch (e) { mc = null; }
+    if (!mc || typeof mc.registerTool !== "function") return;
+    function add(tool) {
+      try { mc.registerTool(tool); } catch (e) { /* draft API drift: skip */ }
+    }
+    function num(v, dflt) { v = Number(v); return isFinite(v) ? v : dflt; }
+    if (!webMcpReadsDone) {
+      webMcpReadsDone = true;
+      add({ name: "flare_list_runs", description: "List recent CI runs, newest first.",
+        inputSchema: { type: "object", properties: { limit: { type: "number", description: "Max runs, 1-50 (default 10)" } } },
+        execute: function (args) {
+          args = args || {};
+          return api("/v1/runs?limit=" + num(args.limit, 10));
+        } });
+      add({ name: "flare_get_run_digest", description: "Compact run result: per-job status, failing step command/exit code, bounded output tail, AI triage. Prefer over raw logs.",
+        inputSchema: { type: "object", properties: { runId: { type: "string", description: "Run id" } }, required: ["runId"] },
+        execute: function (args) {
+          args = args || {};
+          if (!args.runId) return Promise.reject(new Error("runId is required"));
+          return api("/v1/runs/" + encodeURIComponent(args.runId) + "/digest");
+        } });
+      add({ name: "flare_get_flaky", description: "Per-job failure rates for a repo over the trailing window, worst first.",
+        inputSchema: { type: "object", properties: { repo: { type: "string", description: "owner/name" }, days: { type: "number", description: "1-365 (default 30)" } }, required: ["repo"] },
+        execute: function (args) {
+          args = args || {};
+          if (!args.repo) return Promise.reject(new Error("repo is required"));
+          return api("/v1/flaky?repo=" + encodeURIComponent(args.repo) + "&days=" + num(args.days, 30));
+        } });
+    }
+    if (!isAdmin || webMcpWritesDone) return;
+    webMcpWritesDone = true;
+    add({ name: "flare_dispatch_run", description: "Trigger a CI run for repo@sha.",
+      inputSchema: { type: "object", properties: { repo: { type: "string", description: "owner/name" }, sha: { type: "string", description: "commit sha or branch" }, ref: { type: "string", description: "optional branch label" } }, required: ["repo", "sha"] },
+      execute: function (args) {
+        args = args || {};
+        if (!args.repo || !args.sha) return Promise.reject(new Error("repo and sha are required"));
+        return api("/v1/runs/dispatch", { method: "POST", body: JSON.stringify({ repo: args.repo, sha: args.sha, ref: args.ref || "" }) });
+      } });
+    add({ name: "flare_rerun_job", description: "Reset a finished job to queued so a runner picks it up again.",
+      inputSchema: { type: "object", properties: { runId: { type: "string", description: "Run id" }, jobId: { type: "string", description: "Job id" } }, required: ["runId", "jobId"] },
+      execute: function (args) {
+        args = args || {};
+        if (!args.runId || !args.jobId) return Promise.reject(new Error("runId and jobId are required"));
+        return api("/v1/runs/" + encodeURIComponent(args.runId) + "/jobs/" + encodeURIComponent(args.jobId) + "/rerun", { method: "POST", body: "{}" });
+      } });
+  }
+
   function route(st) {
     if (st.user) {
       showApp(st.user.actor, st.user.admin, st.githubConnected);
       loadRuns();
-      if (st.user.admin) { loadTokens(); loadUsers(); loadAudit(); }
+      registerWebMcpTools(st.user.admin);
+      if (st.user.admin) { loadTokens(); loadUsers(); loadAudit(); loadOAuthGrants(); }
     } else {
       showAuth(st);
     }
@@ -737,16 +826,20 @@ form.inline input { flex: 1; min-width: 180px; }
   });
 
   var tabRuns = document.getElementById("tabRuns");
+  var tabSearch = document.getElementById("tabSearch");
   var tabAccess = document.getElementById("tabAccess");
   var tabSettings = document.getElementById("tabSettings");
   var runsPane = document.getElementById("runsPane");
+  var searchPane = document.getElementById("searchPane");
   var accessPane = document.getElementById("accessPane");
   var settingsPane = document.getElementById("settingsPane");
   function selectTab(name) {
     tabRuns.className = name === "runs" ? "active" : "";
+    tabSearch.className = name === "search" ? "active" : "";
     tabAccess.className = name === "access" ? "active" : "";
     tabSettings.className = name === "settings" ? "active" : "";
     runsPane.hidden = name !== "runs";
+    searchPane.hidden = name !== "search";
     accessPane.hidden = name !== "access";
     settingsPane.hidden = name !== "settings";
   }
@@ -781,7 +874,46 @@ form.inline input { flex: 1; min-width: 180px; }
     if (!box.hidden && back) back.click();
   });
   tabRuns.addEventListener("click", function () { selectTab("runs"); loadRuns(); });
-  tabAccess.addEventListener("click", function () { selectTab("access"); loadTokens(); loadUsers(); loadAudit(); });
+  tabSearch.addEventListener("click", function () { selectTab("search"); });
+  document.getElementById("searchForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    runLogSearch();
+  });
+  function runLogSearch() {
+    var q = document.getElementById("searchInput").value.trim();
+    var err = document.getElementById("searchErr");
+    var list = document.getElementById("searchList");
+    err.textContent = "";
+    list.textContent = "";
+    if (!q) return;
+    api("/v1/search/logs?q=" + encodeURIComponent(q) + "&limit=50").then(function (res) {
+      var hits = (res && res.hits) || [];
+      if (hits.length === 0) {
+        list.textContent = "No matching log lines.";
+        return;
+      }
+      var table = el("table");
+      var head = el("tr");
+      ["when", "repo", "branch", "level", "line"].forEach(function (h) { head.appendChild(el("th", h)); });
+      var thead = el("thead"); thead.appendChild(head); table.appendChild(thead);
+      var body = el("tbody");
+      hits.forEach(function (h) {
+        var tr = el("tr");
+        tr.appendChild(timeCell(h.created_at));
+        tr.appendChild(el("td", h.repo + " / " + h.run_id.slice(0, 8)));
+        tr.appendChild(el("td", h.branch || "-"));
+        tr.appendChild(el("td", h.level));
+        var line = el("td", h.line); line.className = "mono";
+        tr.appendChild(line);
+        body.appendChild(tr);
+      });
+      table.appendChild(body);
+      list.appendChild(table);
+    }, function (e) {
+      err.textContent = (e && e.message) || "Search failed";
+    });
+  }
+  tabAccess.addEventListener("click", function () { selectTab("access"); loadTokens(); loadUsers(); loadAudit(); loadOAuthGrants(); });
   tabSettings.addEventListener("click", function () { selectTab("settings"); loadSettings(); });
 
   var selectedRunId = null;
@@ -1112,6 +1244,32 @@ form.inline input { flex: 1; min-width: 180px; }
       .catch(function () { err.textContent = "Could not create token (name required; repos must be owner/name entries)."; });
   });
 
+  function loadOAuthGrants() {
+    var body = document.getElementById("grantsBody");
+    stateRow(body, 5, "Loading connected apps…", "muted");
+    api("/v1/admin/oauth-grants").then(function (data) {
+      body.textContent = "";
+      (data.grants || []).forEach(function (g) {
+        var tr = el("tr");
+        tr.appendChild(el("td", g.clientName || g.clientId));
+        tr.appendChild(el("td", g.userId));
+        tr.appendChild(el("td", (g.scope || []).join(" ")));
+        tr.appendChild(g.createdAt ? timeCell(new Date(g.createdAt * 1000).toISOString()) : el("td", "—"));
+        var tdBtn = el("td");
+        var btn = el("button", "Revoke");
+        btn.className = "danger";
+        btn.addEventListener("click", function () {
+          api("/v1/admin/oauth-grants?grantId=" + encodeURIComponent(g.grantId) + "&userId=" + encodeURIComponent(g.userId), { method: "DELETE" })
+            .then(loadOAuthGrants).catch(function () {});
+        });
+        tdBtn.appendChild(btn);
+        tr.appendChild(tdBtn);
+        body.appendChild(tr);
+      });
+      if (!body.children.length) stateRow(body, 5, "No connected apps.", "muted");
+    }).catch(function () { stateRow(body, 5, "Could not load connected apps.", "err"); });
+  }
+
   function loadAudit() {
     var body = document.getElementById("auditBody");
     stateRow(body, 4, "Loading audit log…", "muted");
@@ -1236,6 +1394,12 @@ form.inline input { flex: 1; min-width: 180px; }
       document.getElementById("notifyWebhookInput").value = "";
       document.getElementById("notifyWebhookInfo").textContent =
         "Chat webhook: " + (s.notifyWebhookSet ? "configured (write-only)." : "not set.") + " Works with Slack, Discord, and Mattermost-compatible URLs.";
+      document.getElementById("billingTokenInput").value = "";
+      document.getElementById("billingAccountInput").value = s.cloudflareAccountId || "";
+      lastBillingAccount = s.cloudflareAccountId || "";
+      document.getElementById("billingInfo").textContent =
+        "Billable usage: " + (s.billingTokenSet && s.cloudflareAccountId ? "configured." : "not set.") + " A typed token saves; emptying the account id clears it.";
+      document.getElementById("billingOk").textContent = "";
       document.getElementById("notifyWebhookOk").textContent = "";
       document.getElementById("badgeHiddenInput").value = s.badgeHiddenRepos || "";
       document.getElementById("badgeOk").textContent = "";
@@ -1255,8 +1419,12 @@ form.inline input { flex: 1; min-width: 180px; }
       document.getElementById("fairShareInput").value = String(s.fairSharePerRepo ?? 0);
       document.getElementById("gatewayInput").value = s.aiGatewayId || "";
       document.getElementById("gatewayInput").disabled = s.aiGatewaySource === "env";
+      document.getElementById("triageModelInput").value = s.triageModelSource === "default" ? "" : (s.triageModel || "");
+      document.getElementById("triageModelInput").disabled = s.triageModelSource === "env";
+      document.getElementById("triageModelInput").title = "effective: " + (s.triageModel || "default");
       document.getElementById("writeConfirmCheck").checked = !!s.mcpWriteConfirm;
       document.getElementById("webSearchCheck").checked = !!s.triageWebSearch;
+      document.getElementById("healCheck").checked = !!s.healOnFailure;
       document.getElementById("schedOk").textContent = "";
       loadSchedules();
       loadMonitors();
@@ -1337,6 +1505,30 @@ form.inline input { flex: 1; min-width: 180px; }
       .catch(function () { err.textContent = "Could not save (a 12-512 char https URL is required; empty clears)."; });
   });
 
+  var lastBillingAccount = "";
+  document.getElementById("billingForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("billingErr");
+    var ok = document.getElementById("billingOk");
+    err.textContent = ""; ok.textContent = "";
+    var body = {};
+    var token = document.getElementById("billingTokenInput").value.trim();
+    var account = document.getElementById("billingAccountInput").value.trim();
+    // Password field renders empty: only a typed token is sent (empty
+    // never clears here — clear via the API). Account id saves when
+    // changed; emptying it clears the stored id.
+    if (token) body.billingApiToken = token;
+    if (account !== lastBillingAccount) body.cloudflareAccountId = account;
+    if (Object.keys(body).length === 0) { ok.textContent = "Nothing to save."; return; }
+    api("/v1/admin/settings", { method: "POST", body: JSON.stringify(body) })
+      .then(function () {
+        document.getElementById("billingTokenInput").value = "";
+        ok.textContent = "Saved.";
+        loadSettings();
+      })
+      .catch(function () { err.textContent = "Could not save (token 20-512 chars, account id 32 hex)."; });
+  });
+
   document.getElementById("badgeHiddenForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
     var err = document.getElementById("badgeErr");
@@ -1381,16 +1573,20 @@ form.inline input { flex: 1; min-width: 180px; }
       fairSharePerRepo: cap,
       mcpWriteConfirm: document.getElementById("writeConfirmCheck").checked,
       triageWebSearch: document.getElementById("webSearchCheck").checked,
+      healOnFailure: document.getElementById("healCheck").checked,
     };
     if (!document.getElementById("gatewayInput").disabled) {
       payload.aiGatewayId = document.getElementById("gatewayInput").value.trim();
+    }
+    if (!document.getElementById("triageModelInput").disabled) {
+      payload.triageModel = document.getElementById("triageModelInput").value.trim();
     }
     api("/v1/admin/settings", { method: "POST", body: JSON.stringify(payload) })
       .then(function () {
         ok.textContent = "Saved.";
         loadSettings();
       })
-      .catch(function () { err.textContent = "Could not save (gateway id must be a 1-64 char slug)."; });
+      .catch(function () { err.textContent = "Could not save (gateway id must be a 1-64 char slug; model a Workers AI id)."; });
   });
 
   function scheduleAction(path, method, body) {

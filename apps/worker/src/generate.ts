@@ -1,4 +1,5 @@
-import { TRIAGE_MODEL, gatewayOptions, type AiBinding } from "./triage";
+import { TRIAGE_MODEL, gatewayOptions, isModelBusyError, type AiBinding } from "./triage";
+import { readAiUsage, startGenAiSpan } from "./trace";
 
 export const GENERATE_MAX_TOKENS = 1024;
 export const GENERATE_MAX_PROMPT_CHARS = 2000;
@@ -25,11 +26,14 @@ export function extractYaml(text: string): string {
   return body.slice(0, 16384);
 }
 
-export async function runGenerate(
+export type GenerateOutcome = { status: "ok"; yaml: string } | { status: "busy" } | { status: "failed" };
+
+export async function runGenerateWithStatus(
   ai: AiBinding,
   prompt: string,
   opts: { gatewayId?: string } = {},
-): Promise<string | null> {
+): Promise<GenerateOutcome> {
+  const span = await startGenAiSpan({ operation: "chat", model: TRIAGE_MODEL, agentName: "generate_pipeline" });
   try {
     const out = (await ai.run(
       TRIAGE_MODEL,
@@ -39,10 +43,28 @@ export async function runGenerate(
       },
       gatewayOptions(opts.gatewayId),
     )) as { response?: unknown };
-    if (typeof out?.response !== "string" || !out.response.trim()) return null;
+    const usage = readAiUsage(out);
+    if (usage) span.setUsage(usage.inputTokens, usage.outputTokens);
+    if (typeof out?.response !== "string" || !out.response.trim()) {
+      span.end(false);
+      return { status: "failed" };
+    }
     const yaml = extractYaml(out.response);
-    return yaml.includes("jobs:") ? yaml : null;
-  } catch {
-    return null;
+    const ok = yaml.includes("jobs:");
+    span.end(ok);
+    return ok ? { status: "ok", yaml } : { status: "failed" };
+  } catch (err) {
+    span.recordError(err);
+    span.end(false);
+    return isModelBusyError(err) ? { status: "busy" } : { status: "failed" };
   }
+}
+
+export async function runGenerate(
+  ai: AiBinding,
+  prompt: string,
+  opts: { gatewayId?: string } = {},
+): Promise<string | null> {
+  const out = await runGenerateWithStatus(ai, prompt, opts);
+  return out.status === "ok" ? out.yaml : null;
 }

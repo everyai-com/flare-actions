@@ -1,3 +1,5 @@
+import { readAiUsage, startGenAiSpan } from "./trace";
+
 export const TRIAGE_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast";
 export const TRIAGE_MAX_LOG_CHARS = 6000;
 export const TRIAGE_MAX_TOKENS = 512;
@@ -15,6 +17,8 @@ export interface TriageInput {
   jobName: string;
   steps: TriageStep[];
   logTail: string;
+  runId?: string;
+  jobId?: string;
 }
 
 export interface TriageMessage {
@@ -70,12 +74,29 @@ export function gatewayOptions(gatewayId: string | undefined): AiRunOptions | un
   return id ? { gateway: { id } } : undefined;
 }
 
+// Workers AI sync inference rejects when busy (Sept 17): classify
+// capacity errors by message so callers degrade deliberately (retryable
+// 503 on direct APIs, silent skip in background triage) instead of
+// lumping them with real failures.
+export function isModelBusyError(err: unknown): boolean {
+  const text =
+    err instanceof Error
+      ? `${err.name} ${err.message}`
+      : typeof err === "string"
+        ? err
+        : typeof err === "object" && err !== null
+          ? JSON.stringify(err)
+          : "";
+  return /\b(busy|overloaded|capacity|rate.?limit|too many|temporar(y|ily)|429|503)\b/i.test(text.slice(0, 500));
+}
+
 export async function runTriage(
   ai: AiBinding,
   input: TriageInput,
-  opts: { gatewayId?: string; searchContext?: string } = {},
+  opts: { gatewayId?: string; searchContext?: string; model?: string } = {},
 ): Promise<string | null> {
   try {
+    const model = opts.model?.trim() || TRIAGE_MODEL;
     const messages = buildTriageMessages(input);
     // Live web context grounds the model past its training cutoff; the
     // failing output stays primary (read first), the web section is
@@ -84,17 +105,41 @@ export async function runTriage(
       const last = messages[messages.length - 1];
       last.content += `\n\nLive web context (secondary — failing output above wins conflicts):\n${opts.searchContext.trim().slice(0, 1500)}`;
     }
-    const out = (await ai.run(
-      TRIAGE_MODEL,
-      {
-        messages,
-        max_tokens: TRIAGE_MAX_TOKENS,
-      },
-      gatewayOptions(opts.gatewayId),
-    )) as { response?: unknown };
-    if (typeof out?.response !== "string" || !out.response.trim()) return null;
-    return out.response.trim().slice(0, TRIAGE_MAX_STORED_CHARS);
-  } catch {
+    const span = await startGenAiSpan({
+      operation: "chat",
+      model,
+      agentName: "triage",
+      runId: input.runId,
+      jobId: input.jobId,
+    });
+    try {
+      const out = (await ai.run(
+        model,
+        {
+          messages,
+          max_tokens: TRIAGE_MAX_TOKENS,
+        },
+        gatewayOptions(opts.gatewayId),
+      )) as { response?: unknown };
+      const usage = readAiUsage(out);
+      if (usage) span.setUsage(usage.inputTokens, usage.outputTokens);
+      if (typeof out?.response !== "string" || !out.response.trim()) {
+        span.end(false);
+        return null;
+      }
+      span.end(true);
+      return out.response.trim().slice(0, TRIAGE_MAX_STORED_CHARS);
+    } catch (err) {
+      span.recordError(err);
+      span.end(false);
+      throw err;
+    }
+  } catch (err) {
+    // Background triage always skips on error; a busy model gets its
+    // own log line so capacity skips are visible, not silent.
+    if (isModelBusyError(err)) {
+      console.log(JSON.stringify({ level: "warn", msg: "triage skipped: model busy", repo: input.repo }));
+    }
     return null;
   }
 }

@@ -1,7 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
+import type { BrowserWorker } from "@cloudflare/puppeteer";
 import { runSeatJob, type ContainerCtl, type ContainerStartOptions, type SeatDeps } from "./seat";
+import { runBrowserCheck } from "./browsercheck";
 import { resolveAppCreds } from "../../worker/src/connect";
 import { markJobRetained } from "../../worker/src/db";
+import { basinSink } from "../../worker/src/basin";
 
 export interface SeatsEnv {
   DB: D1Database;
@@ -9,6 +12,8 @@ export interface SeatsEnv {
   RUN_QUEUE: Queue;
   SEAT_QUEUE: Queue;
   AI: Ai;
+  ANALYTICS?: AnalyticsEngineDataset;
+  BROWSER?: BrowserWorker;
   EMAIL?: SendEmail;
   SEATS: DurableObjectNamespace;
   SEATS_V2: DurableObjectNamespace;
@@ -20,6 +25,9 @@ export interface SeatsEnv {
   SECRETS_KEY?: string;
   AI_GATEWAY_ID?: string;
   TRIAGE_WEB_SEARCH?: string;
+  TRIAGE_MODEL?: string;
+  ARTIFACTS_MIRROR_REMOTE?: string;
+  ARTIFACTS_MIRROR_TOKEN?: string;
 }
 
 type BoundContainer = NonNullable<DurableObjectState["container"]>;
@@ -66,6 +74,7 @@ function adaptV1(container: BoundContainer): ContainerCtl {
     snapshot: async () => {
       throw new Error("snapshots need the durable_object scheduling policy (V2 seats)");
     },
+    monitor: () => container.monitor(),
   };
 }
 
@@ -115,10 +124,16 @@ function adaptV2(container: BoundContainer): ContainerCtl {
       const snap = await container.snapshotContainer(name ? { name } : undefined);
       return { id: snap.id, size: snap.size, name: snap.name };
     },
+    monitor: () => container.monitor(),
   };
 }
 
-async function seatDeps(env: SeatsEnv, container: BoundContainer, v2: boolean): Promise<SeatDeps> {
+async function seatDeps(
+  env: SeatsEnv,
+  container: BoundContainer,
+  v2: boolean,
+  doCtx: DurableObjectState,
+): Promise<SeatDeps> {
   // Same D1 the main worker stores Connect-flow credentials in, so
   // connecting once on the dashboard lights up private checkouts
   // on seats with no extra secrets.
@@ -127,18 +142,27 @@ async function seatDeps(env: SeatsEnv, container: BoundContainer, v2: boolean): 
     { appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY },
     env.SECRETS_KEY,
   );
+  const browserBinding = env.BROWSER;
   return {
     db: env.DB,
     cache: env.CACHE,
     queue: env.RUN_QUEUE,
     seatQueue: env.SEAT_QUEUE,
     ai: env.AI,
+    analytics: env.ANALYTICS,
+    basin: basinSink(env, doCtx),
+    browser: browserBinding
+      ? { check: (url, opts) => runBrowserCheck(browserBinding, url, opts) }
+      : undefined,
     appId: creds?.appId,
     appKey: creds?.privateKey,
+    mirrorRemote: env.ARTIFACTS_MIRROR_REMOTE,
+    mirrorToken: env.ARTIFACTS_MIRROR_TOKEN,
     mail: { EMAIL: env.EMAIL, NOTIFY_FROM_EMAIL: env.NOTIFY_FROM_EMAIL, SECRETS_KEY: env.SECRETS_KEY },
     secretsKey: env.SECRETS_KEY,
     gatewayId: env.AI_GATEWAY_ID,
     webSearch: env.TRIAGE_WEB_SEARCH === "1" ? true : undefined,
+    triageModel: env.TRIAGE_MODEL,
     container: v2 ? adaptV2(container) : adaptV1(container),
     ...(v2
       ? {
@@ -163,11 +187,13 @@ async function seatDeps(env: SeatsEnv, container: BoundContainer, v2: boolean): 
 }
 
 // One seat (one container) per job, addressed by job id. /run
-// executes inline and answers with the outcome: the open request
-// keeps the seat alive across long steps and idle container waits,
-// where a detached waitUntil could hibernate mid-job and strand the
-// claim. Queue wakes therefore ack after completion (natural retry),
-// and concurrent wakes for one job are settled by the atomic claim.
+// executes inline and answers with the outcome. Pending I/O
+// (container.monitor(), exec output, timers) keeps the DO alive
+// without a connected client on compat 2026-10-01+, so the old "open
+// request keeps the seat alive" constraint is retired — but /run still
+// answers inline deliberately: queue wakes ack after completion
+// (natural retry), and concurrent wakes for one job are settled by
+// the atomic claim.
 export class ContainerSeat extends DurableObject<SeatsEnv> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -183,7 +209,7 @@ export class ContainerSeat extends DurableObject<SeatsEnv> {
     const jobId = body.jobId;
     const env = this.env;
     try {
-      const outcome = await runSeatJob(await seatDeps(env, container, false), jobId);
+      const outcome = await runSeatJob(await seatDeps(env, container, false, this.ctx), jobId);
       return Response.json({ ok: true, ...outcome });
     } catch (err) {
       console.log(JSON.stringify({ msg: "seat crashed", jobId, error: String(err) }));
@@ -261,7 +287,7 @@ export class ContainerSeatV2 extends DurableObject<SeatsEnv> {
     try {
       await this.ctx.storage.put("activeJob", jobId);
       await this.ctx.storage.setAlarm(Date.now() + SEAT_ALARM_MS).catch(() => undefined);
-      const outcome = await runSeatJob(await seatDeps(env, container, true), jobId);
+      const outcome = await runSeatJob(await seatDeps(env, container, true, this.ctx), jobId);
       if (outcome.status === "retained") {
         await this.ctx.storage.put("retainedJob", { jobId, until: outcome.retainedUntil });
         await this.ctx.storage.setAlarm(Date.parse(outcome.retainedUntil)).catch(() => undefined);

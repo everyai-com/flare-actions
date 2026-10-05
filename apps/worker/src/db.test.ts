@@ -28,6 +28,7 @@ function jobRow(over: Partial<JobRow & { repo: string; sha: string }> = {}): Job
     started_at: null,
     finished_at: null,
     retained_until: null,
+    prior_ms: 0,
     created_at: "2026-10-02T10:00:00.000Z",
     updated_at: "2026-10-02T10:00:00.000Z",
     repo: "o/r",
@@ -103,25 +104,31 @@ class QueueDb implements Db {
 
   private select(norm: string, values: unknown[]) {
     let rows = this.jobs.filter((j) => j.status === "queued");
+    const inMatch = /r\.repo IN \(([^)]*)\)/.exec(norm);
+    const repoCount = inMatch ? ((inMatch[1].match(/\?/g) ?? []).length) : 0;
+    if (repoCount > 0) {
+      const repos = values.slice(0, repoCount) as string[];
+      rows = rows.filter((j) => repos.includes(j.repo));
+    }
     if (norm.includes("j.priority < ?")) {
-      const [priority, , created, , id] = values as [number, number, string, string, string];
+      const [priority, , priorMs, , created, , id] = values.slice(repoCount) as [
+        number, number, number, number, string, string, string,
+      ];
       rows = rows.filter(
         (j) =>
           (j.priority ?? 0) < priority ||
-          ((j.priority ?? 0) === priority && (j.created_at > created || (j.created_at === created && j.id > id))),
+          ((j.priority ?? 0) === priority &&
+            ((j.prior_ms ?? 0) < priorMs ||
+              ((j.prior_ms ?? 0) === priorMs &&
+                (j.created_at > created || (j.created_at === created && j.id > id))))),
       );
-    }
-    const inMatch = /r\.repo IN \(([^)]*)\)/.exec(norm);
-    if (inMatch) {
-      const count = (inMatch[1].match(/\?/g) ?? []).length;
-      const repos = values.slice(values.length - 1 - count, values.length - 1) as string[];
-      rows = rows.filter((j) => repos.includes(j.repo));
     }
     rows = rows
       .slice()
       .sort(
         (a, b) =>
           (b.priority ?? 0) - (a.priority ?? 0) ||
+          (b.prior_ms ?? 0) - (a.prior_ms ?? 0) ||
           a.created_at.localeCompare(b.created_at) ||
           a.id.localeCompare(b.id),
       );
@@ -211,6 +218,27 @@ describe("claimNextJob", () => {
       jobRow({ id: "job-old", created_at: "2026-10-02T09:00:00.000Z", priority: 0 }),
     ]);
     expect((await claimNextJob(db, []))?.id).toBe("job-old");
+  });
+
+  it("claims longest-predicted-first within a priority (LPT drain order)", async () => {
+    const db = new QueueDb([
+      jobRow({ id: "job-old-short", created_at: "2026-10-02T09:00:00.000Z", priority: 0, prior_ms: 1000 }),
+      jobRow({ id: "job-new-long", created_at: "2026-10-02T11:00:00.000Z", priority: 0, prior_ms: 60000 }),
+      jobRow({ id: "job-unknown", created_at: "2026-10-02T08:00:00.000Z", priority: 0, prior_ms: 0 }),
+    ]);
+    expect((await claimNextJob(db, []))?.id).toBe("job-new-long");
+    expect((await claimNextJob(db, []))?.id).toBe("job-old-short");
+    expect((await claimNextJob(db, []))?.id).toBe("job-unknown");
+  });
+
+  it("keeps repo scoping aligned past the first keyset page", async () => {
+    const db = new QueueDb([
+      ...queue(30, (i) => ({ labels: "macos", repo: i % 2 === 0 ? "o/a" : "o/b" })),
+      jobRow({ id: "job-free", labels: "", repo: "o/a", created_at: "2026-10-02T11:00:00.000Z" }),
+    ]);
+    // Page 2+ binds repos before the keyset; a misalignment would
+    // compare repo against dates and return nothing.
+    expect((await claimNextJob(db, ["windows"], ["o/a"]))?.id).toBe("job-free");
   });
 
   it("stays bounded on a large backlog of mismatched jobs", async () => {

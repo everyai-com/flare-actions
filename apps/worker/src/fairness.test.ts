@@ -4,6 +4,7 @@ import { labelsMatch, simulateDrain, splitLabels, type SimJob } from "./fairness
 const job = (over: Partial<SimJob> & { id: string }): SimJob => ({
   repo: "o/a",
   priority: 0,
+  priorMs: 0,
   createdAt: "2026-10-02T10:00:00.000Z",
   labels: "",
   ...over,
@@ -32,6 +33,16 @@ describe("simulateDrain", () => {
     const claims = simulateDrain(jobs, [{ id: "r1", labels: [] }]);
     expect(claims.map((c) => c.jobId)).toEqual(["b", "a", "d", "c"]);
     expect(claims[0]).toMatchObject({ runnerId: "r1", round: 1, repo: "o/a" });
+  });
+
+  it("claims longest-predicted-first within a priority", () => {
+    const jobs = [
+      job({ id: "old-short", priority: 0, priorMs: 1000, createdAt: "2026-10-02T10:00:01.000Z" }),
+      job({ id: "new-long", priority: 0, priorMs: 60000, createdAt: "2026-10-02T10:00:03.000Z" }),
+      job({ id: "unknown", priority: 0, createdAt: "2026-10-02T10:00:00.000Z" }),
+    ];
+    const claims = simulateDrain(jobs, [{ id: "r1", labels: [] }]);
+    expect(claims.map((c) => c.jobId)).toEqual(["new-long", "old-short", "unknown"]);
   });
 
   it("skips jobs the runner's labels cannot take", () => {

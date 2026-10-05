@@ -36,6 +36,17 @@ export interface JobSpec {
   // Managed seats only: keep the failed container alive for debugging
   // instead of destroying it (BYO runners ignore this).
   retainOnFailure?: boolean;
+  // Managed seats only: declarative browser checks via the BROWSER
+  // binding (BYO runners ignore these).
+  browserChecks?: JobBrowserCheckSpec[];
+}
+
+export interface JobBrowserCheckSpec {
+  name: string;
+  url: string;
+  expectTitle?: string;
+  expectText?: string;
+  screenshot?: boolean;
 }
 
 // Step conditionals: the bounded GitHub subset that covers cleanup and
@@ -208,6 +219,41 @@ export function parseJobSpec(definition: string): JobSpec | null {
   if (parsed.retainOnFailure !== undefined) {
     if (typeof parsed.retainOnFailure !== "boolean") return null;
     if (parsed.retainOnFailure) spec.retainOnFailure = true;
+  }
+  if (parsed.browserChecks !== undefined) {
+    if (!Array.isArray(parsed.browserChecks) || parsed.browserChecks.length === 0 || parsed.browserChecks.length > 10) {
+      return null;
+    }
+    const checks: JobBrowserCheckSpec[] = [];
+    const seen = new Set<string>();
+    for (const c of parsed.browserChecks) {
+      if (!isRecord(c)) return null;
+      if (typeof c.name !== "string" || !/^[\w.-]{1,64}$/.test(c.name) || seen.has(c.name)) return null;
+      seen.add(c.name);
+      if (typeof c.url !== "string" || c.url.length === 0 || c.url.length > 2048) return null;
+      let protocol = "";
+      try {
+        protocol = new URL(c.url).protocol;
+      } catch {
+        return null;
+      }
+      if (protocol !== "https:") return null;
+      const check: JobBrowserCheckSpec = { name: c.name, url: c.url };
+      for (const field of ["expectTitle", "expectText"] as const) {
+        const v = c[field];
+        if (v !== undefined) {
+          if (typeof v !== "string" || !v || v.length > 512) return null;
+          check[field] = v;
+        }
+      }
+      if (check.expectTitle === undefined && check.expectText === undefined) return null;
+      if (c.screenshot !== undefined) {
+        if (typeof c.screenshot !== "boolean") return null;
+        check.screenshot = c.screenshot;
+      }
+      checks.push(check);
+    }
+    spec.browserChecks = checks;
   }
   return spec;
 }

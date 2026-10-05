@@ -26,6 +26,8 @@ const run: RunRow = {
   source: null,
   pr_number: null,
   pr_comment_id: null,
+  heal_branch: null,
+  heal_pr_url: null,
   status: "success",
   created_at: "2026-10-01T09:00:00.000Z",
   updated_at: "2026-10-01T09:02:30.000Z",
@@ -46,6 +48,7 @@ const job: JobRow = {
   started_at: "2026-10-01T09:00:00.000Z",
   finished_at: "2026-10-01T09:02:00.000Z",
   retained_until: null,
+    prior_ms: 0,
   created_at: "2026-10-01T09:00:00.000Z",
   updated_at: "2026-10-01T09:02:00.000Z",
 };

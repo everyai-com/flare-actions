@@ -19,6 +19,10 @@ export const SETTING_KEYS = {
   aiGatewayId: "ai_gateway_id",
   mcpWriteConfirm: "mcp_write_confirm",
   triageWebSearch: "triage_web_search",
+  billingApiToken: "billing_api_token",
+  cloudflareAccountId: "cloudflare_account_id",
+  triageModel: "triage_model",
+  healOnFailure: "heal_on_failure",
 } as const;
 
 export function validateWebhookSecret(secret: unknown): string | null {
@@ -135,4 +139,41 @@ export function parseTriageWebSearch(value: unknown): { on: boolean } | { error:
   if (value === "1" || value === "true") return { on: true };
   if (value === "0" || value === "false" || value === "" || value === null || value === undefined) return { on: false };
   return { error: "triageWebSearch must be a boolean" };
+}
+
+// Self-healing runs (off by default — each failure costs model
+// inference plus a draft PR on a flare-heal/* branch). Same boolean
+// shape as above.
+export function parseHealOnFailure(value: unknown): { on: boolean } | { error: string } {
+  if (typeof value === "boolean") return { on: value };
+  if (value === "1" || value === "true") return { on: true };
+  if (value === "0" || value === "false" || value === "" || value === null || value === undefined) return { on: false };
+  return { error: "healOnFailure must be a boolean" };
+}
+
+// Billing-Read API token for the Billable Usage API (write-only,
+// encrypted at rest like the chat webhook). Tokens are long opaque
+// strings; empty clears.
+export function validateBillingApiToken(token: unknown): string | null {
+  if (typeof token !== "string" || token.length < 20 || token.length > 512) {
+    return "billing API token must be 20-512 characters";
+  }
+  return null;
+}
+
+// Cloudflare account id scoping billable-usage reads (32 hex chars).
+export function validateCloudflareAccountId(id: unknown): string | null {
+  if (typeof id !== "string" || !/^[0-9a-f]{32}$/i.test(id.trim())) {
+    return "Cloudflare account id must be 32 hex characters";
+  }
+  return null;
+}
+
+// Triage model override (see docs/MODEL-EVAL.md for the measured
+// trade-offs). Workers AI model id; empty clears to the default.
+export function validateTriageModel(model: unknown): string | null {
+  if (typeof model !== "string" || !/^@[A-Za-z0-9/_.-]{1,127}$/.test(model.trim())) {
+    return "triage model must be a Workers AI model id like @cf/vendor/name";
+  }
+  return null;
 }

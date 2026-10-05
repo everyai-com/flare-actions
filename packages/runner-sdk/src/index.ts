@@ -140,6 +140,7 @@ export interface FlareQueuedJob {
   name: string;
   repo: string;
   priority: number;
+  priorMs: number;
   labels: string;
   createdAt: string;
 }
@@ -157,6 +158,25 @@ export interface FlareUsage {
   computeMinutes: number;
   actionsListUsd: number;
   topRepos: { repo: string; jobs: number; computeMinutes: number }[];
+}
+
+export interface FlareBillableUsage {
+  configured: boolean;
+  currency?: string;
+  from?: string;
+  to?: string;
+  totalCost?: number;
+  families?: { family: string; cost: number; rows: number }[];
+}
+
+export interface FlareLogHit {
+  job_id: string;
+  run_id: string;
+  repo: string;
+  branch: string;
+  level: string;
+  line: string;
+  created_at: string;
 }
 
 export interface FlareDigestStep {
@@ -335,6 +355,22 @@ export class FlareClient {
     const res = await this.call(`/v1/admin/queue?limit=${limit}`);
     if (!res.ok) throw new Error(`listQueue failed: ${res.status}`);
     return (await res.json()) as FlareQueue;
+  }
+
+  async searchLogs(query: string, limit = 50): Promise<FlareLogHit[]> {
+    const res = await this.call(`/v1/search/logs?q=${encodeURIComponent(query)}&limit=${limit}`);
+    if (!res.ok) throw new Error(`searchLogs failed: ${res.status}`);
+    const data = (await res.json()) as { hits: FlareLogHit[] };
+    return data.hits;
+  }
+
+  async getBillableUsage(days = 30): Promise<FlareBillableUsage | null> {
+    const res = await this.call(`/v1/usage/billable?days=${days}`);
+    // Non-admin tokens (401) and upstream outages (502) degrade to
+    // compute-only output; only the shape below throws.
+    if (res.status === 401 || res.status === 502) return null;
+    if (!res.ok) throw new Error(`getBillableUsage failed: ${res.status}`);
+    return (await res.json()) as FlareBillableUsage;
   }
 
   async getUsage(days = 30, repo?: string): Promise<FlareUsage> {

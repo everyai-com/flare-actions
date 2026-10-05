@@ -24,10 +24,17 @@ import {
   triageAndStore,
   type QueueSender,
 } from "../../worker/src/finish";
+import { emitJobTerminal } from "../../worker/src/analytics";
+import { basinJobTerminal, sendBasin, type BasinSink } from "../../worker/src/basin";
+import { requestHeal } from "../../worker/src/heal";
 import { bytesEqual, getInstallationToken, mintAppJwt } from "../../worker/src/github";
 import { reportJobCheck } from "../../worker/src/checks";
 import { notifyRunCompleted, type NotifyMailEnv } from "../../worker/src/notify";
+import { EGRESS_LOG_PATH, EGRESS_SHIM_PATH, parseEgressLog } from "./egress";
 import { evaluateResultMonitors } from "../../worker/src/monitors";
+import { indexJobLog } from "../../worker/src/search";
+import { recordRuntimePrior } from "../../worker/src/priors";
+import { jobDurationMs } from "../../worker/src/cost";
 import { MAX_JUNIT_BYTES, parseJUnit } from "../../worker/src/junit";
 import { seatEligible } from "../../worker/src/pipeline";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
@@ -94,6 +101,11 @@ export interface ContainerCtl {
   // stores the returned id (D1/DO storage, 30-day expiry) and passes
   // it back as snapshotId on a later start.
   snapshot(name?: string): Promise<ContainerSnapshot>;
+  // Resolves when the instance stops (any cause). Awaiting it counts
+  // as pending I/O, which keeps the DO alive without a connected
+  // client on compat 2026-10-01+; seats also race it against every
+  // exec so a dead container fails fast instead of hanging to timeout.
+  monitor(): Promise<void>;
 }
 
 export interface SeatBlobStore {
@@ -136,6 +148,21 @@ export interface SeatDeps {
   ai: AiBinding | undefined;
   appId?: string;
   appKey?: string;
+  // Artifacts mirror checkout: remote template holding `{repo}` plus
+  // a repo token. Absent = GitHub only; present = mirror first with
+  // GitHub fallback (see renderMirrorRemote).
+  mirrorRemote?: string;
+  mirrorToken?: string;
+  // Browser-check driver (BROWSER binding). Absent = the seats worker
+  // has no Browser Rendering binding; jobs with browserChecks fail
+  // closed rather than skipping.
+  browser?: BrowserDriver;
+  // Analytics Engine dataset for CI lifecycle events. Absent = the
+  // seats worker has no dataset binding; emission skips silently.
+  analytics?: AnalyticsEngineDataset | undefined;
+  // Basin Pipeline sink for the same events (cold storage). Absent =
+  // no CI_EVENTS stream binding; emission skips silently.
+  basin?: BasinSink | undefined;
   container: ContainerCtl;
   timing?: SeatTiming;
   sleep?: (ms: number) => Promise<void>;
@@ -150,6 +177,9 @@ export interface SeatDeps {
   // AI Gateway id fronting triage inference (env-provided; D1 fills the
   // gap inside triageAndStore). Unset = direct inference.
   gatewayId?: string;
+  // Triage model override (env-provided; D1 triage_model fills the gap
+  // inside triageAndStore). Unset = default model.
+  triageModel?: string;
   // Forces Web Search grounding for triage on (D1 decides when unset).
   webSearch?: boolean;
 }
@@ -181,12 +211,13 @@ const SNAPSHOT_MAX_AGE_MS = 25 * 86400000;
 // documented Phase 2 follow-up, not this change).
 const RETAIN_TTL_MS = 30 * 60000;
 
-// Per-job egress accounting. Two namespaces, both measured (never
+// Per-job egress accounting. Three namespaces, all measured (never
 // estimated): `r2:<area>` rows for the transfers the seat performs on
-// the job's behalf (cache/artifacts/sources/test-reports), and one
-// `(interface)` row for the container NIC delta across the job. True
-// per-domain breakdown needs outbound interception (the roadmap's next
-// egress step); these rows already answer "R2 vs internet".
+// the job's behalf (cache/artifacts/sources/test-reports), one
+// `(interface)` row for the container NIC delta across the job, and
+// bare-domain rows from the LD_PRELOAD shim when the image carries
+// it (statically linked binaries bypass the shim, so the domain rows
+// are a lower bound and the NIC row stays the cross-check total).
 export interface EgressTally {
   host: string;
   reqBytes: number;
@@ -196,6 +227,22 @@ export interface EgressTally {
 export function egressHostForKey(key: string): string {
   const area = key.split("/")[0];
   return area === "cache" || area === "artifacts" || area === "sources" || area === "test-reports" ? `r2:${area}` : "r2:other";
+}
+
+// Artifacts mirror remote: the operator configures a template holding
+// `{repo}` (e.g. `https://<acct>.artifacts.cloudflare.net/git/mirrors/{repo}.git`)
+// and seats render it per job. Fail-closed: anything that is not
+// exactly that shape (or a template without the placeholder) renders
+// null and the job checks out from GitHub. The token is embedded as
+// the password exactly like the GitHub App token below, and scrubbed
+// from every error the same way.
+export function renderMirrorRemote(template: string, repo: string): string | null {
+  if (!template.includes("{repo}")) return null;
+  const name = repo.replace(/\//g, "-");
+  if (!/^[\w.-]+$/.test(name)) return null;
+  const url = template.split("{repo}").join(name);
+  if (!/^https:\/\/[a-f0-9]{32}\.artifacts\.cloudflare\.net\/git\/[\w.-]+\/[\w.-]+\.git$/.test(url)) return null;
+  return url;
 }
 
 // /proc/net/dev: `iface: rxBytes ... txBytes ...` (tx is the 9th field).
@@ -256,6 +303,22 @@ interface StepRecord {
   output: string;
 }
 
+// Worker-side browser checks (BROWSER binding, Browser Rendering).
+// Injected so unit tests never touch puppeteer; seat-do adapts the
+// real binding. The driver returns the page title, visible text (the
+// adapter caps it), and a PNG screenshot when asked.
+export interface BrowserPageResult {
+  title: string;
+  text: string;
+  screenshot: Uint8Array | null;
+}
+
+export interface BrowserDriver {
+  check(url: string, opts: { screenshot: boolean; timeoutMs: number }): Promise<BrowserPageResult>;
+}
+
+export const BROWSER_CHECK_TIMEOUT_MS = 30000;
+
 export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOutcome> {
   const timing = deps.timing ?? DEFAULT_TIMING;
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -279,7 +342,27 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       status: "error",
       log: "[seat] refusing to execute: job definition could not be parsed (corrupt or from a newer version)",
     });
-    await rollupRunStatus(deps.db, job.run_id);
+    await rollupRunStatus(deps.db, job.run_id, deps.analytics, deps.basin);
+    emitJobTerminal(deps.analytics, {
+      repo: run.repo,
+      runId: job.run_id,
+      jobName: job.name,
+      status: "error",
+      durationMs: 0,
+      executor: "seat",
+      attempts: job.attempts,
+    });
+    if (deps.basin) {
+      sendBasin(deps.basin, basinJobTerminal({
+        repo: run.repo,
+        runId: job.run_id,
+        jobName: job.name,
+        status: "error",
+        durationMs: 0,
+        executor: "seat",
+        attempts: job.attempts,
+      }));
+    }
     return { status: "failed", jobId, detail: "unparseable job definition" };
   }
   // Repo secrets decrypt here (same key ladder as the main worker) and
@@ -369,9 +452,15 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     // token-scrubbed) so releases are self-diagnosing via the API.
     await note(`[seat] released: ${detail}`);
     await releaseJob(deps.db, jobId);
-    await rollupRunStatus(deps.db, job.run_id);
+    await rollupRunStatus(deps.db, job.run_id, deps.analytics, deps.basin);
     return { status: "released", jobId, detail };
   };
+
+  // Armed once boot confirms the instance is up; every exec below
+  // races it so an unexpected stop fails fast (exit 125) instead of
+  // hanging to the step timeout. Never rejects (both arms resolve).
+  let stopSignal: Promise<true> | null = null;
+  const STOPPED = Symbol("container-stopped");
 
   async function execBounded(
     cmd: string[],
@@ -400,7 +489,25 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         );
         return { timedOut: true, exitCode: 124, stdout: new Uint8Array(), stderr: new Uint8Array() };
       }
-      const out = await Promise.race([proc.output(), timeout]);
+      const racers: Promise<{ exitCode: number; stdout: Uint8Array; stderr: Uint8Array } | null | typeof STOPPED>[] = [
+        proc.output(),
+        timeout,
+      ];
+      if (stopSignal) racers.push(stopSignal.then(() => STOPPED, () => STOPPED));
+      const out = await Promise.race(racers);
+      if (out === STOPPED) {
+        try {
+          proc.kill();
+        } catch {
+          // Already exited.
+        }
+        return {
+          timedOut: false,
+          exitCode: 125,
+          stdout: new Uint8Array(),
+          stderr: new TextEncoder().encode("container stopped unexpectedly"),
+        };
+      }
       if (out === null) {
         try {
           proc.kill();
@@ -523,6 +630,17 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
   }
   if (!started) return release("container did not start", true);
   if (!restored) await note(`[seat] container running (attempt ${startAttempt})`);
+  // Pending-I/O keep-alive + unexpected-stop detection (see ContainerCtl.monitor).
+  try {
+    stopSignal = deps.container.monitor().then(
+      () => true as const,
+      () => true as const,
+    );
+  } catch {
+    // A monitor that throws synchronously degrades to no watcher;
+    // exec timeouts still bound every call.
+    stopSignal = null;
+  }
   const ifaceStart = await sampleIface();
 
   try {
@@ -559,19 +677,54 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
           appToken = null;
         }
       }
-      const remote = appToken
-        ? `https://x-access-token:${appToken}@github.com/${run.repo}.git`
-        : `https://github.com/${run.repo}.git`;
-      const checkoutScript = `set -e\nrm -rf ${WORKDIR}\nmkdir -p ${WORKDIR}\ncd ${WORKDIR}\ngit init -q\ngit remote add origin ${remote}\ngit fetch -q --depth 1 origin ${run.sha}\ngit checkout -q FETCH_HEAD\n`;
-      const co = await execBounded(["sh", "-s"], { stdin: checkoutScript }, timing.checkoutMs ?? 180000);
-      if (co.timedOut || co.exitCode !== 0) {
+      const scrubTokens = (s: string): string => {
+        let out = s;
+        // Mirror tokens carry `?expires=` and are URL-encoded in the
+        // remote, so scrub both the raw and encoded forms — git echoes
+        // the URL as embedded.
+        const forms = [appToken, deps.mirrorToken, deps.mirrorToken ? encodeURIComponent(deps.mirrorToken) : null];
+        for (const t of forms) {
+          if (t) out = out.split(t).join("[redacted]");
+        }
+        return out;
+      };
+      const checkoutVia = async (remote: string): Promise<string | null> => {
+        const script = `set -e\nrm -rf ${WORKDIR}\nmkdir -p ${WORKDIR}\ncd ${WORKDIR}\ngit init -q\ngit remote add origin ${remote}\ngit fetch -q --depth 1 origin ${run.sha}\ngit checkout -q FETCH_HEAD\n`;
+        const co = await execBounded(["sh", "-s"], { stdin: script }, timing.checkoutMs ?? 180000);
+        if (!co.timedOut && co.exitCode === 0) return null;
         const raw = decode(co.timedOut ? co.stderr : new Uint8Array([...co.stdout, ...co.stderr])).slice(0, 300);
-        // git errors can echo the remote URL — scrub the token (the
-        // release detail lands in seat logs, never in job rows).
-        const errText = appToken ? raw.split(appToken).join("[redacted]") : raw;
-        return release(`checkout failed: ${errText || "unknown"}`);
+        // git errors can echo the remote URL — scrub every token (the
+        // release detail lands in the job log, so this must be total).
+        return scrubTokens(raw) || "unknown";
+      };
+      // Mirror first when configured: the mirror failing (stale,
+      // missing repo, expired token) must never fail a checkout
+      // GitHub could serve, so any mirror error falls through.
+      const mirror =
+        deps.mirrorRemote && deps.mirrorToken ? renderMirrorRemote(deps.mirrorRemote, run.repo) : null;
+      if (mirror && deps.mirrorToken) {
+        const mirrorErr = await checkoutVia(
+          `https://x-access-token:${encodeURIComponent(deps.mirrorToken)}@${mirror.slice("https://".length)}`,
+        );
+        if (mirrorErr === null) {
+          await note("[seat] checkout ok (mirror)");
+        } else {
+          await note("[seat] mirror unavailable, trying github");
+          const remote = appToken
+            ? `https://x-access-token:${appToken}@github.com/${run.repo}.git`
+            : `https://github.com/${run.repo}.git`;
+          const err = await checkoutVia(remote);
+          if (err !== null) return release(`checkout failed (mirror: ${mirrorErr}; github: ${err})`.slice(0, 400));
+          await note("[seat] checkout ok");
+        }
+      } else {
+        const remote = appToken
+          ? `https://x-access-token:${appToken}@github.com/${run.repo}.git`
+          : `https://github.com/${run.repo}.git`;
+        const err = await checkoutVia(remote);
+        if (err !== null) return release(`checkout failed: ${err}`);
+        await note("[seat] checkout ok");
       }
-      await note("[seat] checkout ok");
     }
 
     // Cache restore.
@@ -603,6 +756,33 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       ...jobEnv,
       ...matrixEnv(spec.matrix),
     };
+    // Per-domain egress: when the image carries the LD_PRELOAD shim,
+    // step processes append their own traffic tally to a
+    // container-side log, collected after the steps loop. Older
+    // images fail the probe and run exactly as before, no rows. A
+    // job-supplied LD_PRELOAD chains after ours (space-separated is
+    // valid) rather than being clobbered.
+    let shimEgress = false;
+    try {
+      const probe = await execBounded(["test", "-x", EGRESS_SHIM_PATH], {}, 15000);
+      shimEgress = !probe.timedOut && probe.exitCode === 0;
+    } catch {
+      shimEgress = false;
+    }
+    if (shimEgress) {
+      const prev = stepEnv["LD_PRELOAD"];
+      stepEnv["LD_PRELOAD"] = prev ? `${EGRESS_SHIM_PATH} ${prev}` : EGRESS_SHIM_PATH;
+      stepEnv["FLARE_EGRESS_LOG"] = EGRESS_LOG_PATH;
+      // A snapshot-restored container carries the previous job's log
+      // at this fixed path — remove it so domain rows never leak
+      // across jobs (staging canary-01 proved the leak).
+      try {
+        await execBounded(["rm", "-f", EGRESS_LOG_PATH], {}, 15000);
+      } catch {
+        // Best effort: worst case the parser reads stale rows, which
+        // the NIC cross-check still bounds.
+      }
+    }
     let timedOutJob = false;
     let anyFailed = false;
     let jobFailed = false;
@@ -639,6 +819,15 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         jobFailed = true;
         continue;
       }
+      if (!r.timedOut && r.exitCode === 125) {
+        // The stop watcher won the exec race: the instance is gone, so
+        // there is no step log to tail — say so explicitly.
+        records.push({ command: mask(command), exitCode: 125, durationMs, output: "[seat] container stopped unexpectedly" });
+        logParts.push(mask(`--- step ${i + 1}: ${command} ---\n[seat] container stopped unexpectedly\n(exit 125, ${durationMs}ms)`));
+        anyFailed = true;
+        jobFailed = true;
+        continue;
+      }
       const m = /EXIT:(\d+)\s*$/.exec(decode(r.stdout));
       const exitCode = m ? Number(m[1]) : r.exitCode;
       const tail = await execBounded(["tail", "-c", String(STEP_OUTPUT_CAP), "/tmp/step.log"], {}, 30000);
@@ -652,6 +841,85 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
           continue;
         }
         jobFailed = true;
+      }
+    }
+    // Shim-log collection: the rows tally at terminal accounting
+    // below, next to the (interface) row they detail. Retried
+    // attempts return before that save, so only the final attempt
+    // lands in job_egress — same as the NIC row.
+    let domainEgress: EgressTally[] = [];
+    if (shimEgress) {
+      try {
+        const log = await execBounded(["cat", EGRESS_LOG_PATH], {}, 30000);
+        if (!log.timedOut && log.exitCode === 0) {
+          domainEgress = parseEgressLog(decode(log.stdout));
+          if (domainEgress.length > 0) {
+            const top = domainEgress
+              .slice(0, 3)
+              .map((d) => `${d.host} ↓${d.respBytes}b`)
+              .join(", ");
+            logParts.push(`[seat] domain egress: ${domainEgress.length} domains (top: ${top})`);
+          }
+        }
+      } catch {
+        // A missing log (shim never loaded) is not a job failure.
+      }
+    }
+    // Browser checks (seats-only): declarative load+assert checks run
+    // worker-side after successful steps. Each check lands in records
+    // like a step, so digests and triage see failures; screenshots
+    // upload as artifacts for debugging. Any failure fails the job.
+    if (spec.browserChecks && spec.browserChecks.length > 0) {
+      if (timedOutJob || jobFailed || records.length === 0) {
+        logParts.push("[seat] browser checks skipped (steps did not succeed)");
+      } else if (!deps.browser) {
+        const msg = "[seat] browser checks need the BROWSER binding (Browser Rendering not configured on this seats worker)";
+        records.push({ command: "browser checks", exitCode: 1, durationMs: 0, output: msg });
+        logParts.push(mask(`--- browser checks ---\n${msg}\n(exit 1, 0ms)`));
+        anyFailed = true;
+        jobFailed = true;
+      } else {
+        for (const check of spec.browserChecks) {
+          await note(`[seat] browser check start: ${check.name} ${check.url}`);
+          const startedAt = Date.now();
+          try {
+            const page = await deps.browser.check(check.url, {
+              screenshot: check.screenshot !== false,
+              timeoutMs: BROWSER_CHECK_TIMEOUT_MS,
+            });
+            const durationMs = Date.now() - startedAt;
+            const titleOk = check.expectTitle === undefined || page.title.includes(check.expectTitle);
+            const textOk = check.expectText === undefined || page.text.includes(check.expectText);
+            const failed = !titleOk
+              ? `title ${JSON.stringify(page.title.slice(0, 120))} missing ${JSON.stringify(check.expectTitle)}`
+              : !textOk
+                ? `page text missing ${JSON.stringify(check.expectText)} (got ${JSON.stringify(page.text.slice(0, 200))})`
+                : "";
+            if (page.screenshot && page.screenshot.byteLength > 0) {
+              if (page.screenshot.byteLength > SEAT_BLOB_CAP) {
+                logParts.push(`[seat] browser screenshot skipped (>${SEAT_BLOB_CAP}b)`);
+              } else if (cache) {
+                const shotName = `browser-${check.name}.png`;
+                await cache.put(`artifacts/${jobId}/${shotName}`, page.screenshot);
+                logParts.push(`[seat] browser screenshot: ${shotName} (${page.screenshot.byteLength}b)`);
+              }
+            }
+            const output = failed || `title ${JSON.stringify(page.title.slice(0, 120))} ok`;
+            records.push({ command: `browser ${check.name}`, exitCode: failed ? 1 : 0, durationMs, output: mask(output) });
+            logParts.push(mask(`--- browser ${check.name}: ${check.url} ---\n${output}\n(exit ${failed ? 1 : 0}, ${durationMs}ms)`));
+            if (failed) {
+              anyFailed = true;
+              jobFailed = true;
+            }
+          } catch (err) {
+            const durationMs = Date.now() - startedAt;
+            const msg = `browser error: ${String(err instanceof Error ? err.message : err).slice(0, 300)}`;
+            records.push({ command: `browser ${check.name}`, exitCode: 1, durationMs, output: mask(msg) });
+            logParts.push(mask(`--- browser ${check.name}: ${check.url} ---\n${msg}\n(exit 1, ${durationMs}ms)`));
+            anyFailed = true;
+            jobFailed = true;
+          }
+        }
       }
     }
     const success = !timedOutJob && records.length > 0 && !jobFailed;
@@ -848,14 +1116,56 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       }
       return { status: "released", jobId, detail: "job was requeued before completion; result dropped" };
     }
-    await rollupRunStatus(deps.db, job.run_id);
+    await rollupRunStatus(deps.db, job.run_id, deps.analytics, deps.basin);
+    // FTS index slice for global log search (best-effort, like monitors).
+    await indexJobLog(deps.db, {
+      jobId,
+      runId: job.run_id,
+      repo: run.repo,
+      branch: run.branch,
+      log: finalLog,
+    }).catch(() => undefined);
+    // Runtime prior for drain-order prediction (success/failure carry
+    // real durations; seats only finish those two statuses here).
+    const finished = await getJob(deps.db, jobId);
+    const seatDurationMs = finished ? jobDurationMs(finished) : null;
+    if (finished) {
+      emitJobTerminal(deps.analytics, {
+        repo: run.repo,
+        runId: job.run_id,
+        jobName: finished.name,
+        status,
+        durationMs: seatDurationMs ?? 0,
+        executor: "seat",
+        attempts: finished.attempts,
+      });
+      if (deps.basin) {
+        sendBasin(deps.basin, basinJobTerminal({
+          repo: run.repo,
+          runId: job.run_id,
+          jobName: finished.name,
+          status,
+          durationMs: seatDurationMs ?? 0,
+          executor: "seat",
+          attempts: finished.attempts,
+        }));
+      }
+    }
+    if (finished?.finished_at && seatDurationMs !== null) {
+      await recordRuntimePrior(deps.db, {
+        repo: run.repo,
+        name: job.name,
+        finishedAt: finished.finished_at,
+        durationMs: seatDurationMs,
+      }).catch(() => undefined);
+    }
     try {
       await evaluateResultMonitors(deps.db, deps.mail ?? {}, run, {
         ...job,
         status,
         log: finalLog,
       });
-      const promoted = await promoteBlockedJobs(deps.db, deps.queue, run.repo, (p) => deps.spawn?.(p.jobId));
+      const promoted = await promoteBlockedJobs(deps.db, deps.queue, run.repo, (p) => deps.spawn?.(p.jobId), deps.analytics, deps.basin);
       if (promoted.length > 0) await note(`[seat] promoted ${promoted.length} job(s)`);
       if (deps.mail) {
         const finalRun = await getRun(deps.db, job.run_id);
@@ -891,7 +1201,11 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         await triageAndStore(deps.db, deps.ai, run, job.id, jobName, mask(logParts.join("\n")), resultJson, {
           gatewayId: deps.gatewayId,
           webSearch: deps.webSearch,
+          model: deps.triageModel,
         });
+        // Self-heal request (same cheap claim the worker files; the
+        // worker's scheduled tick drains the queue).
+        await requestHeal(deps.db, job.run_id, job.id);
       }
     } catch (err) {
       console.log(JSON.stringify({ level: "warn", msg: "seat post-processing failed", jobId, error: String(err) }));
@@ -906,6 +1220,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         const dRx = Math.max(0, end.rx - ifaceStart.rx);
         if (dTx > 0 || dRx > 0) tally("(interface)", dTx, dRx);
       }
+      for (const d of domainEgress) tally(d.host, d.reqBytes, d.respBytes);
       if (egress.length > 0) await saveJobEgress(deps.db, jobId, job.run_id, egress);
     } catch {
       // Best effort.

@@ -45,6 +45,9 @@ export interface RunDigest {
   failedJobs: number;
   jobs: DigestJob[];
   egress?: DigestEgress;
+  // Self-heal outcome (absent when no heal ran): the fix branch and
+  // its draft PR, opened on a failed run when heal_on_failure is on.
+  heal?: { branch: string; prUrl: string };
 }
 
 const FAILED_STATUSES = ["failure", "error", "cancelled"];
@@ -114,5 +117,6 @@ export async function buildRunDigest(db: Db, runId: string): Promise<RunDigest |
     failedJobs: digestJobs.filter((j) => FAILED_STATUSES.includes(j.status)).length,
     jobs: digestJobs,
     ...(egress ? { egress } : {}),
+    ...(run.heal_branch && run.heal_pr_url ? { heal: { branch: run.heal_branch, prUrl: run.heal_pr_url } } : {}),
   };
 }

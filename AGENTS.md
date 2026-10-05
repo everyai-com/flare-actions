@@ -14,12 +14,16 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `npm run types` — regenerate `apps/worker/src/worker-configuration.d.ts`.
   Run after any `wrangler.jsonc` change. NOTE: output varies with `.dev.vars`
   presence (secrets become required bindings); code must compile both ways —
-  see `WorkerSecrets` intersection in `apps/worker/src/index.ts`.
+  see `WorkerSecrets` intersection in `apps/worker/src/index.ts`. The script
+  passes `--include-runtime=false`: wrangler's inlined runtime snapshot lags
+  `@cloudflare/workers-types` and its globals shadow the newer `Tracing`/
+  `Span`/`Container` APIs (red typecheck with no source change). Runtime
+  globals come only from tsconfig `"types"`; the generated file is `Env`.
 - `npm run typecheck` — `tsc --noEmit`, must be clean
 - `npm test` — vitest, colocated `*.test.ts`, must pass
 - `npm run deploy` / `npm run deploy:dry` — deploy / validate only
 - `npm run runner` — external pull-runner (reads `.env` automatically)
-- `npm run cli -- <runs|logs|local|run|watch|cancel|dispatch|rerun|flaky|artifacts|badge|import|mcp-config|tests|cache|usage|egress|queue>`
+- `npm run cli -- <runs|logs|local|run|watch|cancel|dispatch|rerun|flaky|artifacts|badge|import|mcp-config|tests|cache|usage|egress|queue|devbox|mcp-serve>`
   — CLI (reads `.env` automatically)
 
 ## Architecture
@@ -87,12 +91,32 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   generic advice. Inference optionally fronts AI Gateway (`AI_GATEWAY_ID`
   env or D1 `ai_gateway_id`, off by default) and grounds in Web Search
   (`websearch.ts`, opt-in `triage_web_search`, needs a gateway).
+- CI analytics (`analytics.ts` + `basin.ts`, queries in
+  `docs/ANALYTICS.md`): both executors emit `run.dispatched` /
+  `run.terminal` / `job.terminal` to Analytics Engine (hot, sync
+  buffer, committed `ANALYTICS` binding) and, when bound, to a Basin
+  Pipeline stream (cold Iceberg rows; `CI_EVENTS` is operator-added,
+  never committed — read defensively via `basinSink`, emitted via
+  `waitUntil`). Unbound or failing sinks skip silently, never 500.
+- Self-healing runs (`heal.ts`, `docs/HEALING.md`): opt-in D1
+  `heal_on_failure` (dashboard toggle, default off). Failures file an
+  atomic `heal_claims` row via `requestHeal` (both executors, next to
+  triage); the scheduled tick drains ≤2/tick via `processHealClaims`
+  (production only) — model proposes ≤3 full-file fixes, Git Data API
+  pushes `flare-heal/*`, a draft PR opens, a `source: heal:*`
+  verification run dispatches. Never heals heal branches or verify
+  runs; needs App `contents:write` + `pull_requests:write`.
 - Scheduling fairness (`fairness.ts`, dependency-free — the CLI imports it
   directly): `claimNextJob` takes an optional per-repo running cap (D1
   `fair_share_per_repo`, 0 = off); `simulateDrain` replays claim order
   deterministically for `cli queue` (live queue: `GET /v1/admin/queue`).
 - MCP (`mcp.ts`): stateless Streamable HTTP, Bearer [REDACTED] Protocol
-  negotiates `2026-07-28`/`2024-11-05`; WriteGuard tiers per tool
+  negotiates `2026-07-28` + legacy eras via the MCP SDK's
+  `createMcpHandler` (stateless per-request servers; `mcp-oauth.ts` pure
+  logic + `oauth-server.ts` provider wiring loaded lazily so vitest
+  stays runtime-free); OAuth 2.1 dynamic clients + legacy API tokens
+  (dual-auth, `flare:read`/`flare:run` scopes) on a D1-backed store
+  (`oauth_kv`, no KV namespace); WriteGuard tiers per tool
   (`MCP_TOOL_RISK`), attributed audit rows for write-tier calls, optional
   write-confirm gate (D1 `mcp_write_confirm`).
 - Step env always includes `CI=true` (GitHub parity: tool retries,
@@ -148,8 +172,10 @@ exhaustion) → runner polls `GET /v1/jobs/next?labels=` → executes →
   policy) serves new jobs; V1 finishes in-flight ones. V2-only: snapshot
   caches (`seat_snapshots`, image-lineage keyed), `retain-on-failure`
   YAML key (30-min TTL alarm, SSH enabled), per-job egress
-  (`job_egress`, `GET /v1/runs/:id/egress`), peak-RSS sampling. Seat
-  reports cap at 256KB log / 64KB result like BYO (D1 2MB rows).
+  (`job_egress`, `GET /v1/runs/:id/egress`, per-domain rows via the
+  `LD_PRELOAD` shim in `apps/seats/egress.c`), peak-RSS sampling,
+  Artifacts mirror checkouts (mirror-first with GitHub fallback).
+  Seat reports cap at 256KB log / 64KB result like BYO (D1 2MB rows).
 - Wakes travel the `flare-actions-seats` queue (main produces, seats
   consumes; DLQ `flare-actions-seats-dlq`). Never worker→workers.dev
   HTTPS (edge error 1042) and never a service binding (deploy-time

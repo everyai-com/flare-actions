@@ -18,6 +18,7 @@ function jobRow(over: Partial<JobRow> = {}): JobRow {
     started_at: "2026-10-02T10:00:00.000Z",
     finished_at: null,
     retained_until: null,
+    prior_ms: 0,
     created_at: "2026-10-02T10:00:00.000Z",
     updated_at: "2026-10-02T10:00:00.000Z",
     ...over,
@@ -277,9 +278,28 @@ describe("triageAndStore", () => {
         return { response: "Cause: boom." };
       },
     };
-    await triageAndStore(db, ai, { repo: "o/r", sha: "abc" }, "job-1", "test", "log", result, { gatewayId: "gw-env" });
+    await triageAndStore(db, ai, { id: "run-1", repo: "o/r", sha: "abc" }, "job-1", "test", "log", result, { gatewayId: "gw-env" });
     expect(seen).toEqual([{ gateway: { id: "gw-env" } }]);
     expect(db.jobs.get("job-1")?.triage).toBe("Cause: boom.");
+  });
+
+  it("threads the model override (env wins, D1 fills the gap)", async () => {
+    const seen: string[] = [];
+    const ai = {
+      run: async (m: string) => {
+        seen.push(m);
+        return { response: "Cause: boom." };
+      },
+    };
+    const db = new MemDb();
+    db.jobs.set("job-1", jobRow());
+    db.settings.set("triage_model", "@cf/qwen/qwen3.8-27b");
+    await triageAndStore(db, ai, { id: "run-1", repo: "o/r", sha: "abc" }, "job-1", "test", "log", result, {
+      model: "@cf/deepseek-ai/deepseek-v4-flash-0731",
+    });
+    expect(seen).toEqual(["@cf/deepseek-ai/deepseek-v4-flash-0731"]);
+    await triageAndStore(db, ai, { id: "run-1", repo: "o/r", sha: "abc" }, "job-1", "test", "log", result);
+    expect(seen[1]).toBe("@cf/qwen/qwen3.8-27b");
   });
 
   it("falls back to the D1 gateway and grounds with web search when on", async () => {
@@ -296,7 +316,7 @@ describe("triageAndStore", () => {
       },
       websearch: async () => new Response(JSON.stringify({ items: [{ url: "https://x.example", title: "T", description: "D" }] })),
     };
-    await triageAndStore(db, ai, { repo: "o/r", sha: "abc" }, "job-1", "test", "log", result);
+    await triageAndStore(db, ai, { id: "run-1", repo: "o/r", sha: "abc" }, "job-1", "test", "log", result);
     expect(seen.opts).toEqual({ gateway: { id: "gw-d1" } });
     expect(seen.prompt).toContain("Live web context");
     expect(seen.prompt).toContain("https://x.example");
@@ -314,10 +334,10 @@ describe("triageAndStore", () => {
         return new Response("{}");
       },
     };
-    await triageAndStore(db, ai, { repo: "o/r", sha: "abc" }, "job-1", "test", "log", result);
+    await triageAndStore(db, ai, { id: "run-1", repo: "o/r", sha: "abc" }, "job-1", "test", "log", result);
     expect(searched).toBe(false);
-    await triageAndStore(db, undefined, { repo: "o/r", sha: "abc" }, "job-1", "test", "log", result);
-    await triageAndStore(db, { run: async () => { throw new Error("down"); } }, { repo: "o/r", sha: "abc" }, "job-1", "test", "log", result);
+    await triageAndStore(db, undefined, { id: "run-1", repo: "o/r", sha: "abc" }, "job-1", "test", "log", result);
+    await triageAndStore(db, { run: async () => { throw new Error("down"); } }, { id: "run-1", repo: "o/r", sha: "abc" }, "job-1", "test", "log", result);
     expect(db.jobs.get("job-1")?.triage).toBe("Cause: boom.");
   });
 });

@@ -6,9 +6,12 @@ import {
   parseFairSharePerRepo,
   parseMcpWriteConfirm,
   parseTriageWebSearch,
+  validateBillingApiToken,
+  validateCloudflareAccountId,
   validateNotifyFromEmail,
   validateNotifyMode,
   validateNotifyWebhookUrl,
+  validateTriageModel,
   validateTurnstileSecretKey,
   validateTurnstileSiteKey,
   validateWebhookSecret,
@@ -143,5 +146,24 @@ describe("parseTriageWebSearch", () => {
     expect(parseTriageWebSearch(false)).toEqual({ on: false });
     expect(parseTriageWebSearch(null)).toEqual({ on: false });
     expect("error" in parseTriageWebSearch("sometimes")).toBe(true);
+  });
+});
+
+describe("billing settings", () => {
+  it("validates the token length", () => {
+    expect(validateBillingApiToken("x".repeat(40))).toBeNull();
+    expect(validateBillingApiToken("short")).not.toBeNull();
+    expect(validateBillingApiToken(42)).not.toBeNull();
+  });
+  it("validates the 32-hex account id", () => {
+    expect(validateCloudflareAccountId("a54b12fe3ef06df16ff0041d79c18fc0")).toBeNull();
+    expect(validateCloudflareAccountId("A54B12FE3EF06DF16FF0041D79C18FC0")).toBeNull();
+    expect(validateCloudflareAccountId("not-hex")).not.toBeNull();
+    expect(validateCloudflareAccountId("a54b12fe")).not.toBeNull();
+  });
+  it("validates triage model ids", () => {
+    expect(validateTriageModel("@cf/deepseek-ai/deepseek-v4-flash-0731")).toBeNull();
+    expect(validateTriageModel("llama")).not.toBeNull();
+    expect(validateTriageModel("")).not.toBeNull();
   });
 });

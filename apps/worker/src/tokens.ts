@@ -1,3 +1,6 @@
+import { findLiveToken, type Db } from "./db";
+import { bytesEqual } from "./github";
+
 export const TOKEN_SCOPES = ["runner", "readonly", "admin"] as const;
 export type TokenScope = (typeof TOKEN_SCOPES)[number];
 
@@ -63,4 +66,44 @@ export function parseRepos(raw: string): string[] {
     .split(",")
     .map((r) => r.trim())
     .filter((r) => REPO_RE.test(r));
+}
+
+export type AuthScope = "admin" | "runner" | "readonly";
+
+export interface ApiTokenIdentity {
+  scope: AuthScope;
+  actor: string;
+  repos: string[];
+}
+
+export async function timingSafeEqualStr(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [da, db] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b)),
+  ]);
+  return bytesEqual(new Uint8Array(da), new Uint8Array(db));
+}
+
+// Bearer validation shared by the HTTP API (authIdentity) and the MCP
+// OAuth validator (dual-auth fallback): env secrets first, then D1
+// tokens. `repos` is the token's repo allowlist ([] = all repos).
+export async function authIdentityFromToken(
+  token: string,
+  secrets: { db: Db; adminToken?: string; runnerToken?: string },
+): Promise<ApiTokenIdentity | null> {
+  if (secrets.adminToken && (await timingSafeEqualStr(token, secrets.adminToken))) {
+    return { scope: "admin", actor: "break-glass", repos: [] };
+  }
+  if (secrets.runnerToken && (await timingSafeEqualStr(token, secrets.runnerToken))) {
+    return { scope: "runner", actor: "env:runner", repos: [] };
+  }
+  const row = await findLiveToken(secrets.db, await hashToken(token));
+  if (!row) return null;
+  const scopes = parseScopes(row.scopes);
+  const repos = parseRepos(row.repos ?? "");
+  if (scopesAllow(scopes, "admin")) return { scope: "admin", actor: `token:${row.id}`, repos };
+  if (scopesAllow(scopes, "run")) return { scope: "runner", actor: `token:${row.id}`, repos };
+  if (scopesAllow(scopes, "read")) return { scope: "readonly", actor: `token:${row.id}`, repos };
+  return null;
 }

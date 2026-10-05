@@ -31,6 +31,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: gate
+        # Least-privilege token for this job: `npm run token:mint -- --profile ci`
+        # (Workers Scripts Edit + D1 Edit + Queues Edit, one account). See docs/TOKENS.md.
         run: |
           if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"

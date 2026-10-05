@@ -122,3 +122,138 @@ Connect flow (stored in the shared D1, picked up automatically) or
 from `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY` secrets (env wins).
 Without either, private checkouts fail and the job releases to BYO
 runners with `GITHUB_TOKEN`.
+
+Private origins behind your firewall (self-hosted git, internal APIs)
+are not reachable from seats: Workers VPC bindings cover Worker/DO
+`fetch`, not container egress, and the beta has no container
+attachment. Run a BYO runner inside your network for those jobs.
+
+## Per-domain egress
+
+`job_egress` carries three measured namespaces per job: `r2:<area>`
+rows for seat-side transfers, one `(interface)` row for the container
+NIC delta, and bare-domain rows (`registry.npmjs.org`,
+`api.github.com`, …) from a passive `LD_PRELOAD` shim compiled into
+the seat image (`apps/seats/egress.c` → `/opt/flare/egress.so`).
+
+- Seats probe for the shim before the steps loop; older images fail
+  the probe and run exactly as before (no rows, no behavior change).
+  A job-supplied `LD_PRELOAD` chains after ours rather than being
+  clobbered.
+- The shim observes `connect`/`send`/`recv`/`read`/`write` (+ vector
+  and `msg` variants) and DNS (`getaddrinfo` plus port-53 wire
+  parsing for c-ares runtimes like Node), appending `DNS`/`OUT`/`IN`
+  lines to `$FLARE_EGRESS_LOG`. Traffic flows exactly as without it.
+- Attribution is a lower bound: statically linked binaries bypass
+  the shim, resolver traffic is deliberately uncounted, and the
+  seat-side parser caps hostile input (charset checks, 200-domain
+  cap with an `(other-domains)` bucket, int64-safe counts). The NIC
+  row stays the cross-check total.
+- Staging-validated end to end (canary `egress-canary-job-01`):
+  curl/Node/Python downloads attribute to the right domains with
+  byte-exact counts against the step outputs.
+
+## Artifacts mirror checkouts
+
+Seats can check out from a Cloudflare Artifacts Git mirror instead of
+GitHub — same shallow-fetch shape, usually faster for big repos.
+Configure two seats secrets (remote template + repo token); seats try
+the mirror first and fall back to GitHub on any mirror failure, so a
+stale mirror, missing repo, or expired token never fails a checkout
+GitHub could serve.
+
+```bash
+# One mirror repo per GitHub repo; name it owner-name (the seat
+# renders {repo} as owner/name with / -> -).
+npx wrangler artifacts repos create everyai-com-flare-actions \
+  --namespace flare-mirrors
+# Seed it (repeat after upstream pushes; seats fetch by sha, so the
+# mirror only needs the shas jobs check out).
+git push \
+  "https://x-access-token:<write-token>@<acct>.artifacts.cloudflare.net/git/flare-mirrors/everyai-com-flare-actions.git" \
+  <sha>:refs/heads/main
+# Least-privilege read token for seats (TTL up to a year).
+npx wrangler artifacts repos issue-token everyai-com-flare-actions \
+  --namespace flare-mirrors --scope read --ttl 31536000 --json
+# Wire the seats worker (staging shown; same vars on prod).
+printf '%s' \
+  'https://<acct>.artifacts.cloudflare.net/git/flare-mirrors/{repo}.git' |
+  npx wrangler secret put ARTIFACTS_MIRROR_REMOTE \
+    --config apps/seats/wrangler.staging.jsonc
+npx wrangler secret put ARTIFACTS_MIRROR_TOKEN \
+  --config apps/seats/wrangler.staging.jsonc < token.txt
+```
+
+- The template must match
+  `https://<32-hex-acct>.artifacts.cloudflare.net/git/<ns>/<repo>.git`
+  exactly — anything else fails closed to GitHub.
+- Tokens carry `?expires=`; seats URL-encode them into the remote
+  (unencoded, git misparses the URL) and scrub both the raw and
+  encoded forms from every error.
+- Mirror errors surface as HTTP 500 from Artifacts (even for unknown
+  shas); the release detail names both sides
+  (`checkout failed (mirror: …; github: …)`).
+- Staging-validated: mirror checkout (`mirror-canary-job-02`),
+  GitHub fallback, bogus-sha release with zero token leakage
+  (`mirror-canary-job-04`).
+- Still manual: per-repo provisioning/push and yearly token rotation.
+  Worker-minted per-job tokens via the `ARTIFACTS` binding (no stored
+  token at all) wait for the beta + billing to settle.
+
+## Local-Docker dev mode
+
+`apps/seats/src/local-docker.ts` is a `ContainerCtl` backed by the
+local `docker` CLI, so seat execution logic (`runSeatJob`) can be
+exercised without deploying: it satisfies the same interface the DO
+adapter does (`start` / `exec` / `destroy` / `monitor`), which keeps
+local runs faithful to the `docker wait` stop semantics. Dev-only —
+nothing in the worker path imports it.
+
+- Needs a local Docker daemon (colima works); any runnable image
+  works (`alpine:3.20` is enough for a smoke, the prod seat image is
+  `linux/amd64` and emulates on ARM laptops).
+- Flat env values ride a 0600 `--env-file`; multiline values (PEM
+  keys) fall back to `-e` (argv-visible — local dev only).
+- Snapshots are unsupported and reject loudly; snapshot-dependent
+  paths (Phase 2 warm caches) need staging.
+- `docker run` failures reject loudly; instances are `--rm` + named
+  `flare-seat-local-*`, removed on `destroy()`.
+
+```bash
+node --experimental-strip-types --eval '
+  const { LocalContainer } = await import("./apps/seats/src/local-docker.ts");
+  const c = new LocalContainer("alpine:3.20");
+  await c.start();
+  const h = await c.exec(["echo", "seat-dev-ok"]);
+  console.log(new TextDecoder().decode((await h.output()).stdout));
+  c.destroy();
+'
+```
+
+## Warm dev boxes
+
+`cli devbox` manages persistent local containers for the build/test
+loop — no worker, no tokens, no network. Each box is a stable
+`flare-devbox-<name>` instance with a `/work` dir, recorded in
+`~/.flare/devboxes.json` and reattached per command, so one-shot CLI
+invocations share warm state:
+
+```bash
+cli devbox create api --image node:22-bookworm
+cli devbox sync api --dir . src package.json   # tar the tree into /work
+cli devbox exec api -- npm test                # exit code relayed
+cli devbox snapshot api deps-installed          # docker commit lineage
+cli devbox restore api deps-installed           # recreate from the tag
+cli devbox fetch api dist/app.js ./out          # copy build output out
+cli devbox destroy api                          # instance gone, images kept
+```
+
+- Snapshots are committed local images (`flare-devbox-<name>:<tag>`);
+  `destroy` keeps them — prune with `docker rmi`.
+- Sync uses the SDK gzip-tar helpers (same path validation as cache
+  restore); fetch traversal-guards the box path and asserts the tar
+  listing before extracting.
+- `cli mcp-serve` exposes the same eight operations over MCP on
+  stdio for agents on this machine (protocol `2026-07-28`). It grants
+  local code execution by design — register it only with clients you
+  trust, like any shell-capable MCP server.

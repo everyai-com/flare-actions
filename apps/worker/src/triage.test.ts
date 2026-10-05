@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTriageMessages, runTriage, TRIAGE_MODEL } from "./triage";
+import { buildTriageMessages, isModelBusyError, runTriage, TRIAGE_MODEL } from "./triage";
 
 const input = {
   repo: "octo/app",
@@ -65,6 +65,43 @@ describe("runTriage", () => {
         input,
       ),
     ).resolves.toBeNull();
+  });
+
+  it("classifies capacity rejections as busy", () => {
+    expect(isModelBusyError(new Error("model is busy, try again"))).toBe(true);
+    expect(isModelBusyError(new Error("429 rate limit exceeded"))).toBe(true);
+    expect(isModelBusyError(new Error("service temporarily overloaded"))).toBe(true);
+    expect(isModelBusyError("503 Service Unavailable")).toBe(true);
+    expect(isModelBusyError(new Error("boom"))).toBe(false);
+    expect(isModelBusyError(null)).toBe(false);
+    expect(isModelBusyError(new Error("business logic failed"))).toBe(false);
+  });
+
+  it("still degrades to skip on busy rejections", async () => {
+    await expect(
+      runTriage(
+        {
+          run: async () => {
+            throw new Error("model busy");
+          },
+        },
+        input,
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it("honors a model override, defaulting to the triage model", async () => {
+    let seen = "";
+    const fake = {
+      run: async (model: string) => {
+        seen = model;
+        return { response: "Cause: x." };
+      },
+    };
+    await runTriage(fake, input, { model: "@cf/qwen/qwen3.8-27b" });
+    expect(seen).toBe("@cf/qwen/qwen3.8-27b");
+    await runTriage(fake, input);
+    expect(seen).toBe(TRIAGE_MODEL);
   });
 
   it("fronts AI Gateway when a gateway id is set, direct otherwise", async () => {

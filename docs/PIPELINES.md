@@ -42,6 +42,11 @@ jobs:
         if: always()
       - run: ./scripts/notify.sh     # only when something failed earlier
         if: failure()
+    browser-checks:                # seats-only: Browser Rendering checks after steps
+      - name: homepage
+        url: https://example.com/
+        expect-title: Example      # substring of <title> (or expect-text)
+        screenshot: true           # PNG artifact, default true
 ```
 
 ## Semantics
@@ -94,11 +99,20 @@ jobs:
   always runs). Steps reach them on `localhost:<port>`.
 - **`container`** runs each step as `docker run --rm -v <checkout>:/work
   -w /work`, forwarding only `FLARE_*`, job `env`, and matrix vars.
+- **`browser-checks`** (managed seats only) run worker-side via Browser
+  Rendering after successful steps: each check loads its `url`
+  (https only), asserts `expect-title` and/or `expect-text`
+  substrings (at least one required), and stores a PNG screenshot as
+  a `browser-<name>.png` artifact (unless `screenshot: false`). Any
+  miss fails the job. BYO runners and `cli local` fail closed on the
+  key rather than silently skipping; seats without the `BROWSER`
+  binding fail with a configuration pointer. Skipped when steps fail.
 
 ## Limits
 
 32 jobs post-expansion, 100 steps/job, 8 matrix keys × 16 values, 8 labels,
-32 env vars, 8 services, 16 cache paths, 32 artifact paths, 64 KB file.
+32 env vars, 8 services, 16 cache paths, 32 artifact paths,
+10 browser-checks/job (30 s each), 64 KB file.
 
 ## Generating pipelines
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildGenerateMessages, extractYaml, runGenerate } from "./generate";
+import { buildGenerateMessages, extractYaml, runGenerate, runGenerateWithStatus } from "./generate";
 
 describe("generate", () => {
   it("builds constrained generation prompts", () => {
@@ -40,5 +40,30 @@ describe("generate", () => {
     };
     await runGenerate(fake, "x", { gatewayId: "prod" });
     expect(seen).toEqual({ gateway: { id: "prod" } });
+  });
+
+  it("distinguishes busy from failed outcomes", async () => {
+    const busy = await runGenerateWithStatus(
+      {
+        run: async () => {
+          throw new Error("429 overloaded, retry later");
+        },
+      },
+      "x",
+    );
+    expect(busy).toEqual({ status: "busy" });
+    const failed = await runGenerateWithStatus(
+      {
+        run: async () => {
+          throw new Error("boom");
+        },
+      },
+      "x",
+    );
+    expect(failed).toEqual({ status: "failed" });
+    const empty = await runGenerateWithStatus({ run: async () => ({}) }, "x");
+    expect(empty).toEqual({ status: "failed" });
+    const ok = await runGenerateWithStatus({ run: async () => ({ response: "jobs:\n  a: {}\n" }) }, "x");
+    expect(ok.status).toBe("ok");
   });
 });

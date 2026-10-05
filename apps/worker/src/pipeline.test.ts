@@ -219,6 +219,42 @@ describe("job definition serialization", () => {
     const def = serializeDefinition({ name: "a", steps: [{ run: "echo" }], retainOnFailure: true }, "a");
     expect(JSON.parse(def).retainOnFailure).toBe(true);
   });
+
+  it("parses browser-checks and serializes them into the definition", () => {
+    const yaml =
+      "jobs:\n  a:\n    steps:\n      - run: echo\n    browser-checks:\n" +
+      "      - name: home\n        url: https://example.com/\n        expect-title: Example\n        screenshot: false\n";
+    const jobs = parsePipeline(yaml);
+    expect(jobs?.[0].browserChecks).toEqual([
+      { name: "home", url: "https://example.com/", expectTitle: "Example", screenshot: false },
+    ]);
+    const def = serializeDefinition(
+      {
+        name: "a",
+        steps: [{ run: "echo" }],
+        browserChecks: [{ name: "home", url: "https://example.com/", expectText: "x" }],
+      },
+      "a",
+    );
+    expect(JSON.parse(def).browserChecks).toEqual([{ name: "home", url: "https://example.com/", expectText: "x" }]);
+  });
+
+  it("rejects malformed browser-checks", () => {
+    const bad = (checks: string) => parsePipeline(`jobs:\n  a:\n    steps:\n      - run: echo\n    browser-checks:\n${checks}\n`);
+    expect(bad("      - name: home\n        url: http://example.com/\n        expect-title: x\n")).toBeNull();
+    expect(bad("      - name: home\n        url: https://example.com/\n")).toBeNull();
+    expect(bad("      - name: home\n        url: not-a-url\n        expect-title: x\n")).toBeNull();
+    expect(bad("      - name: BAD NAME\n        url: https://example.com/\n        expect-title: x\n")).toBeNull();
+    expect(
+      bad(
+        "      - name: a\n        url: https://example.com/\n        expect-title: x\n      - name: a\n        url: https://example.com/\n        expect-title: x\n",
+      ),
+    ).toBeNull();
+    const eleven = Array.from({ length: 11 }, (_, i) => `      - name: c${i}\n        url: https://example.com/\n        expect-title: x\n`).join(
+      "",
+    );
+    expect(bad(eleven)).toBeNull();
+  });
 });
 
 describe("seatEligible", () => {

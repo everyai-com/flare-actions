@@ -15,6 +15,8 @@ export const SCHEMA_STATEMENTS = [
     source TEXT,
     pr_number INTEGER,
     pr_comment_id INTEGER,
+    heal_branch TEXT,
+    heal_pr_url TEXT,
     status TEXT NOT NULL DEFAULT 'queued',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -176,6 +178,32 @@ export const SCHEMA_STATEMENTS = [
     PRIMARY KEY (job_id, host)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_job_egress_run ON job_egress(run_id)`,
+  `CREATE VIRTUAL TABLE IF NOT EXISTS log_fts USING fts5(
+    line, job_id UNINDEXED, run_id UNINDEXED, repo UNINDEXED,
+    branch UNINDEXED, level UNINDEXED, created_at UNINDEXED
+  )`,
+  `CREATE TABLE IF NOT EXISTS job_runtime_priors (
+    repo TEXT NOT NULL,
+    name TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    samples INTEGER NOT NULL DEFAULT 1,
+    avg_ms INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (repo, name, hour)
+  )`,
+  `CREATE TABLE IF NOT EXISTS oauth_kv (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    expires_at INTEGER
+  )`,
+  `CREATE TABLE IF NOT EXISTS heal_claims (
+    run_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    branch TEXT,
+    pr_url TEXT,
+    created_at TEXT NOT NULL
+  )`,
 ];
 
 // Additive columns for databases created before the matching migration.
@@ -194,6 +222,9 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE jobs ADD COLUMN finished_at TEXT`,
   `ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'github'`,
   `ALTER TABLE jobs ADD COLUMN retained_until TEXT`,
+  `ALTER TABLE jobs ADD COLUMN prior_ms INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE runs ADD COLUMN heal_branch TEXT`,
+  `ALTER TABLE runs ADD COLUMN heal_pr_url TEXT`,
 ];
 
 let schemaPromise: Promise<void> | null = null;

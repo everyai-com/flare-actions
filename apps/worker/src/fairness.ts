@@ -1,6 +1,7 @@
 // Deterministic scheduling simulator: replays the claim rules
-// (priority-first, oldest-first, label match, repo allowlist, fair-share
-// caps) over a queue snapshot so policy changes can be validated before
+// (priority-first, longest-predicted-first, oldest-first, label match,
+// repo allowlist, fair-share caps) over a queue snapshot so policy
+// changes can be validated before
 // they ship ("few surprises"). Greedy per-round assignment approximates
 // independent pollers; ties break by job id, so output is stable for
 // stable input. Dependency-free and runtime-free: the CLI imports this
@@ -26,6 +27,7 @@ export interface SimJob {
   id: string;
   repo: string;
   priority: number;
+  priorMs: number;
   createdAt: string;
   labels: string;
 }
@@ -51,7 +53,13 @@ export function simulateDrain(
 ): SimClaim[] {
   const ordered = jobs
     .slice()
-    .sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+    .sort(
+      (a, b) =>
+        b.priority - a.priority ||
+        (b.priorMs ?? 0) - (a.priorMs ?? 0) ||
+        a.createdAt.localeCompare(b.createdAt) ||
+        a.id.localeCompare(b.id),
+    );
   const taken = new Set<string>();
   const running: Record<string, number> = { ...runningByRepo };
   const claims: SimClaim[] = [];

@@ -62,7 +62,7 @@ describe("connect", () => {
     expect(m.setup_url).toBe("https://ci.example.com/dashboard");
     expect(m.redirect_url).toBe("https://ci.example.com/v1/admin/github/callback");
     expect(m.callback_urls).toEqual(["https://ci.example.com/v1/admin/github/oauth/callback"]);
-    expect(m.default_permissions).toEqual({ contents: "read", statuses: "write", checks: "write", pull_requests: "write" });
+    expect(m.default_permissions).toEqual({ contents: "write", statuses: "write", checks: "write", pull_requests: "write" });
     expect(m.default_events).toEqual(["push", "pull_request"]);
     expect(m.hook_attributes).toEqual({ url: "https://ci.example.com/webhooks/github", active: true });
   });

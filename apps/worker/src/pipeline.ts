@@ -44,6 +44,17 @@ export interface PipelineTestReports {
   paths: string[];
 }
 
+// Managed seats only: declarative browser checks run worker-side via
+// the BROWSER binding (Browser Rendering) after successful steps
+// (BYO runners ignore them). YAML key: `browser-checks`.
+export interface PipelineBrowserCheck {
+  name: string;
+  url: string;
+  expectTitle?: string;
+  expectText?: string;
+  screenshot?: boolean;
+}
+
 // Extended keys are optional and only set when the document defines
 // them, so minimal pipelines still parse to exactly { name, steps }.
 export interface PipelineJob {
@@ -73,9 +84,11 @@ export interface PipelineJob {
   // Managed seats only: keep the failed container for debugging (BYO
   // runners ignore it). YAML key: `retain-on-failure`.
   retainOnFailure?: boolean;
+  browserChecks?: PipelineBrowserCheck[];
 }
 
 export const MAX_JOBS = 32;
+export const MAX_BROWSER_CHECKS = 10;
 export const MAX_STEPS_PER_JOB = 100;
 export const MAX_RUN_LENGTH = 8000;
 export const MAX_DEFINITION_BYTES = 64 * 1024;
@@ -181,6 +194,7 @@ interface RawJob {
   retry?: number;
   if?: string;
   retainOnFailure?: boolean;
+  browserChecks?: PipelineBrowserCheck[];
 }
 
 function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<string, string[]> }) | null {
@@ -319,6 +333,48 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     if (typeof def["retain-on-failure"] !== "boolean") return null;
     if (def["retain-on-failure"]) job.retainOnFailure = true;
   }
+  if (def["browser-checks"] !== undefined) {
+    if (!Array.isArray(def["browser-checks"])) return null;
+    if (def["browser-checks"].length === 0 || def["browser-checks"].length > MAX_BROWSER_CHECKS) return null;
+    const checks: PipelineBrowserCheck[] = [];
+    const seen = new Set<string>();
+    for (const c of def["browser-checks"]) {
+      if (!isRecord(c)) return null;
+      if (typeof c.name !== "string" || !/^[\w.-]{1,64}$/.test(c.name) || seen.has(c.name)) return null;
+      seen.add(c.name);
+      if (typeof c.url !== "string" || c.url.length === 0 || c.url.length > 2048) return null;
+      let protocol = "";
+      try {
+        protocol = new URL(c.url).protocol;
+      } catch {
+        return null;
+      }
+      // https only: seats cannot reach operator localhost, and
+      // plain-http assertions against staging hosts are a downgrade
+      // footgun. Previews and prod are https.
+      if (protocol !== "https:") return null;
+      const check: PipelineBrowserCheck = { name: c.name, url: c.url };
+      for (const [yamlKey, field] of [
+        ["expect-title", "expectTitle"],
+        ["expect-text", "expectText"],
+      ] as const) {
+        const v = c[yamlKey];
+        if (v !== undefined) {
+          if (typeof v !== "string" || !v || v.length > 512) return null;
+          check[field] = v;
+        }
+      }
+      // A check asserting nothing still bills a browser session —
+      // fail closed so typos can't buy no-ops.
+      if (check.expectTitle === undefined && check.expectText === undefined) return null;
+      if (c.screenshot !== undefined) {
+        if (typeof c.screenshot !== "boolean") return null;
+        check.screenshot = c.screenshot;
+      }
+      checks.push(check);
+    }
+    job.browserChecks = checks;
+  }
   if (def.strategy !== undefined) {
     if (!isRecord(def.strategy) || def.strategy.matrix === undefined) return null;
     const axes = parseMatrix(def.strategy.matrix);
@@ -403,6 +459,7 @@ export function parsePipeline(text: string): PipelineJob[] | null {
       if (r.retry !== undefined) job.retry = r.retry;
       if (r.if !== undefined) job.if = r.if;
       if (r.retainOnFailure !== undefined) job.retainOnFailure = r.retainOnFailure;
+      if (r.browserChecks) job.browserChecks = r.browserChecks;
       out.push(job);
     }
   }
@@ -430,6 +487,7 @@ export function serializeDefinition(job: PipelineJob, baseName: string): string 
     retry: job.retry,
     if: job.if,
     retainOnFailure: job.retainOnFailure,
+    browserChecks: job.browserChecks,
   });
 }
 

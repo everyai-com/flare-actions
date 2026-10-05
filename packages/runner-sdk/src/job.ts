@@ -238,6 +238,11 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
       return fail("[setup] docker is not available on this runner (needed for container/services)");
     }
   }
+  // Seats-only: silently skipping browser checks would report green on
+  // untested pages, so BYO runners fail closed with a pointer.
+  if (spec.browserChecks && spec.browserChecks.length > 0) {
+    return fail("[setup] browser-checks need managed seats (this runner cannot drive the BROWSER binding)");
+  }
   if (serviceNames.length > 0) {
     const services: Record<string, JobServiceSpec> = {};
     for (const [name, svc] of Object.entries(spec.services ?? {})) {

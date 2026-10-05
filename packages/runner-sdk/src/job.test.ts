@@ -128,6 +128,23 @@ describe("runJob", () => {
     }
   });
 
+  it("fails closed on browser-checks (seats-only, never silently skipped)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-browser-"));
+    try {
+      const out = await runJob(
+        {
+          steps: [{ run: "echo hi" }],
+          browserChecks: [{ name: "home", url: "https://example.com/", expectTitle: "Example" }],
+        },
+        { cwd: dir, env: { ...process.env }, client: fakeClient(), jobId: "j1" },
+      );
+      expect(out.success).toBe(false);
+      expect(out.log).toContain("browser-checks need managed seats");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("times out long jobs", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flare-job-timeout-"));
     try {

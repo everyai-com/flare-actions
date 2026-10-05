@@ -1,6 +1,9 @@
+import { emitRunTerminal, runDurationMs } from "./analytics";
+import { basinRunTerminal, sendBasin, type BasinSink } from "./basin";
 import { readJobSpec } from "./pipeline";
 import { ACTIONS_LIST_USD_PER_MIN } from "./cost";
 import { labelsMatch, splitLabels } from "./fairness";
+import { deleteJobLogIndex } from "./search";
 
 export interface RunRow {
   id: string;
@@ -12,9 +15,20 @@ export interface RunRow {
   source: string | null;
   pr_number: number | null;
   pr_comment_id: number | null;
+  heal_branch: string | null;
+  heal_pr_url: string | null;
   status: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface HealClaimRow {
+  run_id: string;
+  job_id: string;
+  status: string;
+  branch: string | null;
+  pr_url: string | null;
+  created_at: string;
 }
 
 export interface JobRow {
@@ -32,6 +46,7 @@ export interface JobRow {
   started_at: string | null;
   finished_at: string | null;
   retained_until: string | null;
+  prior_ms: number;
   created_at: string;
   updated_at: string;
 }
@@ -216,10 +231,54 @@ export async function updateRunStatus(db: Db, id: string, status: string): Promi
     .run();
 }
 
+// Self-heal bookkeeping (see heal.ts). The claim is the dedupe: one
+// row per run, claimed atomically, so concurrent failure callbacks
+// cannot open duplicate heal PRs.
+export async function claimHealAttempt(db: Db, runId: string, jobId: string): Promise<boolean> {
+  const res = (await db
+    .prepare("INSERT OR IGNORE INTO heal_claims (run_id, job_id, status, created_at) VALUES (?, ?, 'pending', ?)")
+    .bind(runId, jobId, nowIso())
+    .run()) as { meta?: { changes?: number } };
+  return (res?.meta?.changes ?? 0) > 0;
+}
+
+export async function listPendingHealClaims(db: Db, limit = 2): Promise<HealClaimRow[]> {
+  const res = await db
+    .prepare("SELECT * FROM heal_claims WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?")
+    .bind(limit)
+    .all<HealClaimRow>();
+  return res.results;
+}
+
+export async function setHealClaimResult(
+  db: Db,
+  runId: string,
+  status: "done" | "failed" | "skipped",
+  branch?: string,
+  prUrl?: string,
+): Promise<void> {
+  await db
+    .prepare("UPDATE heal_claims SET status = ?, branch = ?, pr_url = ? WHERE run_id = ?")
+    .bind(status, branch ?? null, prUrl ?? null, runId)
+    .run();
+}
+
+export async function setRunHeal(db: Db, runId: string, branch: string, prUrl: string): Promise<void> {
+  await db
+    .prepare("UPDATE runs SET heal_branch = ?, heal_pr_url = ?, updated_at = ? WHERE id = ?")
+    .bind(branch, prUrl, nowIso(), runId)
+    .run();
+}
+
 // Recompute a run's status from its jobs: running wins, then queued /
 // blocked, then failure, then success; all-skipped/cancelled rolls up
 // to cancelled so re-runs and fan-out settle correctly.
-export async function rollupRunStatus(db: Db, runId: string): Promise<string> {
+export async function rollupRunStatus(
+  db: Db,
+  runId: string,
+  analytics?: AnalyticsEngineDataset,
+  basin?: BasinSink,
+): Promise<string> {
   const jobs = await getJobsForRun(db, runId);
   let status = "queued";
   if (jobs.length === 0) {
@@ -236,6 +295,34 @@ export async function rollupRunStatus(db: Db, runId: string): Promise<string> {
     status = "success";
   }
   await updateRunStatus(db, runId, status);
+  // At-least-once run.terminal event (queries dedupe by run_id): only
+  // terminal rollups pay the extra read, and only when bound. The
+  // Basin copy rides the same read so the hot and cold paths agree.
+  if ((analytics || basin) && isTerminal(status)) {
+    const run = await getRun(db, runId).catch(() => null);
+    if (run) {
+      if (analytics) {
+        emitRunTerminal(analytics, {
+          repo: run.repo,
+          runId,
+          event: run.event,
+          status,
+          durationMs: runDurationMs(jobs),
+          jobCount: jobs.length,
+        });
+      }
+      if (basin) {
+        sendBasin(basin, basinRunTerminal({
+          repo: run.repo,
+          runId,
+          event: run.event,
+          status,
+          durationMs: runDurationMs(jobs),
+          jobCount: jobs.length,
+        }));
+      }
+    }
+  }
   return status;
 }
 
@@ -243,12 +330,12 @@ export async function createJob(
   db: Db,
   id: string,
   runId: string,
-  opts?: { name?: string; definition?: string; labels?: string; status?: string; priority?: number },
+  opts?: { name?: string; definition?: string; labels?: string; status?: string; priority?: number; priorMs?: number },
 ): Promise<void> {
   const now = nowIso();
   await db
     .prepare(
-      "INSERT INTO jobs (id, run_id, status, log, name, definition, result, labels, priority, created_at, updated_at) VALUES (?, ?, ?, '', ?, ?, '', ?, ?, ?, ?)",
+      "INSERT INTO jobs (id, run_id, status, log, name, definition, result, labels, priority, prior_ms, created_at, updated_at) VALUES (?, ?, ?, '', ?, ?, '', ?, ?, ?, ?, ?)",
     )
     .bind(
       id,
@@ -258,6 +345,7 @@ export async function createJob(
       opts?.definition ?? "",
       opts?.labels ?? "",
       opts?.priority ?? 0,
+      opts?.priorMs ?? 0,
       now,
       now,
     )
@@ -440,6 +528,7 @@ export async function claimNextJob(
     for (const row of counts.results) runningByRepo.set(row.repo, row.c);
   }
   let afterPriority = 0;
+  let afterPriorMs = 0;
   let afterCreated: string | null = null;
   let afterId = "";
   let scanned = 0;
@@ -449,17 +538,17 @@ export async function claimNextJob(
         ? await db
             .prepare(
               `SELECT j.*, r.repo, r.sha, r.source FROM jobs j JOIN runs r ON r.id = j.run_id
-               WHERE j.status = 'queued'${repoFilter} ORDER BY j.priority DESC, j.created_at ASC, j.id ASC LIMIT ?`,
+               WHERE j.status = 'queued'${repoFilter} ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
             .bind(...allowedRepos, CLAIM_PAGE_SIZE)
             .all<JobWithSource>()
         : await db
             .prepare(
               `SELECT j.*, r.repo, r.sha, r.source FROM jobs j JOIN runs r ON r.id = j.run_id
-               WHERE j.status = 'queued'${repoFilter} AND (j.priority < ? OR (j.priority = ? AND (j.created_at > ? OR (j.created_at = ? AND j.id > ?))))
-               ORDER BY j.priority DESC, j.created_at ASC, j.id ASC LIMIT ?`,
+               WHERE j.status = 'queued'${repoFilter} AND (j.priority < ? OR (j.priority = ? AND (j.prior_ms < ? OR (j.prior_ms = ? AND (j.created_at > ? OR (j.created_at = ? AND j.id > ?))))))
+               ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
-            .bind(afterPriority, afterPriority, afterCreated, afterCreated, afterId, ...allowedRepos, CLAIM_PAGE_SIZE)
+            .bind(...allowedRepos, afterPriority, afterPriority, afterPriorMs, afterPriorMs, afterCreated, afterCreated, afterId, CLAIM_PAGE_SIZE)
             .all<JobWithSource>();
     if (res.results.length === 0) return null;
     for (const job of res.results) {
@@ -469,6 +558,7 @@ export async function claimNextJob(
     }
     const last = res.results[res.results.length - 1];
     afterPriority = last.priority ?? 0;
+    afterPriorMs = last.prior_ms ?? 0;
     afterCreated = last.created_at;
     afterId = last.id;
     scanned += res.results.length;
@@ -481,18 +571,19 @@ export interface QueuedJobRow {
   run_id: string;
   name: string;
   priority: number;
+  prior_ms: number;
   labels: string;
   created_at: string;
   repo: string;
 }
 
-// The live queue in claim order (priority, then oldest). Powers the
-// admin queue view and the fairness simulator's input.
+// The live queue in claim order (priority, longest-predicted, oldest).
+// Powers the admin queue view and the fairness simulator's input.
 export async function listQueuedJobs(db: Db, limit = 200): Promise<QueuedJobRow[]> {
   const res = await db
     .prepare(
-      `SELECT j.id, j.run_id, j.name, j.priority, j.labels, j.created_at, r.repo FROM jobs j JOIN runs r ON r.id = j.run_id
-       WHERE j.status = 'queued' ORDER BY j.priority DESC, j.created_at ASC, j.id ASC LIMIT ?`,
+      `SELECT j.id, j.run_id, j.name, j.priority, j.prior_ms, j.labels, j.created_at, r.repo FROM jobs j JOIN runs r ON r.id = j.run_id
+       WHERE j.status = 'queued' ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
     )
     .bind(Math.min(Math.max(limit, 1), 500))
     .all<QueuedJobRow>();
@@ -548,12 +639,22 @@ export async function rerunJob(db: Db, jobId: string): Promise<(JobRow & { repo:
     )
     .bind(nowIso(), jobId)
     .run();
+  // The retry re-indexes on completion; drop the stale slice now so a
+  // search during the re-run doesn't surface the previous attempt.
+  await deleteJobLogIndex(db, jobId);
   return { ...job, status: "queued" };
 }
 
 // Cancel queued/running/blocked jobs in a concurrency group, scoped to
 // one repo and excluding the run that is fanning out now.
-export async function cancelGroupJobs(db: Db, repo: string, group: string, excludeRunId: string): Promise<string[]> {
+export async function cancelGroupJobs(
+  db: Db,
+  repo: string,
+  group: string,
+  excludeRunId: string,
+  analytics?: AnalyticsEngineDataset,
+  basin?: BasinSink,
+): Promise<string[]> {
   const res = await db
     .prepare(
       `SELECT j.* FROM jobs j JOIN runs r ON r.id = j.run_id
@@ -565,7 +666,7 @@ export async function cancelGroupJobs(db: Db, repo: string, group: string, exclu
   for (const job of res.results) {
     if (readJobSpec(job.definition, job.name).group !== group) continue;
     await setJobStatus(db, job.id, "cancelled");
-    await rollupRunStatus(db, job.run_id);
+    await rollupRunStatus(db, job.run_id, analytics, basin);
     cancelled.push(job.id);
   }
   return cancelled;
@@ -818,6 +919,7 @@ export async function pruneOldRuns(
     await db.prepare("DELETE FROM test_results WHERE run_id = ?").bind(row.id).run();
     await db.prepare("DELETE FROM test_reports WHERE run_id = ?").bind(row.id).run();
     await db.prepare("DELETE FROM job_egress WHERE run_id = ?").bind(row.id).run();
+    await db.prepare("DELETE FROM log_fts WHERE run_id = ?").bind(row.id).run();
     await db.prepare("DELETE FROM jobs WHERE run_id = ?").bind(row.id).run();
     await db.prepare("DELETE FROM runs WHERE id = ?").bind(row.id).run();
   }

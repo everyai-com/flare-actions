@@ -46,7 +46,11 @@ export function buildManifest(name: string, origin: string): AppManifest {
     // covered by contents, pull_request requires pull_requests. checks:write
     // powers per-job Check Runs with failure output on the PR page;
     // pull_requests:write powers the per-run PR summary comment.
-    default_permissions: { contents: "read", statuses: "write", checks: "write", pull_requests: "write" },
+    // contents:write powers self-healing (heal branches are pushed, never
+    // merged, and only when the heal_on_failure toggle is on — but the
+    // permission is manifest-wide, so apps connected before the heal
+    // release must reinstall/accept it before heals can push).
+    default_permissions: { contents: "write", statuses: "write", checks: "write", pull_requests: "write" },
     default_events: ["push", "pull_request"],
     hook_attributes: { url: `${base}/webhooks/github`, active: true },
   };

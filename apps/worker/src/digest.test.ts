@@ -13,6 +13,8 @@ function runRow(over: Partial<RunRow> = {}): RunRow {
     source: null,
     pr_number: null,
     pr_comment_id: null,
+    heal_branch: null,
+    heal_pr_url: null,
     status: "failure",
     created_at: "2026-10-02T10:00:00.000Z",
     updated_at: "2026-10-02T10:01:30.000Z",
@@ -36,6 +38,7 @@ function jobRow(over: Partial<JobRow> = {}): JobRow {
     started_at: "2026-10-02T10:00:10.000Z",
     finished_at: "2026-10-02T10:01:00.000Z",
     retained_until: null,
+    prior_ms: 0,
     created_at: "2026-10-02T10:00:00.000Z",
     updated_at: "2026-10-02T10:01:00.000Z",
     ...over,
@@ -145,5 +148,13 @@ describe("buildRunDigest", () => {
     const digest = await buildRunDigest(new DigestDb(runRow(), [jobRow()]), "run-1");
     expect(digest?.egress).toBeUndefined();
     expect(digest?.jobs[0].retainedUntil).toBeUndefined();
+  });
+
+  it("carries the heal branch and PR when a heal landed", async () => {
+    const healed = runRow({ heal_branch: "flare-heal/abc123", heal_pr_url: "https://github.com/o/r/pull/7" });
+    const digest = await buildRunDigest(new DigestDb(healed, [jobRow()]), "run-1");
+    expect(digest?.heal).toEqual({ branch: "flare-heal/abc123", prUrl: "https://github.com/o/r/pull/7" });
+    const plain = await buildRunDigest(new DigestDb(runRow(), [jobRow()]), "run-1");
+    expect(plain?.heal).toBeUndefined();
   });
 });
