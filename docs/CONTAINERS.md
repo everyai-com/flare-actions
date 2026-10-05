@@ -87,8 +87,18 @@ Notes:
   Dockerfile changes.
 - The seats queue (`flare-actions-seats`) and its dead-letter queue
   (`flare-actions-seats-dlq`) are created by setup alongside the other
-  queues; previews never wake seats (`ENVIRONMENT` guard), so no
-  staging seats queue is needed.
+  queues. A persistent staging seats worker
+  (`flare-actions-seats-staging`, gitignored
+  `apps/seats/wrangler.staging.jsonc`) consumes
+  `flare-actions-staging-seats` for V2 rehearsals; main previews
+  never wake seats (`ENVIRONMENT` guard).
+- V2 container application names are account-global and immutable:
+  staging must use a distinct name (`flare-actions-seats-staging-v2`)
+  or the prod deploy fails creating `flare-actions-seats-v2`, and a
+  rename never applies — delete the app via
+  `DELETE /accounts/:id/containers/applications/:appId` and redeploy
+  to recreate it (there is no `wrangler containers` subcommand for
+  application deletion).
 - `SEATS_TOKEN` gates the seats public URL for direct debugging only;
   main↔seats traffic travels the private queue, never HTTPS (worker to
   `*.workers.dev` subrequests are edge-rejected, error 1042).
