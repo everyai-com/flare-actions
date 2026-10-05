@@ -44,9 +44,11 @@ Shipped and tested (405 vitest, tsc clean, seats dry-run green):
   tools (session-cookie path + 5 native page tools), CI analytics
   sinks (Analytics Engine hot path + Basin cold path + SQL cookbook),
   HealingAgent self-heal runs (opt-in toggle, draft PR + verify run),
-  evaluation spikes (K2/Forge/Workflows verdicts in `docs/SPIKES.md`).
-  Still open: model refresh evals, `openapi.yaml`, agent-traces,
-  grants application.
+  evaluation spikes (K2/Forge/Workflows verdicts in `docs/SPIKES.md`),
+  model refresh evals (second run + Clef judge gate), `openapi.yaml`
+  for the v1 API (62 paths, CI coverage gate), agent-traces for warm
+  boxes + heal + generate, and self-service OAuth grants (dashboard
+  Apps tab + `GET`/`DELETE /v1/oauth/grants`).
 
 ## Strategy note: @cloudflare/ci and where Flare wins
 
@@ -220,15 +222,14 @@ Needs Phase 0 done:
 
 ## Phase 3 — AI + agent surface + scale
 
-- **Triage/generate model refresh**: currently
-  `@cf/meta/llama-3.1-8b-instruct-fp8-fast`. Evaluate GLM-5.3/Flash (1M
-  context, Aug 26–28), DeepSeek V4 Flash/Pro (Aug 14), Qwen 3.8 27B
-  (Aug 17) for long-tail quality; eval Clef/Clef-flash decision models
-  (Oct 1: Jev-API compatible, 64k ctx, vision encoder, typed
-  probabilities, 39/209ms, Apache-2.0, RL fine-tuning via AI Gateway
-  datasets + Containers sandboxes) for flaky-vs-real classification and
-  escalate/don't routing. Consider `cloudflare/auto` (Auto Router beta,
-  free) for cost-aware routing.
+- **Triage/generate model refresh** (refreshed 2026-10-05, second
+  eval run, see `docs/MODEL-EVAL.md`): default stays
+  `@cf/meta/llama-3.1-8b-instruct-fp8-fast` (only triage model stable
+  across both runs); deepseek quality-first pick; glm regressed to
+  0.50 (avoid); full Clef (stable 1.00) wired as the HealingAgent
+  judge gate (`judge.ts`, skips heals at p(flaky) ≥ 0.5, fails open).
+  `cloudflare/auto` considered and declined (variance in scripted
+  slots). Re-run `npm run eval:models` after prompt/model changes.
 - **AI Gateway in front of inference** (one-line change:
   `{ gateway: { id: 'default' } }` auto-creates): unified billing,
   full request/response logging, token + cost attribution, User Insights
@@ -281,13 +282,15 @@ Needs Phase 0 done:
   `contents:write` (manifest bumped; older installs must re-accept).
 - **Forge evaluation** (spiked 2026-10-05, see `docs/SPIKES.md`):
   spec first, pipeline later. Forge (Sept 28, Apache-2.0) is young
-  (`cf` CLI only in prod); Flare has no OpenAPI spec, and our
-  CLI/MCP surfaces are bespoke, not REST-mapped. Next: author
-  `openapi.yaml` for the v1 API (docs + validation + agent tools on
-  its own); re-evaluate Forge once the spec exists.
-- **Agent-traces for agent features**: emit OTel GenAI-convention spans
-  (Agents view supports Think/Flue/AI SDK today, raw OTel soon) so warm
-  boxes and heal-agents are replayable/debuggable.
+  (`cf` CLI only in prod); our CLI/MCP surfaces are bespoke, not
+  REST-mapped. The spec prerequisite shipped 2026-10-05
+  (`openapi.yaml`, 62 paths, CI-enforced); Forge re-evaluation is
+  future work once Forge matures past `cf`-CLI-only.
+- **Agent-traces for agent features** (shipped 2026-10-05): OTel
+  GenAI-convention spans on triage/generate/judge/heal inference plus
+  root-span annotations for warm boxes (seat run/job/snapshot
+  lifecycle), heal claim→drain outcomes, and generate requests —
+  warm boxes and heal-agents are replayable from a run id.
 - **Handle busy-rejection**: Workers AI sync inference now rejects when
   busy (Sept 17) — confirm triage/generate degrade-to-skip covers it.
 - **Workflows as orchestration** (spiked 2026-10-05, see
@@ -301,8 +304,9 @@ Needs Phase 0 done:
   runtime (just-bash in Dynamic Workers, FUSE-synced SQLite workspace,
   container only when needed, <10% container goal). Long-term this could
   run simple steps without containers at all.
-- **Community Engineers grants**: $1M OSS fund over two years, applications
-  opening later — Flare qualifies thematically (OSS on CF infra). Apply.
+- **Community Engineers grants**: $1M OSS fund; the 2026 application
+  window closed September 6 (annual process). Revisit next cycle —
+  Flare qualifies thematically (OSS on CF infra).
 
 ## Explicitly not chasing
 

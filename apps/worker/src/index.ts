@@ -62,6 +62,7 @@ import {
 } from "./db";
 import { commitFilesToNewBranch, getDefaultBranch, getInstallationToken, getRepoTreePaths, mintAppJwt, openDraftPullRequest, resolveRefToSha, verifyGitHubSignature } from "./github";
 import { processHealClaims, requestHeal } from "./heal";
+import { judgeFlaky } from "./judge";
 import { DASHBOARD_HTML } from "./dashboard";
 import { ensureSchema } from "./schema";
 import {
@@ -165,6 +166,7 @@ import {
   handleAuthorizeGet,
   handleAuthorizePost,
   listOAuthGrants,
+  listUserOAuthGrants,
   oauthUserId,
   principalFromCtx,
   principalFromSession,
@@ -1798,6 +1800,37 @@ export default {
         await audit(env.DB, ident.actor, "token.revoke", revokeMatch[1]);
         return json({ ok: true });
       }
+      // Self-service connected apps: any logged-in dashboard user
+      // lists and revokes their own OAuth grants. Session-cookie only
+      // (Bearer [REDACTED] carry no OAuth user id); cookie mutations are
+      // CSRF-checked at the top of fetch.
+      if (request.method === "GET" && url.pathname === "/v1/oauth/grants") {
+        const session = await oauthSession(request, env);
+        if (!session) return json({ error: "unauthorized" }, 401);
+        const grants = await listUserOAuthGrants(new D1KV(env.DB), session.userId);
+        const { createAuthServer, oauthEnv } = await import("./oauth-server");
+        const api = createAuthServer(url.origin).getOAuthApi(oauthEnv(env));
+        const out = [];
+        for (const grant of grants) {
+          const client = await api.lookupClient(grant.clientId).catch(() => null);
+          out.push({ ...grant, clientName: client?.clientName ?? null });
+        }
+        return json({ grants: out });
+      }
+      if (request.method === "DELETE" && url.pathname === "/v1/oauth/grants") {
+        const session = await oauthSession(request, env);
+        if (!session) return json({ error: "unauthorized" }, 401);
+        const grantId = url.searchParams.get("grantId") ?? "";
+        if (!grantId) return json({ error: "grantId is required" }, 400);
+        // Ownership first: revokeGrant alone does not verify the grant
+        // belongs to the caller, so a forged id must 404, not revoke.
+        const mine = await listUserOAuthGrants(new D1KV(env.DB), session.userId);
+        if (!mine.some((g) => g.grantId === grantId)) return json({ error: "grant not found" }, 404);
+        const { createAuthServer, oauthEnv } = await import("./oauth-server");
+        await createAuthServer(url.origin).getOAuthApi(oauthEnv(env)).revokeGrant(grantId, session.userId);
+        await audit(env.DB, session.actor, "oauth.revoke", `${session.userId} ${grantId}`);
+        return json({ ok: true });
+      }
       if (request.method === "GET" && url.pathname === "/v1/admin/oauth-grants") {
         if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
         const limit = Number(url.searchParams.get("limit") ?? "100");
@@ -2390,6 +2423,9 @@ export default {
         }
         if (outcome.status !== "ok") return json({ error: "generation failed" }, 502);
         await audit(env.DB, ident.actor, "pipeline.generate", body.prompt.slice(0, 80));
+        ctx.waitUntil(
+          annotateSpan({ actor: ident.actor, "genai.prompt_chars": body.prompt.length, "genai.outcome": outcome.status }),
+        );
         return json({ yaml: outcome.yaml });
       }
       return json({ error: "not found" }, 404);
@@ -2468,6 +2504,7 @@ export default {
           const { processed, healed } = await processHealClaims({
             db: env.DB,
             ai: env.AI,
+            judge: env.AI ? (text) => judgeFlaky(env.AI, text, { gatewayId: env.AI_GATEWAY_ID }) : undefined,
             installationToken: async (installationId: number) => {
               const jwt = await mintAppJwt(creds.appId, creds.privateKey);
               return getInstallationToken(jwt, installationId);

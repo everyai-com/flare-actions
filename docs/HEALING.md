@@ -17,6 +17,9 @@ step one (diagnosis); healing is step two (proposed fix).
    `processHealClaims` (production only, max 2 claims per tick):
    - Re-checks guards (toggle still on, run still red — a retry may
      have fixed it since the claim).
+   - Clef judge gate (`judge.ts`): p(flaky) ≥ 0.5 skips the heal —
+     transient failures heal by retrying, not by patching. Fails
+     open (proceeds) on judge errors.
    - Mints an installation token, fetches the repo tree (300 paths),
      and calls Workers AI with failing steps + log tail + triage.
    - Parses a strict JSON proposal (`{files: [{path, content}],

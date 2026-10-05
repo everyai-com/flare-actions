@@ -323,3 +323,26 @@ export async function listOAuthGrants(
     ? { grants, list_complete: true }
     : { grants, cursor: page.cursor, list_complete: false };
 }
+
+// One user's grants for the self-service "My apps" surface. Grants
+// share one prefix across users, so this pages internally and filters
+// by the record's userId (never by key shape, which is the
+// provider's business) — bounded so a crowded server cannot turn a
+// profile page into a full-table scan.
+export async function listUserOAuthGrants(kv: D1KV, userId: string, limit = 100): Promise<OAuthGrantInfo[]> {
+  const want = Math.min(100, Math.max(1, Math.floor(limit)));
+  const out: OAuthGrantInfo[] = [];
+  let cursor: string | undefined;
+  for (let pages = 0; pages < 5 && out.length < want; pages++) {
+    const page = await listOAuthGrants(kv, { limit: 100, cursor });
+    for (const grant of page.grants) {
+      if (grant.userId === userId) {
+        out.push(grant);
+        if (out.length >= want) break;
+      }
+    }
+    if (page.list_complete) break;
+    cursor = page.cursor;
+  }
+  return out;
+}

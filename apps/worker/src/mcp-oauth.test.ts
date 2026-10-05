@@ -10,6 +10,7 @@ import {
   handleAuthorizeGet,
   handleAuthorizePost,
   listOAuthGrants,
+  listUserOAuthGrants,
   MCP_OAUTH_SCOPE_OFFLINE,
   MCP_OAUTH_SCOPE_READ,
   MCP_OAUTH_SCOPE_RUN,
@@ -336,5 +337,24 @@ describe("mcp-oauth", () => {
     expect(one.grants.map((g) => g.grantId)).toEqual(["g1"]);
     expect(one.list_complete).toBe(false);
     expect(typeof one.cursor).toBe("string");
+  });
+
+  it("lists one user's grants, skipping others and corrupt rows", async () => {
+    const kv = new D1KV(sqliteDb());
+    await kv.put("grant:github/alice:g1", JSON.stringify({ id: "g1", userId: "github/alice", clientId: "c1", scope: ["flare:read"] }));
+    await kv.put("grant:github/bob:g2", JSON.stringify({ id: "g2", userId: "github/bob", clientId: "c2", scope: ["flare:read"] }));
+    await kv.put("grant:bogus", "{corrupt");
+    expect((await listUserOAuthGrants(kv, "github/alice")).map((g) => g.grantId)).toEqual(["g1"]);
+    expect((await listUserOAuthGrants(kv, "github/bob")).map((g) => g.grantId)).toEqual(["g2"]);
+    expect(await listUserOAuthGrants(kv, "github/nobody")).toEqual([]);
+  });
+
+  it("caps per-user grants at the limit", async () => {
+    const kv = new D1KV(sqliteDb());
+    for (let i = 0; i < 5; i++) {
+      await kv.put(`grant:u:g${i}`, JSON.stringify({ id: `g${i}`, userId: "u", clientId: "c", scope: [] }));
+    }
+    expect((await listUserOAuthGrants(kv, "u", 3)).map((g) => g.grantId).sort()).toEqual(["g0", "g1", "g2"]);
+    expect(await listUserOAuthGrants(kv, "u")).toHaveLength(5);
   });
 });

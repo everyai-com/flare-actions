@@ -42,7 +42,8 @@ import {
   type TriageMessage,
   type TriageStep,
 } from "./triage";
-import { readAiUsage, startGenAiSpan } from "./trace";
+import { buildJudgeText, JUDGE_FLAKY_THRESHOLD } from "./judge";
+import { annotateSpan, readAiUsage, startGenAiSpan } from "./trace";
 
 export const HEAL_BRANCH_PREFIX = "flare-heal/";
 export const HEAL_SOURCE_PREFIX = "heal:";
@@ -107,6 +108,9 @@ export interface HealDeps {
   // Dispatch a verification run on the heal branch; resolves to the
   // verify run id, or null when the dispatch fails.
   verify: (repo: string, branch: string, source: string) => Promise<string | null>;
+  // Flaky-vs-real judge (probability the failure is flaky). Absent =
+  // no judge configured, heals proceed (fail open).
+  judge?: (text: string) => Promise<number | null>;
   model?: string;
   gatewayId?: string;
 }
@@ -226,7 +230,9 @@ export async function requestHeal(db: Db, runId: string, jobId: string): Promise
     // Never heal a heal branch or a verification run: heals must not loop.
     if (run.branch.startsWith(HEAL_BRANCH_PREFIX)) return false;
     if (run.source?.startsWith(HEAL_SOURCE_PREFIX)) return false;
-    return claimHealAttempt(db, runId, jobId);
+    const claimed = await claimHealAttempt(db, runId, jobId);
+    if (claimed) await annotateSpan({ "flare.run.id": runId, "flare.job.id": jobId, "heal.claimed": true });
+    return claimed;
   } catch (err) {
     console.log(JSON.stringify({ level: "warn", msg: "heal request failed", runId, error: String(err) }));
     return false;
@@ -237,11 +243,13 @@ async function processOneClaim(deps: HealDeps, claim: { run_id: string; job_id: 
   const fail = async (reason: string): Promise<"failed"> => {
     await setHealClaimResult(deps.db, claim.run_id, "failed").catch(() => undefined);
     await audit(deps.db, "heal", "run.heal_failed", `${claim.run_id} ${reason}`).catch(() => undefined);
+    await annotateSpan({ "flare.run.id": claim.run_id, "flare.job.id": claim.job_id, "heal.outcome": `failed:${reason}` });
     return "failed";
   };
   const skip = async (reason: string): Promise<"skipped"> => {
     await setHealClaimResult(deps.db, claim.run_id, "skipped").catch(() => undefined);
     await audit(deps.db, "heal", "run.heal_skipped", `${claim.run_id} ${reason}`).catch(() => undefined);
+    await annotateSpan({ "flare.run.id": claim.run_id, "flare.job.id": claim.job_id, "heal.outcome": `skipped:${reason}` });
     return "skipped";
   };
   if (!deps.ai) return skip("no-ai-binding");
@@ -258,6 +266,16 @@ async function processOneClaim(deps: HealDeps, claim: { run_id: string; job_id: 
   if (!token) return fail("no-token");
   const job = await getJob(deps.db, claim.job_id).catch(() => null);
   if (!job) return skip("job-gone");
+  // Judge gate: flaky failures (timeout, port collision, auth hiccup)
+  // heal by retrying, not by patching — skip before spending model +
+  // branch + PR + verification run. Null verdict fails open.
+  if (deps.judge) {
+    const steps = parseReportedSteps(job.result);
+    const pFlaky = await deps
+      .judge(buildJudgeText({ jobName: job.name, steps, logTail: (job.log ?? "").slice(-2000), triage: job.triage ?? "" }))
+      .catch(() => null);
+    if (pFlaky !== null && pFlaky >= JUDGE_FLAKY_THRESHOLD) return skip(`flaky-${pFlaky.toFixed(2)}`);
+  }
   const treePaths = await deps.gh.treePaths(token, run.repo, run.sha).catch(() => [] as string[]);
   const modelText = await runHealModel(
     deps.ai,
@@ -314,6 +332,13 @@ async function processOneClaim(deps: HealDeps, claim: { run_id: string; job_id: 
     "run.healed",
     `${run.id} ${branch} ${prUrl}${verifyRunId ? ` verify:${verifyRunId}` : " verify:failed"}`,
   ).catch(() => undefined);
+  await annotateSpan({
+    "flare.run.id": run.id,
+    "flare.job.id": job.id,
+    "heal.outcome": "done",
+    "heal.pr_url": prUrl,
+    ...(verifyRunId ? { "heal.verify_run_id": verifyRunId } : {}),
+  });
   return "done";
 }
 

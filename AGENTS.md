@@ -105,7 +105,10 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   (production only) — model proposes ≤3 full-file fixes, Git Data API
   pushes `flare-heal/*`, a draft PR opens, a `source: heal:*`
   verification run dispatches. Never heals heal branches or verify
-  runs; needs App `contents:write` + `pull_requests:write`.
+  runs; needs App `contents:write` + `pull_requests:write`. A Clef
+  judge gate (`judge.ts`, p(flaky) ≥ 0.5 skips, fails open) sits
+  before inference; model picks are eval-pinned (`npm run
+  eval:models`, `docs/MODEL-EVAL.md`).
 - Scheduling fairness (`fairness.ts`, dependency-free — the CLI imports it
   directly): `claimNextJob` takes an optional per-repo running cap (D1
   `fair_share_per_repo`, 0 = off); `simulateDrain` replays claim order

@@ -18,8 +18,10 @@ The client discovers OAuth from the `401` challenge, registers itself
 (`POST /oauth/register`), and opens the dashboard login + consent page
 (`GET /authorize`). No tokens to copy. Admins can grant `flare:read` +
 `flare:run`; everyone else grants `flare:read` only (mirroring dashboard
-privilege). Connected apps show in the dashboard Access tab and revoke
-immediately.
+privilege). Everyone manages their own connections in the dashboard
+Apps tab (`GET`/`DELETE /v1/oauth/grants`, session-cookie authed —
+revoking disconnects the app immediately); admins additionally see all
+teammates' grants in the Access tab.
 
 **API tokens:** for headless clients:
 

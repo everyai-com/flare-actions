@@ -261,6 +261,35 @@ describe("processHealClaims", () => {
     expect(gh.calls).toEqual(["tree"]);
   });
 
+  it("skips flaky failures before spending model + branch + PR", async () => {
+    const db = sqliteDb();
+    const gh = fakeGh();
+    const { runId, jobId } = await seedRun(db, { healOn: true });
+    expect(await requestHeal(db, runId, jobId)).toBe(true);
+    let judged = "";
+    const out = await processHealClaims({
+      ...deps(db, gh, PROPOSAL),
+      judge: async (text) => {
+        judged = text;
+        return 0.91;
+      },
+    });
+    expect(out).toEqual({ processed: 1, healed: 0 });
+    expect(gh.calls).toEqual([]);
+    expect(judged).toContain("job: test");
+    const claim = await db.prepare("SELECT status FROM heal_claims WHERE run_id = ?").bind(runId).first<{ status: string }>();
+    expect(claim?.status).toBe("skipped");
+  });
+
+  it("proceeds when the judge fails open", async () => {
+    const db = sqliteDb();
+    const gh = fakeGh();
+    const { runId, jobId } = await seedRun(db, { healOn: true });
+    expect(await requestHeal(db, runId, jobId)).toBe(true);
+    const out = await processHealClaims({ ...deps(db, gh, PROPOSAL), judge: async () => null });
+    expect(out).toEqual({ processed: 1, healed: 1 });
+  });
+
   it("still lands the PR when verification dispatch fails", async () => {
     const db = sqliteDb();
     const gh = fakeGh();

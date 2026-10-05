@@ -1,0 +1,2916 @@
+# Flare Actions API — OpenAPI 3.0 contract for the v1 surface.
+# Source of truth for docs, client validation, and agent tools; the
+# ordered prerequisite for any Forge generation pipeline evaluation.
+# Coverage is enforced: scripts/check-openapi.mjs fails CI when a
+# route in apps/worker/src/index.ts has no path entry here.
+openapi: 3.0.3
+info:
+  title: Flare Actions API
+  version: 1.0.0
+  description: |-
+    GitHub Actions alternative on Cloudflare. Token scopes: `admin`
+    (everything), `runner` (run + read), `readonly` (read). Tokens
+    carry an optional repo allowlist (empty = all repos); out-of-scope
+    repos answer 403, unknown ids answer 404. All errors are
+    `{"error": string}`; admin dashboard routes also accept the
+    `flare_session` cookie.
+servers:
+  - url: https://flare-actions.everyai-com.workers.dev
+tags:
+  - name: runs
+    description: Run lifecycle, digests, waits, cancellation
+  - name: jobs
+    description: Runner claims, status callbacks, heartbeats, reruns
+  - name: artifacts
+    description: Per-job build artifacts over R2
+  - name: cache
+    description: Build cache over R2
+  - name: tests
+    description: JUnit test reports and per-run rollups
+  - name: analytics
+    description: Flaky rates, usage, log search, egress, badges
+  - name: admin
+    description: Admin-only dashboard APIs (token or session)
+  - name: auth
+    description: Login, registration, invites, password reset
+  - name: oauth
+    description: MCP OAuth provider (AS+RS) and client metadata
+  - name: mcp
+    description: MCP streamable-HTTP endpoint
+  - name: webhooks
+    description: GitHub event ingestion
+security:
+  - bearerAuth: []
+paths:
+  /v1/runs:
+    get:
+      tags: [runs]
+      operationId: listRuns
+      summary: List runs, newest first
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Limit50'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Paginated runs (repo-scoped tokens see only their repos)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Run'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/runs/dispatch:
+    post:
+      tags: [runs]
+      operationId: dispatchRun
+      summary: Dispatch a run for repo@sha (SHA, branch, or tag)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, sha]
+              properties:
+                repo:
+                  type: string
+                  description: owner/name
+                sha:
+                  type: string
+                  description: Commit SHA, branch, or tag (max 128 chars)
+                ref:
+                  type: string
+                  description: Optional branch label (max 128 chars)
+                pipeline:
+                  type: string
+                  description: Inline flare.yml (skips the repo fetch)
+                priority:
+                  type: integer
+                  minimum: 0
+                  maximum: 10
+                  default: 0
+                  description: Agent fast lane (10 jumps batch work)
+                source:
+                  type: string
+                  description: Uploaded working-tree id (requires inline pipeline)
+      responses:
+        '202':
+          description: Run accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runId, jobIds]
+                properties:
+                  runId:
+                    type: string
+                  jobIds:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/runs/{runId}:
+    get:
+      tags: [runs]
+      operationId: getRun
+      summary: Get a run with jobs and cost summary
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Run detail
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run, jobs, summary]
+                properties:
+                  run:
+                    $ref: '#/components/schemas/Run'
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Job'
+                  summary:
+                    $ref: '#/components/schemas/CostSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/runs/{runId}/wait:
+    get:
+      tags: [runs]
+      operationId: waitRun
+      summary: Block until the run is terminal (replaces poll loops)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - name: timeout
+          in: query
+          schema:
+            type: number
+            minimum: 1
+            maximum: 90
+            default: 30
+          description: Server-side wait budget in seconds
+      responses:
+        '200':
+          description: Terminal (or timed-out) run state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run, jobs, summary, timedOut, waitedMs]
+                properties:
+                  run:
+                    $ref: '#/components/schemas/Run'
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Job'
+                  summary:
+                    $ref: '#/components/schemas/CostSummary'
+                  timedOut:
+                    type: boolean
+                  waitedMs:
+                    type: number
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/runs/{runId}/digest:
+    get:
+      tags: [runs]
+      operationId: getRunDigest
+      summary: Token-efficient run digest for agents (no full logs)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Structured digest with failing steps and triage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunDigest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/runs/{runId}/cancel:
+    post:
+      tags: [runs]
+      operationId: cancelRun
+      summary: Cancel a run's queued and blocked jobs
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Cancellation count
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, cancelled]
+                properties:
+                  ok:
+                    type: boolean
+                  cancelled:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/runs/{runId}/status:
+    post:
+      tags: [jobs]
+      operationId: postJobStatus
+      summary: Executor status callback (running/terminal transitions)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jobId, status]
+              properties:
+                jobId:
+                  type: string
+                status:
+                  type: string
+                  enum: [running, success, failure, error, cancelled]
+                log:
+                  type: string
+                  description: Full log (capped server-side at 256KB)
+                result:
+                  type: string
+                  description: JSON step results (capped at 64KB)
+      responses:
+        '200':
+          description: Recorded (dropped=true when the report belongs to a superseded execution)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                  dropped:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/runs/{runId}/artifacts:
+    get:
+      tags: [artifacts]
+      operationId: listRunArtifacts
+      summary: List a run's artifacts across jobs
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Artifact entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [artifacts]
+                properties:
+                  artifacts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Artifact'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotConfigured'
+  /v1/runs/{runId}/tests:
+    get:
+      tags: [tests]
+      operationId: getRunTests
+      summary: Per-run JUnit rollup with failing cases
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Totals, per-job counts, and failing cases (max 50)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunTests'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/runs/{runId}/egress:
+    get:
+      tags: [analytics]
+      operationId: getRunEgress
+      summary: Per-job network egress accounting
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Byte totals and per-host rows
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runId, totals, jobs]
+                properties:
+                  runId:
+                    type: string
+                  totals:
+                    $ref: '#/components/schemas/ByteTotals'
+                  jobs:
+                    type: array
+                    items:
+                      type: object
+                      required: [jobId, host, reqBytes, respBytes]
+                      properties:
+                        jobId:
+                          type: string
+                        host:
+                          type: string
+                        reqBytes:
+                          type: number
+                        respBytes:
+                          type: number
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/runs/{runId}/jobs/{jobId}/heartbeat:
+    post:
+      tags: [jobs]
+      operationId: jobHeartbeat
+      summary: Liveness heartbeat (stale claims requeue after 20m quiet)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Heartbeat recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/runs/{runId}/jobs/{jobId}/rerun:
+    post:
+      tags: [jobs]
+      operationId: rerunJob
+      summary: Reset a finished job to queued for re-execution
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Job requeued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/jobs/next:
+    get:
+      tags: [jobs]
+      operationId: claimNextJob
+      summary: Claim the next label-matched queued job (runner poll)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: labels
+          in: query
+          schema:
+            type: string
+          description: Comma-separated runner labels (os, arch, extras)
+      responses:
+        '200':
+          description: "Claimed job with repo secrets, or {job: null} when empty"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job:
+                    type: object
+                    nullable: true
+                    description: Claimed job row (null when the queue is empty)
+                  secrets:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    description: Decrypted repo secrets (claim only, never on read APIs)
+                  secretsError:
+                    type: boolean
+                    description: True when secret rows were undecryptable
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/jobs/{jobId}/artifacts/{name}:
+    get:
+      tags: [artifacts]
+      operationId: downloadArtifact
+      summary: Download a job artifact by name
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Artifact bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [artifacts]
+      operationId: uploadArtifact
+      summary: Upload a job artifact by name
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Artifact stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+  /v1/jobs/{jobId}/tests:
+    put:
+      tags: [tests]
+      operationId: uploadTestReport
+      summary: Upload a JUnit XML report for a job
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      requestBody:
+        required: true
+        content:
+          application/xml:
+            schema:
+              type: string
+      responses:
+        '200':
+          description: Parsed counts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, jobId, total, passed, failed, errors, skipped, truncated]
+                properties:
+                  ok:
+                    type: boolean
+                  jobId:
+                    type: string
+                  total:
+                    type: integer
+                  passed:
+                    type: integer
+                  failed:
+                    type: integer
+                  errors:
+                    type: integer
+                  skipped:
+                    type: integer
+                  truncated:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+  /v1/cache/{key}:
+    get:
+      tags: [cache]
+      operationId: getCache
+      summary: Fetch a cache tarball by key
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cache bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [cache]
+      operationId: putCache
+      summary: Store a cache tarball by key
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Cache stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+  /v1/source:
+    post:
+      tags: [runs]
+      operationId: uploadSource
+      summary: Upload a working-tree tarball for source dispatch (50MB cap)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Source id for dispatch (7-day retention)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [source]
+                properties:
+                  source:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+  /v1/source/{id}:
+    get:
+      tags: [runs]
+      operationId: downloadSource
+      summary: Download an uploaded working-tree tarball
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tarball bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/flaky:
+    get:
+      tags: [analytics]
+      operationId: flakyStats
+      summary: Per-job failure rates for a repo, worst first
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: owner/name
+        - name: days
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 365
+            default: 30
+      responses:
+        '200':
+          description: Flaky statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stats]
+                properties:
+                  stats:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FlakyStat'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/usage:
+    get:
+      tags: [analytics]
+      operationId: usageStats
+      summary: Compute usage (minutes, cost attribution) over a window
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 365
+            default: 30
+        - name: repo
+          in: query
+          schema:
+            type: string
+          description: Optional owner/name filter
+      responses:
+        '200':
+          description: Usage rollup
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageStats'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/usage/billable:
+    get:
+      tags: [analytics]
+      operationId: billableUsage
+      summary: Real Cloudflare spend via the Billable Usage API (admin)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 365
+            default: 30
+      responses:
+        '200':
+          description: "Billable rollup, or {configured:false} without credentials"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [configured]
+                properties:
+                  configured:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          description: Billable usage unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/search/logs:
+    get:
+      tags: [analytics]
+      operationId: searchLogs
+      summary: Global log search over the FTS index
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            maxLength: 500
+          description: "Query with branch:/level:/repo: filters"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Matching log hits
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hits]
+                properties:
+                  hits:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LogHit'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/badge.svg:
+    get:
+      tags: [analytics]
+      operationId: statusBadge
+      summary: Public status badge SVG (no auth; hidden repos show unknown)
+      security: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: owner/name
+        - name: branch
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SVG badge
+          content:
+            image/svg+xml:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /v1/admin/tokens:
+    get:
+      tags: [admin]
+      operationId: listTokens
+      summary: List API tokens (hashes only, never plaintext)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Token list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tokens]
+                properties:
+                  tokens:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiToken'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [admin]
+      operationId: createToken
+      summary: Mint an API token (plaintext shown once)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 64
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                    enum: [runner, readonly, admin]
+                  default: [runner]
+                repos:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: string
+                  description: owner/name allowlist (empty = all repos)
+      responses:
+        '200':
+          description: Created token with one-time plaintext
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name, scopes, token]
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  scopes:
+                    type: array
+                    items:
+                      type: string
+                  repos:
+                    type: array
+                    items:
+                      type: string
+                  token:
+                    type: string
+                    description: Plaintext, shown once
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/admin/tokens/{id}/revoke:
+    post:
+      tags: [admin]
+      operationId: revokeToken
+      summary: Revoke an API token
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/admin/settings:
+    get:
+      tags: [admin]
+      operationId: getSettings
+      summary: Read dashboard-managed settings and binding sources
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Settings snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [admin]
+      operationId: updateSettings
+      summary: Update dashboard-managed settings (partial)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                webhookSecret:
+                  type: string
+                notifyFromEmail:
+                  type: string
+                notifyMode:
+                  type: string
+                  enum: [all, failures, off]
+                notifyWebhookUrl:
+                  type: string
+                badgeHiddenRepos:
+                  type: string
+                turnstileSiteKey:
+                  type: string
+                turnstileSecretKey:
+                  type: string
+                fairSharePerRepo:
+                  type: integer
+                aiGatewayId:
+                  type: string
+                mcpWriteConfirm:
+                  type: boolean
+                triageWebSearch:
+                  type: boolean
+                healOnFailure:
+                  type: boolean
+                billingApiToken:
+                  type: string
+                cloudflareAccountId:
+                  type: string
+                triageModel:
+                  type: string
+      responses:
+        '200':
+          description: Settings saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Setting managed via environment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/admin/audit:
+    get:
+      tags: [admin]
+      operationId: listAudit
+      summary: List audit log entries, newest first
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/admin/queue:
+    get:
+      tags: [admin]
+      operationId: queueSnapshot
+      summary: Live queue in claim order plus fair-share cap
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 200
+      responses:
+        '200':
+          description: Queue snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [fairSharePerRepo, jobs]
+                properties:
+                  fairSharePerRepo:
+                    type: integer
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/QueuedJob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/admin/cache:
+    get:
+      tags: [admin]
+      operationId: listCacheEntries
+      summary: List cache entries by prefix
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: prefix
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        '200':
+          description: Cache entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          $ref: '#/components/responses/NotConfigured'
+    delete:
+      tags: [admin]
+      operationId: purgeCache
+      summary: Purge cache entries by prefix (empty = all)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: prefix
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Purge counts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted:
+                    type: integer
+                  truncated:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          $ref: '#/components/responses/NotConfigured'
+  /v1/admin/users:
+    get:
+      tags: [admin]
+      operationId: listUsers
+      summary: List admins, allow-listed GitHub users, email users, invites
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: User directory
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users, emailUsers, invites]
+                properties:
+                  admin:
+                    type: string
+                    nullable: true
+                  adminEmail:
+                    type: string
+                    nullable: true
+                  users:
+                    type: array
+                    items:
+                      type: string
+                  emailUsers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EmailUser'
+                  invites:
+                    type: array
+                    items:
+                      type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [admin]
+      operationId: manageGithubUser
+      summary: Add or remove an allow-listed GitHub login
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login, action]
+              properties:
+                login:
+                  type: string
+                action:
+                  type: string
+                  enum: [add, remove]
+      responses:
+        '200':
+          description: Updated allow list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/admin/users/email:
+    post:
+      tags: [admin]
+      operationId: removeEmailUser
+      summary: Remove an email user (never the admin, never yourself)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, action]
+              properties:
+                email:
+                  type: string
+                action:
+                  type: string
+                  enum: [remove]
+      responses:
+        '200':
+          description: Removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/admin/users/invite:
+    post:
+      tags: [admin]
+      operationId: inviteUser
+      summary: Create a single-use 24h invite link for an email
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+      responses:
+        '200':
+          description: Invite URL and expiry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [inviteUrl, email, expiresAt]
+                properties:
+                  inviteUrl:
+                    type: string
+                  email:
+                    type: string
+                  expiresAt:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Email already has an account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/admin/invite/{token}:
+    get:
+      tags: [auth]
+      operationId: peekInvite
+      summary: Resolve an invite token to its email (unauthenticated)
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Invite email
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [email]
+                properties:
+                  email:
+                    type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/admin/register:
+    post:
+      tags: [auth]
+      operationId: registerWithInvite
+      summary: Create a password account from an invite (sets session cookie)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token:
+                  type: string
+                password:
+                  type: string
+                turnstileToken:
+                  type: string
+      responses:
+        '200':
+          description: Registered (session cookie set)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/admin/bootstrap:
+    post:
+      tags: [auth]
+      operationId: bootstrapAdmin
+      summary: Claim the admin account on a fresh deploy (once only)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                password:
+                  type: string
+                turnstileToken:
+                  type: string
+      responses:
+        '200':
+          description: Admin claimed (session cookie set)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/admin/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Email + password login (sets session cookie)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                password:
+                  type: string
+                turnstileToken:
+                  type: string
+      responses:
+        '200':
+          description: Logged in (session cookie set)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/admin/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Destroy the session cookie
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+  /v1/admin/reset:
+    post:
+      tags: [auth]
+      operationId: requestPasswordReset
+      summary: Request a password reset email (generic 200, no enumeration)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                turnstileToken:
+                  type: string
+      responses:
+        '200':
+          description: Accepted (always, when well-formed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/admin/reset/confirm:
+    post:
+      tags: [auth]
+      operationId: confirmPasswordReset
+      summary: Set a new password with a reset token (drops all sessions)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Password updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /v1/admin/secrets:
+    get:
+      tags: [admin]
+      operationId: listRepoSecrets
+      summary: List repo secret names (values are write-only)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: owner/name
+      responses:
+        '200':
+          description: Secret names
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [secrets]
+                properties:
+                  secrets:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [admin]
+      operationId: setRepoSecret
+      summary: Set a repo secret value (AES-GCM at rest)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, name, value]
+              properties:
+                repo:
+                  type: string
+                name:
+                  type: string
+                value:
+                  type: string
+      responses:
+        '200':
+          description: Secret stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    delete:
+      tags: [admin]
+      operationId: deleteRepoSecret
+      summary: Delete a repo secret
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/admin/schedules:
+    get:
+      tags: [admin]
+      operationId: listSchedules
+      summary: List cron schedules
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Schedules
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schedules]
+                properties:
+                  schedules:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Schedule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [admin]
+      operationId: createSchedule
+      summary: Create a cron schedule (max 50)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, ref, cron]
+              properties:
+                repo:
+                  type: string
+                ref:
+                  type: string
+                  description: Branch or tag (max 128 chars)
+                cron:
+                  type: string
+                  description: 5-field UTC cron
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/admin/schedules/{id}:
+    post:
+      tags: [admin]
+      operationId: toggleSchedule
+      summary: Enable or disable a schedule
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Toggled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [admin]
+      operationId: deleteSchedule
+      summary: Delete a schedule
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/admin/monitors:
+    get:
+      tags: [admin]
+      operationId: listMonitors
+      summary: List result and duration monitors
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Monitors (webhook URLs never serialized)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [monitors]
+                properties:
+                  monitors:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Monitor'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [admin]
+      operationId: createMonitor
+      summary: Create a monitor
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MonitorInput'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/admin/monitors/{id}:
+    post:
+      tags: [admin]
+      operationId: updateMonitor
+      summary: Toggle or mute a monitor
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                muteMinutes:
+                  type: integer
+                  nullable: true
+                  minimum: 0
+                  description: Null clears the mute
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [admin]
+      operationId: deleteMonitor
+      summary: Delete a monitor
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/admin/generate:
+    post:
+      tags: [admin]
+      operationId: generatePipeline
+      summary: Generate flare.yml from natural language (Workers AI)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt:
+                  type: string
+                  maxLength: 2000
+      responses:
+        '200':
+          description: Generated YAML
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [yaml]
+                properties:
+                  yaml:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          $ref: '#/components/responses/NotConfigured'
+        '502':
+          description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/oauth/grants:
+    get:
+      tags: [oauth]
+      operationId: listMyGrants
+      summary: List my OAuth connected apps (session cookie)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: My grants with client names
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [grants]
+                properties:
+                  grants:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OAuthGrant'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [oauth]
+      operationId: revokeMyGrant
+      summary: Revoke one of my OAuth grants
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: grantId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/admin/oauth-grants:
+    get:
+      tags: [admin]
+      operationId: listOAuthGrants
+      summary: List authorized OAuth apps (keyset-paginated)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Grants with client names
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [grants]
+                properties:
+                  grants:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OAuthGrant'
+                  cursor:
+                    type: string
+                    nullable: true
+                  list_complete:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [admin]
+      operationId: revokeOAuthGrant
+      summary: Revoke an OAuth grant (client + user)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: grantId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: userId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/admin/status:
+    get:
+      tags: [admin]
+      operationId: dashboardStatus
+      summary: Dashboard bootstrap state (claim, user, GitHub)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Status snapshot (user null when logged out)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [claimed, githubConnected]
+                properties:
+                  claimed:
+                    type: boolean
+                  githubConnected:
+                    type: boolean
+                  installUrl:
+                    type: string
+                    nullable: true
+                  user:
+                    type: object
+                    nullable: true
+  /v1/admin/github/connect:
+    post:
+      tags: [admin]
+      operationId: githubConnectBegin
+      summary: Begin GitHub App creation via manifest (open pre-claim)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        '200':
+          description: Manifest post URL and payload
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [postUrl, manifest]
+                properties:
+                  postUrl:
+                    type: string
+                  manifest:
+                    type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: GitHub already managed via environment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/admin/github/callback:
+    get:
+      tags: [admin]
+      operationId: githubConnectCallback
+      summary: Manifest exchange callback (redirects to dashboard)
+      security: []
+      parameters:
+        - name: state
+          in: query
+          schema:
+            type: string
+        - name: code
+          in: query
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to the dashboard with the outcome
+  /v1/admin/github/login:
+    get:
+      tags: [auth]
+      operationId: githubLogin
+      summary: Begin GitHub OAuth login (redirects to github.com)
+      security: []
+      responses:
+        '302':
+          description: Redirect to GitHub authorize or dashboard on error
+  /v1/admin/github/oauth/callback:
+    get:
+      tags: [auth]
+      operationId: githubOAuthCallback
+      summary: GitHub OAuth callback (sets session, redirects)
+      security: []
+      responses:
+        '302':
+          description: Redirect to the dashboard with the outcome
+  /webhooks/github:
+    post:
+      tags: [webhooks]
+      operationId: githubWebhook
+      summary: GitHub event ingestion (HMAC-verified, idempotent)
+      security: []
+      parameters:
+        - name: X-Hub-Signature-256
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-GitHub-Event
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-GitHub-Delivery
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Accepted (redeliveries ack without duplicating; gated events ack with no run)
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /mcp:
+    get:
+      tags: [mcp]
+      operationId: mcpDiscovery
+      summary: MCP server discovery document
+      security: []
+      responses:
+        '200':
+          description: Discovery with protocol versions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, version, protocol, protocolVersion]
+                properties:
+                  name:
+                    type: string
+                  version:
+                    type: string
+                  protocol:
+                    type: string
+                  protocolVersion:
+                    type: string
+                  protocolVersions:
+                    type: array
+                    items:
+                      type: string
+    post:
+      tags: [mcp]
+      operationId: mcpRequest
+      summary: MCP streamable-HTTP JSON-RPC (Bearer token or same-origin cookie)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JsonRpcRequest'
+      responses:
+        '200':
+          description: JSON-RPC response (SSE stream when negotiated)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonRpcResponse'
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '406':
+          description: Missing dual Accept header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /authorize:
+    get:
+      tags: [oauth]
+      operationId: oauthAuthorize
+      summary: OAuth consent page (session-authenticated browser flow)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Consent HTML
+          content:
+            text/html:
+              schema:
+                type: string
+        '302':
+          description: Redirect (login or back to client)
+    post:
+      tags: [oauth]
+      operationId: oauthConsent
+      summary: Approve or deny the OAuth consent
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+      responses:
+        '302':
+          description: Redirect back to the client
+  /oauth/token:
+    post:
+      tags: [oauth]
+      operationId: oauthToken
+      summary: Token endpoint (authorization_code, refresh_token, client_credentials)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Token response
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /oauth/register:
+    post:
+      tags: [oauth]
+      operationId: oauthRegister
+      summary: Dynamic client registration (RFC 7591)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Registered client
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /.well-known/oauth-authorization-server:
+    get:
+      tags: [oauth]
+      operationId: oauthServerMetadata
+      summary: Authorization server metadata (RFC 8414)
+      security: []
+      responses:
+        '200':
+          description: Server metadata
+          content:
+            application/json:
+              schema:
+                type: object
+  /.well-known/oauth-protected-resource:
+    get:
+      tags: [oauth]
+      operationId: protectedResourceMetadata
+      summary: Protected resource metadata (RFC 9728)
+      security: []
+      responses:
+        '200':
+          description: Resource metadata
+          content:
+            application/json:
+              schema:
+                type: object
+  /.well-known/oauth-protected-resource/mcp:
+    get:
+      tags: [oauth]
+      operationId: mcpResourceMetadata
+      summary: MCP-scoped protected resource metadata
+      security: []
+      responses:
+        '200':
+          description: Resource metadata
+          content:
+            application/json:
+              schema:
+                type: object
+  /dashboard:
+    get:
+      tags: [admin]
+      operationId: dashboard
+      summary: Dashboard HTML application
+      security: []
+      responses:
+        '200':
+          description: Dashboard HTML
+          content:
+            text/html:
+              schema:
+                type: string
+  /:
+    get:
+      tags: [admin]
+      operationId: root
+      summary: Redirect to the dashboard
+      security: []
+      responses:
+        '302':
+          description: Redirect to /dashboard
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: API token (admin, runner, or readonly scope)
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: flare_session
+      description: Dashboard session cookie (admin routes, MCP, OAuth consent)
+  parameters:
+    RunId:
+      name: runId
+      in: path
+      required: true
+      schema:
+        type: string
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema:
+        type: string
+    Limit50:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    Offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 100000
+        default: 0
+  responses:
+    BadRequest:
+      description: Invalid input
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Valid credentials, out of scope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Unknown id (or out-of-scope repo, indistinguishably)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RateLimited:
+      description: Too many attempts
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooLarge:
+      description: Body exceeds the endpoint cap
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotConfigured:
+      description: Optional binding not configured
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    Ok:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+    OAuthGrant:
+      type: object
+      required: [grantId, userId, clientId, scope]
+      properties:
+        grantId:
+          type: string
+        userId:
+          type: string
+        clientId:
+          type: string
+        clientName:
+          type: string
+          nullable: true
+        scope:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: number
+          nullable: true
+    Run:
+      type: object
+      required: [id, repo, sha, event, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        repo:
+          type: string
+        sha:
+          type: string
+        event:
+          type: string
+        installation_id:
+          type: integer
+          nullable: true
+        branch:
+          type: string
+        source:
+          type: string
+          nullable: true
+        pr_number:
+          type: integer
+          nullable: true
+        pr_comment_id:
+          type: integer
+          nullable: true
+        heal_branch:
+          type: string
+          nullable: true
+        heal_pr_url:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [queued, running, blocked, success, failure, error, cancelled, skipped]
+        created_at:
+          type: string
+        updated_at:
+          type: string
+    Job:
+      type: object
+      required: [id, run_id, status]
+      properties:
+        id:
+          type: string
+        run_id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, blocked, success, failure, error, cancelled, skipped]
+        log:
+          type: string
+        definition:
+          type: string
+        result:
+          type: string
+        triage:
+          type: string
+        labels:
+          type: string
+        priority:
+          type: integer
+        attempts:
+          type: integer
+        started_at:
+          type: string
+          nullable: true
+        finished_at:
+          type: string
+          nullable: true
+        retained_until:
+          type: string
+          nullable: true
+        prior_ms:
+          type: integer
+        created_at:
+          type: string
+        updated_at:
+          type: string
+        durationMs:
+          type: number
+          nullable: true
+    CostSummary:
+      type: object
+      description: Cost attribution rollup for a run's jobs
+    RunDigest:
+      type: object
+      required: [runId, repo, sha, branch, event, status, totalJobs, failedJobs, jobs]
+      properties:
+        runId:
+          type: string
+        repo:
+          type: string
+        sha:
+          type: string
+        branch:
+          type: string
+        event:
+          type: string
+        status:
+          type: string
+        durationMs:
+          type: number
+          nullable: true
+        totalJobs:
+          type: integer
+        failedJobs:
+          type: integer
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/DigestJob'
+        egress:
+          $ref: '#/components/schemas/DigestEgress'
+        heal:
+          type: object
+          properties:
+            branch:
+              type: string
+            prUrl:
+              type: string
+    DigestJob:
+      type: object
+      required: [id, name, status, stepCount]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+        durationMs:
+          type: number
+          nullable: true
+        stepCount:
+          type: integer
+        failing:
+          $ref: '#/components/schemas/DigestStep'
+        triage:
+          type: string
+        retainedUntil:
+          type: string
+    DigestStep:
+      type: object
+      required: [command, exitCode, durationMs, outputTail]
+      properties:
+        command:
+          type: string
+        exitCode:
+          type: number
+        durationMs:
+          type: number
+        outputTail:
+          type: string
+    DigestEgress:
+      type: object
+      required: [reqBytes, respBytes, topHosts]
+      properties:
+        reqBytes:
+          type: number
+        respBytes:
+          type: number
+        topHosts:
+          type: array
+          items:
+            type: object
+            required: [host, reqBytes, respBytes]
+            properties:
+              host:
+                type: string
+              reqBytes:
+                type: number
+              respBytes:
+                type: number
+    Artifact:
+      type: object
+      description: Artifact entry (job id, name, size)
+    FlakyStat:
+      type: object
+      description: Per-job failure rate row (job, runs, failures, rate)
+    UsageStats:
+      type: object
+      description: Compute minutes and cost attribution rollup
+    LogHit:
+      type: object
+      description: FTS log match (run, job, line, rank)
+    ByteTotals:
+      type: object
+      required: [reqBytes, respBytes]
+      properties:
+        reqBytes:
+          type: number
+        respBytes:
+          type: number
+    RunTests:
+      type: object
+      required: [runId, totals, jobs, failing]
+      properties:
+        runId:
+          type: string
+        totals:
+          $ref: '#/components/schemas/TestTotals'
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobTestCounts'
+        failing:
+          type: array
+          items:
+            $ref: '#/components/schemas/FailingTest'
+    TestTotals:
+      type: object
+      required: [total, passed, failed, errors, skipped]
+      properties:
+        total:
+          type: integer
+        passed:
+          type: integer
+        failed:
+          type: integer
+        errors:
+          type: integer
+        skipped:
+          type: integer
+    JobTestCounts:
+      type: object
+      required: [jobId, jobName, total, passed, failed, errors, skipped]
+      properties:
+        jobId:
+          type: string
+        jobName:
+          type: string
+        total:
+          type: integer
+        passed:
+          type: integer
+        failed:
+          type: integer
+        errors:
+          type: integer
+        skipped:
+          type: integer
+        durationMs:
+          type: number
+        truncated:
+          type: boolean
+    FailingTest:
+      type: object
+      required: [jobId, jobName, name, status]
+      properties:
+        jobId:
+          type: string
+        jobName:
+          type: string
+        suite:
+          type: string
+        name:
+          type: string
+        classname:
+          type: string
+        status:
+          type: string
+        message:
+          type: string
+    ApiToken:
+      type: object
+      required: [id, name, scopes]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        repos:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+        revoked_at:
+          type: string
+          nullable: true
+    Settings:
+      type: object
+      description: Dashboard settings snapshot (see GET /v1/admin/settings)
+    EmailUser:
+      type: object
+      required: [email, isAdmin, createdAt]
+      properties:
+        email:
+          type: string
+        isAdmin:
+          type: boolean
+        createdAt:
+          type: string
+    AuditEntry:
+      type: object
+      required: [id, actor, action, created_at]
+      properties:
+        id:
+          type: string
+        actor:
+          type: string
+        action:
+          type: string
+        target:
+          type: string
+        created_at:
+          type: string
+    QueuedJob:
+      type: object
+      required: [id, runId, name, repo]
+      properties:
+        id:
+          type: string
+        runId:
+          type: string
+        name:
+          type: string
+        repo:
+          type: string
+        priority:
+          type: integer
+        priorMs:
+          type: number
+        labels:
+          type: string
+        createdAt:
+          type: string
+    Schedule:
+      type: object
+      required: [id, repo, ref, cron, enabled]
+      properties:
+        id:
+          type: string
+        repo:
+          type: string
+        ref:
+          type: string
+        cron:
+          type: string
+        enabled:
+          type: boolean
+        lastRunAt:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+    Monitor:
+      type: object
+      required: [id, repo, trigger, enabled]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        repo:
+          type: string
+        branch:
+          type: string
+        job:
+          type: string
+        trigger:
+          type: string
+          enum: [result, duration]
+        result:
+          type: string
+        consecutive:
+          type: integer
+        durationSeconds:
+          type: number
+        logPattern:
+          type: string
+        webhookSet:
+          type: boolean
+        enabled:
+          type: boolean
+        mutedUntil:
+          type: string
+          nullable: true
+        streak:
+          type: integer
+        lastFiredAt:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+    MonitorInput:
+      type: object
+      required: [repo, trigger]
+      properties:
+        name:
+          type: string
+        repo:
+          type: string
+        branch:
+          type: string
+        job:
+          type: string
+          description: Glob string (max 128 chars)
+        trigger:
+          type: string
+          enum: [result, duration]
+        result:
+          type: string
+        consecutive:
+          type: integer
+        durationSeconds:
+          type: number
+        logPattern:
+          type: string
+        webhookUrl:
+          type: string
+    JsonRpcRequest:
+      type: object
+      required: [jsonrpc, method]
+      properties:
+        jsonrpc:
+          type: string
+          enum: ['2.0']
+        id:
+          type: number
+        method:
+          type: string
+        params:
+          type: object
+    JsonRpcResponse:
+      type: object
+      required: [jsonrpc, id]
+      properties:
+        jsonrpc:
+          type: string
+          enum: ['2.0']
+        id:
+          type: number
+        result:
+          type: object
+        error:
+          type: object

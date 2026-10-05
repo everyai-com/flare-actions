@@ -190,6 +190,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <nav class="tabs">
 <button id="tabRuns" class="active">Runs</button>
 <button id="tabSearch">Search</button>
+<button id="tabApps">Apps</button>
 <button id="tabAccess">Access</button>
 <button id="tabSettings">Settings</button>
 </nav>
@@ -392,6 +393,11 @@ form.inline input { flex: 1; min-width: 180px; }
 </form>
 <p id="searchErr" class="err"></p>
 <div id="searchList"></div>
+</section>
+<section id="appsPane" class="card" hidden>
+<h2>My apps</h2>
+<p class="muted">OAuth apps you authorized on the MCP endpoint (Claude, ChatGPT, Cursor, …). Revoking disconnects the app immediately.</p>
+<div class="table-scroll"><table><thead><tr><th>App</th><th>Scopes</th><th>Granted</th><th></th></tr></thead><tbody id="myAppsBody"></tbody></table></div>
 </section>
 </section>
 </main>
@@ -635,6 +641,7 @@ form.inline input { flex: 1; min-width: 180px; }
     if (st.user) {
       showApp(st.user.actor, st.user.admin, st.githubConnected);
       loadRuns();
+      loadMyApps();
       registerWebMcpTools(st.user.admin);
       if (st.user.admin) { loadTokens(); loadUsers(); loadAudit(); loadOAuthGrants(); }
     } else {
@@ -827,19 +834,23 @@ form.inline input { flex: 1; min-width: 180px; }
 
   var tabRuns = document.getElementById("tabRuns");
   var tabSearch = document.getElementById("tabSearch");
+  var tabApps = document.getElementById("tabApps");
   var tabAccess = document.getElementById("tabAccess");
   var tabSettings = document.getElementById("tabSettings");
   var runsPane = document.getElementById("runsPane");
   var searchPane = document.getElementById("searchPane");
+  var appsPane = document.getElementById("appsPane");
   var accessPane = document.getElementById("accessPane");
   var settingsPane = document.getElementById("settingsPane");
   function selectTab(name) {
     tabRuns.className = name === "runs" ? "active" : "";
     tabSearch.className = name === "search" ? "active" : "";
+    tabApps.className = name === "apps" ? "active" : "";
     tabAccess.className = name === "access" ? "active" : "";
     tabSettings.className = name === "settings" ? "active" : "";
     runsPane.hidden = name !== "runs";
     searchPane.hidden = name !== "search";
+    appsPane.hidden = name !== "apps";
     accessPane.hidden = name !== "access";
     settingsPane.hidden = name !== "settings";
   }
@@ -875,6 +886,7 @@ form.inline input { flex: 1; min-width: 180px; }
   });
   tabRuns.addEventListener("click", function () { selectTab("runs"); loadRuns(); });
   tabSearch.addEventListener("click", function () { selectTab("search"); });
+  tabApps.addEventListener("click", function () { selectTab("apps"); loadMyApps(); });
   document.getElementById("searchForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
     runLogSearch();
@@ -1243,6 +1255,32 @@ form.inline input { flex: 1; min-width: 180px; }
       })
       .catch(function () { err.textContent = "Could not create token (name required; repos must be owner/name entries)."; });
   });
+
+  function loadMyApps() {
+    var body = document.getElementById("myAppsBody");
+    if (!body) return;
+    stateRow(body, 4, "Loading your apps…", "muted");
+    api("/v1/oauth/grants").then(function (data) {
+      body.textContent = "";
+      (data.grants || []).forEach(function (g) {
+        var tr = el("tr");
+        tr.appendChild(el("td", g.clientName || g.clientId));
+        tr.appendChild(el("td", (g.scope || []).join(" ")));
+        tr.appendChild(g.createdAt ? timeCell(new Date(g.createdAt * 1000).toISOString()) : el("td", "—"));
+        var tdBtn = el("td");
+        var btn = el("button", "Revoke");
+        btn.className = "danger";
+        btn.addEventListener("click", function () {
+          api("/v1/oauth/grants?grantId=" + encodeURIComponent(g.grantId), { method: "DELETE" })
+            .then(loadMyApps).catch(function () {});
+        });
+        tdBtn.appendChild(btn);
+        tr.appendChild(tdBtn);
+        body.appendChild(tr);
+      });
+      if (!body.children.length) stateRow(body, 4, "No connected apps.", "muted");
+    }).catch(function () { stateRow(body, 4, "Could not load your apps.", "err"); });
+  }
 
   function loadOAuthGrants() {
     var body = document.getElementById("grantsBody");

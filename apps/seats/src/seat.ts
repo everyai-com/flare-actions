@@ -37,6 +37,7 @@ import { recordRuntimePrior } from "../../worker/src/priors";
 import { jobDurationMs } from "../../worker/src/cost";
 import { MAX_JUNIT_BYTES, parseJUnit } from "../../worker/src/junit";
 import { seatEligible } from "../../worker/src/pipeline";
+import { annotateSpan } from "../../worker/src/trace";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
 import type { AiBinding } from "../../worker/src/triage";
 import { interpolateSecrets, maskSecrets } from "../../../packages/runner-sdk/src/secrets";
@@ -429,6 +430,9 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
   } catch {
     // Best effort.
   }
+  // Seat invocations are warm boxes: tag the root span so a job's
+  // container lifecycle is replayable from its run/job ids.
+  await annotateSpan({ "flare.run.id": run.id, "flare.job.id": jobId, "flare.executor": "seat", repo: run.repo });
 
   // Release back to queued. Capacity releases (container never booted)
   // additionally re-queue a delayed wake so saturation never strands a
@@ -451,6 +455,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     // The reason lands in the job log (checkout details are already
     // token-scrubbed) so releases are self-diagnosing via the API.
     await note(`[seat] released: ${detail}`);
+    await annotateSpan({ "seat.released": detail.slice(0, 120) });
     await releaseJob(deps.db, jobId);
     await rollupRunStatus(deps.db, job.run_id, deps.analytics, deps.basin);
     return { status: "released", jobId, detail };
@@ -585,6 +590,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
             // Best effort.
           }
           await note(`[seat] snapshot restored (${row.snapshot_id.slice(0, 12)}…)`);
+          await annotateSpan({ "seat.snapshot.restored": true });
         } else {
           try {
             await deleteSeatSnapshot(deps.db, v2Image, run.repo);
@@ -592,6 +598,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
             // Best effort.
           }
           await note("[seat] snapshot degraded, deleted; fresh boot");
+          await annotateSpan({ "seat.snapshot.degraded": true });
         }
       }
     } catch {
@@ -1117,6 +1124,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       return { status: "released", jobId, detail: "job was requeued before completion; result dropped" };
     }
     await rollupRunStatus(deps.db, job.run_id, deps.analytics, deps.basin);
+    await annotateSpan({ "flare.job.status": status, "seat.snapshot.restored": restored });
     // FTS index slice for global log search (best-effort, like monitors).
     await indexJobLog(deps.db, {
       jobId,
