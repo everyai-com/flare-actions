@@ -2,7 +2,7 @@
 # Object drives everything through exec calls, so the entrypoint just
 # sleeps — no agent code lives in here, and runner logic changes never
 # require an image rebuild.
-FROM node:22-slim
+FROM node:26-slim
 
 # Per-domain egress shim (egress.c): compiled in-image so the .so always
 # matches the runtime glibc, then the toolchain is purged in the same
