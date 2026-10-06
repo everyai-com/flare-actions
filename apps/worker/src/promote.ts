@@ -167,8 +167,11 @@ export async function fastForwardWinner(
       ref: base,
       onAuth: () => ({ username: "x", password: secret }),
     });
-  } catch {
-    await appendLedger(deps.db, tournamentId, "promote-failed", "fast-forward rejected; blessed pointer stands").catch(
+  } catch (err) {
+    const detail = String(err instanceof Error ? err.message : err)
+      .replace(/art_v2_\S+/g, "art_v2_[redacted]")
+      .slice(0, 300);
+    await appendLedger(deps.db, tournamentId, "promote-failed", `fast-forward rejected (${detail}); blessed pointer stands`).catch(
       () => undefined,
     );
     return { status: "skipped", reason: "failed" };

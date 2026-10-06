@@ -157,7 +157,7 @@ async function main() {
   const runStatus = {};
   for (const a of board.attempts) {
     if (!a.run_id) continue;
-    runStatus[a.agent] = (await api(`/v1/runs/${a.run_id}`)).status;
+    runStatus[a.agent] = (await api(`/v1/runs/${a.run_id}`)).run.status;
   }
   check("alpha green", runStatus.alpha === "success", runStatus.alpha ?? "no-run");
   check("beta green", runStatus.beta === "success", runStatus.beta ?? "no-run");
