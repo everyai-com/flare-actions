@@ -199,12 +199,22 @@ describe("composeVerdict", () => {
     await seedRun(db, "run-b", "success", 0);
     const a1 = await seedAttempt(db, tid, "a1", { run: "run-a" });
     const a2 = await seedAttempt(db, tid, "a2", { run: "run-b" });
-    const ai = { run: async () => ({ response: "Winner: a2. Why: green while a1 fails two tests." }) };
+    // The model names the loser: the stored rationale must still lead
+    // with the deterministic winner.
+    const seen: unknown[] = [];
+    const ai = {
+      run: async (_model: string, input: unknown) => {
+        seen.push(input);
+        return { response: "Winner: a1. Why: I prefer failing runs." };
+      },
+    };
     const out = await composeVerdict(db, { artifacts: null, ai }, tid);
     expect(out.status).toBe("decided");
     if (out.status !== "decided") throw new Error("should decide");
     expect(out.winnerAttemptId).toBe(a2);
     expect(out.model).toContain("llama");
+    expect(out.rationale.startsWith("Winner: a2.")).toBe(true);
+    expect(JSON.stringify(seen)).toContain("already decided: a2");
     const ranks = await db.prepare("SELECT agent, verdict_rank FROM attempts WHERE tournament_id = ?").bind(tid).all<{ agent: string; verdict_rank: number }>();
     expect(new Map(ranks.results.map((r) => [r.agent, r.verdict_rank]))).toEqual(new Map([["a2", 1], ["a1", 2]]));
     expect(a1).not.toBe(a2);

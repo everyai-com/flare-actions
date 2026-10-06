@@ -151,15 +151,22 @@ export async function fastForwardWinner(
   if (!token) return { status: "skipped", reason: "failed" };
   const secret = token.split("?expires=")[0];
   const fs = deps.fs();
+  const git = deps.git;
   const dir = "/promote";
   const base = tournament.base_ref || "main";
+  let step = "init";
   try {
-    await deps.git.init({ fs, dir, defaultBranch: base });
-    await deps.git.addRemote({ fs, dir, remote: "winner", url: winnerRemote });
-    await deps.git.addRemote({ fs, dir, remote: "source", url: sourceRemote });
-    await deps.git.fetch({ fs, http: deps.http, dir, remote: "winner", ref: tournament.resolved_sha, singleBranch: true, depth: 50 });
-    await deps.git.branch({ fs, dir, ref: base, object: tournament.resolved_sha, checkout: false });
-    await deps.git.push({
+    step = "init";
+    await git.init({ fs, dir, defaultBranch: base });
+    step = "addRemote";
+    await git.addRemote({ fs, dir, remote: "winner", url: winnerRemote });
+    await git.addRemote({ fs, dir, remote: "source", url: sourceRemote });
+    step = "fetch";
+    await git.fetch({ fs, http: deps.http, dir, remote: "winner", ref: tournament.resolved_sha, singleBranch: true, depth: 50 });
+    step = "branch";
+    await git.branch({ fs, dir, ref: base, object: tournament.resolved_sha, checkout: false });
+    step = "push";
+    await git.push({
       fs,
       http: deps.http,
       dir,
@@ -168,7 +175,7 @@ export async function fastForwardWinner(
       onAuth: () => ({ username: "x", password: secret }),
     });
   } catch (err) {
-    const detail = String(err instanceof Error ? err.message : err)
+    const detail = `${step}: ${String(err instanceof Error ? err.message : err)}`
       .replace(/art_v2_\S+/g, "art_v2_[redacted]")
       .slice(0, 300);
     await appendLedger(deps.db, tournamentId, "promote-failed", `fast-forward rejected (${detail}); blessed pointer stands`).catch(

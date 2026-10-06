@@ -197,9 +197,11 @@ async function gatherEvidence(
 }
 
 function buildVerdictPrompt(intent: string, ranked: VerdictEvidence[]): { system: string; user: string } {
+  const winner = ranked[0]?.agent ?? "unknown";
   return {
     system:
-      "You judge an agent coding tournament. Reply in ≤150 words: Winner: one agent name. Why: two sentences citing verification evidence (status, failing tests, failure output). Note any attempt that looks partially correct. Never invent results; every claim must trace to the evidence.",
+      `The tournament is already decided: ${winner} won (final — never name a different winner, never write a Winner line). ` +
+      "Reply in ≤150 words justifying the decision: two sentences citing verification evidence (status, failing tests, failure output). Note any attempt that looks partially correct. Never invent results; every claim must trace to the evidence.",
     user: `Task: ${intent.slice(0, 500)}\n\nAttempts in verification order:\n${ranked.map((r) => r.summary).join("\n\n").slice(0, 6000)}`,
   };
 }
@@ -223,7 +225,10 @@ async function aiRationale(
       gatewayOptions(gatewayId),
     )) as { response?: unknown };
     if (typeof out?.response !== "string" || !out.response.trim()) throw new Error("empty verdict");
-    return { rationale: out.response.trim().slice(0, VERDICT_MAX_STORED_CHARS), model: model?.trim() || TRIAGE_MODEL };
+    // Deterministic header first: the stored rationale can never contradict
+    // the ranking even if the model names another agent in its prose.
+    const headed = `Winner: ${ranked[0]?.agent ?? "unknown"}. ${out.response.trim()}`;
+    return { rationale: headed.slice(0, VERDICT_MAX_STORED_CHARS), model: model?.trim() || TRIAGE_MODEL };
   } catch {
     return { rationale: fallback.slice(0, VERDICT_MAX_STORED_CHARS), model: "deterministic" };
   }
