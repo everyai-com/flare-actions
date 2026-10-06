@@ -124,10 +124,10 @@ function fakeGit(calls: string[], opts: { pushThrows?: boolean } = {}): PromoteG
   return {
     init: async () => { calls.push("init"); },
     addRemote: async (o) => { calls.push(`remote:${o.remote}`); },
-    fetch: async (o) => { calls.push(`fetch:${o.remote}:${o.ref}`); },
+    fetch: async (o) => { calls.push(`fetch:${o.remote}:${o.ref}:auth=${typeof o.onAuth === "function"}`); },
     branch: async (o) => { calls.push(`branch:${o.ref}@${o.object}`); },
-    push: async () => {
-      calls.push("push");
+    push: async (o) => {
+      calls.push(`push:auth=${typeof o.onAuth === "function"}`);
       if (opts.pushThrows) throw new Error("non-fast-forward");
     },
   };
@@ -138,17 +138,20 @@ function stubFs(): FsClient {
   return { promises: { readFile: fn, writeFile: fn, unlink: fn, readdir: fn, mkdir: fn, rmdir: fn, stat: fn, lstat: fn } };
 }
 
-function ffDeps(db: Db, git: PromoteGit | null, over: Partial<FastForwardDeps> = {}): FastForwardDeps {
+function ffDeps(db: Db, git: PromoteGit | null, over: Partial<FastForwardDeps> = {}, seen: string[] = []): FastForwardDeps {
   return {
     db,
     artifacts: {
-      get: async () => ({
+      get: async (name: string) => ({
         readFile: async () => null,
         fork: async () => ({ name: "", remote: "", defaultBranch: "main" }),
         log: async () => [],
         readTree: async () => null,
         readCommit: async () => null,
-        createToken: async () => ({ plaintext: "writetok?expires=9" }),
+        createToken: async (scope: string) => {
+          seen.push(`${scope}:${name}`);
+          return { plaintext: `${scope}tok?expires=9` };
+        },
         [Symbol.dispose]: () => undefined,
       }),
     },
@@ -166,9 +169,12 @@ describe("fastForwardWinner", () => {
     const db = sqliteDb();
     await seedDecided(db, "t1");
     const calls: string[] = [];
-    const out = await fastForwardWinner(ffDeps(db, fakeGit(calls)), "t1");
+    const seen: string[] = [];
+    const out = await fastForwardWinner(ffDeps(db, fakeGit(calls), {}, seen), "t1");
     expect(out).toEqual({ status: "pushed", sha: SHA });
-    expect(calls).toEqual(["init", "remote:winner", "remote:source", `fetch:winner:${SHA}`, `branch:main@${SHA}`, "push"]);
+    // Repo-scoped tokens: read on the winner fork, write on the source.
+    expect(seen).toEqual(["read:fork-1", "write:base"]);
+    expect(calls).toEqual(["init", "remote:winner", "remote:source", `fetch:winner:${SHA}:auth=true`, `branch:main@${SHA}`, "push:auth=true"]);
     const kinds = await db.prepare("SELECT kind FROM ledger WHERE tournament_id = 't1'").bind().all<{ kind: string }>();
     expect(kinds.results.map((r) => r.kind)).toEqual(["promoted"]);
     expect(await fastForwardWinner(ffDeps(db, fakeGit(calls)), "t1")).toEqual({ status: "skipped", reason: "already" });
@@ -198,6 +204,6 @@ describe("fastForwardPass", () => {
     const d = ffDeps(db, fakeGit(calls));
     expect(await fastForwardPass(d)).toEqual({ pushed: 1 });
     expect(await fastForwardPass(d)).toEqual({ pushed: 0 });
-    expect(calls.filter((c) => c === "push")).toHaveLength(1);
+    expect(calls.filter((c) => c === "push:auth=true")).toHaveLength(1);
   });
 });

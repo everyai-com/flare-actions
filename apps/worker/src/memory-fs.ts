@@ -1,9 +1,18 @@
 // In-memory filesystem for isomorphic-git promotion pushes, adapted
 // from Cloudflare's Artifacts isomorphic-git example (docs). Workers
 // have no node:fs; this is the entire disk for one promotion.
+//
+// isomorphic-git binds 10 commands at construction (missing ones throw
+// `undefined.bind`), prefers the `promises` surface when present, and
+// branches on `err.code` — every error below carries a Node-style code.
 type Entry =
   | { kind: "dir"; children: Set<string>; mtimeMs: number }
-  | { kind: "file"; data: Uint8Array; mtimeMs: number };
+  | { kind: "file"; data: Uint8Array; mtimeMs: number }
+  | { kind: "symlink"; target: string; mtimeMs: number };
+
+function fsError(code: string, path: string): Error {
+  return Object.assign(new Error(`${code}: ${path}`), { code });
+}
 
 class MemoryStats {
   constructor(private entry: Entry) {}
@@ -21,7 +30,7 @@ class MemoryStats {
   }
 
   get mode(): number {
-    return this.entry.kind === "file" ? 0o100644 : 0o040000;
+    return this.entry.kind === "file" ? 0o100644 : this.entry.kind === "symlink" ? 0o120000 : 0o040000;
   }
 
   isFile(): boolean {
@@ -33,7 +42,7 @@ class MemoryStats {
   }
 
   isSymbolicLink(): boolean {
-    return false;
+    return this.entry.kind === "symlink";
   }
 }
 
@@ -52,6 +61,8 @@ export class MemoryFS {
     rmdir: (path: string): Promise<void> => this.rmdir(path),
     stat: (path: string): Promise<MemoryStats> => this.stat(path),
     lstat: (path: string): Promise<MemoryStats> => this.lstat(path),
+    readlink: (path: string): Promise<string> => this.readlink(path),
+    symlink: (target: string, path: string): Promise<void> => this.symlink(target, path),
   };
 
   private normalize(input: string): string {
@@ -85,13 +96,13 @@ export class MemoryFS {
 
   private requireEntry(path: string): Entry {
     const entry = this.getEntry(path);
-    if (!entry) throw new Error(`ENOENT: ${path}`);
+    if (!entry) throw fsError("ENOENT", path);
     return entry;
   }
 
   private requireDir(path: string): Extract<Entry, { kind: "dir" }> {
     const entry = this.requireEntry(path);
-    if (entry.kind !== "dir") throw new Error(`ENOTDIR: ${path}`);
+    if (entry.kind !== "dir") throw fsError("ENOTDIR", path);
     return entry;
   }
 
@@ -101,7 +112,7 @@ export class MemoryFS {
     const recursive = typeof options === "object" && options !== null && options.recursive;
     const parent = this.parent(target);
     if (!this.entries.has(parent)) {
-      if (!recursive) throw new Error(`ENOENT: ${parent}`);
+      if (!recursive) throw fsError("ENOENT", parent);
       await this.mkdir(parent, { recursive: true });
     }
     if (this.entries.has(target)) return;
@@ -119,7 +130,7 @@ export class MemoryFS {
 
   async readFile(path: string, options?: string | { encoding?: string }): Promise<Uint8Array | string> {
     const entry = this.requireEntry(path);
-    if (entry.kind !== "file") throw new Error(`EISDIR: ${path}`);
+    if (entry.kind !== "file") throw fsError("EISDIR", path);
     const encoding = typeof options === "string" ? options : options?.encoding;
     return encoding ? this.decoder.decode(entry.data) : entry.data;
   }
@@ -131,7 +142,7 @@ export class MemoryFS {
   async unlink(path: string): Promise<void> {
     const target = this.normalize(path);
     const entry = this.requireEntry(target);
-    if (entry.kind !== "file") throw new Error(`EISDIR: ${path}`);
+    if (entry.kind !== "file" && entry.kind !== "symlink") throw fsError("EISDIR", path);
     this.entries.delete(target);
     this.requireDir(this.parent(target)).children.delete(this.basename(target));
   }
@@ -139,16 +150,37 @@ export class MemoryFS {
   async rmdir(path: string): Promise<void> {
     const target = this.normalize(path);
     const entry = this.requireDir(target);
-    if (entry.children.size > 0) throw new Error(`ENOTEMPTY: ${path}`);
+    if (entry.children.size > 0) throw fsError("ENOTEMPTY", path);
     this.entries.delete(target);
     this.requireDir(this.parent(target)).children.delete(this.basename(target));
   }
 
   async stat(path: string): Promise<MemoryStats> {
-    return new MemoryStats(this.requireEntry(path));
+    // Follows one link hop (ten chained); loops surface as ELOOP.
+    let current = path;
+    for (let hop = 0; hop < 10; hop++) {
+      const entry = this.requireEntry(current);
+      if (entry.kind !== "symlink") return new MemoryStats(entry);
+      current = entry.target.startsWith("/") ? entry.target : `${this.parent(current)}/${entry.target}`;
+    }
+    throw fsError("ELOOP", path);
   }
 
   async lstat(path: string): Promise<MemoryStats> {
-    return this.stat(path);
+    return new MemoryStats(this.requireEntry(path));
+  }
+
+  async readlink(path: string): Promise<string> {
+    const entry = this.requireEntry(path);
+    if (entry.kind !== "symlink") throw fsError("EINVAL", path);
+    return entry.target;
+  }
+
+  async symlink(target: string, path: string): Promise<void> {
+    const resolved = this.normalize(path);
+    await this.mkdir(this.parent(resolved), { recursive: true });
+    if (this.entries.has(resolved)) throw fsError("EEXIST", path);
+    this.entries.set(resolved, { kind: "symlink", target, mtimeMs: Date.now() });
+    this.requireDir(this.parent(resolved)).children.add(this.basename(resolved));
   }
 }

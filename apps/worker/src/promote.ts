@@ -78,6 +78,7 @@ export interface PromoteGit {
     ref: string;
     singleBranch?: boolean;
     depth?: number;
+    onAuth: () => { username: string; password: string };
   }): Promise<unknown>;
   branch(opts: { fs: FsClient; dir: string; ref: string; object?: string; checkout?: boolean }): Promise<unknown>;
   push(opts: {
@@ -104,11 +105,15 @@ export type FastForwardOutcome =
   | { status: "pushed"; sha: string }
   | { status: "skipped"; reason: "not-ready" | "already" | "unavailable" | "failed" };
 
-async function mintWriteToken(artifacts: TournamentArtifacts, repo: string): Promise<string | null> {
+async function mintToken(
+  artifacts: TournamentArtifacts,
+  repo: string,
+  scope: "read" | "write",
+): Promise<string | null> {
   let handle = null as Awaited<ReturnType<TournamentArtifacts["get"]>> | null;
   try {
     handle = await artifacts.get(repo);
-    const out = await handle.createToken("write", 600);
+    const out = await handle.createToken(scope, 600);
     const plaintext = typeof out === "string" ? out : (out as { plaintext?: unknown }).plaintext;
     return typeof plaintext === "string" && plaintext ? plaintext : null;
   } catch {
@@ -147,9 +152,12 @@ export async function fastForwardWinner(
   const winnerRemote = deps.remoteFor(winner.fork_repo);
   const sourceRemote = deps.remoteFor(tournament.source_repo);
   if (!winnerRemote || !sourceRemote) return { status: "skipped", reason: "unavailable" };
-  const token = await mintWriteToken(deps.artifacts, tournament.source_repo);
-  if (!token) return { status: "skipped", reason: "failed" };
-  const secret = token.split("?expires=")[0];
+  // Tokens are repo-scoped: the fetch reads the winner fork, the push
+  // writes the source. Both travel whole — the server rejects the
+  // `?expires=` suffix stripped (verified against the live API).
+  const readToken = await mintToken(deps.artifacts, winner.fork_repo, "read");
+  const writeToken = await mintToken(deps.artifacts, tournament.source_repo, "write");
+  if (!readToken || !writeToken) return { status: "skipped", reason: "failed" };
   const fs = deps.fs();
   const git = deps.git;
   const dir = "/promote";
@@ -162,7 +170,16 @@ export async function fastForwardWinner(
     await git.addRemote({ fs, dir, remote: "winner", url: winnerRemote });
     await git.addRemote({ fs, dir, remote: "source", url: sourceRemote });
     step = "fetch";
-    await git.fetch({ fs, http: deps.http, dir, remote: "winner", ref: tournament.resolved_sha, singleBranch: true, depth: 50 });
+    await git.fetch({
+      fs,
+      http: deps.http,
+      dir,
+      remote: "winner",
+      ref: tournament.resolved_sha,
+      singleBranch: true,
+      depth: 50,
+      onAuth: () => ({ username: "x", password: readToken }),
+    });
     step = "branch";
     await git.branch({ fs, dir, ref: base, object: tournament.resolved_sha, checkout: false });
     step = "push";
@@ -172,7 +189,7 @@ export async function fastForwardWinner(
       dir,
       remote: "source",
       ref: base,
-      onAuth: () => ({ username: "x", password: secret }),
+      onAuth: () => ({ username: "x", password: writeToken }),
     });
   } catch (err) {
     const detail = `${step}: ${String(err instanceof Error ? err.message : err)}`
