@@ -2,6 +2,11 @@
 
 Date: 2026-10-06 (rev 4: first-principles execution spec). Deadline: Oct 14, 2026.
 
+Status 2026-10-06 EOD: steps 1–8 executed and staging-green — harness
+3x in a row on 7b fast-forward, run/try guide verified cold from a
+fresh clone. Remaining: record the video (`docs/VIDEO-SCRIPT.md`) and
+submit. No 7b drop needed; the Day-6 trigger is retired.
+
 ## First principles (why this shape, derived — not brainstormed)
 
 The brief reduces to five irreducible questions. Everything in this plan
