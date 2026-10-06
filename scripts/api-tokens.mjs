@@ -20,6 +20,22 @@ export const TOKEN_PROFILES = {
     description: "Billable Usage API reads only",
     groups: ["Billing Read"],
   },
+  // Full `npm run setup` without full-access OAuth: D1 + queues + R2 +
+  // deploys + secrets + Basin + seats images + Artifacts namespace and
+  // push subscriptions (B1/B3 REST calls reuse this same token).
+  // Containers/Pipelines only matter when docker is present / Basin is
+  // wanted; the resolver fails closed on any renamed group.
+  setup: {
+    description: "run npm run setup (provision + deploy)",
+    groups: [
+      "Workers Scripts Edit",
+      "D1 Edit",
+      "Queues Edit",
+      "Workers R2 Storage Edit",
+      "Workers Pipelines Edit",
+      "Containers Edit",
+    ],
+  },
 };
 
 export function profileNames() {
@@ -103,6 +119,7 @@ export function permissionHint(output) {
     "  npm run token:mint -- --profile ci      # CI preview deploys",
     "  npm run token:mint -- --profile debug   # read-only agent debugging",
     "  npm run token:mint -- --profile billing # Billable Usage API (cli usage $)",
+    "  npm run token:mint -- --profile setup   # full npm run setup",
     "See docs/TOKENS.md for the exact permission checklist.",
   ];
   if (links.length > 0) lines.push(`Cloudflare's missing-permission link: ${links[0]}`);

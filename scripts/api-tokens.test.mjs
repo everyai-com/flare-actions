@@ -17,9 +17,12 @@ const GROUPS = [
 
 describe("token profiles", () => {
   it("defines ci, debug, and billing profiles", () => {
-    expect(Object.keys(TOKEN_PROFILES).sort()).toEqual(["billing", "ci", "debug"]);
+    expect(Object.keys(TOKEN_PROFILES).sort()).toEqual(["billing", "ci", "debug", "setup"]);
     expect(TOKEN_PROFILES.ci.groups).toContain("Workers Scripts Edit");
     expect(TOKEN_PROFILES.debug.groups.every((g) => /read/i.test(g))).toBe(true);
+    expect(TOKEN_PROFILES.setup.groups).toEqual(
+      expect.arrayContaining(["Workers Scripts Edit", "D1 Edit", "Queues Edit", "Workers R2 Storage Edit"]),
+    );
   });
 });
 
