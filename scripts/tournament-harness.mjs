@@ -35,6 +35,22 @@ function sh(cmd, args, opts = {}) {
   });
 }
 
+// The artifacts CLI is open beta and flakes (observed: transient
+// issue-token + create failures); retry with backoff, fail loudly.
+async function wrangler(args, tries = 3) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await sh("npx", ["wrangler", ...args]);
+    } catch (err) {
+      last = err;
+      console.log(`wrangler retry ${i + 1}/${tries}: ${String(err.message).slice(0, 160)}`);
+      await new Promise((r) => setTimeout(r, 5000 * (i + 1)));
+    }
+  }
+  throw last;
+}
+
 // wrangler prints banners to stdout around JSON; carve the object out.
 function parseWranglerJson(stdout) {
   const start = stdout.indexOf("{");
@@ -81,7 +97,7 @@ const workdir = mkdtempSync(join(tmpdir(), "flare-harness-"));
 async function main() {
   // 1. Source repo + base commit (green base: greeting.txt satisfies flare.yml).
   const created = parseWranglerJson(
-    await sh("npx", ["wrangler", "artifacts", "repos", "create", sourceRepo, "--namespace", NS, "--json"]),
+    await wrangler(["artifacts", "repos", "create", sourceRepo, "--namespace", NS, "--json"]),
   );
   reposToDelete.push(sourceRepo);
   const srcDir = join(workdir, "src");
@@ -119,7 +135,7 @@ async function main() {
   // 3. Concurrent pushes: alpha/beta green on the SAME file (collision),
   // gamma deletes the file (red).
   const pushOne = async (claim, mutate) => {
-    const tokOut = await sh("npx", ["wrangler", "artifacts", "repos", "issue-token", claim.forkRepo, "--namespace", NS, "--scope", "write", "--ttl", "3600"]);
+    const tokOut = await wrangler(["artifacts", "repos", "issue-token", claim.forkRepo, "--namespace", NS, "--scope", "write", "--ttl", "3600"]);
     const token = tokOut.match(/art_v2_\S+/)?.[0];
     if (!token) throw new Error(`no token issued for ${claim.forkRepo}`);
     const dir = join(workdir, claim.agent);
