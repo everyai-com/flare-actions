@@ -5,9 +5,9 @@ the Cloudflare blog + changelog window Aug–Oct 2026 (57 posts) and 9
 Blacksmith engineering posts. Every item names the Cloudflare primitive it
 builds on — nothing here needs off-platform infrastructure.
 
-## Build status (Oct 4, 2026)
+## Build status (Oct 6, 2026)
 
-Shipped and tested (405 vitest, tsc clean, seats dry-run green):
+Shipped and tested (vitest green, tsc clean, seats dry-run green):
 
 - **Phase 0**: V2 seats on the `durable_object` policy — `ContainerSeatV2`
   + `SEATS_V2` binding (additive; V1 keeps serving in-flight jobs, rollback
@@ -48,7 +48,9 @@ Shipped and tested (405 vitest, tsc clean, seats dry-run green):
   model refresh evals (second run + Clef judge gate), `openapi.yaml`
   for the v1 API (62 paths, CI coverage gate), agent-traces for warm
   boxes + heal + generate, and self-service OAuth grants (dashboard
-  Apps tab + `GET`/`DELETE /v1/oauth/grants`).
+  Apps tab + `GET`/`DELETE /v1/oauth/grants` with scope descriptions).
+  The spec is served live (`/openapi.yaml` + `/docs`) with a Redocly
+  validity gate in CI next to the coverage gate.
 
 ## Strategy note: @cloudflare/ci and where Flare wins
 
@@ -180,16 +182,27 @@ Needs Phase 0 done:
   per-repo domain allowlists (their Part 2 is still unannounced — we
   can ship first), via the Sandbox SDK outbound handler or shim-side
   enforcement (needs staging validation either way).
-- **Artifacts repo mirroring** (private beta, Paid-only): shipped
-  seats-side mirror preference (`ARTIFACTS_MIRROR_REMOTE` template +
-  read-scoped token, mirror first with GitHub fallback, fail-closed
-  template check, encoded-token scrubbing) — staging-validated
+- **Artifacts repo mirroring** (open beta Oct 1, Paid-only, billing
+  from Oct 15): shipped seats-side mirror preference
+  (`ARTIFACTS_MIRROR_REMOTE` template + read-scoped token, mirror
+  first with GitHub fallback, fail-closed template check,
+  encoded-token scrubbing) — staging-validated
   (`mirror-canary-job-02/04`). Still manual: per-repo provisioning +
-  yearly token rotation. Still open: worker-minted per-job tokens via
-  the `ARTIFACTS` binding, push-event subscriptions
-  (`cf.artifacts.repo.pushed` → queue → workflow) as a trigger source.
-  Optional: enter the "next Git platform" competition (deadline Oct 14,
-  MIT/Apache/BSD + demo video; first prize $25k credits + Connect stage).
+  yearly token rotation. The Oct 1 "next Git platform" post shipped
+  the primitives the open items ride on: the `ARTIFACTS` Workers
+  binding (fork/inspect/read + repo-scoped Git tokens → worker-minted
+  per-job tokens), event subscriptions (`cf.artifacts.repo.pushed` →
+  queue → workflow, plus created/forked/deleted/cloned/fetched →
+  push-event triggers), Workers Builds integration (push → deploy,
+  branch → Preview), per-namespace US/EU data jurisdiction, and
+  dashboard/API metrics. Still open: per-job tokens via the binding,
+  push-event triggers, provisioning automation. Optional: enter the
+  "next Git platform" competition — deadline Oct 14, 5–10 min demo
+  video + MIT/Apache/BSD source + run instructions, multi-agent
+  concurrency required; top 3 fly to Connect SF, first prize $25k
+  credits + VIP dinner. Flare's angle: the CI/verification layer for
+  agent-built code (dispatch + wait + digest + heal) on Artifacts
+  repos.
 - **Per-job CPU/mem + right-sizing**: BYO runners self-report peak RSS/CPU
   with status callbacks now; seats sample via exec (cgroupfs) until the
   container API exposes metrics — then dashboard graphs and label-size
@@ -341,6 +354,9 @@ Phase 2 starts when snapshots land. Phase 3 is continuous eval.
   Researcher, OS-internal usage, Python-RPC, plus network/security/CA
   posts) + changelog RSS (799 entries) + docs pages for Sandbox SDK 1.0,
   snapshots, scheduling policy, keep-alive, Artifacts, OAuth Provider v1.
+  Plus the Oct 1 "next Git platform on Cloudflare" post (Artifacts open
+  beta: Workers binding, event subscriptions, Builds integration, data
+  jurisdiction, metrics, Oct 15 billing; competition deadline Oct 14).
 - Blacksmith blog: 10M-jobs scheduler (Sep 18), Docker physics (Jul 31),
   network observability P1 (Jul 20), storage (Jul 24), code-mode
   (Aug 24), cache RE (2025), ClickHouse logging (2025), SSH (2025);
