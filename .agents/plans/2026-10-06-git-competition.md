@@ -1,6 +1,55 @@
 # Git competition entry plan — Flare Tournaments: the pull request for the agent era
 
-Date: 2026-10-06 (rev 3: detailed execution spec). Deadline: Oct 14, 2026.
+Date: 2026-10-06 (rev 4: first-principles execution spec). Deadline: Oct 14, 2026.
+
+## First principles (why this shape, derived — not brainstormed)
+
+The brief reduces to five irreducible questions. Everything in this plan
+exists because one of them demands it; anything no question demands is cut.
+
+- Q1 coordination ("how do agents know what others work on?") → demands a
+  shared, live record of who claimed what and where each attempt stands.
+  Minimal answer: atomic task claims + a board. Rejected: agent chat
+  (a second product), polling each other (no primitive, no story).
+- Q2 conflicts ("what happens on conflicting changes?") → demands
+  foresight, not post-hoc merge pain. Minimal honest answer: file-set
+  intersection across attempt diffs — computable from binding reads,
+  demoable, never oversold as semantic. Rejected: real merge (needs a
+  merge primitive that doesn't exist), ignoring it (leaves a brief
+  question unanswered).
+- Q3 review ("how do you review everything?") → demands verdicts that
+  scale with attempt count and compose across attempts. Minimal answer:
+  per-attempt digest/triage (already built) + one cross-attempt ranking
+  review. Rejected: human-in-the-loop per attempt (doesn't scale — the
+  brief's whole point), single-attempt-only review (no comparison).
+- Q4 why ("not just what changed, but why?") → demands an append-only
+  record binding intent → evidence → decision, queryable later.
+  Minimal answer: decision ledger + read-only query. Rejected: commit
+  messages (agents don't write them reliably), nothing (fails the brief
+  verbatim).
+- Q5 compare/decide ("compare multiple changes, decide which ships") →
+  demands ranking + resolution to one blessed outcome. Minimal answer:
+  verdict ranking + blessed pointer, upgraded to a real fast-forward if
+  time allows. Rejected: dashboard-only with no resolution (no decision),
+  auto-merge without verification (unsafe story).
+
+Fixed constraints: 8 days; Workers + Artifacts primitives only; the demo
+must be live and repeatable (finalists demo in SF); every claim in the
+video must survive the question "show me". Hence E2E-first ordering,
+explicit cut order, and the 3x-green harness bar.
+
+Primitive map (subsystem → platform primitive → codebase pattern):
+
+- claims/board → D1 + dashboard → `heal_claims` atomic-claim pattern
+- push trigger → event subscription → queue → `queue()` branch
+- pipeline read → binding `readFile` → webhook dispatch shape
+- isolation → binding `fork()` → per-job temp-dir isolation idea
+- verify → seats containers + mirror checkout → existing executor
+- radar → binding `readTree`/`log` diffs → new, pure function + test
+- verdict → Workers AI over digests → `triage.ts` inference pattern
+- ledger → D1 append-only → audit-log pattern; query → MCP read tool
+- promote → git itself (isomorphic-git) → documented push pattern,
+  with a D1-pointer fallback
 
 ## Goal
 
@@ -37,26 +86,40 @@ of the race → review → decision arc — not by feature count.
 E2E-first: bank a working race → verdict → decision loop as early as
 possible, then upgrade its parts. The blessed pointer lands before the
 isomorphic-git fast-forward; the harness runs against whichever promote
-cut exists. Five small D1-backed modules on the existing agent surface,
-each reusing a proven pattern: dispatch rides `dispatchRun`
-(`apps/worker/src/index.ts:2500`); delivery rides a new Artifacts queue
-consumed by `queue()` (`index.ts:2454`, today ack-only — must branch on
-message shape); execution rides the seats mirror-first checkout
-(`renderMirrorRemote` + `ARTIFACTS_MIRROR_REMOTE/TOKEN`); verdicts ride
-digest + triage; claims ride the atomic-claim pattern (`heal_claims`,
-webhook idempotency); the cross-attempt review rides the triage
-inference pattern (Workers AI, degrade-to-skip, never 500).
-`artifacts` runs skip GitHub-only surfaces like `source` runs do.
-Programmatic promote has no REST endpoint (verified: the REST API is
-repos/forks/imports/tokens/content-reads only), so the upgrade path
-goes through git itself via the documented isomorphic-git-in-Workers
-push pattern, isolated in its own module.
+cut exists.
 
-Alternatives rejected: a full Git-forge clone (judges want the layer
-*above* repos/branches/PRs); per-push CI with no tournament (safe but
-reads as GitHub Actions on a new remote); Workflows orchestration (our
-own spike verdict stands); agent-to-agent chat/awareness (a second
-product, cut for the deadline).
+Data model (new D1 tables; `schema.ts` + migration together, per repo
+rule that both change as one):
+
+- `tournaments`: id, task intent text, source repo + base ref, state
+  (open → verifying → decided), created_at.
+- `attempts`: id, tournament id, agent label, fork repo name, claim
+  state (claimed → pushing → verifying → terminal), linked run id,
+  verdict rank (nullable until decided). One UNIQUE guard so a second
+  claim on the same (tournament, agent) slot fails atomically.
+- `verdicts`: tournament id, ranking JSON (bounded), rationale text
+  (bounded like triage ≤4KB), model id, created_at.
+- `ledger`: append-only rows (tournament id, kind, body, created_at):
+  intent recorded, attempt terminal, collision fired, verdict reached,
+  winner resolved. Never updated, never deleted.
+
+Lifecycles: attempt moves claimed → pushing (first push event) →
+verifying (run dispatched) → terminal (run terminal; digest stored).
+Tournament moves open → verifying (first attempt verifying) → decided
+(verdict + resolution recorded). Verdict runs once all linked runs are
+terminal or a bounded wait expires (a stuck attempt must not veto a
+tournament — expiry recorded in the ledger).
+
+Verdict function inputs (ranked, deterministic first): run terminal
+status (success outranks failure — a green attempt always beats red),
+failing-test count from JUnit where present, then Workers AI rationale
+over digests for ordering among greens and the human-readable why.
+Inference outage degrades to digest-order ranking, recorded, no 500.
+
+Radar definition: for each attempt pair, intersect changed-file sets
+(from binding diff reads); non-empty intersection with both attempts
+non-terminal-failed → collision row + board flag. File-level only —
+the honest scope, stated in docs and video.
 
 ## Schedule (8 days, milestones are the boss)
 
@@ -88,8 +151,9 @@ product, cut for the deadline).
    the `cf.artifacts.repo.pushed` envelope (source namespace/repo,
    payload ref/after), read `flare.yml` via binding `readFile`, dispatch
    via `dispatchRun` with event `artifacts`; pushes without a pipeline
-   file ack cleanly with no run. Done when: unit tests cover valid push,
-   missing pipeline (clean ack), malformed envelope (ack, no 500).
+   file ack cleanly with no run. Tests: valid push dispatches; missing
+   pipeline clean-acks; malformed envelope acks without 500; redelivery
+   of the same push is idempotent (delivery-guard like webhooks).
 3. **Queue + event subscription.** New `flare-actions-artifacts` queue
    (+ staging twin, DLQ), `queue()` branches Artifacts messages to the
    trigger module, `scripts/setup.mjs` gains a provisioning step for the
@@ -102,31 +166,36 @@ product, cut for the deadline).
    mirror token for the entry; per-job `createToken("read")` is cut
    unless free. Done when: push → run → `[seat] checkout ok (mirror)` →
    terminal digest, plus the no-`flare.yml` negative.
-5. **Tournaments (`tournaments.ts` + board).** Task intent + atomic agent
-   claims (one claim → one binding `fork()`; double-claim fails
-   atomically), live attempt states (claimed → pushing → verifying →
-   terminal) on a tournament board (dashboard view; CLI read only if
-   free). Done when: 2 claims race cleanly, board shows live states.
-6. **Overlap radar + AI verdict + ledger.** File-level collision
-   detection across attempt diffs (binding `readTree`/`log`); Workers AI
-   review over all digests ranking attempts with rationale
-   (degrade-to-skip like triage; outage → digest-order ranking, no 500);
-   append-only decision ledger (intent → attempts → verdicts → decision)
-   with an MCP read-only `why` tool. Done when: forced collision fires
-   the radar, verdict ranks a known-good attempt first, ledger + `why`
-   agree.
+5. **Tournaments (`tournaments.ts` + board + migration + test).** Task
+   intent + atomic agent claims (one claim → one binding `fork()`;
+   double-claim fails atomically), live attempt states on a tournament
+   board (dashboard view; CLI read only if free). Tests: claim/fork
+   link, double-claim atomicity, state transitions, tournament decided
+   only via verdict+resolution. Done when: 2 claims race cleanly and the
+   board shows live states.
+6. **Overlap radar + AI verdict + ledger (+ migration + tests + MCP
+   `why`).** Radar as defined above; verdict per the ranking inputs
+   above; ledger append-only per the data model; MCP read-only `why`
+   tool answers "why did attempt X win/lose?" from the ledger. Tests:
+   intersection logic incl. empty/disjoint sets, verdict ordering among
+   green/green and green/red, inference-outage degradation, ledger
+   append-only (no update path exists). Done when: forced collision
+   fires, known-good ranks first, ledger + `why` agree.
 7. **Promote the winner, two cuts.** 7a (banked): blessed-sha pointer in
    D1 + dashboard/API + one-command adopt → M2. 7b (upgrade, droppable):
    `promote.ts` isomorphic-git fast-forward of the blessed ref from the
-   Worker (strip `?expires=` per the docs). Done when: 7a always; 7b
-   only if staging-green by the Day 6 drop trigger.
+   Worker (strip `?expires=` per the docs; MemoryFS; auth-failure and
+   non-fast-forward both fail closed with ledger rows, never half-push).
+   Done when: 7a always; 7b only if staging-green by the Day 6 trigger.
 8. **Tournament-mode demo harness.** Script: open a task, fork per agent,
    drive ≥3 concurrent pushes (one forced failure, one forced file
    collision) over git-HTTPS with binding-minted tokens, run verdict +
-   promote, print the ledger. Done when: green 3x in a row on staging.
+   promote, print the ledger. Works on 7a or 7b (fallback-tolerant).
+   Done when: green 3x in a row on staging.
 9. **Video + submission.** Run/try instructions doc (+ README pointer)
-   verified cold; video per the narrative beats below; submit at
-   cloudflare.com/git-competition on Day 8 morning. Docs-only; no code.
+   verified cold on a fresh checkout; video per the beats below; submit
+   at cloudflare.com/git-competition on Day 8 morning. Docs-only; no
+   code. Done when: the submission checklist below is fully ticked.
 
 ## Video narrative beats (the 60-second rule)
 
@@ -141,6 +210,11 @@ product, cut for the deadline).
   numbers), where to run it. Hard stop ≤10:00.
 - Rough cut Day 5 against M2 (finds every demo gap); final cut Day 7.
 
+Submission checklist: video 5–10 min; MIT source link; run/try
+instructions verified cold; multi-agent concurrency undeniable on
+screen; radar + verdict + promote all visible; nothing claimed that
+isn't shown.
+
 ## Validation Plan
 
 - Steps 1–3: `npm run types`, `npm run typecheck`, `npm test`,
@@ -150,22 +224,30 @@ product, cut for the deadline).
 - Step 4 (first high-risk check): M1 E2E + negatives as above.
 - Steps 5–7 (highest-risk check): 3-agent tournament E2E — all attempts
   verified, radar fires, verdict sensible, winner resolved, ledger
-  complete; negatives: double-claim atomic, verdict outage degrades.
+  complete; negatives: double-claim atomic, verdict outage degrades,
+  7b non-fast-forward fails closed.
 - Step 8: harness green 3x; ledger query + MCP `why` agree.
-- Step 9: instructions followed cold on a fresh checkout; video
-  checklist (tournament lands <1:00, collision + verdict + promote
-  visible, ≤10:00).
+- Step 9: cold fresh-checkout instructions run; video checklist ticked.
+
+## Failure modes & cut order
+
+- Cut order (first to go): per-job tokens → CLI board reads → 7b
+  isomorphic-git promote (→ 7a pointer) → JUnit-aware verdict ordering
+  (→ status + AI rationale only). Heal stays GitHub-only, always.
+- A stuck attempt never vetoes a tournament (bounded wait, ledger row).
+- Inference outages never 500 (verdict degrades, radar is pure logic).
+- Push without pipeline, malformed events, redeliveries: ack, never poison.
+- No code changes after Day 8 submission except a demo-breaking fix.
 
 ## Risks / Open Questions
 
-- 8 days for a big swing: cut order is explicit — per-job tokens, CLI
-  board reads, then 7b isomorphic-git promote (→ 7a blessed pointer),
-  in that order. Heal stays GitHub-only.
+- 8 days for a big swing — the schedule's fallback triggers are the
+  mitigation, and they have dates, not vibes.
 - Event-subscription provisioning mechanics still unverified — first
-  execution research item, with the Day 1 fallback trigger above.
+  execution research item, with the Day 1 fallback trigger.
 - isomorphic-git is the newest dependency (bundle, MemoryFS, push-auth
-  all unproven here) — hence isolated module + drop trigger, and the
-  harness never depends on it (works on 7a).
+  all unproven here) — isolated module + Day 6 drop trigger; the
+  harness never depends on it.
 - Queues are not preview-isolated — validate on the staging worker.
 - Artifacts is Paid-only; access already proven (staging mirror-canary
   jobs). Billing starts Oct 15, after the deadline.
