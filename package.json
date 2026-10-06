@@ -33,6 +33,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "bench": "node scripts/bench.mjs",
+    "harness": "node scripts/tournament-harness.mjs",
     "lint:openapi": "npx -y @redocly/cli lint --config .redocly.yaml openapi.yaml",
     "openapi:gen": "node scripts/gen-openapi-ts.mjs",
     "test": "vitest run",

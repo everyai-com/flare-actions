@@ -543,7 +543,9 @@ async function createRunAndFanOut(
 // validation would couple one-click deploys to the seats worker).
 async function wakeSeat(env: WorkerEnv, jobId: string): Promise<void> {
   try {
-    if (env.ENVIRONMENT !== "production") return;
+    // Previews wake the staging seats (their SEAT_QUEUE producer points
+    // at the staging queue); production wakes production seats.
+    if (env.ENVIRONMENT !== "production" && env.ENVIRONMENT !== "preview") return;
     const job = await getJob(env.DB, jobId);
     if (!job || job.status !== "queued" || !seatEligible(job.definition)) return;
     await env.SEAT_QUEUE.send({ jobId });
