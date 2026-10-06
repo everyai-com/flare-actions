@@ -17,6 +17,7 @@ jobs:
       - run: npm ci
       - run: npm run types
       - run: npm run typecheck
+      - run: npm run lint
       - run: npm test
       - run: npm run deploy:dry
       - run: node scripts/check-openapi.mjs
