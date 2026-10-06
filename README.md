@@ -231,6 +231,12 @@ digests, re-run jobs, check flakes, generate pipelines.
 `npm run cli -- mcp-config` prints a paste-ready client config; details
 in [docs/MCP.md](docs/MCP.md).
 
+## Agent tournaments (Cloudflare Artifacts)
+
+Race N coding agents on one task: isolated forks, real CI per attempt,
+collision radar, AI verdict, winner fast-forwarded, immutable ledger.
+Try it on staging in ~10 minutes — [docs/TOURNAMENTS.md](docs/TOURNAMENTS.md).
+
 ## Built for agents
 
 GitHub Actions is built for humans — commit, push, then stare at a queue.
