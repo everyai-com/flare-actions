@@ -1308,6 +1308,73 @@ function dashboardResponse(): Response {
   });
 }
 
+export interface TournamentTickResult {
+  polled: { dispatched: number; terminal: number };
+  verdicts: { decided: number };
+  resolved: { resolved: number };
+  pushed: { pushed: number };
+}
+
+// One tournament-machine tick: poll forks for pushes, decide ripe
+// tournaments, resolve winners, fast-forward the blessed ref. Shared by the
+// production cron and the admin tick endpoint (staging has no cron).
+// Every pass degrades to zero counts, never throws.
+export async function runTournamentTick(env: WorkerEnv): Promise<TournamentTickResult> {
+  const out: TournamentTickResult = {
+    polled: { dispatched: 0, terminal: 0 },
+    verdicts: { decided: 0 },
+    resolved: { resolved: 0 },
+    pushed: { pushed: 0 },
+  };
+  try {
+    const polled = await pollTournamentAttempts({
+      db: env.DB,
+      artifacts: env.ARTIFACTS ?? null,
+      namespace: env.ARTIFACTS_NAMESPACE ?? "",
+      dispatch: async (input) => {
+        const result = await dispatchRun(env, input);
+        for (const jobId of result.queuedIds) await wakeSeat(env, jobId);
+        return { runId: result.runId };
+      },
+    });
+    out.polled = { dispatched: polled.dispatched, terminal: polled.terminal };
+  } catch (err) {
+    log("warn", "tournament poll failed", { error: String(err) });
+  }
+  try {
+    const verdicts = await verdictPass(env.DB, {
+      artifacts: env.ARTIFACTS ?? null,
+      ai: env.AI ?? null,
+      gatewayId: env.AI_GATEWAY_ID,
+      model: env.TRIAGE_MODEL,
+    });
+    out.verdicts = { decided: verdicts.decided };
+  } catch (err) {
+    log("warn", "tournament verdicts failed", { error: String(err) });
+  }
+  try {
+    const resolved = await resolvePass(env.DB);
+    out.resolved = { resolved: resolved.resolved };
+  } catch (err) {
+    log("warn", "tournament resolve failed", { error: String(err) });
+  }
+  try {
+    const pushed = await fastForwardPass({
+      db: env.DB,
+      artifacts: env.ARTIFACTS ?? null,
+      remoteFor: (repo) =>
+        artifactsRemoteFor(env.ARTIFACTS_ACCOUNT_ID ?? "", env.ARTIFACTS_NAMESPACE ?? "", repo),
+      git,
+      http,
+      fs: () => new MemoryFS(),
+    });
+    out.pushed = { pushed: pushed.pushed };
+  } catch (err) {
+    log("warn", "tournament promote failed", { error: String(err) });
+  }
+  return out;
+}
+
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -1478,6 +1545,13 @@ export default {
         }
         await audit(env.DB, ident.actor, "tournament.claim", `${claimMatch[1]}:${valid.agent}`);
         return json(out, 201);
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/tournaments/tick") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const tick = await runTournamentTick(env);
+        await audit(env.DB, ident.actor, "tournament.tick", JSON.stringify(tick));
+        return json(tick);
       }
       const runMatch = /^\/v1\/runs\/([^/]+)$/.exec(url.pathname);
       if (request.method === "GET" && runMatch) {
@@ -2659,54 +2733,13 @@ export default {
       } catch (err) {
         log("warn", "heal drain failed", { error: String(err) });
       }
-      try {
-        const polled = await pollTournamentAttempts({
-          db: env.DB,
-          artifacts: env.ARTIFACTS ?? null,
-          namespace: env.ARTIFACTS_NAMESPACE ?? "",
-          dispatch: async (input) => {
-            const out = await dispatchRun(env, input);
-            for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
-            return { runId: out.runId };
-          },
-        });
-        if (polled.dispatched > 0 || polled.terminal > 0) {
-          log("info", "tournament poll finished", { ...polled });
-        }
-      } catch (err) {
-        log("warn", "tournament poll failed", { error: String(err) });
+      const tick = await runTournamentTick(env);
+      if (tick.polled.dispatched > 0 || tick.polled.terminal > 0) {
+        log("info", "tournament poll finished", { ...tick.polled });
       }
-      try {
-        const verdicts = await verdictPass(env.DB, {
-          artifacts: env.ARTIFACTS ?? null,
-          ai: env.AI ?? null,
-          gatewayId: env.AI_GATEWAY_ID,
-          model: env.TRIAGE_MODEL,
-        });
-        if (verdicts.decided > 0) log("info", "tournament verdicts decided", { ...verdicts });
-      } catch (err) {
-        log("warn", "tournament verdicts failed", { error: String(err) });
-      }
-      try {
-        const resolved = await resolvePass(env.DB);
-        if (resolved.resolved > 0) log("info", "tournaments resolved", { ...resolved });
-      } catch (err) {
-        log("warn", "tournament resolve failed", { error: String(err) });
-      }
-      try {
-        const pushed = await fastForwardPass({
-          db: env.DB,
-          artifacts: env.ARTIFACTS ?? null,
-          remoteFor: (repo) =>
-            artifactsRemoteFor(env.ARTIFACTS_ACCOUNT_ID ?? "", env.ARTIFACTS_NAMESPACE ?? "", repo),
-          git,
-          http,
-          fs: () => new MemoryFS(),
-        });
-        if (pushed.pushed > 0) log("info", "tournaments promoted", { ...pushed });
-      } catch (err) {
-        log("warn", "tournament promote failed", { error: String(err) });
-      }
+      if (tick.verdicts.decided > 0) log("info", "tournament verdicts decided", { ...tick.verdicts });
+      if (tick.resolved.resolved > 0) log("info", "tournaments resolved", { ...tick.resolved });
+      if (tick.pushed.pushed > 0) log("info", "tournaments promoted", { ...tick.pushed });
     } catch (err) {
       log("error", "scheduled handler failed", { error: String(err) });
     }

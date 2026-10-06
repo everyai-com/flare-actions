@@ -369,6 +369,50 @@ paths:
                 $ref: '#/components/schemas/Error'
         '503':
           $ref: '#/components/responses/NotConfigured'
+  /v1/admin/tournaments/tick:
+    post:
+      tags: [tournaments]
+      operationId: tickTournaments
+      summary: Run one tournament-machine tick (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Per-pass counts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [polled, verdicts, resolved, pushed]
+                properties:
+                  polled:
+                    type: object
+                    required: [dispatched, terminal]
+                    properties:
+                      dispatched:
+                        type: integer
+                      terminal:
+                        type: integer
+                  verdicts:
+                    type: object
+                    required: [decided]
+                    properties:
+                      decided:
+                        type: integer
+                  resolved:
+                    type: object
+                    required: [resolved]
+                    properties:
+                      resolved:
+                        type: integer
+                  pushed:
+                    type: object
+                    required: [pushed]
+                    properties:
+                      pushed:
+                        type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/runs/{runId}/cancel:
     post:
       tags: [runs]
