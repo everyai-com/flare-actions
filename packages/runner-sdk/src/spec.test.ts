@@ -87,6 +87,19 @@ describe("parseJobSpec", () => {
       bad(Array.from({ length: 11 }, (_, i) => ({ name: `c${i}`, url: "https://example.com/", expectTitle: "x" }))),
     ).toBeNull();
   });
+
+  it("keeps egress allowlists and rejects malformed shapes", () => {
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], egress: { allow: ["Example.COM"] } }))?.egress).toEqual({
+      allow: ["example.com"],
+    });
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }] }))?.egress).toBeUndefined();
+    const bad = (egress: unknown) => parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], egress }));
+    expect(bad({ allow: [] })).toBeNull();
+    expect(bad({ allow: "example.com" })).toBeNull();
+    expect(bad({ allow: ["https://example.com/"] })).toBeNull();
+    expect(bad({ allow: ["a.com", "a.com"] })).toBeNull();
+    expect(bad("nope")).toBeNull();
+  });
 });
 
 describe("stepRuns", () => {

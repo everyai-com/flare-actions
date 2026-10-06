@@ -47,6 +47,8 @@ jobs:
         url: https://example.com/
         expect-title: Example      # substring of <title> (or expect-text)
         screenshot: true           # PNG artifact, default true
+    egress:                        # seats-only: outbound domain allowlist
+      allow: [example.com]         # exact + subdomains pass; loopback always passes
 ```
 
 ## Semantics
@@ -107,12 +109,21 @@ jobs:
   miss fails the job. BYO runners and `cli local` fail closed on the
   key rather than silently skipping; seats without the `BROWSER`
   binding fail with a configuration pointer. Skipped when steps fail.
+- **`egress.allow`** (managed seats only) is enforced by the
+  LD_PRELOAD shim at `connect()` time: exact names and subdomains
+  pass, loopback always passes (services), DNS always passes,
+  everything else fails with `EACCES` (denials are logged as
+  `[seat] egress blocked N connects (...)`). Unknown IPs fail closed,
+  so direct-IP externals break by design; statically linked binaries
+  bypass the shim (as with attribution), and connectionless UDP is
+  unenforced. BYO runners and `cli local` fail closed on the key.
+  Absent the key, seats observe without enforcing.
 
 ## Limits
 
 32 jobs post-expansion, 100 steps/job, 8 matrix keys × 16 values, 8 labels,
 32 env vars, 8 services, 16 cache paths, 32 artifact paths,
-10 browser-checks/job (30 s each), 64 KB file.
+10 browser-checks/job (30 s each), 32 egress allow domains, 64 KB file.
 
 ## Generating pipelines
 

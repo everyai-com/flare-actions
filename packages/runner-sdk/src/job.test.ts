@@ -145,6 +145,23 @@ describe("runJob", () => {
     }
   });
 
+  it("fails closed on egress allowlists (seats-only, never silently unenforced)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-egress-"));
+    try {
+      const out = await runJob(
+        {
+          steps: [{ run: "echo hi" }],
+          egress: { allow: ["example.com"] },
+        },
+        { cwd: dir, env: { ...process.env }, client: fakeClient(), jobId: "j1" },
+      );
+      expect(out.success).toBe(false);
+      expect(out.log).toContain("egress allowlists need managed seats");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("times out long jobs", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flare-job-timeout-"));
     try {

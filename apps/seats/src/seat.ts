@@ -30,7 +30,7 @@ import { requestHeal } from "../../worker/src/heal";
 import { bytesEqual, getInstallationToken, mintAppJwt } from "../../worker/src/github";
 import { reportJobCheck } from "../../worker/src/checks";
 import { notifyRunCompleted, type NotifyMailEnv } from "../../worker/src/notify";
-import { EGRESS_LOG_PATH, EGRESS_SHIM_PATH, parseEgressLog } from "./egress";
+import { EGRESS_LOG_PATH, EGRESS_SHIM_PATH, countBlockedConnects, parseEgressLog } from "./egress";
 import { evaluateResultMonitors } from "../../worker/src/monitors";
 import { indexJobLog } from "../../worker/src/search";
 import { recordRuntimePrior } from "../../worker/src/priors";
@@ -927,6 +927,23 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         // the NIC cross-check still bounds.
       }
     }
+    // Outbound allowlist: the shim enforces it at connect() time
+    // (exact + subdomains pass, loopback always passes, unknown IPs
+    // fail closed). No shim — or an observe-only shim predating
+    // enforcement — fails closed rather than running unconfined.
+    if (spec.egress && spec.egress.allow.length > 0) {
+      if (!shimEgress) return release("egress allowlist needs the shim-carrying seat image");
+      let enforcing = false;
+      try {
+        const cap = await execBounded(["sh", "-c", `grep -qa FLARE_EGRESS_ALLOW ${EGRESS_SHIM_PATH}`], {}, 15000);
+        enforcing = !cap.timedOut && cap.exitCode === 0;
+      } catch {
+        enforcing = false;
+      }
+      if (!enforcing) return release("egress allowlist needs the enforcing shim image (this image predates it)");
+      stepEnv["FLARE_EGRESS_ALLOW"] = spec.egress.allow.join(",");
+      logParts.push(`[seat] egress allowlist: ${spec.egress.allow.length} domains`);
+    }
     let timedOutJob = false;
     let anyFailed = false;
     let jobFailed = false;
@@ -996,13 +1013,18 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       try {
         const log = await execBounded(["cat", EGRESS_LOG_PATH], {}, 30000);
         if (!log.timedOut && log.exitCode === 0) {
-          domainEgress = parseEgressLog(decode(log.stdout));
+          const raw = decode(log.stdout);
+          domainEgress = parseEgressLog(raw);
           if (domainEgress.length > 0) {
             const top = domainEgress
               .slice(0, 3)
               .map((d) => `${d.host} ↓${d.respBytes}b`)
               .join(", ");
             logParts.push(`[seat] domain egress: ${domainEgress.length} domains (top: ${top})`);
+          }
+          const denials = countBlockedConnects(raw);
+          if (denials.blocked > 0) {
+            logParts.push(`[seat] egress blocked ${denials.blocked} connects (${denials.sample.join(", ")})`);
           }
         }
       } catch {

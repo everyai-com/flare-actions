@@ -23,6 +23,25 @@ function cleanHostname(raw: string): string | null {
   return name;
 }
 
+// Blocked-connect forensics: the shim logs `BLOCK <ip> <host>` for
+// allowlist denials (enforcement on). Bounded count + sample only.
+export function countBlockedConnects(text: string): { blocked: number; sample: string[] } {
+  let blocked = 0;
+  const sample: string[] = [];
+  const lines = text.slice(0, MAX_LOG_BYTES).split("\n");
+  for (let i = 0; i < lines.length && i < MAX_LOG_LINES; i++) {
+    const parts = lines[i].trim().split(/\s+/);
+    if (parts.length !== 3 || parts[0] !== "BLOCK") continue;
+    if (!/^[0-9a-fA-F.:]{1,64}$/.test(parts[1])) continue;
+    blocked += 1;
+    if (sample.length < 5) {
+      const host = cleanHostname(parts[2]);
+      sample.push(host ?? `ip:${parts[1]}`);
+    }
+  }
+  return { blocked, sample };
+}
+
 export function parseEgressLog(text: string): EgressTally[] {
   const dns = new Map<string, string>();
   const out = new Map<string, number>();

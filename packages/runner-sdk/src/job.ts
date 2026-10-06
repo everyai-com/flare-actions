@@ -243,6 +243,11 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
   if (spec.browserChecks && spec.browserChecks.length > 0) {
     return fail("[setup] browser-checks need managed seats (this runner cannot drive the BROWSER binding)");
   }
+  // Seats-only: an unenforced allowlist is a lie about the security
+  // boundary, so BYO runners fail closed with a pointer.
+  if (spec.egress && spec.egress.allow.length > 0) {
+    return fail("[setup] egress allowlists need managed seats (this runner cannot intercept outbound connections)");
+  }
   if (serviceNames.length > 0) {
     const services: Record<string, JobServiceSpec> = {};
     for (const [name, svc] of Object.entries(spec.services ?? {})) {

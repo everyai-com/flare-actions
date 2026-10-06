@@ -236,6 +236,8 @@ class FakeContainer implements ContainerCtl {
   // Egress-shim probe answer: false keeps every existing test on the
   // no-shim path (steps run, no domain rows).
   shimPresent = false;
+  // Enforcement-marker probe answer for the allowlist capability check.
+  shimEnforcing = true;
 
   snapshots: (string | undefined)[] = [];
 
@@ -317,6 +319,9 @@ class FakeContainer implements ContainerCtl {
     if (cmd[0] === "rm") return { exitCode: 0 };
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("test -f")) return { exitCode: 0 };
     if (cmd[0] === "test" && cmd[1] === "-x") return { exitCode: this.shimPresent ? 0 : 1 };
+    if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("grep -qa FLARE_EGRESS_ALLOW")) {
+      return { exitCode: this.shimEnforcing ? 0 : 1 };
+    }
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("cat /sys/fs/cgroup")) {
       return { exitCode: 0, stdout: bytes("123456") };
     }
@@ -814,6 +819,43 @@ describe("runSeatJob", () => {
     const firstStep = shimmed.calls.findIndex((c) => c.cmd[0] === "sh" && c.cmd[1] === "-c" && c.cmd[2]?.startsWith("sh -s >"));
     expect(rmIdx).toBeGreaterThanOrEqual(0);
     expect(rmIdx).toBeLessThan(firstStep);
+  });
+
+  it("passes the egress allowlist to steps and reports denials", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ egress: { allow: ["example.com"] } }));
+    const container = new FakeContainer();
+    container.shimPresent = true;
+    container.testXml.set(EGRESS_LOG_PATH, "BLOCK 1.2.3.4 evil.example.net\nOUT 93.184.216.34 10\n");
+    expect((await runSeatJob(deps(db, container), "j1")).status).toBe("completed");
+    const stepEnvs = container.calls
+      .filter((c) => c.cmd[0] === "sh" && c.cmd[1] === "-c" && c.cmd[2]?.startsWith("sh -s >"))
+      .map((c) => c.opts?.env ?? {});
+    expect(stepEnvs.length).toBeGreaterThan(0);
+    for (const env of stepEnvs) expect(env["FLARE_EGRESS_ALLOW"]).toBe("example.com");
+    const log = db.jobs.get("j1")?.log as string;
+    expect(log).toContain("[seat] egress allowlist: 1 domains");
+    expect(log).toContain("[seat] egress blocked 1 connects (evil.example.net)");
+  });
+
+  it("releases allowlisted jobs when the image has no shim", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ egress: { allow: ["example.com"] } }));
+    const container = new FakeContainer();
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("released");
+    expect((out as { detail: string }).detail).toContain("shim-carrying seat image");
+  });
+
+  it("releases allowlisted jobs on observe-only shim images", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ egress: { allow: ["example.com"] } }));
+    const container = new FakeContainer();
+    container.shimPresent = true;
+    container.shimEnforcing = false;
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("released");
+    expect((out as { detail: string }).detail).toContain("predates it");
   });
 
   it("treats a malformed shim log as no rows, not a failure", async () => {

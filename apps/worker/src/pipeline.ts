@@ -55,6 +55,14 @@ export interface PipelineBrowserCheck {
   screenshot?: boolean;
 }
 
+// Managed seats only: outbound allowlist enforced by the LD_PRELOAD
+// shim (BYO runners fail closed). YAML key: `egress: { allow: [...] }`.
+// Exact names and subdomains pass; loopback always passes (services);
+// unknown IPs fail closed. Absent = observe-only accounting.
+export interface PipelineEgress {
+  allow: string[];
+}
+
 // Extended keys are optional and only set when the document defines
 // them, so minimal pipelines still parse to exactly { name, steps }.
 export interface PipelineJob {
@@ -85,10 +93,12 @@ export interface PipelineJob {
   // runners ignore it). YAML key: `retain-on-failure`.
   retainOnFailure?: boolean;
   browserChecks?: PipelineBrowserCheck[];
+  egress?: PipelineEgress;
 }
 
 export const MAX_JOBS = 32;
 export const MAX_BROWSER_CHECKS = 10;
+export const MAX_EGRESS_ALLOW = 32;
 export const MAX_STEPS_PER_JOB = 100;
 export const MAX_RUN_LENGTH = 8000;
 export const MAX_DEFINITION_BYTES = 64 * 1024;
@@ -195,6 +205,7 @@ interface RawJob {
   if?: string;
   retainOnFailure?: boolean;
   browserChecks?: PipelineBrowserCheck[];
+  egress?: PipelineEgress;
 }
 
 function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<string, string[]> }) | null {
@@ -375,6 +386,26 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     }
     job.browserChecks = checks;
   }
+  if (def.egress !== undefined) {
+    if (!isRecord(def.egress)) return null;
+    const allow = def.egress.allow;
+    if (!Array.isArray(allow) || allow.length === 0 || allow.length > MAX_EGRESS_ALLOW) return null;
+    const domains: string[] = [];
+    const seen = new Set<string>();
+    for (const d of allow) {
+      if (typeof d !== "string") return null;
+      const dom = d.trim().toLowerCase();
+      if (
+        !/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(dom) ||
+        seen.has(dom)
+      ) {
+        return null;
+      }
+      seen.add(dom);
+      domains.push(dom);
+    }
+    job.egress = { allow: domains };
+  }
   if (def.strategy !== undefined) {
     if (!isRecord(def.strategy) || def.strategy.matrix === undefined) return null;
     const axes = parseMatrix(def.strategy.matrix);
@@ -460,6 +491,7 @@ export function parsePipeline(text: string): PipelineJob[] | null {
       if (r.if !== undefined) job.if = r.if;
       if (r.retainOnFailure !== undefined) job.retainOnFailure = r.retainOnFailure;
       if (r.browserChecks) job.browserChecks = r.browserChecks;
+      if (r.egress) job.egress = r.egress;
       out.push(job);
     }
   }
@@ -488,6 +520,7 @@ export function serializeDefinition(job: PipelineJob, baseName: string): string 
     if: job.if,
     retainOnFailure: job.retainOnFailure,
     browserChecks: job.browserChecks,
+    egress: job.egress,
   });
 }
 

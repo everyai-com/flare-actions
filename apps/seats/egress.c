@@ -9,13 +9,19 @@
 //   OUT <ip> <bytes-sent>
 //   IN  <ip> <bytes-received>
 //
-// Passive only: every hook calls the real function first and traffic
-// flows exactly as without the shim. Without FLARE_EGRESS_LOG set
-// (or when the log cannot be opened) each hook is one flag check
+// Passive by default: every hook calls the real function first and
+// traffic flows exactly as without the shim. Without FLARE_EGRESS_LOG
+// set (or when the log cannot be opened) each hook is one flag check
 // plus the real call. Byte hooks cover send/recv, read/write, and
 // readv/writev (libuv drives sockets with readv/writev); counting
 // is gated on a prior connect(), so pipes and accepted sockets are
 // never counted.
+//
+// Enforcement (opt-in): with FLARE_EGRESS_ALLOW set to a comma list
+// of domains, connect() to anything else fails with EACCES (and a
+// BLOCK line is logged). Exact names and subdomains pass, loopback
+// and DNS always pass, unknown IPs fail closed. Connectionless UDP
+// (sendto without connect) is unattributed and unenforced.
 // Limits, by design: outbound TCP/UDP only, dynamically linked
 // binaries only (static Go/Rust bypass it — the seat treats the log
 // as a lower bound and keeps the NIC-delta row as the cross-check
@@ -25,6 +31,7 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -40,6 +47,8 @@
 
 #define MAXFD 1024
 #define MAXDNS 2048
+#define MAXALLOW 32
+#define MAXDOMAIN 254
 // Per-direction bytes held per fd before a flush line is written; the
 // remainder flushes on close. A SIGKILLed step loses at most this
 // much attribution per fd — bounded, and crashes stay loud (the
@@ -74,6 +83,12 @@ static struct {
 } g_dns[MAXDNS];
 static int g_dns_next = 0;
 
+// Enforcement allowlist, parsed once from FLARE_EGRESS_ALLOW.
+// allow_init: 0 unparsed, 1 parsed. Empty/unset = observe-only.
+static char g_allow[MAXALLOW][MAXDOMAIN];
+static int g_allow_n = 0;
+static int g_allow_init = 0;
+
 static int log_ready(void) {
   if (g_logfd != -2) return g_logfd;
   const char *path = getenv("FLARE_EGRESS_LOG");
@@ -105,6 +120,75 @@ static void copy_name(char *dst, size_t size, const char *src) {
     i++;
   }
   dst[i] = '\0';
+}
+
+static void allow_init(void) {
+  if (g_allow_init) return;
+  g_allow_init = 1;
+  const char *env = getenv("FLARE_EGRESS_ALLOW");
+  if (!env || !*env) return;
+  char buf[4096];
+  copy_name(buf, sizeof buf, env);
+  char *save = NULL;
+  for (char *tok = strtok_r(buf, ",", &save); tok && g_allow_n < MAXALLOW; tok = strtok_r(NULL, ",", &save)) {
+    while (*tok == ' ' || *tok == '\t') tok++;
+    size_t len = strlen(tok);
+    while (len > 0 && (tok[len - 1] == ' ' || tok[len - 1] == '\t')) tok[--len] = '\0';
+    if (len == 0 || len >= MAXDOMAIN) continue;
+    for (size_t i = 0; i < len; i++) {
+      if (tok[i] >= 'A' && tok[i] <= 'Z') tok[i] += 32;
+    }
+    strcpy(g_allow[g_allow_n++], tok);
+  }
+}
+
+// Exact or subdomain match (host == allow, or host ends .allow).
+static int allow_match(const char *host, const char *allow) {
+  size_t hlen = strlen(host);
+  size_t alen = strlen(allow);
+  if (hlen < alen) return 0;
+  if (strcmp(host + hlen - alen, allow) != 0) return 0;
+  return hlen == alen || host[hlen - alen - 1] == '.';
+}
+
+static int is_loopback_ip(const char *ip) {
+  if (strncmp(ip, "127.", 4) == 0) return 1;
+  return strcmp(ip, "::1") == 0;
+}
+
+// Most recent hostname mapped to ip (getaddrinfo + wire snoops
+// both feed g_dns). Returns 1 on hit, copying lowercased.
+static int dns_name_for(const char *ip, char *out, size_t outlen) {
+  int found = 0;
+  pthread_mutex_lock(&g_lock);
+  for (int i = 0; i < MAXDNS; i++) {
+    int idx = (g_dns_next + MAXDNS - 1 - i) % MAXDNS;
+    if (g_dns[idx].ip[0] && strcmp(g_dns[idx].ip, ip) == 0 && g_dns[idx].name[0]) {
+      copy_name(out, outlen, g_dns[idx].name);
+      found = 1;
+      break;
+    }
+  }
+  pthread_mutex_unlock(&g_lock);
+  if (found) {
+    for (size_t i = 0; out[i]; i++) {
+      if (out[i] >= 'A' && out[i] <= 'Z') out[i] += 32;
+    }
+  }
+  return found;
+}
+
+// 1 = connect() may proceed. Observe-only when no allowlist is set.
+static int egress_allowed(const char *ip) {
+  allow_init();
+  if (g_allow_n == 0) return 1;
+  if (is_loopback_ip(ip)) return 1;
+  char host[256];
+  if (!dns_name_for(ip, host, sizeof host)) return 0;
+  for (int i = 0; i < g_allow_n; i++) {
+    if (allow_match(host, g_allow[i])) return 1;
+  }
+  return 0;
 }
 
 static int looks_numeric(const char *s) {
@@ -420,6 +504,25 @@ static void snoop_recv(int fd, const void *buf, ssize_t n, const struct sockaddr
 
 int connect(int fd, const struct sockaddr *addr, socklen_t len) {
   RESOLVE(int, connect, int, const struct sockaddr *, socklen_t);
+  // Enforcement first (DNS peers never block: resolution must work
+  // for the allowed names to resolve at all).
+  if (addr && (addr->sa_family == AF_INET || addr->sa_family == AF_INET6) && !is_dns_peer(addr, len)) {
+    char ip[64] = "";
+    if (addr->sa_family == AF_INET) {
+      inet_ntop(AF_INET, &((const struct sockaddr_in *)addr)->sin_addr, ip, sizeof ip);
+    } else {
+      inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)addr)->sin6_addr, ip, sizeof ip);
+    }
+    if (ip[0] && !egress_allowed(ip)) {
+      char host[256] = "?";
+      dns_name_for(ip, host, sizeof host);
+      char line[384];
+      int n = snprintf(line, sizeof line, "BLOCK %s %s\n", ip, host[0] ? host : "?");
+      if (n > 0 && (size_t)n < sizeof line) emit(line, (size_t)n);
+      errno = EACCES;
+      return -1;
+    }
+  }
   // Record before the real call: non-blocking connects (Node)
   // return EINPROGRESS and complete later; bytes only flow after
   // success, and close() flushes nothing for unconnected fds.

@@ -39,6 +39,13 @@ export interface JobSpec {
   // Managed seats only: declarative browser checks via the BROWSER
   // binding (BYO runners ignore these).
   browserChecks?: JobBrowserCheckSpec[];
+  // Managed seats only: outbound allowlist enforced by the LD_PRELOAD
+  // shim (BYO runners fail closed).
+  egress?: JobEgressSpec;
+}
+
+export interface JobEgressSpec {
+  allow: string[];
 }
 
 export interface JobBrowserCheckSpec {
@@ -254,6 +261,26 @@ export function parseJobSpec(definition: string): JobSpec | null {
       checks.push(check);
     }
     spec.browserChecks = checks;
+  }
+  if (parsed.egress !== undefined) {
+    if (!isRecord(parsed.egress)) return null;
+    const allow = parsed.egress.allow;
+    if (!Array.isArray(allow) || allow.length === 0 || allow.length > 32) return null;
+    const domains: string[] = [];
+    const seen = new Set<string>();
+    for (const d of allow) {
+      if (typeof d !== "string") return null;
+      const dom = d.trim().toLowerCase();
+      if (
+        !/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(dom) ||
+        seen.has(dom)
+      ) {
+        return null;
+      }
+      seen.add(dom);
+      domains.push(dom);
+    }
+    spec.egress = { allow: domains };
   }
   return spec;
 }

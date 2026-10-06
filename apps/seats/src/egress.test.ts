@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OTHER_DOMAINS_HOST, parseEgressLog } from "./egress";
+import { OTHER_DOMAINS_HOST, countBlockedConnects, parseEgressLog } from "./egress";
 
 describe("parseEgressLog", () => {
   it("attributes bytes to resolved hostnames", () => {
@@ -52,5 +52,25 @@ describe("parseEgressLog", () => {
       { host: "ip:1.1.1.1", reqBytes: Number.MAX_SAFE_INTEGER, respBytes: 0 },
     ]);
     expect(parseEgressLog("x".repeat(3 * 1024 * 1024))).toEqual([]);
+  });
+
+  it("ignores BLOCK lines for byte attribution", () => {
+    expect(parseEgressLog("BLOCK 1.2.3.4 evil.example\nOUT 93.184.216.34 10\n")).toEqual([
+      { host: "ip:93.184.216.34", reqBytes: 10, respBytes: 0 },
+    ]);
+  });
+});
+
+describe("countBlockedConnects", () => {
+  it("counts denials and samples hostnames", () => {
+    const out = countBlockedConnects(
+      ["BLOCK 1.2.3.4 Evil.Example", "BLOCK 5.6.7.8 ?", "OUT 1.1.1.1 5", "BLOCK nope bad"].join("\n"),
+    );
+    expect(out.blocked).toBe(2);
+    expect(out.sample).toEqual(["evil.example", "ip:5.6.7.8"]);
+  });
+
+  it("returns zeros on garbage", () => {
+    expect(countBlockedConnects("garbage\nOUT x\n")).toEqual({ blocked: 0, sample: [] });
   });
 });

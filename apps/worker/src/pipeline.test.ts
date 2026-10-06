@@ -239,6 +239,26 @@ describe("job definition serialization", () => {
     expect(JSON.parse(def).browserChecks).toEqual([{ name: "home", url: "https://example.com/", expectText: "x" }]);
   });
 
+  it("parses egress allowlists and serializes them into the definition", () => {
+    const yaml =
+      "jobs:\n  a:\n    steps:\n      - run: echo\n    egress:\n      allow:\n        - Example.COM\n        - api.example.com\n";
+    const jobs = parsePipeline(yaml);
+    expect(jobs?.[0].egress).toEqual({ allow: ["example.com", "api.example.com"] });
+    const def = serializeDefinition({ name: "a", steps: [{ run: "echo" }], egress: { allow: ["example.com"] } }, "a");
+    expect(JSON.parse(def).egress).toEqual({ allow: ["example.com"] });
+  });
+
+  it("rejects malformed egress allowlists", () => {
+    const bad = (allow: string) => parsePipeline(`jobs:\n  a:\n    steps:\n      - run: echo\n    egress:\n${allow}\n`);
+    expect(bad("      allow: notalist")).toBeNull();
+    expect(bad("      allow: []")).toBeNull();
+    expect(bad("      allow:\n        - https://example.com/")).toBeNull();
+    expect(bad("      allow:\n        - bad_domain!")).toBeNull();
+    expect(bad("      allow:\n        - dup.com\n        - dup.com")).toBeNull();
+    expect(bad(`      allow:\n${Array.from({ length: 33 }, (_, i) => `        - h${i}.example.com`).join("\n")}`)).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    steps:\n      - run: echo\n    egress: allowlist")).toBeNull();
+  });
+
   it("rejects malformed browser-checks", () => {
     const bad = (checks: string) => parsePipeline(`jobs:\n  a:\n    steps:\n      - run: echo\n    browser-checks:\n${checks}\n`);
     expect(bad("      - name: home\n        url: http://example.com/\n        expect-title: x\n")).toBeNull();

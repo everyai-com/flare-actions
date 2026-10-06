@@ -62,7 +62,8 @@ with node, git, python3, sh, and tar.
 ## Provisioning
 
 `npm run setup` does it when docker is available: builds the image for
-`linux/amd64` (content-tagged, rebuilt only when the Dockerfile changes),
+`linux/amd64` (content-tagged, rebuilt when the Dockerfile or the
+egress-shim source changes),
 pushes to your account's registry, generates `apps/seats/wrangler.jsonc`
 from the committed `wrangler.jsonc.example` with that image (the
 generated file is gitignored — your account id never lands in git),
@@ -83,15 +84,17 @@ npx wrangler deploy --config apps/seats/wrangler.jsonc
 
 Notes:
 
-- Tags must be immutable (`:latest` is rejected); bump the tag when the
-  Dockerfile changes.
+- Tags must be immutable (`:latest` is rejected); the setup content tag
+  covers the Dockerfile plus `egress.c`, so shim changes mint a new tag
+  instead of overwriting one.
 - The seats queue (`flare-actions-seats`) and its dead-letter queue
   (`flare-actions-seats-dlq`) are created by setup alongside the other
   queues. A persistent staging seats worker
   (`flare-actions-seats-staging`, gitignored
   `apps/seats/wrangler.staging.jsonc`) consumes
   `flare-actions-staging-seats` for V2 rehearsals; main previews
-  never wake seats (`ENVIRONMENT` guard).
+  wake the staging seats through it (`ENVIRONMENT=preview` passes
+  the wake guard, production wakes production seats).
 - V2 container application names are account-global and immutable:
   staging must use a distinct name (`flare-actions-seats-staging-v2`)
   or the prod deploy fails creating `flare-actions-seats-v2`, and a

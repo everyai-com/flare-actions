@@ -180,10 +180,13 @@ let seatsToken = null;
   } else if (dryRun) {
     console.log("(dry-run) would build/push the seat image and deploy the seats worker");
   } else {
-    // Content tag: the image rebuilds only when the Dockerfile changes,
-    // so re-runs reuse the registry image and just redeploy workers.
+    // Content tag: the image rebuilds when the Dockerfile or the egress
+    // shim source changes (the .so compiles in-image, so egress.c is part
+    // of the content) — re-runs otherwise reuse the registry image and
+    // just redeploy workers. Tags are immutable, never overwritten.
     const dockerfile = readFileSync(join(root, "apps/seats/Dockerfile"), "utf8");
-    const tag = `flare-actions-seat:${createHash("sha1").update(dockerfile).digest("hex").slice(0, 12)}`;
+    const shimSrc = readFileSync(join(root, "apps/seats/egress.c"), "utf8");
+    const tag = `flare-actions-seat:${createHash("sha1").update(dockerfile).update(shimSrc).digest("hex").slice(0, 12)}`;
     let r = run("docker", ["build", "--platform", "linux/amd64", "-t", tag, "apps/seats"]);
     if (r.status !== 0) fail(`seat image build failed:\n${r.stdout}\n${r.stderr}`);
     r = run("npx", ["wrangler", "containers", "push", tag]);
