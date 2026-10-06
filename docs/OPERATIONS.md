@@ -63,6 +63,10 @@ put` reads from stdin, and `.dev.vars` (local) is gitignored.
 
 - **Logs**: `npx wrangler tail` for the main worker; every line is
   structured JSON. `wrangler tail flare-actions-seats` for seats.
+- **Log search**: every terminal job log is indexed into a D1 FTS5
+  table (both executors; pruned with runs). `npm run cli -- search
+  <terms> [repo:owner/name] [branch:main] [level:error]` or
+  `GET /v1/search/logs?q=...` — scoped tokens only see their repos.
 - **Stuck jobs**: runners heartbeat and seats mirror progress; jobs quiet
   for 20 minutes are automatically requeued by the next webhook or status
   callback. No manual intervention needed.
