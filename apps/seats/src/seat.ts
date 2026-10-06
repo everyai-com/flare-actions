@@ -709,7 +709,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       try {
         up = deps.container.running;
       } catch {
-        up = false;
+        // Getter threw — the container is still down.
       }
       if (up) {
         started = true;

@@ -83,7 +83,6 @@ export function parseJUnit(xml: string): ParsedTestReport | { error: string } {
 
   const cases: ParsedTestCase[] = [];
   let truncated = false;
-  let suiteCount = 0;
   // Each <testsuite> open starts a section; nested suites just start a
   // new section (their cases keep the innermost suite name).
   const suiteRe = /<testsuite(\s[^>]*)?>/gi;
@@ -97,7 +96,7 @@ export function parseJUnit(xml: string): ParsedTestReport | { error: string } {
     const end = i + 1 < opens.length ? opens[i + 1].index : clean.length;
     sections.push({ attrs: opens[i].attrs, body: clean.slice(opens[i].index, end) });
   }
-  suiteCount = opens.length;
+  const suiteCount = opens.length;
 
   for (const section of sections) {
     const suiteName = (section.attrs["name"] ?? "").slice(0, 256);

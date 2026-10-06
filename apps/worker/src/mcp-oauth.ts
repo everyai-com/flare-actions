@@ -255,7 +255,7 @@ export async function handleAuthorizePost(request: Request, ctx: AuthorizeContex
   if (parsed instanceof Response) return parsed;
   const { authRequest, client } = parsed;
   if (!ctx.session) return loginRequiredPage();
-  let decision: string | null = null;
+  let decision: string | null;
   try {
     decision = (await request.formData()).get("decision")?.toString() ?? null;
   } catch {

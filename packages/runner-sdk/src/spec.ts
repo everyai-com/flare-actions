@@ -238,7 +238,7 @@ export function parseJobSpec(definition: string): JobSpec | null {
       if (typeof c.name !== "string" || !/^[\w.-]{1,64}$/.test(c.name) || seen.has(c.name)) return null;
       seen.add(c.name);
       if (typeof c.url !== "string" || c.url.length === 0 || c.url.length > 2048) return null;
-      let protocol = "";
+      let protocol: string;
       try {
         protocol = new URL(c.url).protocol;
       } catch {

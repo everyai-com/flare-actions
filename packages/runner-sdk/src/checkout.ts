@@ -77,6 +77,8 @@ export async function checkoutRepo(opts: CheckoutOptions, urlOverride?: string):
   } catch (err) {
     // Belt and braces: scrub the token if a git error ever echoes it.
     const msg = String((err as Error)?.message ?? err);
+    // The cause may echo the token; the scrubbed message is the chain.
+    // eslint-disable-next-line preserve-caught-error
     throw new Error(opts.token ? msg.split(opts.token).join("[redacted]") : msg);
   }
 }

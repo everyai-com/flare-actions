@@ -940,7 +940,7 @@ async function dispatchRun(
   // pipeline.
   let sha = input.sha;
   let installationId: number | null = null;
-  let jobs: PipelineJob[] | null = null;
+  let jobs: PipelineJob[] | null;
   if (input.source) {
     sha = `src-${input.source.slice(0, 8)}`;
     jobs = input.pipeline ? parsePipeline(input.pipeline) : null;

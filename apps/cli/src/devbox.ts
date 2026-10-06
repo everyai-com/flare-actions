@@ -173,6 +173,7 @@ export class BoxManager implements DevboxOps {
     } catch (err) {
       throw new Error(
         `${err instanceof Error ? err.message : String(err)} — container was removed outside the CLI (devbox restore or destroy to recover)`,
+        { cause: err },
       );
     }
     return c;

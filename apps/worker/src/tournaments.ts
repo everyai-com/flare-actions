@@ -254,7 +254,7 @@ export async function pollTournamentAttempts(deps: TournamentPollDeps): Promise<
     try {
       head = await forkHead(deps.artifacts, attempt.fork_repo);
     } catch {
-      head = null;
+      // Fork unreadable — leave head null so the next tick retries.
     }
     if (!head) continue;
     out.checked += 1;

@@ -280,7 +280,7 @@ export async function rollupRunStatus(
   basin?: BasinSink,
 ): Promise<string> {
   const jobs = await getJobsForRun(db, runId);
-  let status = "queued";
+  let status: string;
   if (jobs.length === 0) {
     status = "queued";
   } else if (jobs.some((j) => j.status === "running")) {
