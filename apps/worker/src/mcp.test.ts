@@ -317,6 +317,57 @@ describe("mcp", () => {
     expect((missing.body as { result: { isError?: boolean } }).result.isError).toBe(true);
   });
 
+  it("tournament_why explains the board and verdict", async () => {
+    const boardDb: Db = {
+      prepare(sql: string) {
+        return {
+          bind(..._values: unknown[]) {
+            const norm = sql.replace(/\s+/g, " ");
+            return {
+              all: async <T,>() => {
+                if (norm.startsWith("SELECT * FROM attempts")) {
+                  return { results: [{ id: "a1", agent: "a1", state: "terminal", run_id: "run1", verdict_rank: 1 }] as T[] };
+                }
+                if (norm.startsWith("SELECT * FROM ledger")) {
+                  return { results: [{ id: "l1", kind: "verdict", body: "winner a1" }] as T[] };
+                }
+                return { results: [] as T[] };
+              },
+              first: async <T,>() => {
+                if (norm.startsWith("SELECT * FROM tournaments")) {
+                  return { id: "t1", intent: "fix it", state: "verifying" } as T;
+                }
+                if (norm.startsWith("SELECT * FROM verdicts")) {
+                  return { tournament_id: "t1", ranking: "[\"a1\"]", rationale: "a1 green", model: "m" } as T;
+                }
+                return null as T | null;
+              },
+              run: async () => ({}),
+            };
+          },
+        };
+      },
+    };
+    const d = deps({ db: boardDb });
+    const ok = await rpc(d, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "tournament_why", arguments: { tournamentId: "t1" } },
+    });
+    const data = JSON.parse(text(ok.body)) as { intent: string; verdict: { rationale: string }; ledger: unknown[] };
+    expect(data.intent).toBe("fix it");
+    expect(data.verdict.rationale).toBe("a1 green");
+    expect(data.ledger).toHaveLength(1);
+    const missing = await rpc(deps({ db: fakeDb({}) }), {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "tournament_why", arguments: { tournamentId: "nope" } },
+    });
+    expect(toolErr(missing.body).isError).toBe(true);
+  });
+
   it("exposes discovery metadata", () => {
     expect(mcpDiscovery().tools).toContain("dispatch_run");
     expect(mcpDiscovery().tools).toContain("run_and_wait");

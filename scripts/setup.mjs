@@ -49,13 +49,24 @@ function fail(msg) {
 }
 
 // 3. Queues (idempotent)
-for (const q of ["flare-actions-runs", "flare-actions-dlq", "flare-actions-seats", "flare-actions-seats-dlq"]) {
+for (const q of ["flare-actions-runs", "flare-actions-dlq", "flare-actions-seats", "flare-actions-seats-dlq", "flare-actions-artifacts", "flare-actions-artifacts-dlq"]) {
   const r = run("npx", ["wrangler", "queues", "create", q]);
   const out = r.stdout + r.stderr;
   if (r.status !== 0 && !/already (exists|taken)/i.test(out) && !dryRun) {
     fail(`queue create ${q} failed:\n${out}`);
   }
   if (/already (exists|taken)/i.test(out)) console.log(`queue ${q} already exists, reusing`);
+}
+
+// 3b. Artifacts wiring (manual: wrangler has no namespaces-create and no
+// repo-scoped subscription flags). Print once; the worker degrades
+// cleanly (no-binding skips) until an operator completes these.
+{
+  console.log("Artifacts: create the `flare-tournaments` namespace (dashboard > Workers > Artifacts,");
+  console.log("  or POST /accounts/:id/artifacts/namespaces), then subscribe");
+  console.log("  `flare-actions-artifacts` to each stable repo: queue > Subscriptions >");
+  console.log("  Subscribe to events > source artifacts.repo > pushed. Dynamic");
+  console.log("  tournament forks are watched by the worker poller instead.");
 }
 
 // 4. R2 bucket for build cache + artifacts (idempotent)

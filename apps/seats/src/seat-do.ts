@@ -28,6 +28,7 @@ export interface SeatsEnv {
   TRIAGE_MODEL?: string;
   ARTIFACTS_MIRROR_REMOTE?: string;
   ARTIFACTS_MIRROR_TOKEN?: string;
+  ARTIFACTS?: Artifacts;
 }
 
 type BoundContainer = NonNullable<DurableObjectState["container"]>;
@@ -158,6 +159,7 @@ async function seatDeps(
     appKey: creds?.privateKey,
     mirrorRemote: env.ARTIFACTS_MIRROR_REMOTE,
     mirrorToken: env.ARTIFACTS_MIRROR_TOKEN,
+    artifacts: env.ARTIFACTS ?? null,
     mail: { EMAIL: env.EMAIL, NOTIFY_FROM_EMAIL: env.NOTIFY_FROM_EMAIL, SECRETS_KEY: env.SECRETS_KEY },
     secretsKey: env.SECRETS_KEY,
     gatewayId: env.AI_GATEWAY_ID,

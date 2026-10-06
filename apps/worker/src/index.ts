@@ -141,6 +141,21 @@ import { jobDurationMs, summarizeRunCost } from "./cost";
 import { runGenerateWithStatus } from "./generate";
 import { handleCacheGet, handleCachePut, listCacheEntries, purgeCachePrefix } from "./cache";
 import { deleteJobArtifacts, handleArtifactGet, handleArtifactPut, listRunArtifacts, pruneOldCache } from "./artifacts";
+import { ARTIFACTS_EVENT, handleArtifactsPush } from "./artifacts-push";
+import {
+  claimAttempt,
+  createTournament,
+  getTournamentBoard,
+  listTournaments,
+  pollTournamentAttempts,
+  validateTournamentClaim,
+  validateTournamentCreate,
+} from "./tournaments";
+import { verdictPass } from "./verdict";
+import { artifactsRemoteFor, fastForwardPass, resolvePass } from "./promote";
+import git from "isomorphic-git";
+import http from "isomorphic-git/http/web";
+import { MemoryFS } from "./memory-fs";
 import { cronMatches, validateCron } from "./cron";
 import { reportJobCheck } from "./checks";
 import {
@@ -202,6 +217,16 @@ interface QueueJobMessage {
   jobId: string;
   repo: string;
   sha: string;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// The runs queue carries dispatch confirmations; the artifacts queue
+// carries event envelopes. Shape-narrow before touching either.
+function isQueueJobMessage(v: unknown): v is QueueJobMessage {
+  return isRecord(v) && typeof v["runId"] === "string" && typeof v["jobId"] === "string";
 }
 
 const MAX_WEBHOOK_BYTES = 2 * 1024 * 1024;
@@ -757,7 +782,7 @@ async function handleStatusCallback(
         const origin = new URL(request.url).origin;
         ctx.waitUntil(notifyRunCompleted(env.DB, env, { run: finalRun, origin }));
         // One PR comment per run, edited in place on later completions.
-        if (run.event !== "source" && finalRun.pr_number && run.installation_id) {
+        if (run.event !== "source" && run.event !== ARTIFACTS_EVENT && finalRun.pr_number && run.installation_id) {
           const creds = await getAppCreds(env);
           ctx.waitUntil(
             (async () => {
@@ -783,10 +808,11 @@ async function handleStatusCallback(
         }
       }
     }
-    // Source runs have no commit to annotate: skip commit statuses and
-    // Check Runs for them (triage/notify/digest still apply).
-    const isSourceRun = run.event === "source";
-    if (!isSourceRun && (body.status === "success" || body.status === "failure" || body.status === "error")) {
+    // Source and Artifacts runs have no GitHub commit to annotate: skip
+    // commit statuses and Check Runs for them (triage/notify/digest
+    // still apply).
+    const skipsGitHub = run.event === "source" || run.event === ARTIFACTS_EVENT;
+    if (!skipsGitHub && (body.status === "success" || body.status === "failure" || body.status === "error")) {
       const ghState = body.status === "success" ? "success" : "failure";
       const creds = await getAppCreds(env);
       ctx.waitUntil(
@@ -802,7 +828,7 @@ async function handleStatusCallback(
     }
     // Per-job Check Run: the rich PR-page surface (failing command +
     // output tail). Best-effort, independent of commit statuses.
-    if (!isSourceRun && isTerminal(body.status)) {
+    if (!skipsGitHub && isTerminal(body.status)) {
       const creds = await getAppCreds(env);
       const origin = new URL(request.url).origin;
       ctx.waitUntil(
@@ -1405,6 +1431,53 @@ export default {
           return json({ error: "offset must be an integer 0-100000" }, 400);
         }
         return json({ runs: await listRuns(env.DB, limit, offset, ident.repos) });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/tournaments") {
+        const ident = await requireScope(request, env, "run");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const valid = validateTournamentCreate(body);
+        if ("error" in valid) return json({ error: valid.error }, 400);
+        const namespace = env.ARTIFACTS_NAMESPACE ?? "";
+        if (!repoAllowed(ident, `${namespace}/${valid.sourceRepo}`)) {
+          return json({ error: "token is not scoped to that repo" }, 403);
+        }
+        const out = await createTournament(env.DB, valid);
+        await audit(env.DB, ident.actor, "tournament.create", out.id);
+        return json({ id: out.id }, 201);
+      }
+      if (request.method === "GET" && url.pathname === "/v1/tournaments") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const limit = Number(url.searchParams.get("limit") ?? "20");
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+          return json({ error: "limit must be an integer 1-100" }, 400);
+        }
+        return json({ tournaments: await listTournaments(env.DB, limit) });
+      }
+      const tournamentMatch = /^\/v1\/tournaments\/([^/]+)$/.exec(url.pathname);
+      if (tournamentMatch && request.method === "GET") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const board = await getTournamentBoard(env.DB, tournamentMatch[1]);
+        if (!board) return json({ error: "tournament not found" }, 404);
+        return json(board);
+      }
+      const claimMatch = /^\/v1\/tournaments\/([^/]+)\/claims$/.exec(url.pathname);
+      if (claimMatch && request.method === "POST") {
+        const ident = await requireScope(request, env, "run");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        if (!env.ARTIFACTS) return json({ error: "artifacts not configured" }, 503);
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const valid = validateTournamentClaim(body);
+        if ("error" in valid) return json({ error: valid.error }, 400);
+        const out = await claimAttempt(env.DB, env.ARTIFACTS, claimMatch[1], valid.agent);
+        if ("error" in out) {
+          const status = out.error === "already-claimed" ? 409 : out.error === "fork-failed" ? 502 : 400;
+          return json({ error: out.error }, status);
+        }
+        await audit(env.DB, ident.actor, "tournament.claim", `${claimMatch[1]}:${valid.agent}`);
+        return json(out, 201);
       }
       const runMatch = /^\/v1\/runs\/([^/]+)$/.exec(url.pathname);
       if (request.method === "GET" && runMatch) {
@@ -2451,17 +2524,52 @@ export default {
     }
   },
 
-  async queue(batch: MessageBatch<QueueJobMessage>, env: WorkerEnv): Promise<void> {
+  async queue(batch: MessageBatch<QueueJobMessage | Record<string, unknown>>, env: WorkerEnv): Promise<void> {
     await ensureSchema(env.DB);
     for (const msg of batch.messages) {
+      const body: unknown = msg.body;
+      // Artifacts push events arrive on the artifacts queue via an event
+      // subscription. Outcomes always ack: the handler dedupes by delivery
+      // claim, so a retry would only re-skip as duplicate. Only a throw
+      // before the outcome (DB down on claim) retries.
+      if (isRecord(body) && typeof body["type"] === "string" && body["type"].startsWith("cf.artifacts.")) {
+        try {
+          const outcome = await handleArtifactsPush(
+            {
+              db: env.DB,
+              artifacts: env.ARTIFACTS ?? null,
+              dispatch: async (input) => {
+                const out = await dispatchRun(env, input);
+                for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
+                return { runId: out.runId };
+              },
+            },
+            body,
+          );
+          log("info", "artifacts push handled", {
+            status: outcome.status,
+            ...(outcome.status === "dispatched" ? { runId: outcome.runId } : { reason: outcome.reason }),
+          });
+          msg.ack();
+        } catch (err) {
+          log("error", "artifacts push failed, retrying", { error: String(err) });
+          msg.retry();
+        }
+        continue;
+      }
       try {
-        const run = await getRun(env.DB, msg.body.runId);
-        if (!run) {
-          log("warn", "queue message for unknown run, acking", { runId: msg.body.runId });
+        if (!isQueueJobMessage(body)) {
+          log("warn", "queue message of unknown shape, acking");
           msg.ack();
           continue;
         }
-        log("info", "dispatch confirmed", { runId: msg.body.runId, jobId: msg.body.jobId });
+        const run = await getRun(env.DB, body.runId);
+        if (!run) {
+          log("warn", "queue message for unknown run, acking", { runId: body.runId });
+          msg.ack();
+          continue;
+        }
+        log("info", "dispatch confirmed", { runId: body.runId, jobId: body.jobId });
         msg.ack();
       } catch (err) {
         log("error", "queue message failed, retrying", { error: String(err) });
@@ -2550,6 +2658,54 @@ export default {
         }
       } catch (err) {
         log("warn", "heal drain failed", { error: String(err) });
+      }
+      try {
+        const polled = await pollTournamentAttempts({
+          db: env.DB,
+          artifacts: env.ARTIFACTS ?? null,
+          namespace: env.ARTIFACTS_NAMESPACE ?? "",
+          dispatch: async (input) => {
+            const out = await dispatchRun(env, input);
+            for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
+            return { runId: out.runId };
+          },
+        });
+        if (polled.dispatched > 0 || polled.terminal > 0) {
+          log("info", "tournament poll finished", { ...polled });
+        }
+      } catch (err) {
+        log("warn", "tournament poll failed", { error: String(err) });
+      }
+      try {
+        const verdicts = await verdictPass(env.DB, {
+          artifacts: env.ARTIFACTS ?? null,
+          ai: env.AI ?? null,
+          gatewayId: env.AI_GATEWAY_ID,
+          model: env.TRIAGE_MODEL,
+        });
+        if (verdicts.decided > 0) log("info", "tournament verdicts decided", { ...verdicts });
+      } catch (err) {
+        log("warn", "tournament verdicts failed", { error: String(err) });
+      }
+      try {
+        const resolved = await resolvePass(env.DB);
+        if (resolved.resolved > 0) log("info", "tournaments resolved", { ...resolved });
+      } catch (err) {
+        log("warn", "tournament resolve failed", { error: String(err) });
+      }
+      try {
+        const pushed = await fastForwardPass({
+          db: env.DB,
+          artifacts: env.ARTIFACTS ?? null,
+          remoteFor: (repo) =>
+            artifactsRemoteFor(env.ARTIFACTS_ACCOUNT_ID ?? "", env.ARTIFACTS_NAMESPACE ?? "", repo),
+          git,
+          http,
+          fs: () => new MemoryFS(),
+        });
+        if (pushed.pushed > 0) log("info", "tournaments promoted", { ...pushed });
+      } catch (err) {
+        log("warn", "tournament promote failed", { error: String(err) });
       }
     } catch (err) {
       log("error", "scheduled handler failed", { error: String(err) });

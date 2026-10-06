@@ -189,6 +189,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <section id="appPane" hidden>
 <nav class="tabs">
 <button id="tabRuns" class="active">Runs</button>
+<button id="tabTournaments">Tournaments</button>
 <button id="tabSearch">Search</button>
 <button id="tabApps">Apps</button>
 <button id="tabAccess">Access</button>
@@ -382,6 +383,25 @@ form.inline input { flex: 1; min-width: 180px; }
 <div id="githubInstallBox" hidden>
 <p><strong>App connected — install it on your repos to run pushes.</strong></p>
 <p><a id="githubInstallLink" href="#" target="_blank" rel="noopener">Install the GitHub App</a></p>
+</div>
+</section>
+<section id="tournamentsPane" class="card" hidden>
+<h2>Tournaments</h2>
+<p class="muted">One task races N agents in isolated forks. Open a tournament, agents claim slots, every push is verified, the verdict picks a winner.</p>
+<form id="tournamentForm" class="inline">
+<input id="tournamentIntent" placeholder="task intent, e.g. fix the login redirect" maxlength="200" size="40" aria-label="Task intent">
+<input id="tournamentSource" placeholder="source repo" maxlength="100" size="20" aria-label="Source repo">
+<button type="submit">Open tournament</button>
+</form>
+<p id="tournamentsErr" class="err"></p>
+<div id="tournamentsList"></div>
+<div id="tournamentDetail" hidden>
+<h3 id="tournamentTitle"></h3>
+<p><button id="backToTournaments" class="ghost">Back to list</button> <button id="refreshTournament" class="ghost">Refresh</button></p>
+<div id="tournamentAttempts"></div>
+<div id="tournamentVerdict"></div>
+<h4>Ledger</h4>
+<div id="tournamentLedger"></div>
 </div>
 </section>
 <section id="searchPane" class="card" hidden>
@@ -833,22 +853,26 @@ form.inline input { flex: 1; min-width: 180px; }
   });
 
   var tabRuns = document.getElementById("tabRuns");
+  var tabTournaments = document.getElementById("tabTournaments");
   var tabSearch = document.getElementById("tabSearch");
   var tabApps = document.getElementById("tabApps");
   var tabAccess = document.getElementById("tabAccess");
   var tabSettings = document.getElementById("tabSettings");
   var runsPane = document.getElementById("runsPane");
+  var tournamentsPane = document.getElementById("tournamentsPane");
   var searchPane = document.getElementById("searchPane");
   var appsPane = document.getElementById("appsPane");
   var accessPane = document.getElementById("accessPane");
   var settingsPane = document.getElementById("settingsPane");
   function selectTab(name) {
     tabRuns.className = name === "runs" ? "active" : "";
+    tabTournaments.className = name === "tournaments" ? "active" : "";
     tabSearch.className = name === "search" ? "active" : "";
     tabApps.className = name === "apps" ? "active" : "";
     tabAccess.className = name === "access" ? "active" : "";
     tabSettings.className = name === "settings" ? "active" : "";
     runsPane.hidden = name !== "runs";
+    tournamentsPane.hidden = name !== "tournaments";
     searchPane.hidden = name !== "search";
     appsPane.hidden = name !== "apps";
     accessPane.hidden = name !== "access";
@@ -885,7 +909,99 @@ form.inline input { flex: 1; min-width: 180px; }
     if (!box.hidden && back) back.click();
   });
   tabRuns.addEventListener("click", function () { selectTab("runs"); loadRuns(); });
+  tabTournaments.addEventListener("click", function () { selectTab("tournaments"); loadTournaments(); });
   tabSearch.addEventListener("click", function () { selectTab("search"); });
+  var currentTournamentId = "";
+  var tournamentTimer = null;
+  function stopTournamentTimer() {
+    if (tournamentTimer) { clearInterval(tournamentTimer); tournamentTimer = null; }
+  }
+  document.getElementById("tournamentForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("tournamentsErr");
+    err.textContent = "";
+    var intent = document.getElementById("tournamentIntent").value.trim();
+    var source = document.getElementById("tournamentSource").value.trim();
+    if (!intent || !source) { err.textContent = "intent and source repo are required"; return; }
+    api("/v1/tournaments", { method: "POST", body: JSON.stringify({ intent: intent, sourceRepo: source }) }).then(function (b) {
+      document.getElementById("tournamentIntent").value = "";
+      showTournament(b.id);
+    }, function (e) { err.textContent = e.message; });
+  });
+  function loadTournaments() {
+    stopTournamentTimer();
+    var err = document.getElementById("tournamentsErr");
+    var list = document.getElementById("tournamentsList");
+    err.textContent = "";
+    list.textContent = "";
+    document.getElementById("tournamentDetail").hidden = true;
+    api("/v1/tournaments").then(function (b) {
+      var tournaments = b.tournaments || [];
+      if (tournaments.length === 0) { list.textContent = "No tournaments yet."; return; }
+      tournaments.forEach(function (t) {
+        var row = document.createElement("p");
+        var btn = document.createElement("button");
+        btn.className = "ghost";
+        btn.textContent = t.intent + " (" + t.state + ")";
+        btn.addEventListener("click", function () { showTournament(t.id); });
+        row.appendChild(btn);
+        list.appendChild(row);
+      });
+    }, function (e) { err.textContent = e.message; });
+  }
+  document.getElementById("backToTournaments").addEventListener("click", function () {
+    stopTournamentTimer();
+    document.getElementById("tournamentDetail").hidden = true;
+    loadTournaments();
+  });
+  document.getElementById("refreshTournament").addEventListener("click", function () {
+    if (currentTournamentId) showTournament(currentTournamentId);
+  });
+  function showTournament(id) {
+    stopTournamentTimer();
+    currentTournamentId = id;
+    var err = document.getElementById("tournamentsErr");
+    err.textContent = "";
+    api("/v1/tournaments/" + encodeURIComponent(id)).then(function (b) {
+      document.getElementById("tournamentsList").textContent = "";
+      document.getElementById("tournamentDetail").hidden = false;
+      document.getElementById("tournamentTitle").textContent = b.tournament.intent + " (" + b.tournament.state + ")";
+      var att = document.getElementById("tournamentAttempts");
+      att.textContent = "";
+      (b.attempts || []).forEach(function (a) {
+        var p = document.createElement("p");
+        var line = a.agent + ": " + a.state;
+        if (a.run_id) line += " run " + String(a.run_id).slice(0, 8);
+        if (a.verdict_rank) line += " rank " + a.verdict_rank;
+        p.textContent = line;
+        att.appendChild(p);
+      });
+      if ((b.attempts || []).length === 0) att.textContent = "No claims yet.";
+      var v = document.getElementById("tournamentVerdict");
+      v.textContent = "";
+      if (b.verdict) {
+        var h = document.createElement("h4");
+        h.textContent = "Verdict";
+        v.appendChild(h);
+        var p = document.createElement("p");
+        p.textContent = b.verdict.rationale || "";
+        v.appendChild(p);
+      }
+      var led = document.getElementById("tournamentLedger");
+      led.textContent = "";
+      (b.ledger || []).forEach(function (l) {
+        var lp = document.createElement("p");
+        lp.textContent = l.kind + ": " + l.body;
+        led.appendChild(lp);
+      });
+      if (b.tournament.state !== "decided") {
+        tournamentTimer = setInterval(function () {
+          if (document.getElementById("tournamentDetail").hidden || tournamentsPane.hidden) { stopTournamentTimer(); return; }
+          showTournament(id);
+        }, 5000);
+      }
+    }, function (e) { err.textContent = e.message; });
+  }
   tabApps.addEventListener("click", function () { selectTab("apps"); loadMyApps(); });
   document.getElementById("searchForm").addEventListener("submit", function (ev) {
     ev.preventDefault();

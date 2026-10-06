@@ -12,7 +12,9 @@ import {
   usageStats,
 } from "./db";
 
-function jobRow(over: Partial<JobRow & { repo: string; sha: string }> = {}): JobRow & { repo: string; sha: string } {
+function jobRow(
+  over: Partial<JobRow & { repo: string; sha: string; event: string }> = {},
+): JobRow & { repo: string; sha: string; event: string } {
   return {
     id: "job-1",
     run_id: "run-1",
@@ -33,13 +35,14 @@ function jobRow(over: Partial<JobRow & { repo: string; sha: string }> = {}): Job
     updated_at: "2026-10-02T10:00:00.000Z",
     repo: "o/r",
     sha: "abc123",
+    event: "push",
     ...over,
   };
 }
 
 // Routes only the SQL claimNextJob issues, against an in-memory queue.
 class QueueDb implements Db {
-  constructor(public jobs: (JobRow & { repo: string; sha: string })[]) {}
+  constructor(public jobs: (JobRow & { repo: string; sha: string; event: string })[]) {}
 
   // Ids whose conditional claim loses (poller race simulation).
   raced = new Set<string>();
@@ -104,6 +107,7 @@ class QueueDb implements Db {
 
   private select(norm: string, values: unknown[]) {
     let rows = this.jobs.filter((j) => j.status === "queued");
+    if (norm.includes("r.event !=")) rows = rows.filter((j) => (j.event ?? "push") !== "artifacts");
     const inMatch = /r\.repo IN \(([^)]*)\)/.exec(norm);
     const repoCount = inMatch ? ((inMatch[1].match(/\?/g) ?? []).length) : 0;
     if (repoCount > 0) {
@@ -202,6 +206,15 @@ describe("claimNextJob", () => {
     ]);
     expect((await claimNextJob(db, [], ["o/a"]))?.id).toBe("job-a");
     expect((await claimNextJob(db, []))?.id).toBe("job-b");
+  });
+
+  it("never claims artifacts-event jobs (seats-only)", async () => {
+    const db = new QueueDb([
+      jobRow({ id: "job-art", event: "artifacts", created_at: "2026-10-02T08:00:00.000Z" }),
+      jobRow({ id: "job-gh", event: "push", created_at: "2026-10-02T09:00:00.000Z" }),
+    ]);
+    expect((await claimNextJob(db, []))?.id).toBe("job-gh");
+    expect(await claimNextJob(db, [])).toBeNull();
   });
 
   it("claims higher-priority jobs before older batch work", async () => {

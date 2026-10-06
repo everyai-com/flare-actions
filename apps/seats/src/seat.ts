@@ -37,6 +37,7 @@ import { recordRuntimePrior } from "../../worker/src/priors";
 import { jobDurationMs } from "../../worker/src/cost";
 import { MAX_JUNIT_BYTES, parseJUnit } from "../../worker/src/junit";
 import { seatEligible } from "../../worker/src/pipeline";
+import { ARTIFACTS_EVENT } from "../../worker/src/artifacts-push";
 import { annotateSpan } from "../../worker/src/trace";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
 import type { AiBinding } from "../../worker/src/triage";
@@ -154,6 +155,11 @@ export interface SeatDeps {
   // GitHub fallback (see renderMirrorRemote).
   mirrorRemote?: string;
   mirrorToken?: string;
+  // ARTIFACTS binding for seat-minted checkout tokens. Tournament forks
+  // are dynamic and tokens are repo-scoped, so seats mint a short-lived
+  // read token per checkout (memory-only, never stored) instead of
+  // sharing one env token. Absent = artifacts runs release.
+  artifacts?: SeatArtifactsNamespace | null;
   // Browser-check driver (BROWSER binding). Absent = the seats worker
   // has no Browser Rendering binding; jobs with browserChecks fail
   // closed rather than skipping.
@@ -230,6 +236,18 @@ export function egressHostForKey(key: string): string {
   return area === "cache" || area === "artifacts" || area === "sources" || area === "test-reports" ? `r2:${area}` : "r2:other";
 }
 
+// Minimal structural surface of the ARTIFACTS binding (runtime-free:
+// tests inject fakes; seat-do.ts passes env.ARTIFACTS, which satisfies
+// this shape structurally).
+export interface SeatArtifactsRepoHandle {
+  createToken(scope: "read" | "write", ttlSeconds: number): Promise<{ plaintext: string } | string>;
+  readonly [Symbol.dispose]?: () => void;
+}
+
+export interface SeatArtifactsNamespace {
+  get(name: string): Promise<SeatArtifactsRepoHandle>;
+}
+
 // Artifacts mirror remote: the operator configures a template holding
 // `{repo}` (e.g. `https://<acct>.artifacts.cloudflare.net/git/mirrors/{repo}.git`)
 // and seats render it per job. Fail-closed: anything that is not
@@ -237,13 +255,56 @@ export function egressHostForKey(key: string): string {
 // null and the job checks out from GitHub. The token is embedded as
 // the password exactly like the GitHub App token below, and scrubbed
 // from every error the same way.
-export function renderMirrorRemote(template: string, repo: string): string | null {
+export function renderMirrorRemote(template: string, repo: string, verbatim = false): string | null {
   if (!template.includes("{repo}")) return null;
-  const name = repo.replace(/\//g, "-");
-  if (!/^[\w.-]+$/.test(name)) return null;
+  // GitHub repos collapse to one mirror segment (owner-name); Artifacts
+  // runs keep namespace/name verbatim so the template
+  // `.../git/{repo}.git` renders the real remote.
+  const name = verbatim
+    ? (() => {
+        const parts = repo.split("/");
+        if (parts.length !== 2 || !parts.every((p) => /^[\w.-]+$/.test(p) && p !== "." && p !== "..")) return null;
+        return `${parts[0]}/${parts[1]}`;
+      })()
+    : repo.replace(/\//g, "-");
+  if (name === null || !/^[\w./-]+$/.test(name)) return null;
   const url = template.split("{repo}").join(name);
   if (!/^https:\/\/[a-f0-9]{32}\.artifacts\.cloudflare\.net\/git\/[\w.-]+\/[\w.-]+\.git$/.test(url)) return null;
   return url;
+}
+
+// Direct Artifacts remote for tournament runs: derives the account host
+// from the operator's mirror template (no second secret) and renders
+// namespace/name verbatim. Reuses renderMirrorRemote's strict shape.
+export function renderArtifactsRemote(mirrorTemplate: string, namespace: string, repo: string): string | null {
+  const host = /^(https:\/\/[a-f0-9]{32}\.artifacts\.cloudflare\.net)\/git\//.exec(mirrorTemplate)?.[1];
+  if (!host) return null;
+  return renderMirrorRemote(`${host}/git/{repo}.git`, `${namespace}/${repo}`, true);
+}
+
+// One-hour read token for a single checkout. Null on any failure.
+async function mintCheckoutToken(artifacts: SeatArtifactsNamespace, repo: string): Promise<string | null> {
+  let handle: SeatArtifactsRepoHandle | null = null;
+  try {
+    handle = await artifacts.get(repo);
+    const out = await handle.createToken("read", 3600);
+    const plaintext = typeof out === "string" ? out : out.plaintext;
+    return plaintext || null;
+  } catch {
+    return null;
+  } finally {
+    try {
+      handle?.[Symbol.dispose]?.();
+    } catch {
+      // Disposal must never fail the checkout.
+    }
+  }
+}
+
+// Basic-auth password slot takes the token secret, not the full
+// `secret?expires=` form (git would misparse the URL).
+function tokenSecret(token: string): string {
+  return token.split("?expires=")[0];
 }
 
 // /proc/net/dev: `iface: rxBytes ... txBytes ...` (tx is the 9th field).
@@ -675,6 +736,13 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       if (!/^[\w.-]+\/[\w.-]+$/.test(run.repo) || !/^[\w.-]+$/.test(run.sha)) {
         return release("invalid repo or sha");
       }
+      const isArtifactsRun = run.event === ARTIFACTS_EVENT;
+      // Tournament forks are dynamic and tokens repo-scoped: mint a
+      // one-hour read token for this checkout only (memory-only).
+      let artifactsToken: string | null = null;
+      if (isArtifactsRun && deps.artifacts) {
+        artifactsToken = await mintCheckoutToken(deps.artifacts, run.repo.slice(run.repo.indexOf("/") + 1));
+      }
       let appToken: string | null = null;
       if (run.installation_id && deps.appId && deps.appKey) {
         try {
@@ -689,7 +757,15 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         // Mirror tokens carry `?expires=` and are URL-encoded in the
         // remote, so scrub both the raw and encoded forms — git echoes
         // the URL as embedded.
-        const forms = [appToken, deps.mirrorToken, deps.mirrorToken ? encodeURIComponent(deps.mirrorToken) : null];
+        const artSecret = artifactsToken ? tokenSecret(artifactsToken) : null;
+        const forms = [
+          appToken,
+          deps.mirrorToken,
+          deps.mirrorToken ? encodeURIComponent(deps.mirrorToken) : null,
+          artifactsToken,
+          artSecret,
+          artSecret ? encodeURIComponent(artSecret) : null,
+        ];
         for (const t of forms) {
           if (t) out = out.split(t).join("[redacted]");
         }
@@ -704,33 +780,51 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         // release detail lands in the job log, so this must be total).
         return scrubTokens(raw) || "unknown";
       };
-      // Mirror first when configured: the mirror failing (stale,
-      // missing repo, expired token) must never fail a checkout
-      // GitHub could serve, so any mirror error falls through.
-      const mirror =
-        deps.mirrorRemote && deps.mirrorToken ? renderMirrorRemote(deps.mirrorRemote, run.repo) : null;
-      if (mirror && deps.mirrorToken) {
-        const mirrorErr = await checkoutVia(
-          `https://x-access-token:${encodeURIComponent(deps.mirrorToken)}@${mirror.slice("https://".length)}`,
+      // Artifacts runs check out from the fork directly and fail closed:
+      // there is no GitHub repo to fall back to.
+      if (isArtifactsRun) {
+        const slash = run.repo.indexOf("/");
+        const remote =
+          deps.mirrorRemote && slash > 0
+            ? renderArtifactsRemote(deps.mirrorRemote, run.repo.slice(0, slash), run.repo.slice(slash + 1))
+            : null;
+        if (!remote) return release("artifacts checkout unavailable (no remote template)");
+        if (!artifactsToken) return release("artifacts checkout unavailable (token mint failed)");
+        const err = await checkoutVia(
+          `https://x:${encodeURIComponent(tokenSecret(artifactsToken))}@${remote.slice("https://".length)}`,
         );
-        if (mirrorErr === null) {
-          await note("[seat] checkout ok (mirror)");
+        if (err !== null) return release(`checkout failed (artifacts: ${err})`.slice(0, 400));
+        await note("[seat] checkout ok (artifacts)");
+      }
+      if (!isArtifactsRun) {
+        // Mirror first when configured: the mirror failing (stale,
+        // missing repo, expired token) must never fail a checkout
+        // GitHub could serve, so any mirror error falls through.
+        const mirror =
+          deps.mirrorRemote && deps.mirrorToken ? renderMirrorRemote(deps.mirrorRemote, run.repo) : null;
+        if (mirror && deps.mirrorToken) {
+          const mirrorErr = await checkoutVia(
+            `https://x-access-token:${encodeURIComponent(deps.mirrorToken)}@${mirror.slice("https://".length)}`,
+          );
+          if (mirrorErr === null) {
+            await note("[seat] checkout ok (mirror)");
+          } else {
+            await note("[seat] mirror unavailable, trying github");
+            const remote = appToken
+              ? `https://x-access-token:${appToken}@github.com/${run.repo}.git`
+              : `https://github.com/${run.repo}.git`;
+            const err = await checkoutVia(remote);
+            if (err !== null) return release(`checkout failed (mirror: ${mirrorErr}; github: ${err})`.slice(0, 400));
+            await note("[seat] checkout ok");
+          }
         } else {
-          await note("[seat] mirror unavailable, trying github");
           const remote = appToken
             ? `https://x-access-token:${appToken}@github.com/${run.repo}.git`
             : `https://github.com/${run.repo}.git`;
           const err = await checkoutVia(remote);
-          if (err !== null) return release(`checkout failed (mirror: ${mirrorErr}; github: ${err})`.slice(0, 400));
+          if (err !== null) return release(`checkout failed: ${err}`);
           await note("[seat] checkout ok");
         }
-      } else {
-        const remote = appToken
-          ? `https://x-access-token:${appToken}@github.com/${run.repo}.git`
-          : `https://github.com/${run.repo}.git`;
-        const err = await checkoutVia(remote);
-        if (err !== null) return release(`checkout failed: ${err}`);
-        await note("[seat] checkout ok");
       }
     }
 

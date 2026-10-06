@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   egressHostForKey,
   parseNetDev,
+  renderArtifactsRemote,
   renderMirrorRemote,
   runSeatJob,
+  type SeatArtifactsNamespace,
   seatTokenAuthorized,
   type BrowserDriver,
   type ContainerCtl,
@@ -416,6 +418,28 @@ describe("renderMirrorRemote", () => {
     expect(renderMirrorRemote("https://evil.example/{repo}.git", "o/r")).toBeNull();
     expect(renderMirrorRemote("https://short.artifacts.cloudflare.net/git/m/{repo}.git", "o/r")).toBeNull();
     expect(renderMirrorRemote(MIRROR_TEMPLATE, "o /r")).toBeNull();
+  });
+  it("renders namespace/name verbatim for artifacts runs", () => {
+    const template = "https://a54b12fe3ef06df16ff0041d79c18fc0.artifacts.cloudflare.net/git/{repo}.git";
+    expect(renderMirrorRemote(template, "default/race-1", true)).toBe(
+      "https://a54b12fe3ef06df16ff0041d79c18fc0.artifacts.cloudflare.net/git/default/race-1.git",
+    );
+    // Verbatim requires exactly two safe segments.
+    expect(renderMirrorRemote(template, "noslash", true)).toBeNull();
+    expect(renderMirrorRemote(template, "a/b/c", true)).toBeNull();
+    expect(renderMirrorRemote(template, "a/b c", true)).toBeNull();
+    expect(renderMirrorRemote(template, "../x", true)).toBeNull();
+  });
+});
+
+describe("renderArtifactsRemote", () => {
+  it("derives the account host and renders namespace/name verbatim", () => {
+    expect(renderArtifactsRemote(MIRROR_TEMPLATE, "flare-tournaments", "tournament-canary")).toBe(
+      "https://a54b12fe3ef06df16ff0041d79c18fc0.artifacts.cloudflare.net/git/flare-tournaments/tournament-canary.git",
+    );
+    expect(renderArtifactsRemote("https://evil.example/git/m/{repo}.git", "ns", "r")).toBeNull();
+    expect(renderArtifactsRemote(MIRROR_TEMPLATE, "ns", "../x")).toBeNull();
+    expect(renderArtifactsRemote(MIRROR_TEMPLATE, "n/s", "r")).toBeNull();
   });
 });
 
@@ -987,6 +1011,66 @@ describe("runSeatJob", () => {
     const checkouts = container.calls.filter((c) => c.cmd[0] === "sh" && c.cmd[1] === "-s");
     expect(checkouts).toHaveLength(1);
     expect(stdinText(checkouts[0])).not.toContain("artifacts");
+  });
+
+  it("checks out artifacts runs from the fork with a minted token", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const run = db.runs.get("r1")!;
+    run["event"] = "artifacts";
+    run["repo"] = "flare-tournaments/tournament-canary";
+    run["sha"] = "e3359ae1ebc1ef774437e4dfeedb6a4d511b7f9e";
+    const container = new FakeContainer();
+    const artifacts: SeatArtifactsNamespace = {
+      get: async () => ({
+        createToken: async () => ({ plaintext: "art-v1_mintedsecret?expires=9999999999" }),
+        [Symbol.dispose]: () => undefined,
+      }),
+    };
+    const out = await runSeatJob(deps(db, container, { mirrorRemote: MIRROR_TEMPLATE, artifacts }), "j1");
+    expect(out.status).toBe("completed");
+    const checkouts = container.calls.filter((c) => c.cmd[0] === "sh" && c.cmd[1] === "-s");
+    expect(checkouts).toHaveLength(1);
+    expect(stdinText(checkouts[0])).toContain("git/flare-tournaments/tournament-canary.git");
+    expect(stdinText(checkouts[0])).not.toContain("github.com");
+    expect(db.jobs.get("j1")?.log as string).toContain("[seat] checkout ok (artifacts)");
+  });
+
+  it("releases artifacts runs when the token cannot be minted", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const run = db.runs.get("r1")!;
+    run["event"] = "artifacts";
+    run["repo"] = "flare-tournaments/tournament-canary";
+    const container = new FakeContainer();
+    const out = await runSeatJob(deps(db, container, { mirrorRemote: MIRROR_TEMPLATE }), "j1");
+    expect(out.status).toBe("released");
+    expect((out as { detail: string }).detail).toContain("token mint failed");
+    expect(container.calls.filter((c) => c.cmd[0] === "sh" && c.cmd[1] === "-s")).toHaveLength(0);
+  });
+
+  it("scrubs the minted token when artifacts checkout fails", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const run = db.runs.get("r1")!;
+    run["event"] = "artifacts";
+    run["repo"] = "flare-tournaments/tournament-canary";
+    const container = new FakeContainer();
+    container.mirrorExit = 128;
+    container.coStderr = "fatal: https://x:art-v1_mintedsecret@host/git/flare-tournaments/tournament-canary.git: auth failed";
+    const artifacts: SeatArtifactsNamespace = {
+      get: async () => ({
+        createToken: async () => ({ plaintext: "art-v1_mintedsecret?expires=9999999999" }),
+        [Symbol.dispose]: () => undefined,
+      }),
+    };
+    const out = await runSeatJob(deps(db, container, { mirrorRemote: MIRROR_TEMPLATE, artifacts }), "j1");
+    expect(out.status).toBe("released");
+    const detail = (out as { detail: string }).detail;
+    expect(detail).toContain("checkout failed (artifacts:");
+    expect(detail).toContain("[redacted]");
+    expect(detail).not.toContain("art-v1_mintedsecret");
+    expect(db.jobs.get("j1")?.log as string).not.toContain("art-v1_mintedsecret");
   });
 
   it("scrubs both tokens when checkout fails everywhere", async () => {

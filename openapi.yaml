@@ -223,6 +223,152 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/tournaments:
+    post:
+      tags: [tournaments]
+      operationId: createTournament
+      summary: Open a tournament racing agents on one task
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [intent, sourceRepo]
+              properties:
+                intent:
+                  type: string
+                  description: Task description (1-2000 chars)
+                sourceRepo:
+                  type: string
+                  description: Repo name in the bound Artifacts namespace
+                baseRef:
+                  type: string
+                  description: Base branch (default main)
+                baseSha:
+                  type: string
+                  description: Pinned base commit (optional)
+      responses:
+        '201':
+          description: Tournament id
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    get:
+      tags: [tournaments]
+      operationId: listTournaments
+      summary: List recent tournaments
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Tournaments newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tournaments]
+                properties:
+                  tournaments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Tournament'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/tournaments/{tournamentId}:
+    get:
+      tags: [tournaments]
+      operationId: getTournamentBoard
+      summary: Tournament board (attempts, verdict, ledger)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+      responses:
+        '200':
+          description: Board state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TournamentBoard'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/tournaments/{tournamentId}/claims:
+    post:
+      tags: [tournaments]
+      operationId: claimTournamentSlot
+      summary: Claim an agent slot (forks the source)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent]
+              properties:
+                agent:
+                  type: string
+                  description: Agent label matching [\w.-]{1,40}
+      responses:
+        '201':
+          description: Claim with fork repo + remote
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [attemptId, forkRepo, remote]
+                properties:
+                  attemptId:
+                    type: string
+                  forkRepo:
+                    type: string
+                  remote:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Slot already claimed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: Fork failed upstream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/NotConfigured'
   /v1/runs/{runId}/cancel:
     post:
       tags: [runs]
@@ -2413,6 +2559,12 @@ components:
       required: true
       schema:
         type: string
+    TournamentId:
+      name: tournamentId
+      in: path
+      required: true
+      schema:
+        type: string
     Limit50:
       name: limit
       in: query
@@ -2479,6 +2631,67 @@ components:
       properties:
         error:
           type: string
+    Tournament:
+      type: object
+      required: [id, intent, source_repo, state]
+      properties:
+        id:
+          type: string
+        intent:
+          type: string
+        source_repo:
+          type: string
+        base_ref:
+          type: string
+        base_sha:
+          type: string
+        state:
+          type: string
+          enum: [open, verifying, decided]
+        winner_run_id:
+          type: string
+          nullable: true
+        resolved_sha:
+          type: string
+          nullable: true
+    TournamentAttempt:
+      type: object
+      required: [id, agent, fork_repo, state]
+      properties:
+        id:
+          type: string
+        agent:
+          type: string
+        fork_repo:
+          type: string
+        state:
+          type: string
+          enum: [claimed, pushing, verifying, terminal]
+        last_seen_sha:
+          type: string
+        run_id:
+          type: string
+          nullable: true
+        verdict_rank:
+          type: integer
+          nullable: true
+    TournamentBoard:
+      type: object
+      required: [tournament, attempts, ledger]
+      properties:
+        tournament:
+          $ref: '#/components/schemas/Tournament'
+        attempts:
+          type: array
+          items:
+            $ref: '#/components/schemas/TournamentAttempt'
+        verdict:
+          type: object
+          nullable: true
+        ledger:
+          type: array
+          items:
+            type: object
     Ok:
       type: object
       required: [ok]

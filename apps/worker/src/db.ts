@@ -513,6 +513,10 @@ export async function claimNextJob(
   allowedRepos: string[] = [],
   opts: { fairSharePerRepo?: number } = {},
 ): Promise<JobWithSource | null> {
+  // Artifacts runs execute seats-only (BYO runners check out from GitHub
+  // and cannot reach Artifacts remotes), so both scans below exclude
+  // event 'artifacts' in SQL. Seats claim their woken jobs by id.
+  const noArtifacts = `AND r.event != 'artifacts'`;
   // Repo-scoped tokens only claim jobs from their repos (empty = all).
   const repoFilter = allowedRepos.length > 0 ? ` AND r.repo IN (${allowedRepos.map(() => "?").join(", ")})` : "";
   // Fair share: skip repos already at their running cap so one tenant's
@@ -538,14 +542,14 @@ export async function claimNextJob(
         ? await db
             .prepare(
               `SELECT j.*, r.repo, r.sha, r.source FROM jobs j JOIN runs r ON r.id = j.run_id
-               WHERE j.status = 'queued'${repoFilter} ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
+               WHERE j.status = 'queued'${repoFilter} ${noArtifacts} ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
             .bind(...allowedRepos, CLAIM_PAGE_SIZE)
             .all<JobWithSource>()
         : await db
             .prepare(
               `SELECT j.*, r.repo, r.sha, r.source FROM jobs j JOIN runs r ON r.id = j.run_id
-               WHERE j.status = 'queued'${repoFilter} AND (j.priority < ? OR (j.priority = ? AND (j.prior_ms < ? OR (j.prior_ms = ? AND (j.created_at > ? OR (j.created_at = ? AND j.id > ?))))))
+               WHERE j.status = 'queued'${repoFilter} ${noArtifacts} AND (j.priority < ? OR (j.priority = ? AND (j.prior_ms < ? OR (j.prior_ms = ? AND (j.created_at > ? OR (j.created_at = ? AND j.id > ?))))))
                ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
             .bind(...allowedRepos, afterPriority, afterPriority, afterPriorMs, afterPriorMs, afterCreated, afterCreated, afterId, CLAIM_PAGE_SIZE)

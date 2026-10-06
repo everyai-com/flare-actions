@@ -5,6 +5,7 @@ import { MCP_OAUTH_SCOPE_OFFLINE, MCP_OAUTH_SCOPE_READ, MCP_OAUTH_SCOPE_RUN } fr
 import { jobDurationMs } from "./cost";
 import type { RunDigest } from "./digest";
 import { runGenerateWithStatus } from "./generate";
+import { getTournamentBoard } from "./tournaments";
 import { SETTING_KEYS } from "./settings";
 import type { AiBinding } from "./triage";
 
@@ -40,6 +41,7 @@ export const MCP_TOOL_RISK: Record<string, McpToolRisk> = {
   dispatch_run: "contained-write",
   run_and_wait: "contained-write",
   rerun_job: "contained-write",
+  tournament_why: "read",
 };
 
 export interface McpToolDef {
@@ -85,6 +87,9 @@ const TOOL_SCHEMAS = {
     days: z.number().describe("1-365 (default 30)").optional(),
   }),
   generate_pipeline: z.object({ prompt: z.string().describe("Natural-language pipeline description (required)").optional() }),
+  tournament_why: z.object({
+    tournamentId: z.string().describe("Tournament id (required)").optional(),
+  }),
 };
 
 export const MCP_TOOLS: McpToolDef[] = [
@@ -95,6 +100,11 @@ export const MCP_TOOLS: McpToolDef[] = [
     name: "run_and_wait",
     description:
       "Dispatch a run and block until it finishes, returning a compact digest (status, failing step commands/exit codes, bounded output tails, triage). The one-call verify loop: edit → run_and_wait → fix. Needs run scope.",
+  },
+  {
+    name: "tournament_why",
+    description:
+      "Explain an agent tournament: task intent, per-agent attempt states and ranks, the verdict rationale, and the decision ledger. Answers why an attempt won or lost.",
   },
   {
     name: "get_run_digest",
@@ -316,6 +326,26 @@ async function execTool(name: string, args: Record<string, unknown>, deps: McpDe
       const digest = await deps.digestRun(runId);
       if (!digest) return toolResult(id, { error: "run not found" }, true);
       return toolResult(id, digest);
+    }
+    case "tournament_why": {
+      const tournamentId = str(args.tournamentId);
+      if (!tournamentId) return fail(id, -32602, "tournamentId is required");
+      const board = await getTournamentBoard(deps.db, tournamentId);
+      if (!board) return toolResult(id, { error: "tournament not found" }, true);
+      return toolResult(id, {
+        intent: board.tournament.intent,
+        state: board.tournament.state,
+        attempts: board.attempts.map((a) => ({
+          agent: a.agent,
+          state: a.state,
+          rank: a.verdict_rank,
+          runId: a.run_id,
+        })),
+        verdict: board.verdict
+          ? { ranking: board.verdict.ranking, rationale: board.verdict.rationale, model: board.verdict.model }
+          : null,
+        ledger: board.ledger.map((l) => ({ kind: l.kind, body: l.body })),
+      });
     }
     case "rerun_job": {
       if (!deps.canWrite) return fail(id, -32602, "rerun_job needs run scope");
