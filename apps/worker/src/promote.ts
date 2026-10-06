@@ -153,8 +153,9 @@ export async function fastForwardWinner(
   const sourceRemote = deps.remoteFor(tournament.source_repo);
   if (!winnerRemote || !sourceRemote) return { status: "skipped", reason: "unavailable" };
   // Tokens are repo-scoped: the fetch reads the winner fork, the push
-  // writes the source. Both travel whole — the server rejects the
-  // `?expires=` suffix stripped (verified against the live API).
+  // writes the source. Both travel whole (the server also accepts the
+  // `?expires=` suffix stripped — an earlier 403 was a wrong-repo token,
+  // not the form — but whole is canonical over the auth header).
   const readToken = await mintToken(deps.artifacts, winner.fork_repo, "read");
   const writeToken = await mintToken(deps.artifacts, tournament.source_repo, "write");
   if (!readToken || !writeToken) return { status: "skipped", reason: "failed" };

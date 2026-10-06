@@ -150,9 +150,12 @@ export interface SeatDeps {
   ai: AiBinding | undefined;
   appId?: string;
   appKey?: string;
-  // Artifacts mirror checkout: remote template holding `{repo}` plus
-  // a repo token. Absent = GitHub only; present = mirror first with
-  // GitHub fallback (see renderMirrorRemote).
+  // Artifacts mirror checkout: remote template holding `{repo}` plus,
+  // optionally, a shared repo token. Template alone = GitHub only unless
+  // the mirror lives in the binding namespace (see artifactsNamespace):
+  // then seats mint a per-job read token instead of sharing one env
+  // token. Present = mirror first with GitHub fallback (see
+  // renderMirrorRemote).
   mirrorRemote?: string;
   mirrorToken?: string;
   // ARTIFACTS binding for seat-minted checkout tokens. Tournament forks
@@ -160,6 +163,10 @@ export interface SeatDeps {
   // read token per checkout (memory-only, never stored) instead of
   // sharing one env token. Absent = artifacts runs release.
   artifacts?: SeatArtifactsNamespace | null;
+  // Namespace of the ARTIFACTS binding (env ARTIFACTS_NAMESPACE). When
+  // the mirror template points into this namespace, mirror checkouts
+  // mint per-job read tokens too; otherwise they use mirrorToken.
+  artifactsNamespace?: string;
   // Browser-check driver (BROWSER binding). Absent = the seats worker
   // has no Browser Rendering binding; jobs with browserChecks fail
   // closed rather than skipping.
@@ -280,6 +287,22 @@ export function renderArtifactsRemote(mirrorTemplate: string, namespace: string,
   const host = /^(https:\/\/[a-f0-9]{32}\.artifacts\.cloudflare\.net)\/git\//.exec(mirrorTemplate)?.[1];
   if (!host) return null;
   return renderMirrorRemote(`${host}/git/{repo}.git`, `${namespace}/${repo}`, true);
+}
+
+// Mirror template namespace (`.../git/{ns}/{repo}.git`), for the
+// per-job token decision: only mirrors inside the binding namespace
+// can use binding-minted tokens (tokens are repo-scoped and the
+// binding is namespace-scoped).
+export function mirrorNamespaceFor(template: string): string | null {
+  const m = /^https:\/\/[a-f0-9]{32}\.artifacts\.cloudflare\.net\/git\/([\w.-]+)\/\{repo\}\.git$/.exec(template);
+  return m?.[1] ?? null;
+}
+
+// Repo segment of a rendered mirror remote (already shape-checked by
+// renderMirrorRemote): the name to mint the per-job token against.
+export function mirrorRepoFor(rendered: string): string | null {
+  const m = /\/git\/[\w.-]+\/([\w.-]+)\.git$/.exec(rendered);
+  return m?.[1] ?? null;
 }
 
 // One-hour read token for a single checkout. Null on any failure.
@@ -743,6 +766,9 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       if (isArtifactsRun && deps.artifacts) {
         artifactsToken = await mintCheckoutToken(deps.artifacts, run.repo.slice(run.repo.indexOf("/") + 1));
       }
+      // Per-job mirror token (assigned in the mirror branch below;
+      // declared here so the scrubber closes over it).
+      let mirrorMinted: string | null = null;
       let appToken: string | null = null;
       if (run.installation_id && deps.appId && deps.appKey) {
         try {
@@ -758,6 +784,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         // remote, so scrub both the raw and encoded forms — git echoes
         // the URL as embedded.
         const artSecret = artifactsToken ? tokenSecret(artifactsToken) : null;
+        const mirrorSecret = mirrorMinted ? tokenSecret(mirrorMinted) : null;
         const forms = [
           appToken,
           deps.mirrorToken,
@@ -765,6 +792,9 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
           artifactsToken,
           artSecret,
           artSecret ? encodeURIComponent(artSecret) : null,
+          mirrorMinted,
+          mirrorSecret,
+          mirrorSecret ? encodeURIComponent(mirrorSecret) : null,
         ];
         for (const t of forms) {
           if (t) out = out.split(t).join("[redacted]");
@@ -800,11 +830,24 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         // Mirror first when configured: the mirror failing (stale,
         // missing repo, expired token) must never fail a checkout
         // GitHub could serve, so any mirror error falls through.
-        const mirror =
-          deps.mirrorRemote && deps.mirrorToken ? renderMirrorRemote(deps.mirrorRemote, run.repo) : null;
-        if (mirror && deps.mirrorToken) {
+        const mirrorTemplate = deps.mirrorRemote;
+        const mirror = mirrorTemplate ? renderMirrorRemote(mirrorTemplate, run.repo) : null;
+        // Per-job token when the mirror lives in the binding
+        // namespace; otherwise the shared operator token. A failed
+        // mint falls back to the shared token (or GitHub-only).
+        let mirrorToken: string | null = deps.mirrorToken ?? null;
+        if (mirror && mirrorTemplate && deps.artifacts && deps.artifactsNamespace) {
+          if (mirrorNamespaceFor(mirrorTemplate) === deps.artifactsNamespace) {
+            const repoName = mirrorRepoFor(mirror);
+            if (repoName) {
+              mirrorMinted = await mintCheckoutToken(deps.artifacts, repoName);
+              if (mirrorMinted) mirrorToken = tokenSecret(mirrorMinted);
+            }
+          }
+        }
+        if (mirror && mirrorToken) {
           const mirrorErr = await checkoutVia(
-            `https://x-access-token:${encodeURIComponent(deps.mirrorToken)}@${mirror.slice("https://".length)}`,
+            `https://x-access-token:${encodeURIComponent(mirrorToken)}@${mirror.slice("https://".length)}`,
           );
           if (mirrorErr === null) {
             await note("[seat] checkout ok (mirror)");

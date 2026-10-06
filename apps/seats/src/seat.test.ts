@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   egressHostForKey,
+  mirrorNamespaceFor,
+  mirrorRepoFor,
   parseNetDev,
   renderArtifactsRemote,
   renderMirrorRemote,
@@ -997,6 +999,90 @@ describe("runSeatJob", () => {
     expect(log).toContain("[seat] mirror unavailable, trying github");
     expect(log).toContain("[seat] checkout ok");
     expect(log).not.toContain("(mirror)");
+  });
+
+  it("parses mirror template namespaces and rendered repo names", () => {
+    expect(mirrorNamespaceFor(MIRROR_TEMPLATE)).toBe("mirrors");
+    expect(mirrorNamespaceFor("https://evil.example/{repo}.git")).toBeNull();
+    expect(mirrorRepoFor("https://a54b12fe3ef06df16ff0041d79c18fc0.artifacts.cloudflare.net/git/mirrors/o-r.git")).toBe("o-r");
+    expect(mirrorRepoFor("https://github.com/o/r.git")).toBeNull();
+  });
+
+  it("mints a per-job mirror token inside the binding namespace", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    const minted: string[] = [];
+    const artifacts: SeatArtifactsNamespace = {
+      get: async (name: string) => {
+        minted.push(name);
+        return {
+          createToken: async () => ({ plaintext: "job-minted?expires=9999999999" }),
+          [Symbol.dispose]: () => undefined,
+        };
+      },
+    };
+    const template = MIRROR_TEMPLATE.replace("/git/mirrors/", "/git/flare-tournaments/");
+    const out = await runSeatJob(
+      deps(db, container, { mirrorRemote: template, artifacts, artifactsNamespace: "flare-tournaments" }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    expect(minted).toEqual(["o-r"]);
+    const checkouts = container.calls.filter((c) => c.cmd[0] === "sh" && c.cmd[1] === "-s");
+    expect(checkouts).toHaveLength(1);
+    expect(stdinText(checkouts[0])).toContain("x-access-token:job-minted@");
+    expect(stdinText(checkouts[0])).toContain("git/flare-tournaments/o-r.git");
+    expect(db.jobs.get("j1")?.log as string).toContain("[seat] checkout ok (mirror)");
+  });
+
+  it("falls back to the shared token outside the binding namespace", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    let minted = 0;
+    const artifacts: SeatArtifactsNamespace = {
+      get: async () => {
+        minted += 1;
+        return {
+          createToken: async () => ({ plaintext: "job-minted?expires=9999999999" }),
+          [Symbol.dispose]: () => undefined,
+        };
+      },
+    };
+    const out = await runSeatJob(
+      deps(db, container, { mirrorRemote: MIRROR_TEMPLATE, mirrorToken: "shared-secret", artifacts, artifactsNamespace: "flare-tournaments" }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    expect(minted).toBe(0);
+    const checkouts = container.calls.filter((c) => c.cmd[0] === "sh" && c.cmd[1] === "-s");
+    expect(stdinText(checkouts[0])).toContain("x-access-token:shared-secret@");
+  });
+
+  it("scrubs the minted mirror token when checkout fails", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    container.mirrorExit = 128;
+    container.checkoutExit = 128;
+    container.coStderr = "fatal: https://x-access-token:job-minted@host/git/ns/o-r.git: auth failed";
+    const artifacts: SeatArtifactsNamespace = {
+      get: async () => ({
+        createToken: async () => ({ plaintext: "job-minted?expires=9999999999" }),
+        [Symbol.dispose]: () => undefined,
+      }),
+    };
+    const template = MIRROR_TEMPLATE.replace("/git/mirrors/", "/git/flare-tournaments/");
+    const out = await runSeatJob(
+      deps(db, container, { mirrorRemote: template, artifacts, artifactsNamespace: "flare-tournaments" }),
+      "j1",
+    );
+    expect(out.status).toBe("released");
+    const detail = (out as { detail: string }).detail;
+    expect(detail).not.toContain("job-minted");
+    expect(detail).toContain("[redacted]");
+    expect(db.jobs.get("j1")?.log as string).not.toContain("job-minted");
   });
 
   it("goes straight to github on an invalid mirror template", async () => {
