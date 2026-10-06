@@ -157,6 +157,17 @@ describe("oauth", () => {
     await expect(decideLogin(db, "octocat")).resolves.toEqual({ allowed: true, isAdmin: false, claimed: true });
   });
 
+  it("open registration admits GitHub strangers as non-admin readers", async () => {
+    const db = new MemAuth();
+    await claimAdmin(db, "octocat");
+    await expect(decideLogin(db, "stranger")).resolves.toEqual({ allowed: false, isAdmin: false, claimed: true });
+    db.settings.set("open_registration", "1");
+    await expect(decideLogin(db, "stranger")).resolves.toEqual({ allowed: true, isAdmin: false, claimed: true });
+    await expect(decideLogin(db, "OctoCat")).resolves.toEqual({ allowed: true, isAdmin: true, claimed: true });
+    db.settings.set("open_registration", "0");
+    await expect(decideLogin(db, "stranger")).resolves.toEqual({ allowed: false, isAdmin: false, claimed: true });
+  });
+
   it("manages the allow-list without duplicates", async () => {
     const db = new MemAuth();
     await expect(listAllowedUsers(db)).resolves.toEqual([]);

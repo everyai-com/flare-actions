@@ -1209,6 +1209,8 @@ paths:
                   type: boolean
                 healOnFailure:
                   type: boolean
+                openRegistration:
+                  type: boolean
                 billingApiToken:
                   type: string
                 cloudflareAccountId:
@@ -1540,7 +1542,7 @@ paths:
     post:
       tags: [auth]
       operationId: registerWithInvite
-      summary: Create a password account from an invite (sets session cookie)
+      summary: Create a password account (invite token, or bare email when open registration is on; sets session cookie)
       security: []
       requestBody:
         required: true
@@ -1548,10 +1550,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [token, password]
+              required: [password]
               properties:
                 token:
                   type: string
+                  description: Invite token (always accepted; wins when email is also present)
+                email:
+                  type: string
+                  description: Self-serve signup email (only when the admin enabled open registration)
                 password:
                   type: string
                 turnstileToken:
@@ -2236,6 +2242,8 @@ paths:
                   installUrl:
                     type: string
                     nullable: true
+                  openRegistration:
+                    type: boolean
                   user:
                     type: object
                     nullable: true

@@ -102,7 +102,9 @@ Install the App on your repo either way.
 
 Open `https://<worker>/dashboard` and log in with GitHub or email
 (first login of either kind claims admin). Allow more GitHub users or
-invite teammates by email in the Access tab. The CLI works with any
+invite teammates by email in the Access tab — or flip on open
+registration in Settings so anyone can join from the login page
+(non-admin readers, by email or GitHub). The CLI works with any
 token scope — `readonly` reads, `runner` also dispatches and reruns;
 issue named tokens in the Access tab.
 
@@ -386,7 +388,7 @@ npm run cli -- mcp-config              # MCP client config
 - `GET|POST /v1/admin/settings` — webhook secret, run notifications, badge visibility (admin only)
 - `GET /v1/admin/users` — allowed GitHub users, email users, invites (admin only)
 - `POST /v1/admin/users|users/email|users/invite` — allow/remove users, mint single-use invite links (admin only)
-- `POST /v1/admin/register` — redeem an invite (public, throttled)
+- `POST /v1/admin/register` — redeem an invite, or self-register by email when open registration is on (public, throttled)
 - `POST /v1/admin/bootstrap` — first-run admin claim (open until claimed, throttled)
 - `POST /v1/admin/login`, `POST /v1/admin/logout` — email sessions (throttled)
 - `GET|POST /v1/admin/github/*` — GitHub App connect + login flows

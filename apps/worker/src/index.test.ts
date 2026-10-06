@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isHexSha, validateDispatch, validateScheduleInput, webhookSkipReason } from "./index";
+import { isHexSha, validateDispatch, validateRegisterInput, validateScheduleInput, webhookSkipReason } from "./index";
 
 const SHA = "4203928f77b90dec92b4cd47b9e0795378752ef7";
 const ZERO = "0000000000000000000000000000000000000000";
@@ -130,5 +130,45 @@ describe("validateScheduleInput", () => {
     expect(validateScheduleInput({ repo: "o/r", ref: "../x", cron: "0 3 * * *" })).toHaveProperty("error");
     expect(validateScheduleInput({ repo: "o/r", ref: "main", cron: "0 3 * *" })).toHaveProperty("error");
     expect(validateScheduleInput({ repo: "o/r", ref: "main", cron: 42 })).toHaveProperty("error");
+  });
+});
+
+describe("validateRegisterInput", () => {
+  it("routes invite tokens in invite mode, open or closed", () => {
+    expect(validateRegisterInput({ token: "tok", password: "long-enough" }, false)).toEqual({
+      mode: "invite",
+      token: "tok",
+      password: "long-enough",
+    });
+    expect(validateRegisterInput({ token: "tok", password: "long-enough" }, true)).toEqual({
+      mode: "invite",
+      token: "tok",
+      password: "long-enough",
+    });
+  });
+
+  it("routes bare emails in open mode only, normalized", () => {
+    expect(validateRegisterInput({ email: "  New@Example.com ", password: "long-enough" }, true)).toEqual({
+      mode: "open",
+      email: "new@example.com",
+      password: "long-enough",
+    });
+    expect(validateRegisterInput({ email: "new@example.com", password: "long-enough" }, false)).toEqual({
+      error: "invite required",
+    });
+  });
+
+  it("prefers the token when both are present", () => {
+    expect(validateRegisterInput({ token: "tok", email: "new@example.com", password: "long-enough" }, true)).toEqual({
+      mode: "invite",
+      token: "tok",
+      password: "long-enough",
+    });
+  });
+
+  it("rejects weak passwords and bad emails", () => {
+    expect(validateRegisterInput({ token: "tok", password: "short" }, true)).toHaveProperty("error");
+    expect(validateRegisterInput({ email: "not-an-email", password: "long-enough" }, true)).toHaveProperty("error");
+    expect(validateRegisterInput({ password: "long-enough" }, true)).toHaveProperty("error");
   });
 });

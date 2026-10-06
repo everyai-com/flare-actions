@@ -5,6 +5,7 @@ import {
   parseBadgeHiddenRepos,
   parseFairSharePerRepo,
   parseMcpWriteConfirm,
+  parseOpenRegistration,
   parseTriageWebSearch,
   validateBillingApiToken,
   validateCloudflareAccountId,
@@ -136,6 +137,19 @@ describe("parseMcpWriteConfirm", () => {
     expect(parseMcpWriteConfirm(undefined)).toEqual({ on: false });
     expect("error" in parseMcpWriteConfirm("sometimes")).toBe(true);
     expect("error" in parseMcpWriteConfirm(2)).toBe(true);
+  });
+});
+
+describe("parseOpenRegistration", () => {
+  it("accepts booleans and 1/0 spellings, defaults off", () => {
+    expect(parseOpenRegistration(true)).toEqual({ on: true });
+    expect(parseOpenRegistration("1")).toEqual({ on: true });
+    expect(parseOpenRegistration(false)).toEqual({ on: false });
+    expect(parseOpenRegistration("0")).toEqual({ on: false });
+    expect(parseOpenRegistration(null)).toEqual({ on: false });
+    expect(parseOpenRegistration(undefined)).toEqual({ on: false });
+    expect("error" in parseOpenRegistration("sometimes")).toBe(true);
+    expect("error" in parseOpenRegistration(2)).toBe(true);
   });
 });
 

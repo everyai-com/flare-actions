@@ -207,8 +207,10 @@ gaps so one-click deploys need zero `wrangler secret` commands.
   allow-listed GitHub users + registered emails may log in (non-admin
   reads). Connect and email bootstrap are open pre-claim, then locked.
   Teammates join via single-use 24h invite links (no email delivery
-  needed). `ADMIN_TOKEN` env is break-glass recovery only; setup
-  never mints it.
+  needed), or — when the admin enables `open_registration` in Settings
+  (default off) — anyone self-registers from the login page as a
+  non-admin reader, by email or GitHub. `ADMIN_TOKEN` env is break-glass
+  recovery only; setup never mints it.
 - Webhooks: `GITHUB_WEBHOOK_SECRET` env or D1 `webhook_secret` (Settings
   tab; encrypted at rest with the secrets data key).
 - GitHub App: Connect flow (`connect.ts` manifest + callback; creds in

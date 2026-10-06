@@ -120,6 +120,7 @@ form.inline input { flex: 1; min-width: 180px; }
 </form>
 <p id="emailErr" class="err"></p>
 <p class="muted"><button id="forgotBtn" class="ghost" type="button">Forgot password?</button></p>
+<p class="muted"><button id="registerToggleBtn" class="ghost" type="button" hidden>No account? Create one</button></p>
 </div>
 <div id="connectBox">
 <h2>Connect GitHub</h2>
@@ -131,6 +132,7 @@ form.inline input { flex: 1; min-width: 180px; }
 </div>
 <div id="githubBox">
 <button id="githubLoginBtn" class="btn-github btn-block">Login with GitHub</button>
+<p class="muted" id="githubOpenHint" hidden>Open registration is on — any GitHub user can log in (reader access).</p>
 <p id="authInstallBox" hidden><a id="authInstallLink" href="#" target="_blank" rel="noopener">Install the App on your repos first</a></p>
 <p id="loginMsg"></p>
 <div id="breakGlassBox" hidden>
@@ -330,6 +332,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <label><input type="checkbox" id="writeConfirmCheck"> MCP write-confirm</label>
 <label><input type="checkbox" id="webSearchCheck"> triage web search</label>
 <label><input type="checkbox" id="healCheck"> heal on failure (draft PR + verify run)</label>
+<label><input type="checkbox" id="openRegCheck"> open registration (anyone can join)</label>
 <button type="submit">Save</button>
 </form>
 <p id="schedErr" class="err"></p>
@@ -530,6 +533,17 @@ form.inline input { flex: 1; min-width: 180px; }
     resetConfirmPane.hidden = false; resetPane.hidden = true; invitePane.hidden = true; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
   }
 
+  var emailMode = "login";
+  function setEmailMode(mode) {
+    emailMode = mode;
+    var registering = mode === "register";
+    document.getElementById("emailPw2Wrap").hidden = !registering;
+    document.getElementById("emailBtn").textContent = registering ? "Create account" : "Log in";
+    document.getElementById("emailTitle").textContent = registering ? "Create your account" : "Log in with email";
+    document.getElementById("emailDesc").textContent = registering ? "Reader access — invites still work too." : "Welcome back.";
+    document.getElementById("registerToggleBtn").textContent = registering ? "Have an account? Log in" : "No account? Create one";
+    document.getElementById("emailErr").textContent = "";
+  }
   function showAuth(st) {
     lastStatus = st;
     invitePane.hidden = true;
@@ -541,6 +555,11 @@ form.inline input { flex: 1; min-width: 180px; }
     document.getElementById("emailDesc").textContent = st.claimed ? "Welcome back." : "First account claims admin.";
     document.getElementById("connectBox").hidden = st.githubConnected;
     document.getElementById("breakGlassBox").hidden = !st.breakGlass;
+    var openReg = st.claimed && st.openRegistration;
+    emailMode = "login";
+    document.getElementById("registerToggleBtn").hidden = !openReg;
+    document.getElementById("registerToggleBtn").textContent = "No account? Create one";
+    document.getElementById("githubOpenHint").hidden = !openReg;
     var installBox = document.getElementById("authInstallBox");
     if (st.githubConnected && st.installUrl) {
       installBox.hidden = false;
@@ -703,7 +722,7 @@ form.inline input { flex: 1; min-width: 180px; }
       route(st);
       handleGithubQuery(st, g, q.get("reason"));
       if (rt === "done") document.getElementById("loginMsg").textContent = "Password updated — log in.";
-    }).catch(function () { showAuth({ claimed: true, githubConnected: false, breakGlass: false, installUrl: null }); });
+    }).catch(function () { showAuth({ claimed: true, githubConnected: false, breakGlass: false, installUrl: null, openRegistration: false }); });
   }
 
   document.getElementById("emailForm").addEventListener("submit", function (ev) {
@@ -717,6 +736,20 @@ form.inline input { flex: 1; min-width: 180px; }
       var pw2 = document.getElementById("emailPw2").value;
       if (pw !== pw2) { err.textContent = "Passwords do not match."; return; }
       fetch("/v1/admin/bootstrap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email, password: pw, turnstileToken: turnstileToken("tsEmail") }) })
+        .then(function (res) {
+          if (!res.ok) throw new Error("bad");
+          document.getElementById("emailInput").value = "";
+          document.getElementById("emailPw").value = "";
+          document.getElementById("emailPw2").value = "";
+          boot();
+        })
+        .catch(function () { err.textContent = "Could not create account (valid email, 8+ char password)."; });
+      return;
+    }
+    if (emailMode === "register") {
+      var pwAgain = document.getElementById("emailPw2").value;
+      if (pw !== pwAgain) { err.textContent = "Passwords do not match."; return; }
+      fetch("/v1/admin/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email, password: pw, turnstileToken: turnstileToken("tsEmail") }) })
         .then(function (res) {
           if (!res.ok) throw new Error("bad");
           document.getElementById("emailInput").value = "";
@@ -741,9 +774,14 @@ form.inline input { flex: 1; min-width: 180px; }
     showReset();
   });
 
+  document.getElementById("registerToggleBtn").addEventListener("click", function (ev) {
+    ev.preventDefault();
+    setEmailMode(emailMode === "register" ? "login" : "register");
+  });
+
   document.getElementById("resetBackBtn").addEventListener("click", function (ev) {
     ev.preventDefault();
-    route(lastStatus || { claimed: true, githubConnected: false, breakGlass: false, installUrl: null });
+    route(lastStatus || { claimed: true, githubConnected: false, breakGlass: false, installUrl: null, openRegistration: false });
   });
 
   document.getElementById("resetRequestForm").addEventListener("submit", function (ev) {
@@ -1579,6 +1617,7 @@ form.inline input { flex: 1; min-width: 180px; }
       document.getElementById("writeConfirmCheck").checked = !!s.mcpWriteConfirm;
       document.getElementById("webSearchCheck").checked = !!s.triageWebSearch;
       document.getElementById("healCheck").checked = !!s.healOnFailure;
+      document.getElementById("openRegCheck").checked = !!s.openRegistration;
       document.getElementById("schedOk").textContent = "";
       loadSchedules();
       loadMonitors();
@@ -1728,6 +1767,7 @@ form.inline input { flex: 1; min-width: 180px; }
       mcpWriteConfirm: document.getElementById("writeConfirmCheck").checked,
       triageWebSearch: document.getElementById("webSearchCheck").checked,
       healOnFailure: document.getElementById("healCheck").checked,
+      openRegistration: document.getElementById("openRegCheck").checked,
     };
     if (!document.getElementById("gatewayInput").disabled) {
       payload.aiGatewayId = document.getElementById("gatewayInput").value.trim();

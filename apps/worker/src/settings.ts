@@ -23,6 +23,7 @@ export const SETTING_KEYS = {
   cloudflareAccountId: "cloudflare_account_id",
   triageModel: "triage_model",
   healOnFailure: "heal_on_failure",
+  openRegistration: "open_registration",
 } as const;
 
 export function validateWebhookSecret(secret: unknown): string | null {
@@ -149,6 +150,17 @@ export function parseHealOnFailure(value: unknown): { on: boolean } | { error: s
   if (value === "1" || value === "true") return { on: true };
   if (value === "0" || value === "false" || value === "" || value === null || value === undefined) return { on: false };
   return { error: "healOnFailure must be a boolean" };
+}
+
+// Open registration (off by default — invite links and the GitHub
+// allow-list stay the only way in). When on, anyone can create a
+// non-admin reader account from the dashboard, by email (no invite)
+// or by GitHub login. Same boolean shape as above.
+export function parseOpenRegistration(value: unknown): { on: boolean } | { error: string } {
+  if (typeof value === "boolean") return { on: value };
+  if (value === "1" || value === "true") return { on: true };
+  if (value === "0" || value === "false" || value === "" || value === null || value === undefined) return { on: false };
+  return { error: "openRegistration must be a boolean" };
 }
 
 // Billing-Read API token for the Billable Usage API (write-only,

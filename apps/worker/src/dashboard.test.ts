@@ -35,4 +35,12 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("healCheck");
     expect(DASHBOARD_HTML).toContain("healOnFailure");
   });
+
+  it("wires the open-registration toggle and self-serve signup", () => {
+    expect(DASHBOARD_HTML).toContain("openRegCheck");
+    expect(DASHBOARD_HTML).toContain("openRegistration");
+    expect(DASHBOARD_HTML).toContain("registerToggleBtn");
+    expect(DASHBOARD_HTML).toContain("setEmailMode");
+    expect(DASHBOARD_HTML).toContain("githubOpenHint");
+  });
 });

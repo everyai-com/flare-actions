@@ -76,7 +76,7 @@ import {
   validateSecretName,
   validateSecretValue,
 } from "./secrets";
-import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseFairSharePerRepo, parseHealOnFailure, parseMcpWriteConfirm, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
+import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseFairSharePerRepo, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
 import {
   addAllowedUser,
   beginOAuth,
@@ -363,6 +363,13 @@ async function isClaimed(env: WorkerEnv): Promise<boolean> {
     isAdminMarkerClaimed(env.DB),
   ]);
   return github !== null || email !== null || marker;
+}
+
+// Open registration (admin toggle, default off): anyone may create a
+// non-admin reader account from the dashboard, by email or GitHub.
+async function isOpenRegistration(env: WorkerEnv): Promise<boolean> {
+  const parsed = parseOpenRegistration(await getSetting(env.DB, SETTING_KEYS.openRegistration));
+  return "on" in parsed && parsed.on;
 }
 
 async function getOAuthCreds(env: WorkerEnv): Promise<{ clientId: string; clientSecret: string } | null> {
@@ -878,6 +885,30 @@ export function isHexSha(s: string): boolean {
   return /^[0-9a-f]{4,64}$/i.test(s);
 }
 
+export type RegisterInput =
+  | { mode: "invite"; token: string; password: string }
+  | { mode: "open"; email: string; password: string }
+  | { error: string };
+
+// Registration has two doors: an invite token (always), or a bare
+// email when the admin enabled open registration. A token wins when
+// both are present, so invite links keep working on open deploys.
+// Both doors create non-admin accounts only — admin comes solely
+// from the first-login claim and bootstrap paths.
+export function validateRegisterInput(
+  body: Record<string, unknown>,
+  openRegistration: boolean,
+): RegisterInput {
+  const { token, email, password } = body;
+  const pwErr = validatePassword(password);
+  if (pwErr) return { error: pwErr };
+  if (typeof token === "string" && token) return { mode: "invite", token, password: password as string };
+  if (!openRegistration) return { error: "invite required" };
+  const emailErr = validateEmail(email);
+  if (emailErr) return { error: emailErr };
+  return { mode: "open", email: normalizeEmail(email as string), password: password as string };
+}
+
 export function validateDispatch(
   body: Record<string, unknown>,
 ): { repo: string; sha: string; ref: string; pipeline?: string; priority: number; source?: string } | { error: string } {
@@ -1097,6 +1128,7 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       mcpWriteConfirm?: unknown;
       triageWebSearch?: unknown;
       healOnFailure?: unknown;
+      openRegistration?: unknown;
       billingApiToken?: unknown;
       cloudflareAccountId?: unknown;
       triageModel?: unknown;
@@ -1118,13 +1150,14 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
     const hasWriteConfirm = body.mcpWriteConfirm !== undefined;
     const hasWebSearch = body.triageWebSearch !== undefined;
     const hasHeal = body.healOnFailure !== undefined;
+    const hasOpenReg = body.openRegistration !== undefined;
     const hasBillingToken = body.billingApiToken !== undefined;
     const hasAccountId = body.cloudflareAccountId !== undefined;
     const hasTriageModel = body.triageModel !== undefined;
     if (
       !hasWebhook && !hasNotifyFrom && !hasNotifyMode && !hasNotifyWebhook && !hasBadgeHidden &&
       !hasTurnstileSite && !hasTurnstileSecret && !hasFairShare && !hasGateway && !hasWriteConfirm && !hasWebSearch &&
-      !hasHeal && !hasBillingToken && !hasAccountId && !hasTriageModel
+      !hasHeal && !hasOpenReg && !hasBillingToken && !hasAccountId && !hasTriageModel
     ) {
       return json({ error: "no settings provided" }, 400);
     }
@@ -1250,6 +1283,13 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       await setSetting(env.DB, SETTING_KEYS.healOnFailure, parsed.on ? "1" : "0");
       await audit(env.DB, ident.actor, "settings.heal_on_failure", parsed.on ? "on" : "off");
       log("info", "heal on failure toggled", { on: parsed.on });
+    }
+    if (hasOpenReg) {
+      const parsed = parseOpenRegistration(body.openRegistration);
+      if ("error" in parsed) return json({ error: parsed.error }, 400);
+      await setSetting(env.DB, SETTING_KEYS.openRegistration, parsed.on ? "1" : "0");
+      await audit(env.DB, ident.actor, "settings.open_registration", parsed.on ? "on" : "off");
+      log("info", "open registration toggled", { on: parsed.on });
     }
     if (hasBillingToken) {
       if (env.BILLING_API_TOKEN) {
@@ -2030,6 +2070,9 @@ export default {
           githubConnected: connected,
           installUrl: slug ? installUrl(slug) : null,
           user: ident ? { actor: ident.actor, admin: ident.scope === "admin" } : null,
+          // Public pre-login: only controls whether the login page
+          // offers self-serve signup; the register route re-checks.
+          openRegistration: await isOpenRegistration(env),
           // Public widget key (safe pre-login); null hides the widget.
           turnstileSiteKey: await getTurnstileSiteKey(env.DB, env),
           // Deployment hardening detail: admins only, not the pre-login page.
@@ -2162,8 +2205,8 @@ export default {
         return json({ email: invite.email });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/register") {
-        const body = (await request.json().catch(() => ({}))) as { token?: unknown; password?: unknown; turnstileToken?: unknown };
-        const keys = await authThrottleKeys(request);
+        const body = (await request.json().catch(() => ({}))) as { token?: unknown; email?: unknown; password?: unknown; turnstileToken?: unknown };
+        const keys = await authThrottleKeys(request, typeof body.email === "string" ? normalizeEmail(body.email) : undefined);
         if (await authThrottleBlocked(env.DB, keys)) {
           return json({ error: "too many attempts — try again later" }, 429);
         }
@@ -2173,18 +2216,23 @@ export default {
         };
         const captchaErr = await checkTurnstile(env.DB, env, body.turnstileToken, request.headers.get("cf-connecting-ip") ?? undefined);
         if (captchaErr) return await fail(json({ error: captchaErr }, 400));
-        if (typeof body.token !== "string" || !body.token) return await fail(json({ error: "invite required" }, 400));
-        const pwErr = validatePassword(body.password);
-        if (pwErr) return await fail(json({ error: pwErr }, 400));
-        const invite = await consumeInvite(env.DB, body.token);
-        if (!invite) return await fail(json({ error: "invite invalid or expired" }, 404));
-        if (await getUser(env.DB, invite.email)) {
+        const input = validateRegisterInput(body, await isOpenRegistration(env));
+        if ("error" in input) return await fail(json({ error: input.error }, 400));
+        let email: string;
+        if (input.mode === "invite") {
+          const invite = await consumeInvite(env.DB, input.token);
+          if (!invite) return await fail(json({ error: "invite invalid or expired" }, 404));
+          email = invite.email;
+        } else {
+          email = input.email;
+        }
+        if (await getUser(env.DB, email)) {
           return await fail(json({ error: "that email already has an account" }, 409));
         }
-        await createUser(env.DB, { email: invite.email, passwordHash: await hashPassword(body.password as string), isAdmin: false });
+        await createUser(env.DB, { email, passwordHash: await hashPassword(input.password), isAdmin: false });
         await clearAuthFailures(env.DB, keys);
-        const sessionId = await createLoginSession(env.DB, { kind: "email", login: invite.email, isAdmin: false });
-        await audit(env.DB, `email:${invite.email}`, "session.register", "");
+        const sessionId = await createLoginSession(env.DB, { kind: "email", login: email, isAdmin: false });
+        await audit(env.DB, `email:${email}`, "session.register", "");
         return new Response(JSON.stringify({ ok: true }), {
           headers: {
             "Content-Type": "application/json",
@@ -2361,6 +2409,7 @@ export default {
         const writeConfirmParsed = parseMcpWriteConfirm(await getSetting(env.DB, SETTING_KEYS.mcpWriteConfirm));
         const webSearchParsed = parseTriageWebSearch(await getSetting(env.DB, SETTING_KEYS.triageWebSearch));
         const healParsed = parseHealOnFailure(await getSetting(env.DB, SETTING_KEYS.healOnFailure));
+        const openRegParsed = parseOpenRegistration(await getSetting(env.DB, SETTING_KEYS.openRegistration));
         return json({
           adminGithubUser: await getSetting(env.DB, SETTING_KEYS.adminGithubUser),
           adminEmail: await getSetting(env.DB, SETTING_KEYS.adminEmail),
@@ -2381,6 +2430,7 @@ export default {
           mcpWriteConfirm: "on" in writeConfirmParsed ? writeConfirmParsed.on : false,
           triageWebSearch: env.TRIAGE_WEB_SEARCH === "1" ? true : "on" in webSearchParsed ? webSearchParsed.on : false,
           healOnFailure: "on" in healParsed ? healParsed.on : false,
+          openRegistration: "on" in openRegParsed ? openRegParsed.on : false,
           billingTokenSet: !!env.BILLING_API_TOKEN || !!(await getSetting(env.DB, SETTING_KEYS.billingApiToken)),
           cloudflareAccountId: env.CLOUDFLARE_ACCOUNT_ID ?? (await getSetting(env.DB, SETTING_KEYS.cloudflareAccountId)) ?? "",
           triageModel: env.TRIAGE_MODEL ?? (await getSetting(env.DB, SETTING_KEYS.triageModel)) ?? TRIAGE_MODEL,

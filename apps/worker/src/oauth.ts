@@ -1,10 +1,11 @@
 import { createSession, getSetting, setSetting, type Db } from "./db";
-import { SETTING_KEYS } from "./settings";
+import { parseOpenRegistration, SETTING_KEYS } from "./settings";
 
 // Login with GitHub, using the connected App's OAuth credentials.
 // First GitHub user to log in claims admin; after that, the admin
-// plus allow-listed usernames may log in. No passwords anywhere —
-// `ADMIN_TOKEN` env survives only as break-glass recovery.
+// plus allow-listed usernames may log in — or anyone, when the admin
+// enables open registration (non-admin readers only). No passwords
+// anywhere — `ADMIN_TOKEN` env survives only as break-glass recovery.
 
 export const SESSION_COOKIE = "flare_session";
 export const SESSION_TTL_DAYS = 30;
@@ -106,6 +107,10 @@ export async function decideLogin(db: Db, login: string): Promise<LoginDecision>
   if (allowed.map((u) => u.toLowerCase()).includes(login.toLowerCase())) {
     return { allowed: true, isAdmin: false, claimed: true };
   }
+  // Open registration admits GitHub strangers as non-admin readers;
+  // the admin and allow-list checks above still win when they match.
+  const open = parseOpenRegistration(await getSetting(db, SETTING_KEYS.openRegistration));
+  if ("on" in open && open.on) return { allowed: true, isAdmin: false, claimed: true };
   return { allowed: false, isAdmin: false, claimed: true };
 }
 
