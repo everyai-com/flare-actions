@@ -32,7 +32,7 @@ Shipped and tested (vitest green, tsc clean, seats dry-run green):
   simulator
   (`fairness.ts`, `/v1/admin/queue`, `cli queue`), peak-RSS sampling,
   new admin settings UI. Still open: named warm dev boxes + file sync,
-  per-domain outbound interception, Artifacts mirroring, runtime priors,
+  per-domain outbound interception, runtime priors,
   Workers VPC, browser-test jobs.
 - **Phase 3**: AI Gateway fronting for triage + generate (env `AI_GATEWAY_ID`
   or D1, off by default), Web Search grounding for triage (opt-in
@@ -46,11 +46,21 @@ Shipped and tested (vitest green, tsc clean, seats dry-run green):
   HealingAgent self-heal runs (opt-in toggle, draft PR + verify run),
   evaluation spikes (K2/Forge/Workflows verdicts in `docs/SPIKES.md`),
   model refresh evals (second run + Clef judge gate), `openapi.yaml`
-  for the v1 API (62 paths, CI coverage gate), agent-traces for warm
+  for the v1 API (68 paths, CI coverage gate), agent-traces for warm
   boxes + heal + generate, and self-service OAuth grants (dashboard
   Apps tab + `GET`/`DELETE /v1/oauth/grants` with scope descriptions).
   The spec is served live (`/openapi.yaml` + `/docs`) with a Redocly
   validity gate in CI next to the coverage gate.
+- **Git competition entry** ("next Git platform", deadline Oct 14):
+  **Flare Tournaments** — race N agents in Artifacts forks, verify each
+  with real CI, collision radar, deterministic verdict + AI Why, winner
+  fast-forwarded from the Worker, append-only ledger
+  (`docs/TOURNAMENTS.md`, `npm run harness`). Shipped Oct 6:
+  Artifacts trigger + seats checkout, tournament API + board, verdict +
+  MCP `tournament_why`, isomorphic-git promote with blessed-pointer
+  fallback. Staging-green 3x in a row on the fast-forward path, run/try
+  guide verified cold from a fresh clone. Still open: record the video
+  (`docs/VIDEO-SCRIPT.md`) and submit.
 
 ## Strategy note: @cloudflare/ci and where Flare wins
 
@@ -196,13 +206,14 @@ Needs Phase 0 done:
   push-event triggers), Workers Builds integration (push → deploy,
   branch → Preview), per-namespace US/EU data jurisdiction, and
   dashboard/API metrics. Still open: per-job tokens via the binding,
-  push-event triggers, provisioning automation. Optional: enter the
+  push-event triggers, provisioning automation. Entered the
   "next Git platform" competition — deadline Oct 14, 5–10 min demo
   video + MIT/Apache/BSD source + run instructions, multi-agent
   concurrency required; top 3 fly to Connect SF, first prize $25k
-  credits + VIP dinner. Flare's angle: the CI/verification layer for
-  agent-built code (dispatch + wait + digest + heal) on Artifacts
-  repos.
+  credits + VIP dinner. Flare's angle: **Flare Tournaments**, the pull
+  request for the agent era (race → verify → radar → verdict →
+  promote → ledger on Artifacts repos; entry status in Build status
+  above, execution spec in `.agents/plans/2026-10-06-git-competition.md`).
 - **Per-job CPU/mem + right-sizing**: BYO runners self-report peak RSS/CPU
   with status callbacks now; seats sample via exec (cgroupfs) until the
   container API exposes metrics — then dashboard graphs and label-size
