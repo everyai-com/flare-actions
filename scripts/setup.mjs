@@ -58,15 +58,37 @@ for (const q of ["flare-actions-runs", "flare-actions-dlq", "flare-actions-seats
   if (/already (exists|taken)/i.test(out)) console.log(`queue ${q} already exists, reusing`);
 }
 
-// 3b. Artifacts wiring (manual: wrangler has no namespaces-create and no
-// repo-scoped subscription flags). Print once; the worker degrades
-// cleanly (no-binding skips) until an operator completes these.
+// 3b. Artifacts push-event subscriptions (REST API: wrangler has no
+// artifacts.repo source options, and only one subscription per repo is
+// allowed). Opt-in via ARTIFACTS_SUBSCRIBE_REPOS (comma-separated stable
+// repo names in ARTIFACTS_NAMESPACE). Previews cannot attach queue
+// consumers, so subscriptions target the prod queue; staging and dynamic
+// tournament forks rely on the worker poller + tick instead.
 {
-  console.log("Artifacts: create the `flare-tournaments` namespace (dashboard > Workers > Artifacts,");
-  console.log("  or POST /accounts/:id/artifacts/namespaces), then subscribe");
-  console.log("  `flare-actions-artifacts` to each stable repo: queue > Subscriptions >");
-  console.log("  Subscribe to events > source artifacts.repo > pushed. Dynamic");
-  console.log("  tournament forks are watched by the worker poller instead.");
+  const repos = (process.env.ARTIFACTS_SUBSCRIBE_REPOS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const namespace = process.env.ARTIFACTS_NAMESPACE ?? "flare-tournaments";
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN ?? "";
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
+  if (repos.length === 0) {
+    console.log("Artifacts: ARTIFACTS_SUBSCRIBE_REPOS unset — skipping push subscriptions (the worker poller still covers tournament forks).");
+  } else if (!apiToken || !accountId) {
+    console.log("Artifacts: set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID to auto-subscribe, or do it by hand:");
+    console.log("  queue flare-actions-artifacts > Subscriptions > Subscribe to events > source artifacts.repo > pushed.");
+    console.log(`  pending repos: ${repos.join(", ")} (namespace ${namespace}).`);
+  } else if (!/^[a-f0-9]{32}$/.test(accountId)) {
+    fail("CLOUDFLARE_ACCOUNT_ID must be the 32-hex account id.");
+  } else if (dryRun) {
+    console.log(`(dry-run) would subscribe flare-actions-artifacts to pushed on ${repos.join(", ")} (namespace ${namespace}).`);
+  } else {
+    try {
+      const { ensurePushSubscriptions } = await import("./artifacts-subscriptions.mjs");
+      for (const r of await ensurePushSubscriptions({ apiToken, accountId, namespace, repos })) {
+        console.log(r.reused ? `Artifacts: ${namespace}/${r.repo} already subscribed, reusing` : `Artifacts: subscribed flare-actions-artifacts to pushed on ${namespace}/${r.repo}`);
+      }
+    } catch (err) {
+      fail(String(err instanceof Error ? err.message : err));
+    }
+  }
 }
 
 // 4. R2 bucket for build cache + artifacts (idempotent)

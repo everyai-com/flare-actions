@@ -103,5 +103,7 @@ Full shapes: `openapi.yaml` (`Tournament`, `TournamentAttempt`,
 - The verdict decides when every attempt is terminal, or 30 minutes
   after the oldest activity with ≥1 terminal run (a stuck attempt never
   vetoes; the timeout is ledgered).
-- Event subscriptions (push → queue) are the production trigger;
-  the poller covers dynamic forks. Either path dispatches; both dedupe.
+- Event subscriptions (push → queue) are the production trigger,
+  provisioned by setup (`ARTIFACTS_SUBSCRIBE_REPOS` + `CLOUDFLARE_API_TOKEN`
+  + `CLOUDFLARE_ACCOUNT_ID`); the poller covers dynamic forks. Either
+  path dispatches; both dedupe.

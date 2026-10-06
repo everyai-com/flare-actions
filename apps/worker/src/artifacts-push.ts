@@ -3,10 +3,12 @@
 // envelope → claim delivery → read flare.yml via the ARTIFACTS binding →
 // dispatch with event "artifacts".
 //
-// Push subscriptions are repo-scoped and not CLI-provisionable, so dynamic
-// tournament forks are watched by poll (same core, synthesized event);
-// the subscription path covers stable repos. Every path acks — malformed
-// events, missing pipelines, and redeliveries skip cleanly, never poison.
+// Push subscriptions are repo-scoped (one per repo; provisioned by setup
+// via the REST API since wrangler has no artifacts.repo source options),
+// so dynamic tournament forks are watched by poll (same core, synthesized
+// event); the subscription path covers stable repos. Every path acks —
+// malformed events, missing pipelines, and redeliveries skip cleanly,
+// never poison.
 //
 // Dispatch is injected: dispatchRun lives in index.ts and importing it
 // here would cycle (index.ts imports this module for the queue consumer).
