@@ -157,31 +157,33 @@ the seat image (`apps/seats/egress.c` → `/opt/flare/egress.so`).
 
 Seats can check out from a Cloudflare Artifacts Git mirror instead of
 GitHub — same shallow-fetch shape, usually faster for big repos.
-Configure two seats secrets (remote template + repo token); seats try
-the mirror first and fall back to GitHub on any mirror failure, so a
-stale mirror, missing repo, or expired token never fails a checkout
-GitHub could serve.
+Seats try the mirror first and fall back to GitHub on any mirror
+failure, so a stale mirror, missing repo, or expired token never fails
+a checkout GitHub could serve.
 
 ```bash
 # One mirror repo per GitHub repo; name it owner-name (the seat
 # renders {repo} as owner/name with / -> -).
-npx wrangler artifacts repos create everyai-com-flare-actions \
-  --namespace flare-mirrors
+node scripts/artifacts-mirror.mjs provision owner/repo
 # Seed it (repeat after upstream pushes; seats fetch by sha, so the
 # mirror only needs the shas jobs check out).
-git push \
-  "https://x-access-token:<write-token>@<acct>.artifacts.cloudflare.net/git/flare-mirrors/everyai-com-flare-actions.git" \
-  <sha>:refs/heads/main
-# Least-privilege read token for seats (TTL up to a year).
-npx wrangler artifacts repos issue-token everyai-com-flare-actions \
-  --namespace flare-mirrors --scope read --ttl 31536000 --json
+node scripts/artifacts-mirror.mjs sync owner/repo <sha>
 # Wire the seats worker (staging shown; same vars on prod).
 printf '%s' \
   'https://<acct>.artifacts.cloudflare.net/git/flare-mirrors/{repo}.git' |
   npx wrangler secret put ARTIFACTS_MIRROR_REMOTE \
     --config apps/seats/wrangler.staging.jsonc
-npx wrangler secret put ARTIFACTS_MIRROR_TOKEN \
-  --config apps/seats/wrangler.staging.jsonc < token.txt
+```
+
+Tokens: mirrors inside the seats `ARTIFACTS` binding namespace need no
+stored token — seats mint a per-job 1h read token via the binding
+(memory-only, scrubbed from errors). Cross-namespace mirrors use one
+shared yearly read token (single-repo: tokens are repo-scoped):
+
+```bash
+node scripts/artifacts-mirror.mjs rotate <mirror-repo> \
+  --seats-config apps/seats/wrangler.staging.jsonc
+# Old token expires on its own TTL; rotation is zero-downtime.
 ```
 
 - The template must match
@@ -195,10 +197,8 @@ npx wrangler secret put ARTIFACTS_MIRROR_TOKEN \
   (`checkout failed (mirror: …; github: …)`).
 - Staging-validated: mirror checkout (`mirror-canary-job-02`),
   GitHub fallback, bogus-sha release with zero token leakage
-  (`mirror-canary-job-04`).
-- Still manual: per-repo provisioning/push and yearly token rotation.
-  Worker-minted per-job tokens via the `ARTIFACTS` binding (no stored
-  token at all) wait for the beta + billing to settle.
+  (`mirror-canary-job-04`), scripted provision/sync/rotate, per-job
+  mint for same-namespace mirrors.
 
 ## Local-Docker dev mode
 

@@ -58,32 +58,38 @@ for (const q of ["flare-actions-runs", "flare-actions-dlq", "flare-actions-seats
   if (/already (exists|taken)/i.test(out)) console.log(`queue ${q} already exists, reusing`);
 }
 
-// 3b. Artifacts push-event subscriptions (REST API: wrangler has no
-// artifacts.repo source options, and only one subscription per repo is
-// allowed). Opt-in via ARTIFACTS_SUBSCRIBE_REPOS (comma-separated stable
-// repo names in ARTIFACTS_NAMESPACE). Previews cannot attach queue
-// consumers, so subscriptions target the prod queue; staging and dynamic
-// tournament forks rely on the worker poller + tick instead.
+// 3b. Artifacts namespace + push-event subscriptions (REST API: wrangler
+// has no namespace-create and no artifacts.repo source options; only one
+// subscription per repo is allowed). Namespace always ensured when API
+// creds exist; subscriptions opt-in via ARTIFACTS_SUBSCRIBE_REPOS
+// (comma-separated stable repo names in ARTIFACTS_NAMESPACE). Previews
+// cannot attach queue consumers, so subscriptions target the prod queue;
+// staging and dynamic tournament forks rely on the worker poller + tick.
 {
   const repos = (process.env.ARTIFACTS_SUBSCRIBE_REPOS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   const namespace = process.env.ARTIFACTS_NAMESPACE ?? "flare-tournaments";
   const apiToken = process.env.CLOUDFLARE_API_TOKEN ?? "";
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
-  if (repos.length === 0) {
-    console.log("Artifacts: ARTIFACTS_SUBSCRIBE_REPOS unset — skipping push subscriptions (the worker poller still covers tournament forks).");
-  } else if (!apiToken || !accountId) {
-    console.log("Artifacts: set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID to auto-subscribe, or do it by hand:");
-    console.log("  queue flare-actions-artifacts > Subscriptions > Subscribe to events > source artifacts.repo > pushed.");
-    console.log(`  pending repos: ${repos.join(", ")} (namespace ${namespace}).`);
+  if (!apiToken || !accountId) {
+    console.log("Artifacts: set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID to provision the namespace and push subscriptions, or do it by hand:");
+    console.log("  namespace: dashboard > Workers > Artifacts, or POST /accounts/:id/artifacts/namespaces;");
+    console.log("  subscriptions: queue flare-actions-artifacts > Subscriptions > Subscribe to events > source artifacts.repo > pushed.");
+    if (repos.length > 0) console.log(`  pending repos: ${repos.join(", ")} (namespace ${namespace}).`);
   } else if (!/^[a-f0-9]{32}$/.test(accountId)) {
     fail("CLOUDFLARE_ACCOUNT_ID must be the 32-hex account id.");
   } else if (dryRun) {
-    console.log(`(dry-run) would subscribe flare-actions-artifacts to pushed on ${repos.join(", ")} (namespace ${namespace}).`);
+    console.log(`(dry-run) would ensure namespace ${namespace}${repos.length > 0 ? ` and subscribe flare-actions-artifacts to pushed on ${repos.join(", ")}` : ""}.`);
   } else {
     try {
-      const { ensurePushSubscriptions } = await import("./artifacts-subscriptions.mjs");
-      for (const r of await ensurePushSubscriptions({ apiToken, accountId, namespace, repos })) {
-        console.log(r.reused ? `Artifacts: ${namespace}/${r.repo} already subscribed, reusing` : `Artifacts: subscribed flare-actions-artifacts to pushed on ${namespace}/${r.repo}`);
+      const { ensureNamespace, ensurePushSubscriptions } = await import("./artifacts-admin.mjs");
+      const ns = await ensureNamespace({ apiToken, accountId, namespace });
+      console.log(ns.reused ? `Artifacts: namespace ${namespace} already exists, reusing` : `Artifacts: namespace ${namespace} created`);
+      if (repos.length === 0) {
+        console.log("Artifacts: ARTIFACTS_SUBSCRIBE_REPOS unset — skipping push subscriptions (the worker poller still covers tournament forks).");
+      } else {
+        for (const r of await ensurePushSubscriptions({ apiToken, accountId, namespace, repos })) {
+          console.log(r.reused ? `Artifacts: ${namespace}/${r.repo} already subscribed, reusing` : `Artifacts: subscribed flare-actions-artifacts to pushed on ${namespace}/${r.repo}`);
+        }
       }
     } catch (err) {
       fail(String(err instanceof Error ? err.message : err));
