@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -86,12 +86,27 @@ describe("runLocal", () => {
 
   it("rejects a missing or invalid pipeline file", async () => {
     const empty = workspace({});
-    await expect(runLocal({ cwd: empty, env: { ...process.env }, quiet: true })).rejects.toThrow("no pipeline file");
+    await expect(runLocal({ cwd: empty, env: { ...process.env }, quiet: true })).rejects.toThrow(
+      "no flare.yml or .github/workflows",
+    );
     const invalid = workspace({ "flare.yml": "jobs: {}\n" });
     await expect(runLocal({ cwd: invalid, env: { ...process.env }, quiet: true })).rejects.toThrow("failed validation");
     const unknownJob = workspace({ "flare.yml": "jobs:\n  a:\n    steps:\n      - run: echo\n" });
     await expect(runLocal({ cwd: unknownJob, job: "ghost", env: { ...process.env }, quiet: true })).rejects.toThrow(
       'no job named "ghost"',
     );
+  });
+
+  it("falls back to .github/workflows when flare.yml is absent", async () => {
+    const dir = workspace({});
+    mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
+    writeFileSync(
+      join(dir, ".github", "workflows", "ci.yml"),
+      'name: CI\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: echo "${{ github.ref_name }}" > actions.txt\n',
+    );
+    const res = await runLocal({ cwd: dir, cacheDir: cacheDir(), env: { ...process.env }, quiet: true });
+    expect(res.ok).toBe(true);
+    expect(res.jobs.map((j) => j.name)).toEqual(["build"]);
+    expect(readFileSync(join(dir, "actions.txt"), "utf8").trim()).toBe("local");
   });
 });

@@ -110,6 +110,17 @@ describe("import helpers", () => {
     expect(res.warnings.join("\n")).toContain("unsupported step condition");
   });
 
+  it("translates supported job conditions and warns on expression soup", () => {
+    const ok = convertActionsWorkflow("jobs:\n  a:\n    if: always()\n    runs-on: ubuntu-latest\n    steps:\n      - run: x\n");
+    if (!isImportSuccess(ok)) throw new Error(ok.error);
+    expect(ok.yaml).toContain("if: always()");
+    const soup = convertActionsWorkflow(
+      "jobs:\n  a:\n    if: ${{ github.ref == 'refs/heads/main' }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: x\n",
+    );
+    if (!isImportSuccess(soup)) throw new Error(soup.error);
+    expect(soup.warnings.join("\n")).toContain("unsupported job condition");
+  });
+
   it("translates step shell and timeout, warning on unsupported shells", () => {
     const res = convertActionsWorkflow(
       "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: x\n        shell: bash\n        timeout-minutes: 5\n      - run: y\n        shell: python\n",

@@ -498,7 +498,7 @@ export async function setRunPrComment(db: Db, runId: string, commentId: number):
   await db.prepare("UPDATE runs SET pr_comment_id = ? WHERE id = ?").bind(commentId, runId).run();
 }
 
-export type JobWithSource = JobRow & { repo: string; sha: string; source: string | null };
+export type JobWithSource = JobRow & { repo: string; sha: string; source: string | null; branch: string | null };
 
 // Poll-and-claim loop: walk matching queued jobs highest-priority-first
 // (then oldest-first) until one claim wins or the scan budget runs out.
@@ -541,14 +541,14 @@ export async function claimNextJob(
       afterCreated === null
         ? await db
             .prepare(
-              `SELECT j.*, r.repo, r.sha, r.source FROM jobs j JOIN runs r ON r.id = j.run_id
+              `SELECT j.*, r.repo, r.sha, r.source, r.branch FROM jobs j JOIN runs r ON r.id = j.run_id
                WHERE j.status = 'queued'${repoFilter} ${noArtifacts} ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
             .bind(...allowedRepos, CLAIM_PAGE_SIZE)
             .all<JobWithSource>()
         : await db
             .prepare(
-              `SELECT j.*, r.repo, r.sha, r.source FROM jobs j JOIN runs r ON r.id = j.run_id
+              `SELECT j.*, r.repo, r.sha, r.source, r.branch FROM jobs j JOIN runs r ON r.id = j.run_id
                WHERE j.status = 'queued'${repoFilter} ${noArtifacts} AND (j.priority < ? OR (j.priority = ? AND (j.prior_ms < ? OR (j.prior_ms = ? AND (j.created_at > ? OR (j.created_at = ? AND j.id > ?))))))
                ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )

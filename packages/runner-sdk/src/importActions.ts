@@ -296,6 +296,14 @@ export function convertActionsWorkflow(text: string): ImportResult {
     if (typeof jobDef["timeout-minutes"] === "number" && jobDef["timeout-minutes"] > 0) {
       out["timeout-minutes"] = Math.floor(jobDef["timeout-minutes"]);
     }
+    // Bounded job-level condition, same subset as steps: the scheduler
+    // treats `success()` (default) as skip-after-failed-need and
+    // `always()`/`failure()` as run. Everything else is warned.
+    if (jobDef.if !== undefined) {
+      const norm = normalizeStepCondition(jobDef.if);
+      if (norm) out.if = norm;
+      else warnings.push(`${jobId}: dropped unsupported job condition \`${String(jobDef.if)}\``);
+    }
     if (jobDef.outputs !== undefined) warnings.push(`${jobId}: job outputs ignored`);
     out.steps = acc.steps;
     jobs[jobId] = out;

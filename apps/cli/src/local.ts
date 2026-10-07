@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -10,6 +10,7 @@ import {
   type RunJobResult,
 } from "flare-actions-runner-sdk";
 import { parsePipeline, type PipelineJob } from "../../worker/src/pipeline.ts";
+import { buildCompatJobs, type WorkflowFile } from "../../worker/src/actionsCompat.ts";
 
 // `cli local`: run flare.yml in the current working tree, on this
 // machine, with no server and no commit. This is the agent inner loop —
@@ -142,13 +143,39 @@ function printOutcome(name: string, outcome: RunJobResult, artifactsDir: string)
 
 export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
   const filePath = resolve(opts.cwd, opts.file ?? "flare.yml");
-  if (!existsSync(filePath)) throw new Error(`no pipeline file at ${filePath}`);
-  const jobs = parsePipeline(readFileSync(filePath, "utf8"));
-  if (!jobs) throw new Error(`${filePath} failed validation (see docs/PIPELINES.md)`);
+  let jobs: PipelineJob[] | null = null;
+  let sourceLabel = filePath;
+  if (existsSync(filePath)) {
+    jobs = parsePipeline(readFileSync(filePath, "utf8"));
+    if (!jobs) throw new Error(`${filePath} failed validation (see docs/PIPELINES.md)`);
+  } else if (!opts.file) {
+    // No flare.yml: fall back to this tree's .github/workflows files —
+    // the same compatibility path the server uses for repos without
+    // flare.yml. Locally there is no event to match, so every file runs.
+    const dir = join(opts.cwd, ".github", "workflows");
+    const files: WorkflowFile[] = [];
+    if (existsSync(dir)) {
+      for (const name of readdirSync(dir).sort()) {
+        if (!/\.ya?ml$/i.test(name)) continue;
+        files.push({ name, text: readFileSync(join(dir, name), "utf8") });
+      }
+    }
+    if (files.length > 0) {
+      const compat = buildCompatJobs(files, null);
+      if (!opts.quiet) {
+        for (const warning of compat.warnings) console.error(`warning: ${warning}`);
+      }
+      if (compat.jobs) {
+        jobs = compat.jobs;
+        sourceLabel = dir;
+      }
+    }
+  }
+  if (!jobs) throw new Error(`no flare.yml or .github/workflows under ${opts.cwd}`);
   let selected = jobs;
   if (opts.job) {
     selected = jobs.filter((j) => j.base === opts.job || j.name === opts.job);
-    if (selected.length === 0) throw new Error(`no job named "${opts.job}" in ${filePath}`);
+    if (selected.length === 0) throw new Error(`no job named "${opts.job}" in ${sourceLabel}`);
   }
 
   const env = opts.env ?? process.env;
@@ -186,6 +213,7 @@ export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
         FLARE_SHA: "local",
         FLARE_RUN_ID: "local",
         FLARE_JOB_ID: slugify(job.name),
+        FLARE_REF: "local",
       },
       client: localClient(cacheDir, artifactsDir, slugify(job.name)),
       jobId: slugify(job.name),

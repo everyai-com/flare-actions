@@ -117,6 +117,7 @@ import {
   serializeDefinition,
   type PipelineJob,
 } from "./pipeline";
+import { buildCompatJobs, fetchWorkflowFiles, type WorkflowEventContext } from "./actionsCompat";
 import { promoteBlockedJobs, maybeRetryJob, reportGitHubStatus, requeueStaleJobs, triageAndStore } from "./finish";
 import { notifyRunCompleted, resolveNotifySender } from "./notify";
 import {
@@ -423,7 +424,11 @@ export interface GitHubWebhookPayload {
   repository?: { full_name?: string };
   after?: string;
   installation?: { id?: number };
-  pull_request?: { head?: { sha?: string; ref?: string }; number?: number };
+  pull_request?: {
+    head?: { sha?: string; ref?: string };
+    base?: { ref?: string };
+    number?: number;
+  };
 }
 
 const ZERO_SHA = "0000000000000000000000000000000000000000";
@@ -448,11 +453,16 @@ function branchFromRef(ref: string | undefined): string {
   return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : "";
 }
 
+// Resolve the run's jobs at repo@sha. Precedence: flare.yml (public
+// raw, then authenticated) always wins; without one, GitHub Actions
+// workflow files matching the run's event are translated and merged
+// (actionsCompat.ts). Anything else is the default single job.
 async function loadPipelineJobs(
   env: WorkerEnv,
   repo: string,
   sha: string,
   installationId: number | null,
+  ctx?: WorkflowEventContext,
 ): Promise<PipelineJob[]> {
   try {
     // Public fast path first (no token minted); fall back to the
@@ -460,16 +470,44 @@ async function loadPipelineJobs(
     const direct = await fetchPipeline(repo, sha, null);
     if (direct) return parsePipeline(direct) ?? defaultPipeline();
     const creds = await getAppCreds(env);
+    let token: string | null = null;
     if (installationId && creds) {
       try {
         const jwt = await mintAppJwt(creds.appId, creds.privateKey);
-        const token = await getInstallationToken(jwt, installationId);
-        if (token) {
-          const text = await fetchPipeline(repo, sha, token);
-          if (text) return parsePipeline(text) ?? defaultPipeline();
-        }
+        token = await getInstallationToken(jwt, installationId);
       } catch (err) {
         log("warn", "private pipeline fetch failed, using default", { error: String(err) });
+      }
+    }
+    if (token) {
+      const text = await fetchPipeline(repo, sha, token);
+      if (text) return parsePipeline(text) ?? defaultPipeline();
+    }
+    // No flare.yml at this commit: native .github/workflows compatibility.
+    if (ctx) {
+      let fetched = await fetchWorkflowFiles(repo, sha, null);
+      if (!fetched && token) fetched = await fetchWorkflowFiles(repo, sha, token);
+      if (fetched) {
+        const compat = buildCompatJobs(fetched.files, { ...ctx, repo: ctx.repo ?? repo });
+        const warnings = [...fetched.warnings, ...compat.warnings];
+        if (compat.jobs) {
+          log("info", "actions-compat run", {
+            repo,
+            sha,
+            files: fetched.files.length,
+            used: compat.used,
+            jobs: compat.jobs.length,
+            warnings: warnings.slice(0, 10),
+          });
+          return compat.jobs;
+        }
+        log("info", "actions-compat produced no jobs", {
+          repo,
+          sha,
+          event: ctx.event,
+          files: fetched.files.length,
+          warnings: warnings.slice(0, 10),
+        });
       }
     }
     return defaultPipeline();
@@ -609,10 +647,16 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     const sha = payload.after ?? payload.pull_request?.head?.sha;
     if (!repo || !sha) return json({ error: "missing repo or sha" }, 400);
     const branch = branchFromRef(payload.ref) || payload.pull_request?.head?.ref || "";
+    const tag = payload.ref?.startsWith("refs/tags/") ? payload.ref.slice("refs/tags/".length) : "";
 
     const installationId = payload.installation?.id ?? null;
     const prNumber = event === "pull_request" ? (payload.pull_request?.number ?? null) : null;
-    const jobs = await loadPipelineJobs(env, repo, sha, installationId);
+    const jobs = await loadPipelineJobs(env, repo, sha, installationId, {
+      event,
+      branch,
+      baseBranch: payload.pull_request?.base?.ref,
+      tag,
+    });
     const { runId, jobIds, queuedIds, blocked } = await createRunAndFanOut(env, {
       repo,
       sha,
@@ -959,7 +1003,18 @@ export function validateScheduleInput(
 
 async function dispatchRun(
   env: WorkerEnv,
-  input: { repo: string; sha: string; ref: string; pipeline?: string; event?: string; priority?: number; source?: string },
+  input: {
+    repo: string;
+    sha: string;
+    ref: string;
+    pipeline?: string;
+    event?: string;
+    priority?: number;
+    source?: string;
+    // Firing cron for schedule events; matches `on.schedule` entries in
+    // Actions-compatible workflow files.
+    cron?: string;
+  },
   basin?: BasinSink,
 ): Promise<{ runId: string; jobIds: string[]; queuedIds: string[] }> {
   // Dispatch accepts a SHA, branch, or tag: non-SHA refs resolve to the
@@ -972,6 +1027,9 @@ async function dispatchRun(
   let sha = input.sha;
   let installationId: number | null = null;
   let jobs: PipelineJob[] | null;
+  const branch = input.source
+    ? input.ref || "local"
+    : branchFromRef(input.ref) || input.ref || (!isHexSha(input.sha) ? input.sha : "");
   if (input.source) {
     sha = `src-${input.source.slice(0, 8)}`;
     jobs = input.pipeline ? parsePipeline(input.pipeline) : null;
@@ -997,12 +1055,13 @@ async function dispatchRun(
       jobs = parsePipeline(input.pipeline);
       if (!jobs) throw new Error("pipeline parse failed");
     } else {
-      jobs = await loadPipelineJobs(env, input.repo, sha, installationId);
+      jobs = await loadPipelineJobs(env, input.repo, sha, installationId, {
+        event: input.event ?? "dispatch",
+        branch,
+        cron: input.cron,
+      });
     }
   }
-  const branch = input.source
-    ? input.ref || "local"
-    : branchFromRef(input.ref) || input.ref || (!isHexSha(input.sha) ? input.sha : "");
   const { runId, jobIds, queuedIds } = await createRunAndFanOut(env, {
     repo: input.repo,
     sha,
@@ -2731,7 +2790,11 @@ export default {
         if (s.enabled !== 1 || !cronMatches(s.cron, now)) continue;
         if (s.last_run_at && Date.now() - Date.parse(s.last_run_at) < 60000) continue;
         try {
-          const out = await dispatchRun(env, { repo: s.repo, sha: s.ref, ref: s.ref, event: "schedule" }, basinSink(env, ctx));
+          const out = await dispatchRun(
+            env,
+            { repo: s.repo, sha: s.ref, ref: s.ref, event: "schedule", cron: s.cron },
+            basinSink(env, ctx),
+          );
           await touchScheduleRun(env.DB, s.id);
           await audit(env.DB, "schedule", "run.dispatch", `${s.id} ${out.runId}`);
           for (const jobId of out.queuedIds) await wakeSeat(env, jobId);

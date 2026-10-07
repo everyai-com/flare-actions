@@ -50,6 +50,9 @@ export interface FlareJob {
   name: string;
   definition: string;
   source?: string | null;
+  // Branch the run was triggered on ("" for tag/source runs); exposed to
+  // steps as FLARE_REF and used by Actions-compatible expressions.
+  branch?: string | null;
 }
 
 export interface FlareStepResult {
