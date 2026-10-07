@@ -14,6 +14,7 @@ export const SCHEMA_STATEMENTS = [
     branch TEXT NOT NULL DEFAULT '',
     source TEXT,
     pipeline_source TEXT NOT NULL DEFAULT '',
+    changed_files TEXT NOT NULL DEFAULT '',
     pr_number INTEGER,
     pr_comment_id INTEGER,
     heal_branch TEXT,
@@ -268,6 +269,7 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE runs ADD COLUMN heal_branch TEXT`,
   `ALTER TABLE runs ADD COLUMN heal_pr_url TEXT`,
   `ALTER TABLE runs ADD COLUMN pipeline_source TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE runs ADD COLUMN changed_files TEXT NOT NULL DEFAULT ''`,
 ];
 
 let schemaPromise: Promise<void> | null = null;

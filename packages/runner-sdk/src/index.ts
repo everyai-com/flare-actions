@@ -53,6 +53,9 @@ export interface FlareJob {
   // Branch the run was triggered on ("" for tag/source runs); exposed to
   // steps as FLARE_REF and used by Actions-compatible expressions.
   branch?: string | null;
+  // Newline-joined changed files ("" = unknown); exposed as
+  // FLARE_CHANGED_FILES for changed-file test selection recipes.
+  changed_files?: string | null;
 }
 
 export interface FlareStepResult {
@@ -84,6 +87,17 @@ export interface FlareFlakyStat {
   runs: number;
   failures: number;
   rate: number;
+}
+
+// "What's blocking the merge": per-check run-time percentiles (ms) and
+// median queue wait for a repo over the trailing window.
+export interface FlareBottleneck {
+  check: string;
+  jobs: number;
+  p50Ms: number;
+  p95Ms: number;
+  queueP50Ms: number;
+  failures: number;
 }
 
 export interface FlareTestTotals {
@@ -446,6 +460,13 @@ export class FlareClient {
     if (!res.ok) throw new Error(`getFlaky failed: ${res.status}`);
     const data = (await res.json()) as { stats: FlareFlakyStat[] };
     return data.stats;
+  }
+
+  async getBottlenecks(repo: string, days = 14): Promise<FlareBottleneck[]> {
+    const res = await this.call(`/v1/bottlenecks?repo=${encodeURIComponent(repo)}&days=${days}`);
+    if (!res.ok) throw new Error(`getBottlenecks failed: ${res.status}`);
+    const data = (await res.json()) as { checks: FlareBottleneck[] };
+    return data.checks;
   }
 
   async reportStatus(

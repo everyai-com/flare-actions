@@ -896,6 +896,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       FLARE_RUN_ID: run.id,
       FLARE_JOB_ID: job.id,
       FLARE_REF: run.branch ?? "",
+      FLARE_CHANGED_FILES: run.changed_files ?? "",
       // GitHub parity (see runner-sdk job.ts); job env may override.
       CI: "true",
       ...jobEnv,

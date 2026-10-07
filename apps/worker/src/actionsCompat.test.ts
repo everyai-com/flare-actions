@@ -86,6 +86,23 @@ describe("matchesWorkflowEvent", () => {
     expect(matchesWorkflowEvent({ schedule: [{ cron: "0 3 * * *" }] }, { event: "schedule" })).toBe(true);
     expect(matchesWorkflowEvent({ push: null }, { event: "schedule", cron: "0 3 * * *" })).toBe(false);
   });
+
+  it("applies paths filters only when changed files are known", () => {
+    const pushMain = { event: "push", branch: "main" };
+    const onPaths = { push: { paths: ["src/**", "lib/*.ts"] } };
+    expect(matchesWorkflowEvent(onPaths, pushMain)).toBe(true); // unknown → conservative
+    expect(matchesWorkflowEvent(onPaths, { ...pushMain, changedFiles: ["src/a.ts"] })).toBe(true);
+    expect(matchesWorkflowEvent(onPaths, { ...pushMain, changedFiles: ["lib/x.ts"] })).toBe(true);
+    expect(matchesWorkflowEvent(onPaths, { ...pushMain, changedFiles: ["lib/nested/x.ts"] })).toBe(false);
+    expect(matchesWorkflowEvent(onPaths, { ...pushMain, changedFiles: ["docs/a.md"] })).toBe(false);
+    const onIgnore = { push: { "paths-ignore": ["docs/**", "*.md"] } };
+    expect(matchesWorkflowEvent(onIgnore, { ...pushMain, changedFiles: ["README.md"] })).toBe(false);
+    expect(matchesWorkflowEvent(onIgnore, { ...pushMain, changedFiles: ["docs/x/y.md"] })).toBe(false);
+    expect(matchesWorkflowEvent(onIgnore, { ...pushMain, changedFiles: ["src/a.ts"] })).toBe(true);
+    const pr = { event: "pull_request", baseBranch: "main", changedFiles: ["src/x.ts"] };
+    expect(matchesWorkflowEvent({ pull_request: { paths: ["src/**"] } }, pr)).toBe(true);
+    expect(matchesWorkflowEvent({ pull_request: { paths: ["pkg/**"] } }, pr)).toBe(false);
+  });
 });
 
 describe("mapGithubExpressions", () => {

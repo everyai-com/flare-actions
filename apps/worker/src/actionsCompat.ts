@@ -33,6 +33,9 @@ export interface WorkflowEventContext {
   cron?: string;
   // owner/name, for `github.repository` guards.
   repo?: string;
+  // Changed files (push compare / PR file list); undefined or empty means
+  // unknown, and `paths:` filters then run conservatively.
+  changedFiles?: string[];
 }
 
 export interface WorkflowFile {
@@ -132,6 +135,22 @@ function scheduleCrons(schedule: unknown): string[] {
   return out;
 }
 
+// Path filters (`paths` / `paths-ignore`): a changed-file list that is
+// unknown (fetch failed, empty) never filters — a GitHub hiccup must not
+// silently skip a workflow. A known list evaluates like Actions: any file
+// passing the positive patterns triggers; any file hitting an ignore
+// pattern suppresses.
+function matchPathFilters(cfg: Record<string, unknown>, ctx: WorkflowEventContext): boolean {
+  const paths = strArray(cfg.paths);
+  const ignore = strArray(cfg["paths-ignore"]);
+  if (!paths && !ignore) return true;
+  const files = ctx.changedFiles;
+  if (!files || files.length === 0) return true;
+  if (paths && !files.some((file) => matchBranchPatterns(paths, file))) return false;
+  if (ignore && files.some((file) => matchBranchPatterns(ignore, file))) return false;
+  return true;
+}
+
 // Pure: does an `on:` block select this run's event? Unknown trigger
 // kinds never match — a workflow for an event we do not deliver is
 // skipped, never guessed into a run.
@@ -148,13 +167,13 @@ export function matchesWorkflowEvent(on: unknown, ctx: WorkflowEventContext): bo
     if (ctx.branch) {
       if (branches && !matchBranchPatterns(branches, ctx.branch)) return false;
       if (ignore && ignore.some((p) => matchBranchGlob(p, ctx.branch as string))) return false;
-      return true;
+      return matchPathFilters(cfg, ctx);
     }
     // Tag push (branch === ""): branch filters never match, tag filters
     // decide when present, and untagged filters alone still run.
     if (branches || ignore) return false;
     if (tags) return ctx.tag ? matchBranchPatterns(tags, ctx.tag) : false;
-    return true;
+    return matchPathFilters(cfg, ctx);
   }
   if (ctx.event === "pull_request") {
     if (!("pull_request" in map)) return false;
@@ -165,6 +184,7 @@ export function matchesWorkflowEvent(on: unknown, ctx: WorkflowEventContext): bo
       const ignore = strArray(cfg["branches-ignore"]);
       if (branches && !matchBranchPatterns(branches, target)) return false;
       if (ignore && ignore.some((p) => matchBranchGlob(p, target))) return false;
+      if (!matchPathFilters(cfg, ctx)) return false;
     }
     return true;
   }

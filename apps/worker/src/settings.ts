@@ -24,6 +24,9 @@ export const SETTING_KEYS = {
   triageModel: "triage_model",
   healOnFailure: "heal_on_failure",
   openRegistration: "open_registration",
+  budgetMinutes: "budget_minutes",
+  budgetMode: "budget_mode",
+  supersedeBranchRuns: "supersede_branch_runs",
 } as const;
 
 export function validateWebhookSecret(secret: unknown): string | null {
@@ -161,6 +164,64 @@ export function parseOpenRegistration(value: unknown): { on: boolean } | { error
   if (value === "1" || value === "true") return { on: true };
   if (value === "0" || value === "false" || value === "" || value === null || value === undefined) return { on: false };
   return { error: "openRegistration must be a boolean" };
+}
+
+// Spend guardrails: monthly compute-minute caps per repo, entered as
+// "owner/name=minutes, owner/other=minutes". Stored as JSON; `block`
+// refuses new runs once a repo is over its cap, `warn` (default) keeps
+// dispatching but audits the overage.
+export function parseBudgetMinutes(value: unknown): { budgets: Record<string, number> } | { error: string } {
+  if (value === null || value === undefined || value === "") return { budgets: {} };
+  if (typeof value !== "string" || value.length > 4096) {
+    return { error: "budgetMinutes must be a string like owner/name=1200, other/name=600" };
+  }
+  const budgets: Record<string, number> = {};
+  for (const raw of value.split(",")) {
+    const part = raw.trim();
+    if (!part) continue;
+    const eq = part.lastIndexOf("=");
+    if (eq <= 0) return { error: `budget entry must be owner/name=minutes: "${part}"` };
+    const repo = part.slice(0, eq).trim();
+    const minutes = Number(part.slice(eq + 1).trim());
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return { error: `budget repo must be owner/name: "${repo}"` };
+    if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 1_000_000) {
+      return { error: `budget minutes must be 1-1000000: "${part}"` };
+    }
+    budgets[repo] = minutes;
+  }
+  if (Object.keys(budgets).length > 50) return { error: "at most 50 budget entries" };
+  return { budgets };
+}
+
+// Tolerant reader for the stored JSON map (hand-edited rows degrade to {}).
+export function parseStoredBudgets(raw: string | null): Record<string, number> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    const out: Record<string, number> = {};
+    for (const [repo, minutes] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0) out[repo] = minutes;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function parseBudgetMode(value: unknown): { mode: "warn" | "block" } | { error: string } {
+  if (value === "warn" || value === "block") return { mode: value };
+  if (value === null || value === undefined || value === "") return { mode: "warn" };
+  return { error: "budgetMode must be warn or block" };
+}
+
+// Auto-supersede: "push" cancels still-active jobs of earlier runs on the
+// same branch when a new push arrives (one run per branch head); "off"
+// (default) keeps every push's run.
+export function parseSupersedeBranchRuns(value: unknown): { mode: "off" | "push" } | { error: string } {
+  if (value === "off" || value === "push") return { mode: value };
+  if (value === null || value === undefined || value === "" || value === "0" || value === "false") return { mode: "off" };
+  return { error: "supersedeBranchRuns must be off or push" };
 }
 
 // Billing-Read API token for the Billable Usage API (write-only,

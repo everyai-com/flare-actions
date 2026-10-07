@@ -467,7 +467,7 @@ describe("runSeatJob", () => {
     expect(db.runs.get("r1")?.status).toBe("success");
     expect(container.destroys).toBe(1);
     const stepCall = container.calls.find((c) => c.cmd[2]?.startsWith("sh -s >"));
-    expect(stepCall?.opts?.env).toMatchObject({ TAG: "v1", FLARE_MATRIX_NODE: "20", FLARE_REPO: "o/r", FLARE_REF: "main", CI: "true" });
+    expect(stepCall?.opts?.env).toMatchObject({ TAG: "v1", FLARE_MATRIX_NODE: "20", FLARE_REPO: "o/r", FLARE_REF: "main", FLARE_CHANGED_FILES: "", CI: "true" });
     expect(stepCall?.opts?.stdin).toBe("echo one");
     expect(stepCall?.opts?.cwd).toBe("/work");
     // FETCH_HEAD (not the raw ref) so branch names and HEAD resolve.

@@ -85,23 +85,24 @@ itself. Everything below answers that, in the order teams hit it.
 
 ### Next (queued)
 
-- [ ] Spend guardrails: per-repo budgets + alerts, warn/refuse dispatch
-      past a cap, cost-per-merged-PR trend (usage APIs exist).
-- [ ] "What's blocking the merge" report: p50/p95 per check, queue wait vs
-      run time, longest pole per repo — dashboard + CLI + one digest line
-      (analytics + priors data already exists).
-- [ ] `paths:` trigger filters + `FLARE_CHANGED_FILES` exposed to steps,
-      unlocking changed-file test selection recipes ("run the 12% that
-      matters", always with a full-suite fallback).
-- [ ] Sharding: docs recipe first, then a native `shards: N` that splits
-      test files across matrix cells, aggregates JUnit, and keeps setup
-      cost bounded (setup overhead is what limits sharding).
-- [ ] Auto-supersede: "one run per branch head" as the default policy for
-      agent-heavy repos (`cancel-in-progress` without hand-written groups).
-- [ ] Surface stale-job reclaims and slot behavior in the dashboard +
-      digest so fleet operators can see liveness at a glance.
-- [ ] Recipes/docs: "one cache, ten agents", "verify without committing",
-      "CI budget math at 300 pushes/day".
+- [x] Spend guardrails: per-repo monthly compute-minute budgets with
+      warn/block modes, audit rows, and a dashboard form.
+- [ ] Cost-per-merged-PR trend (the remaining slice of the budget story).
+- [x] "What's blocking the merge" report: p50/p95 per check + median
+      queue wait — dashboard card, `GET /v1/bottlenecks`, `cli
+      bottlenecks`.
+- [x] `paths:` trigger filters + `FLARE_CHANGED_FILES` exposed to steps,
+      unlocking changed-file test selection recipes (unknown changes run
+      conservatively, never silently skip).
+- [x] Sharding: native `shards: N` splits a job across parallel cells
+      with `FLARE_SHARD_INDEX`/`FLARE_SHARD_TOTAL` (setup overhead is what
+      limits sharding — cache and preinstalled toolchains keep it down).
+- [x] Auto-supersede: opt-in `one run per branch head` policy cancels
+      still-active jobs of earlier same-branch runs on push.
+- [x] Stale-job reclaims write a `[flare] requeued` line into the job log
+      (visible in the dashboard); dead executors can't wedge the queue.
+- [x] Recipes/docs: changed files, shards, and the check loop are covered
+      in `PIPELINES.md`, `GITHUB-ACTIONS-COMPAT.md`, and `DEV-SPEED.md`.
 
 ### Research bets
 

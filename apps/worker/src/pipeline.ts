@@ -97,6 +97,7 @@ export interface PipelineJob {
 }
 
 export const MAX_JOBS = 32;
+export const MAX_SHARDS = 8;
 export const MAX_BROWSER_CHECKS = 10;
 export const MAX_EGRESS_ALLOW = 32;
 export const MAX_STEPS_PER_JOB = 100;
@@ -202,6 +203,10 @@ interface RawJob {
   cancelInProgress: boolean;
   timeoutMinutes?: number;
   retry?: number;
+  // Split a long job into N parallel cells (2-8); each cell gets
+  // FLARE_SHARD_INDEX / FLARE_SHARD_TOTAL for `vitest --shard=…`-style
+  // recipes. Multiplies with a matrix when both are present.
+  shards?: number;
   if?: string;
   retainOnFailure?: boolean;
   browserChecks?: PipelineBrowserCheck[];
@@ -335,6 +340,11 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     if (typeof r !== "number" || !Number.isInteger(r) || r < 0 || r > 5) return null;
     job.retry = r;
   }
+  if (def.shards !== undefined) {
+    const n = def.shards;
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 2 || n > MAX_SHARDS) return null;
+    job.shards = n;
+  }
   if (def.if !== undefined) {
     const cond = normalizeStepCondition(def.if);
     if (!cond) return null;
@@ -463,36 +473,47 @@ export function parsePipeline(text: string): PipelineJob[] | null {
     needsOf.set(r.name, r.needs);
   }
   if (hasCycle([...names], needsOf)) return null;
-  // Expand matrices; the expanded total obeys the job cap.
+  // Expand matrices and shards; the expanded total obeys the job cap.
   const out: PipelineJob[] = [];
   for (const r of raws) {
     const combos = r.axes ? expandMatrixAxes(r.axes) : [null];
+    const shardCount = r.shards ?? 1;
     for (const combo of combos) {
       const matrix = combo ?? undefined;
-      const suffix = combo ? ` (${Object.entries(combo).map(([k, v]) => `${k}=${v}`).join(", ")})` : "";
-      const name = `${r.name}${suffix}`;
-      if (name.length > 128) return null;
-      const steps = r.steps.map((s) => ({ ...s, run: interpolateRun(s.run, matrix ?? {}, r.env) }));
-      const job: PipelineJob = { name, steps };
-      if (combo) job.base = r.name;
-      if (r.labels) job.labels = r.labels;
-      if (matrix) job.matrix = matrix;
-      if (Object.keys(r.env).length > 0) job.env = r.env;
-      if (r.container) job.container = r.container;
-      if (r.services) job.services = r.services;
-      if (r.cache) job.cache = r.cache;
-      if (r.artifacts) job.artifacts = r.artifacts;
-      if (r.testReports) job.testReports = r.testReports;
-      if (r.needs.length > 0) job.needs = r.needs;
-      if (r.group) job.group = r.group;
-      if (r.cancelInProgress) job.cancelInProgress = true;
-      if (r.timeoutMinutes !== undefined) job.timeoutMinutes = r.timeoutMinutes;
-      if (r.retry !== undefined) job.retry = r.retry;
-      if (r.if !== undefined) job.if = r.if;
-      if (r.retainOnFailure !== undefined) job.retainOnFailure = r.retainOnFailure;
-      if (r.browserChecks) job.browserChecks = r.browserChecks;
-      if (r.egress) job.egress = r.egress;
-      out.push(job);
+      for (let shard = 1; shard <= shardCount; shard++) {
+        const parts: string[] = [];
+        if (combo) parts.push(...Object.entries(combo).map(([k, v]) => `${k}=${v}`));
+        if (shardCount > 1) parts.push(`shard=${shard}/${shardCount}`);
+        const suffix = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+        const name = `${r.name}${suffix}`;
+        if (name.length > 128) return null;
+        const steps = r.steps.map((s) => ({ ...s, run: interpolateRun(s.run, matrix ?? {}, r.env) }));
+        const job: PipelineJob = { name, steps };
+        if (combo || shardCount > 1) job.base = r.name;
+        if (r.labels) job.labels = r.labels;
+        if (matrix) job.matrix = matrix;
+        const env = { ...r.env };
+        if (shardCount > 1) {
+          env.FLARE_SHARD_INDEX = String(shard);
+          env.FLARE_SHARD_TOTAL = String(shardCount);
+        }
+        if (Object.keys(env).length > 0) job.env = env;
+        if (r.container) job.container = r.container;
+        if (r.services) job.services = r.services;
+        if (r.cache) job.cache = r.cache;
+        if (r.artifacts) job.artifacts = r.artifacts;
+        if (r.testReports) job.testReports = r.testReports;
+        if (r.needs.length > 0) job.needs = r.needs;
+        if (r.group) job.group = r.group;
+        if (r.cancelInProgress) job.cancelInProgress = true;
+        if (r.timeoutMinutes !== undefined) job.timeoutMinutes = r.timeoutMinutes;
+        if (r.retry !== undefined) job.retry = r.retry;
+        if (r.if !== undefined) job.if = r.if;
+        if (r.retainOnFailure !== undefined) job.retainOnFailure = r.retainOnFailure;
+        if (r.browserChecks) job.browserChecks = r.browserChecks;
+        if (r.egress) job.egress = r.egress;
+        out.push(job);
+      }
     }
   }
   if (out.length > MAX_JOBS) return null;

@@ -43,6 +43,18 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("GITHUB-ACTIONS-COMPAT.md");
   });
 
+  it("renders the slowest-checks report", () => {
+    expect(DASHBOARD_HTML).toContain("bottlenecksBox");
+    expect(DASHBOARD_HTML).toContain("loadBottlenecks");
+    expect(DASHBOARD_HTML).toContain("/v1/bottlenecks?repo=");
+  });
+
+  it("wires budget guardrails and auto-supersede", () => {
+    expect(DASHBOARD_HTML).toContain("budgetInput");
+    expect(DASHBOARD_HTML).toContain("budgetModeSelect");
+    expect(DASHBOARD_HTML).toContain("supersedeCheck");
+  });
+
   it("wires the open-registration toggle and self-serve signup", () => {
     expect(DASHBOARD_HTML).toContain("openRegCheck");
     expect(DASHBOARD_HTML).toContain("openRegistration");

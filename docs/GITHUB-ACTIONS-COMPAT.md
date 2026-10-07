@@ -32,6 +32,7 @@ A workflow runs only for the event that dispatched the run:
 | --- | --- |
 | `push` | a push webhook (branch runs; `branches` / `branches-ignore` filters apply, `!pattern` negations supported; `*` stays within a path segment, `**` crosses) |
 | `push.tags` | a tag push, matched against the tag name (best effort — no branch filters allowed in the same block) |
+| `paths` / `paths-ignore` | matched against the run's changed files (push compare / PR file list, exposed to steps as `FLARE_CHANGED_FILES`). Unknown changed files (fetch failure) run conservatively |
 | `pull_request` | a PR webhook; `branches` filters match the **base** branch |
 | `workflow_dispatch` | manual dispatch via `POST /v1/runs/dispatch`, the CLI (`cli run`), or MCP `dispatch_run` |
 | `schedule` | a dashboard schedule firing; the workflow's `on.schedule[].cron` must equal the schedule's cron (whitespace-normalized, strict match) |
@@ -126,8 +127,8 @@ still takes `flare.yml` or an inline pipeline.
 
 ## Known differences
 
-- No expression engine, no `paths:` trigger filters, no job outputs, no
-  reusable/composite workflows, no JS or container actions.
+- No expression engine, no job outputs, no reusable/composite workflows,
+  no JS or container actions.
 - Caches use Flare's cache semantics (per-key restore, no `restore-keys`).
 - `runs-on` labels map `ubuntu-*` / `macos-*` / `windows-*` onto portable
   runner labels; anything else matches BYO runner labels verbatim.

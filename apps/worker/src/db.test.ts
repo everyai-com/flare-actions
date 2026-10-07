@@ -8,6 +8,7 @@ import {
   isAdminMarkerClaimed,
   pruneWebhookDeliveries,
   releaseAdminMarker,
+  summarizeBottlenecks,
   updateRunningJob,
   usageStats,
 } from "./db";
@@ -53,7 +54,7 @@ class QueueDb implements Db {
     return {
       bind: (...values: unknown[]) => ({
         all: async <T,>(): Promise<{ results: T[] }> => {
-          if (norm.startsWith("SELECT j.*, r.repo, r.sha, r.source, r.branch FROM jobs")) {
+          if (norm.startsWith("SELECT j.*, r.repo, r.sha, r.source, r.branch, r.changed_files FROM jobs")) {
             this.selects += 1;
             return { results: this.select(norm, values) as T[] };
           }
@@ -483,5 +484,56 @@ describe("usageStats", () => {
     expect(out.runs).toBe(0);
     expect(out.computeMinutes).toBe(0);
     expect(out.topRepos).toEqual([]);
+  });
+});
+
+describe("summarizeBottlenecks", () => {
+  const at = (ms: number) => new Date(ms).toISOString();
+  const row = (
+    name: string,
+    status: string,
+    created: number,
+    started: number,
+    finished: number,
+  ): { name: string; status: string; created_at: string; started_at: string | null; finished_at: string | null } => ({
+    name,
+    status,
+    created_at: at(created),
+    started_at: at(started),
+    finished_at: at(finished),
+  });
+
+  it("groups matrix/shard cells by base check and percentiles timings", () => {
+    const rows = [
+      row("test (node=18)", "success", 0, 10_000, 110_000), // 100s run, 10s queue
+      row("test (node=20)", "success", 0, 20_000, 320_000), // 300s run, 20s queue
+      row("test (shard=1/2)", "failure", 0, 30_000, 130_000), // 100s run, 30s queue
+      row("test (shard=2/2)", "success", 0, 40_000, 240_000), // 200s run, 40s queue
+      row("lint", "success", 0, 5_000, 15_000), // 10s run
+      row("queued-only", "queued", 0, 0, 0), // no timings → ignored
+    ];
+    // Strip the pseudo-timestamps for the unstarted row.
+    rows[5] = { name: "queued-only", status: "queued", created_at: at(0), started_at: null, finished_at: null };
+    const out = summarizeBottlenecks(rows);
+    expect(out.map((r) => r.check)).toEqual(["test", "lint"]);
+    const test = out[0];
+    expect(test.jobs).toBe(4);
+    // Sorted durations [100k, 100k, 200k, 300k] → idx floor(0.5*3)=1, floor(0.95*3)=2.
+    expect(test.p50Ms).toBe(100_000);
+    expect(test.p95Ms).toBe(200_000);
+    // Sorted queues [10k, 20k, 30k, 40k] → idx 1.
+    expect(test.queueP50Ms).toBe(20_000);
+    expect(test.failures).toBe(1);
+    expect(out[1]).toMatchObject({ check: "lint", jobs: 1, p50Ms: 10_000, failures: 0 });
+  });
+
+  it("sorts by p95 and honors the limit", () => {
+    const rows = [
+      row("a", "success", 0, 0, 10_000),
+      row("b", "success", 0, 0, 30_000),
+      row("c", "success", 0, 0, 20_000),
+    ];
+    const out = summarizeBottlenecks(rows, 2);
+    expect(out.map((r) => r.check)).toEqual(["b", "c"]);
   });
 });

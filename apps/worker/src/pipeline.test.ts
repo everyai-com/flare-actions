@@ -80,6 +80,30 @@ describe("parsePipeline v2 keys", () => {
     expect(parsePipeline("jobs:\n  a:\n    strategy:\n      matrix: []\n    steps:\n      - run: echo\n")).toBeNull();
   });
 
+  it("expands shards with FLARE_SHARD_* env", () => {
+    const jobs = parsePipeline("jobs:\n  test:\n    shards: 4\n    steps:\n      - run: npx vitest run --shard=$FLARE_SHARD_INDEX/$FLARE_SHARD_TOTAL\n");
+    expect(jobs?.map((j) => j.name)).toEqual(["test (shard=1/4)", "test (shard=2/4)", "test (shard=3/4)", "test (shard=4/4)"]);
+    expect(jobs?.[0].base).toBe("test");
+    expect(jobs?.[2].env).toEqual({ FLARE_SHARD_INDEX: "3", FLARE_SHARD_TOTAL: "4" });
+    expect(jobs?.[0].matrix).toBeUndefined();
+  });
+
+  it("multiplies shards with a matrix and enforces the caps", () => {
+    const jobs = parsePipeline(
+      "jobs:\n  test:\n    shards: 2\n    strategy:\n      matrix:\n        node: [18, 20]\n    env:\n      TAG: ci\n    steps:\n      - run: echo ${{ matrix.node }}\n",
+    );
+    expect(jobs?.map((j) => j.name)).toEqual([
+      "test (node=18, shard=1/2)",
+      "test (node=18, shard=2/2)",
+      "test (node=20, shard=1/2)",
+      "test (node=20, shard=2/2)",
+    ]);
+    expect(jobs?.[0].env).toEqual({ TAG: "ci", FLARE_SHARD_INDEX: "1", FLARE_SHARD_TOTAL: "2" });
+    expect(parsePipeline("jobs:\n  a:\n    shards: 1\n    steps:\n      - run: echo\n")).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    shards: 9\n    steps:\n      - run: echo\n")).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    shards: 2.5\n    steps:\n      - run: echo\n")).toBeNull();
+  });
+
   it("validates needs references and cycles", () => {
     const ok = parsePipeline("jobs:\n  a:\n    steps:\n      - run: echo\n  b:\n    needs: a\n    steps:\n      - run: echo\n");
     expect(ok?.[1].needs).toEqual(["a"]);

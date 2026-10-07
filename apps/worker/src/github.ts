@@ -185,6 +185,74 @@ export async function getDefaultBranch(token: string, repo: string): Promise<str
   return typeof data?.default_branch === "string" && data.default_branch ? data.default_branch : "main";
 }
 
+export const MAX_CHANGED_FILES = 150;
+
+function rawHeaders(token: string | null): Record<string, string> {
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    Accept: "application/vnd.github+json",
+    "User-Agent": "flare-actions",
+  };
+}
+
+function filenameList(json: unknown): string[] {
+  const list = Array.isArray(json) ? json : ((json as { files?: unknown } | null)?.files ?? []);
+  if (!Array.isArray(list)) return [];
+  const out: string[] = [];
+  for (const entry of list) {
+    const name = (entry as { filename?: unknown } | null)?.filename;
+    if (typeof name === "string" && name) out.push(name);
+  }
+  return out;
+}
+
+// Changed files for a run: push compare or PR file list, public-first
+// then installation token. Bounded and best-effort — an empty array
+// means "unknown", never "no changes", so callers (paths filters) must
+// treat it as unfilterable rather than as an empty change set.
+export async function fetchChangedFiles(
+  repo: string,
+  input: { before?: string; after?: string; prNumber?: number | null },
+  installationToken: string | null,
+): Promise<string[]> {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return [];
+  let path: string;
+  if (input.prNumber) {
+    path = `/repos/${repo}/pulls/${input.prNumber}/files?per_page=100`;
+  } else if (input.before && input.after && /^[0-9a-f]{7,40}$/.test(input.before) && !/^0+$/.test(input.before)) {
+    path = `/repos/${repo}/compare/${input.before}...${input.after}`;
+  } else {
+    return [];
+  }
+  const attempts: (string | null)[] = installationToken ? [installationToken, null] : [null];
+  for (const token of attempts) {
+    try {
+      const res = await fetch(`https://api.github.com${path}`, {
+        headers: rawHeaders(token),
+        signal: AbortSignal.timeout(5000),
+      });
+      // Unknown ref/PR is definitive; other failures try the next credential.
+      if (res.status === 404 || res.status === 409 || res.status === 422) return [];
+      if (!res.ok) continue;
+      const json: unknown = await res.json().catch(() => null);
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const name of filenameList(json)) {
+        if (out.length >= MAX_CHANGED_FILES) break;
+        const file = name.trim();
+        if (file && file.length <= 200 && !seen.has(file)) {
+          seen.add(file);
+          out.push(file);
+        }
+      }
+      return out;
+    } catch {
+      continue;
+    }
+  }
+  return [];
+}
+
 // Commit full-file replacements to a NEW branch via the Git Data API
 // (base tree → blobs → tree → commit → ref). Never touches an
 // existing branch: the heal branch name is unique per run.

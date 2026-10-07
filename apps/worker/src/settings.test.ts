@@ -3,9 +3,13 @@ import {
   isBadgeHiddenRepo,
   parseAiGatewayId,
   parseBadgeHiddenRepos,
+  parseBudgetMinutes,
+  parseBudgetMode,
   parseFairSharePerRepo,
   parseMcpWriteConfirm,
   parseOpenRegistration,
+  parseStoredBudgets,
+  parseSupersedeBranchRuns,
   parseTriageWebSearch,
   validateBillingApiToken,
   validateCloudflareAccountId,
@@ -179,5 +183,31 @@ describe("billing settings", () => {
     expect(validateTriageModel("@cf/deepseek-ai/deepseek-v4-flash-0731")).toBeNull();
     expect(validateTriageModel("llama")).not.toBeNull();
     expect(validateTriageModel("")).not.toBeNull();
+  });
+});
+
+describe("budget guardrail settings", () => {
+  it("parses owner/name=minutes pairs and clears on empty", () => {
+    expect(parseBudgetMinutes("")).toEqual({ budgets: {} });
+    expect(parseBudgetMinutes("o/r=1200, org/other=600")).toEqual({ budgets: { "o/r": 1200, "org/other": 600 } });
+    expect("error" in parseBudgetMinutes("o/r")).toBe(true);
+    expect("error" in parseBudgetMinutes("not-a-repo=10")).toBe(true);
+    expect("error" in parseBudgetMinutes("o/r=0")).toBe(true);
+    expect("error" in parseBudgetMinutes("o/r=abc")).toBe(true);
+  });
+
+  it("reads stored JSON tolerantly and validates the mode", () => {
+    expect(parseStoredBudgets('{"o/r":120,"x/y":-1}')).toEqual({ "o/r": 120 });
+    expect(parseStoredBudgets("junk")).toEqual({});
+    expect(parseStoredBudgets(null)).toEqual({});
+    expect(parseBudgetMode("")).toEqual({ mode: "warn" });
+    expect(parseBudgetMode("block")).toEqual({ mode: "block" });
+    expect("error" in parseBudgetMode("nope")).toBe(true);
+  });
+
+  it("parses the auto-supersede toggle", () => {
+    expect(parseSupersedeBranchRuns("push")).toEqual({ mode: "push" });
+    expect(parseSupersedeBranchRuns(null)).toEqual({ mode: "off" });
+    expect("error" in parseSupersedeBranchRuns("always")).toBe(true);
   });
 });

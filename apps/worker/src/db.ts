@@ -14,6 +14,7 @@ export interface RunRow {
   branch: string;
   source: string | null;
   pipeline_source: string;
+  changed_files: string;
   pr_number: number | null;
   pr_comment_id: number | null;
   heal_branch: string | null;
@@ -185,13 +186,14 @@ export async function createRun(
     branch?: string;
     source?: string | null;
     pipelineSource?: string;
+    changedFiles?: string;
     prNumber?: number | null;
   },
 ): Promise<void> {
   const now = nowIso();
   await db
     .prepare(
-      "INSERT INTO runs (id, repo, sha, event, installation_id, branch, source, pipeline_source, pr_number, pr_comment_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'queued', ?, ?)",
+      "INSERT INTO runs (id, repo, sha, event, installation_id, branch, source, pipeline_source, changed_files, pr_number, pr_comment_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'queued', ?, ?)",
     )
     .bind(
       run.id,
@@ -202,6 +204,7 @@ export async function createRun(
       run.branch ?? "",
       run.source ?? null,
       run.pipelineSource ?? "",
+      run.changedFiles ?? "",
       run.prNumber ?? null,
       now,
       now,
@@ -501,7 +504,13 @@ export async function setRunPrComment(db: Db, runId: string, commentId: number):
   await db.prepare("UPDATE runs SET pr_comment_id = ? WHERE id = ?").bind(commentId, runId).run();
 }
 
-export type JobWithSource = JobRow & { repo: string; sha: string; source: string | null; branch: string | null };
+export type JobWithSource = JobRow & {
+  repo: string;
+  sha: string;
+  source: string | null;
+  branch: string | null;
+  changed_files: string | null;
+};
 
 // Poll-and-claim loop: walk matching queued jobs highest-priority-first
 // (then oldest-first) until one claim wins or the scan budget runs out.
@@ -544,14 +553,14 @@ export async function claimNextJob(
       afterCreated === null
         ? await db
             .prepare(
-              `SELECT j.*, r.repo, r.sha, r.source, r.branch FROM jobs j JOIN runs r ON r.id = j.run_id
+              `SELECT j.*, r.repo, r.sha, r.source, r.branch, r.changed_files FROM jobs j JOIN runs r ON r.id = j.run_id
                WHERE j.status = 'queued'${repoFilter} ${noArtifacts} ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
             .bind(...allowedRepos, CLAIM_PAGE_SIZE)
             .all<JobWithSource>()
         : await db
             .prepare(
-              `SELECT j.*, r.repo, r.sha, r.source, r.branch FROM jobs j JOIN runs r ON r.id = j.run_id
+              `SELECT j.*, r.repo, r.sha, r.source, r.branch, r.changed_files FROM jobs j JOIN runs r ON r.id = j.run_id
                WHERE j.status = 'queued'${repoFilter} ${noArtifacts} AND (j.priority < ? OR (j.priority = ? AND (j.prior_ms < ? OR (j.prior_ms = ? AND (j.created_at > ? OR (j.created_at = ? AND j.id > ?))))))
                ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
@@ -677,6 +686,49 @@ export async function cancelGroupJobs(
     cancelled.push(job.id);
   }
   return cancelled;
+}
+
+// Auto-supersede (opt-in): cancel still-active jobs of earlier runs on
+// the same branch when a new push lands — one run per branch head for
+// agent-heavy repos. Empty branch is a no-op (tag/source runs).
+export async function cancelSupersededBranchRuns(
+  db: Db,
+  repo: string,
+  branch: string,
+  excludeRunId: string,
+  analytics?: AnalyticsEngineDataset,
+  basin?: BasinSink,
+): Promise<string[]> {
+  if (!branch) return [];
+  const res = await db
+    .prepare(
+      `SELECT j.* FROM jobs j JOIN runs r ON r.id = j.run_id
+       WHERE r.repo = ? AND r.branch = ? AND j.status IN ('queued', 'running', 'blocked') AND r.id != ?`,
+    )
+    .bind(repo, branch, excludeRunId)
+    .all<JobRow>();
+  const cancelled: string[] = [];
+  for (const job of res.results) {
+    await setJobStatus(db, job.id, "cancelled");
+    await rollupRunStatus(db, job.run_id, analytics, basin);
+    cancelled.push(job.id);
+  }
+  return cancelled;
+}
+
+// Compute minutes a repo burned since `sinceIso` (month start) from
+// finished jobs; drives the budget guard. Tolerant of missing rows.
+export async function monthlyComputeMinutes(db: Db, repo: string, sinceIso: string): Promise<number> {
+  const res = await db
+    .prepare(
+      `SELECT COALESCE(SUM((julianday(j.finished_at) - julianday(j.started_at)) * 1440.0), 0) AS minutes
+       FROM jobs j JOIN runs r ON r.id = j.run_id
+       WHERE r.repo = ? AND j.started_at IS NOT NULL AND j.finished_at IS NOT NULL AND j.created_at >= ?`,
+    )
+    .bind(repo, sinceIso)
+    .first<{ minutes: number }>();
+  const minutes = Number(res?.minutes ?? 0);
+  return Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 100) / 100 : 0;
 }
 
 export async function hasActiveGroupJob(db: Db, repo: string, group: string): Promise<boolean> {
@@ -973,6 +1025,72 @@ export interface FlakyRow {
   runs: number;
   failures: number;
   rate: number;
+}
+
+export interface BottleneckRow {
+  check: string;
+  jobs: number;
+  p50Ms: number;
+  p95Ms: number;
+  queueP50Ms: number;
+  failures: number;
+}
+
+// Pure: group finished-job timings by pre-matrix check name and
+// percentile them (p50/p95 run time + p50 queue wait). This is the
+// "what's blocking the merge" report data.
+export function summarizeBottlenecks(
+  rows: { name: string; status: string; created_at: string; started_at: string | null; finished_at: string | null }[],
+  limit = 12,
+): BottleneckRow[] {
+  const groups = new Map<string, { durations: number[]; queues: number[]; failures: number }>();
+  for (const row of rows) {
+    if (!row.started_at || !row.finished_at) continue;
+    const suffix = row.name.indexOf(" (");
+    const check = suffix > 0 ? row.name.slice(0, suffix) : row.name;
+    const created = Date.parse(row.created_at);
+    const started = Date.parse(row.started_at);
+    const finished = Date.parse(row.finished_at);
+    if (!Number.isFinite(created) || !Number.isFinite(started) || !Number.isFinite(finished)) continue;
+    const g = groups.get(check) ?? { durations: [], queues: [], failures: 0 };
+    g.durations.push(Math.max(0, finished - started));
+    g.queues.push(Math.max(0, started - created));
+    if (row.status === "failure" || row.status === "error") g.failures += 1;
+    groups.set(check, g);
+  }
+  const percentile = (values: number[], p: number): number => {
+    if (values.length === 0) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.floor(p * (sorted.length - 1)))];
+  };
+  const out: BottleneckRow[] = [];
+  for (const [check, g] of groups) {
+    out.push({
+      check,
+      jobs: g.durations.length,
+      p50Ms: percentile(g.durations, 0.5),
+      p95Ms: percentile(g.durations, 0.95),
+      queueP50Ms: percentile(g.queues, 0.5),
+      failures: g.failures,
+    });
+  }
+  out.sort((a, b) => b.p95Ms - a.p95Ms || b.p50Ms - a.p50Ms);
+  return out.slice(0, limit);
+}
+
+// Job timings for a repo over the window, summarized per check. Bounded
+// scan (4000 recent finished jobs); best-effort like every stats read.
+export async function bottleneckStats(db: Db, repo: string, days = 14, limit = 12): Promise<BottleneckRow[]> {
+  const since = new Date(Date.now() - days * 86_400_000).toISOString();
+  const res = await db
+    .prepare(
+      `SELECT j.name, j.status, j.created_at, j.started_at, j.finished_at FROM jobs j JOIN runs r ON r.id = j.run_id
+       WHERE r.repo = ? AND j.created_at >= ? AND j.finished_at IS NOT NULL
+       ORDER BY j.created_at DESC LIMIT 4000`,
+    )
+    .bind(repo, since)
+    .all<{ name: string; status: string; created_at: string; started_at: string | null; finished_at: string | null }>();
+  return summarizeBottlenecks(res.results, limit);
 }
 
 // Per-job failure rates over the trailing window, worst first. Only

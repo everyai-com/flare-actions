@@ -30,6 +30,7 @@ jobs:
     env: { TAG: v1 }               # extra step env; ${{ env.TAG }} in steps
     timeout-minutes: 30            # whole job (default 30, max 1440)
     retry: 2                       # requeue failed jobs up to 2 extra tries
+    shards: 4                      # split into 4 cells (2-8) with FLARE_SHARD_*
     steps:
       - run: npm ci && npm test
       - run: ./slow-suite.sh         # per-step bound (1-180 minutes)
@@ -64,7 +65,16 @@ jobs:
   steps still run; anything outside the subset invalidates the file
   rather than guessing at expression soup.
   `FLARE_REPO`, `FLARE_SHA`, `FLARE_RUN_ID`,
-  `FLARE_JOB_ID`, and `FLARE_MATRIX_*` are always set.
+  `FLARE_JOB_ID`, `FLARE_REF` (branch; empty for tags/source runs), and
+  `FLARE_MATRIX_*` are always set. `FLARE_CHANGED_FILES` carries the
+  run's changed files (newline-separated; empty = unknown) for
+  changed-file test selection.
+- **Shards** split a long job into parallel cells (`shards: 2-8`): each
+  cell runs the same steps with `FLARE_SHARD_INDEX` (1-based) and
+  `FLARE_SHARD_TOTAL` set, so a suite can shard itself:
+  `npx vitest run --shard=$FLARE_SHARD_INDEX/$FLARE_SHARD_TOTAL`. Shards
+  multiply with a matrix and obey the 32-job cap; the workflow is one
+  job name rolled up as `name (shard=i/N)`.
 - **Schedules** are configured per deployment (dashboard → Settings →
   Schedules), not in `flare.yml` — see the README's scheduled runs section.
 - **`needs`** takes job names (pre-matrix). A job runs when all its needs

@@ -1,7 +1,9 @@
 import {
   audit,
+  bottleneckStats,
   cancelGroupJobs,
   cancelQueuedJobs,
+  cancelSupersededBranchRuns,
   claimAdminMarker,
   claimNextJob,
   claimWebhookDelivery,
@@ -41,6 +43,7 @@ import {
   listSchedules,
   listTokens,
   listUsers,
+  monthlyComputeMinutes,
   pruneOldRuns,
   pruneWebhookDeliveries,
   releaseAdminMarker,
@@ -60,7 +63,7 @@ import {
   updateRunningJob,
   usageStats,
 } from "./db";
-import { commitFilesToNewBranch, getDefaultBranch, getInstallationToken, getRepoTreePaths, mintAppJwt, openDraftPullRequest, resolveRefToSha, verifyGitHubSignature } from "./github";
+import { commitFilesToNewBranch, fetchChangedFiles, getDefaultBranch, getInstallationToken, getRepoTreePaths, MAX_CHANGED_FILES, mintAppJwt, openDraftPullRequest, resolveRefToSha, verifyGitHubSignature } from "./github";
 import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
 import { DASHBOARD_HTML } from "./dashboard";
@@ -76,7 +79,7 @@ import {
   validateSecretName,
   validateSecretValue,
 } from "./secrets";
-import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseFairSharePerRepo, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
+import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseBudgetMinutes, parseBudgetMode, parseFairSharePerRepo, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseStoredBudgets, parseSupersedeBranchRuns, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
 import {
   addAllowedUser,
   beginOAuth,
@@ -320,6 +323,11 @@ async function serveMcpRequest(
       agent: request.headers.get("X-Flare-Agent") ?? request.headers.get("User-Agent") ?? undefined,
       dispatchRun: async (input) => {
         if (!repoAllowed({ repos: props.repos }, input.repo)) throw new Error("token is not scoped to that repo");
+        const verdict = await budgetVerdict(env, input.repo);
+        if (verdict?.mode === "block") {
+          await audit(env.DB, props.actor, "budget.blocked", `${input.repo} ${verdict.usedMinutes}/${verdict.cap}`);
+          throw new Error(`monthly budget exceeded for ${input.repo} (${verdict.usedMinutes}/${verdict.cap} compute-minutes)`);
+        }
         const out = await dispatchRun(env, { repo: input.repo, sha: input.sha, ref: input.ref ?? "", pipeline: input.pipeline }, basin);
         await audit(env.DB, props.actor, "run.dispatch", out.runId);
         for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
@@ -420,6 +428,7 @@ async function requireScope(
 
 export interface GitHubWebhookPayload {
   ref?: string;
+  before?: string;
   deleted?: boolean;
   repository?: { full_name?: string };
   after?: string;
@@ -456,6 +465,51 @@ function branchFromRef(ref: string | undefined): string {
 // Which configuration produced a run's jobs. Stored on the run row so
 // the dashboard can show what actually ran without re-fetching GitHub.
 type PipelineSource = "flare" | "actions" | "default" | "inline" | "source";
+
+// Mint an installation token for a repo's run when App creds exist;
+// null when there is no installation or minting fails (callers fall
+// back to unauthenticated public-repo paths).
+async function mintInstallationTokenFor(env: WorkerEnv, installationId: number | null): Promise<string | null> {
+  if (!installationId) return null;
+  const creds = await getAppCreds(env);
+  if (!creds) return null;
+  try {
+    const jwt = await mintAppJwt(creds.appId, creds.privateKey);
+    return await getInstallationToken(jwt, installationId);
+  } catch {
+    return null;
+  }
+}
+
+// Newline-joined changed files, bounded so the env var and the D1 row
+// stay small; "" means unknown (never "no changes").
+export function serializeChangedFiles(files: string[]): string {
+  return files.slice(0, MAX_CHANGED_FILES).join("\n").slice(0, 6000);
+}
+
+export function parseChangedFiles(joined: string): string[] {
+  return joined ? joined.split("\n").filter(Boolean) : [];
+}
+
+function monthStartIso(now = new Date()): string {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+}
+
+// Spend guardrail verdict for a repo: null when no cap applies or the
+// repo is under it; { over, mode, cap, usedMinutes } once it is over.
+// `block` refuses the dispatch, `warn` keeps going + audits the overage.
+async function budgetVerdict(
+  env: WorkerEnv,
+  repo: string,
+): Promise<{ mode: "warn" | "block"; cap: number; usedMinutes: number } | null> {
+  const budgets = parseStoredBudgets(await getSetting(env.DB, SETTING_KEYS.budgetMinutes));
+  const cap = budgets[repo];
+  if (cap === undefined) return null;
+  const usedMinutes = await monthlyComputeMinutes(env.DB, repo, monthStartIso());
+  if (usedMinutes < cap) return null;
+  const parsed = parseBudgetMode(await getSetting(env.DB, SETTING_KEYS.budgetMode));
+  return { mode: "mode" in parsed ? parsed.mode : "warn", cap, usedMinutes };
+}
 
 // Resolve the run's jobs at repo@sha. Precedence: flare.yml (public
 // raw, then authenticated) always wins; without one, GitHub Actions
@@ -541,6 +595,7 @@ async function createRunAndFanOut(
     priority?: number;
     source?: string | null;
     pipelineSource?: PipelineSource;
+    changedFiles?: string;
     prNumber?: number | null;
   },
   basin?: BasinSink,
@@ -555,6 +610,7 @@ async function createRunAndFanOut(
     branch: input.branch,
     source: input.source ?? null,
     pipelineSource: input.pipelineSource,
+    changedFiles: input.changedFiles,
     prNumber: input.prNumber ?? null,
   });
   const jobIds: string[] = [];
@@ -658,16 +714,36 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     const repo = payload.repository?.full_name;
     const sha = payload.after ?? payload.pull_request?.head?.sha;
     if (!repo || !sha) return json({ error: "missing repo or sha" }, 400);
+    // Budget guard: block-mode repos over their monthly cap are skipped
+    // (200 so GitHub stops retrying); warn-mode dispatches and audits.
+    const verdict = await budgetVerdict(env, repo);
+    if (verdict?.mode === "block") {
+      await audit(env.DB, "system", "budget.blocked", `${repo} ${verdict.usedMinutes}/${verdict.cap}`);
+      log("warn", "run skipped: monthly budget exceeded", { repo, usedMinutes: verdict.usedMinutes, cap: verdict.cap });
+      return json({ skipped: "budget", usedMinutes: verdict.usedMinutes, cap: verdict.cap }, 200);
+    }
+    if (verdict) {
+      await audit(env.DB, "system", "budget.warn", `${repo} ${verdict.usedMinutes}/${verdict.cap}`);
+      log("warn", "monthly budget exceeded (warn mode)", { repo, usedMinutes: verdict.usedMinutes, cap: verdict.cap });
+    }
     const branch = branchFromRef(payload.ref) || payload.pull_request?.head?.ref || "";
     const tag = payload.ref?.startsWith("refs/tags/") ? payload.ref.slice("refs/tags/".length) : "";
 
     const installationId = payload.installation?.id ?? null;
     const prNumber = event === "pull_request" ? (payload.pull_request?.number ?? null) : null;
+    // Changed files feed `paths:` trigger filters and FLARE_CHANGED_FILES;
+    // best-effort, and empty means unknown (filters stay conservative).
+    const changedFiles = await fetchChangedFiles(
+      repo,
+      { before: payload.before, after: sha, prNumber },
+      await mintInstallationTokenFor(env, installationId),
+    );
     const loaded = await loadPipelineJobs(env, repo, sha, installationId, {
       event,
       branch,
       baseBranch: payload.pull_request?.base?.ref,
       tag,
+      changedFiles,
     });
     const { runId, jobIds, queuedIds, blocked } = await createRunAndFanOut(env, {
       repo,
@@ -677,8 +753,28 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
       installationId,
       jobs: loaded.jobs,
       pipelineSource: loaded.source,
+      changedFiles: serializeChangedFiles(changedFiles),
       prNumber,
     }, basinSink(env, ctx));
+
+    // Auto-supersede (opt-in): one run per branch head — cancel the
+    // still-active jobs of earlier runs on this branch.
+    if (event === "push" && branch) {
+      const supersede = parseSupersedeBranchRuns(await getSetting(env.DB, SETTING_KEYS.supersedeBranchRuns));
+      if ("mode" in supersede && supersede.mode === "push") {
+        const cancelled = await cancelSupersededBranchRuns(
+          env.DB,
+          repo,
+          branch,
+          runId,
+          env.ANALYTICS,
+          basinSink(env, ctx),
+        );
+        if (cancelled.length > 0) {
+          log("info", "auto-superseded earlier branch runs", { repo, branch, cancelled: cancelled.length });
+        }
+      }
+    }
 
     // Post-response maintenance never blocks the webhook: bounded
     // retention prune plus the stuck-claim sweep (dead executors get
@@ -1207,6 +1303,9 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       triageWebSearch?: unknown;
       healOnFailure?: unknown;
       openRegistration?: unknown;
+      budgetMinutes?: unknown;
+      budgetMode?: unknown;
+      supersedeBranchRuns?: unknown;
       billingApiToken?: unknown;
       cloudflareAccountId?: unknown;
       triageModel?: unknown;
@@ -1229,13 +1328,16 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
     const hasWebSearch = body.triageWebSearch !== undefined;
     const hasHeal = body.healOnFailure !== undefined;
     const hasOpenReg = body.openRegistration !== undefined;
+    const hasBudget = body.budgetMinutes !== undefined;
+    const hasBudgetMode = body.budgetMode !== undefined;
+    const hasSupersede = body.supersedeBranchRuns !== undefined;
     const hasBillingToken = body.billingApiToken !== undefined;
     const hasAccountId = body.cloudflareAccountId !== undefined;
     const hasTriageModel = body.triageModel !== undefined;
     if (
       !hasWebhook && !hasNotifyFrom && !hasNotifyMode && !hasNotifyWebhook && !hasBadgeHidden &&
       !hasTurnstileSite && !hasTurnstileSecret && !hasFairShare && !hasGateway && !hasWriteConfirm && !hasWebSearch &&
-      !hasHeal && !hasOpenReg && !hasBillingToken && !hasAccountId && !hasTriageModel
+      !hasHeal && !hasOpenReg && !hasBudget && !hasBudgetMode && !hasSupersede && !hasBillingToken && !hasAccountId && !hasTriageModel
     ) {
       return json({ error: "no settings provided" }, 400);
     }
@@ -1368,6 +1470,24 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       await setSetting(env.DB, SETTING_KEYS.openRegistration, parsed.on ? "1" : "0");
       await audit(env.DB, ident.actor, "settings.open_registration", parsed.on ? "on" : "off");
       log("info", "open registration toggled", { on: parsed.on });
+    }
+    if (hasBudget) {
+      const parsed = parseBudgetMinutes(body.budgetMinutes);
+      if ("error" in parsed) return json({ error: parsed.error }, 400);
+      await setSetting(env.DB, SETTING_KEYS.budgetMinutes, JSON.stringify(parsed.budgets));
+      await audit(env.DB, ident.actor, "settings.budgets", `${Object.keys(parsed.budgets).length} repos`);
+    }
+    if (hasBudgetMode) {
+      const parsed = parseBudgetMode(body.budgetMode);
+      if ("error" in parsed) return json({ error: parsed.error }, 400);
+      await setSetting(env.DB, SETTING_KEYS.budgetMode, parsed.mode);
+      await audit(env.DB, ident.actor, "settings.budget_mode", parsed.mode);
+    }
+    if (hasSupersede) {
+      const parsed = parseSupersedeBranchRuns(body.supersedeBranchRuns);
+      if ("error" in parsed) return json({ error: parsed.error }, 400);
+      await setSetting(env.DB, SETTING_KEYS.supersedeBranchRuns, parsed.mode);
+      await audit(env.DB, ident.actor, "settings.supersede_branch_runs", parsed.mode);
     }
     if (hasBillingToken) {
       if (env.BILLING_API_TOKEN) {
@@ -1596,6 +1716,21 @@ export default {
         const valid = validateDispatch(body);
         if ("error" in valid) return json({ error: valid.error }, 400);
         if (!repoAllowed(ident, valid.repo)) return json({ error: "token is not scoped to that repo" }, 403);
+        const verdict = await budgetVerdict(env, valid.repo);
+        if (verdict) {
+          const kind = verdict.mode === "block" ? "budget.blocked" : "budget.warn";
+          await audit(env.DB, ident.actor, kind, `${valid.repo} ${verdict.usedMinutes}/${verdict.cap}`);
+          if (verdict.mode === "block") {
+            return json(
+              {
+                error: `monthly budget exceeded for ${valid.repo} (${verdict.usedMinutes}/${verdict.cap} compute-minutes)`,
+                usedMinutes: verdict.usedMinutes,
+                cap: verdict.cap,
+              },
+              429,
+            );
+          }
+        }
         try {
           const out = await dispatchRun(env, valid, basinSink(env, ctx));
           await audit(env.DB, ident.actor, "run.dispatch", out.runId);
@@ -2056,6 +2191,18 @@ export default {
           return json({ error: "billable usage unavailable" }, 502);
         }
       }
+      if (request.method === "GET" && url.pathname === "/v1/bottlenecks") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const repo = url.searchParams.get("repo") ?? "";
+        const days = Number(url.searchParams.get("days") ?? "14");
+        if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
+        if (!repoAllowed(ident, repo)) return json({ error: "token is not scoped to that repo" }, 403);
+        if (!Number.isInteger(days) || days < 1 || days > 90) {
+          return json({ error: "days must be an integer 1-90" }, 400);
+        }
+        return json({ repo, days, checks: await bottleneckStats(env.DB, repo, days) });
+      }
       if (request.method === "GET" && url.pathname === "/v1/flaky") {
         const ident = await requireScope(request, env, "read");
         if (!ident) return json({ error: "unauthorized" }, 401);
@@ -2503,6 +2650,9 @@ export default {
           turnstileSiteSource: turnstileSource,
           turnstileSecretSet: !!env.TURNSTILE_SECRET_KEY || !!(await getSetting(env.DB, SETTING_KEYS.turnstileSecretKey)),
           fairSharePerRepo: "cap" in fairShareParsed ? fairShareParsed.cap : 0,
+          budgetMinutes: (await getSetting(env.DB, SETTING_KEYS.budgetMinutes)) ?? "",
+          budgetMode: (await getSetting(env.DB, SETTING_KEYS.budgetMode)) ?? "warn",
+          supersedeBranchRuns: (await getSetting(env.DB, SETTING_KEYS.supersedeBranchRuns)) ?? "off",
           aiGatewayId: env.AI_GATEWAY_ID ?? (await getSetting(env.DB, SETTING_KEYS.aiGatewayId)) ?? "",
           aiGatewaySource: gatewaySource,
           mcpWriteConfirm: "on" in writeConfirmParsed ? writeConfirmParsed.on : false,
@@ -2808,6 +2958,13 @@ export default {
       for (const s of schedules) {
         if (s.enabled !== 1 || !cronMatches(s.cron, now)) continue;
         if (s.last_run_at && Date.now() - Date.parse(s.last_run_at) < 60000) continue;
+        const scheduleBudget = await budgetVerdict(env, s.repo);
+        if (scheduleBudget?.mode === "block") {
+          await touchScheduleRun(env.DB, s.id);
+          await audit(env.DB, "system", "budget.blocked", `${s.repo} ${scheduleBudget.usedMinutes}/${scheduleBudget.cap}`);
+          log("warn", "scheduled run skipped: budget", { scheduleId: s.id, repo: s.repo });
+          continue;
+        }
         try {
           const out = await dispatchRun(
             env,

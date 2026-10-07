@@ -30,6 +30,7 @@ function usage(): never {
       "  cli dispatch <repo> <sha|branch|tag> [ref]  trigger a run without waiting",
       "  cli rerun <runId> <jobId>                   reset a finished job to queued",
       "  cli flaky <repo> [days]                     per-job failure rates, worst first",
+      "  cli bottlenecks <repo> [days]               slowest checks: p50/p95 run time + queue wait",
       "  cli tests <runId>                           per-test results and failing tests",
       "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
       "  cli queue [labels]                        live queue + projected claim order (admin)",
@@ -207,6 +208,19 @@ try {
     for (const s of stats) {
       console.log(`${(s.rate * 100).toFixed(1)}%\t${s.failures}/${s.runs}\t${s.job}`);
     }
+  } else if (cmd === "bottlenecks" && rest[0]) {
+    const days = rest[1] === undefined ? 14 : Number(rest[1]);
+    if (!Number.isInteger(days) || days < 1 || days > 90) {
+      console.error("days must be an integer 1-90");
+      process.exit(2);
+    }
+    const checks = await client().getBottlenecks(rest[0], days);
+    console.log("check\tp50\tp95\tqueue p50\tjobs\tfailed");
+    for (const c of checks) {
+      const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
+      console.log(`${c.check}\t${secs(c.p50Ms)}\t${secs(c.p95Ms)}\t${secs(c.queueP50Ms)}\t${c.jobs}\t${c.failures}`);
+    }
+    if (checks.length === 0) console.log("(no finished jobs in the window)");
   } else if (cmd === "tests" && rest[0]) {
     const t = await client().getRunTests(rest[0]);
     console.log(

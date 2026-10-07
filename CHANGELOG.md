@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); releases are
 tagged on `main` (`v0.1.0` is the first).
 
+## [Unreleased]
+
+### Added
+
+- `paths:` / `paths-ignore:` trigger filters for Actions-compatible
+  workflows, matched against the run's changed files; `FLARE_CHANGED_FILES`
+  exposes that list (newline-separated) to steps for changed-file test
+  selection. Unknown changes run conservatively, never silently skip.
+- `shards: N` (2–8) in `flare.yml`: splits a job into parallel cells with
+  `FLARE_SHARD_INDEX` / `FLARE_SHARD_TOTAL` for `vitest --shard`-style
+  recipes; multiplies with matrices.
+- "What's blocking the merge": `GET /v1/bottlenecks` + `cli bottlenecks`
+  + a dashboard "Slowest checks (last 14 days)" report — p50/p95 run time
+  and median queue wait per check.
+- Spend guardrails: per-repo monthly compute-minute budgets
+  (`budgetMinutes`), `budgetMode` warn|block — block skips webhooks (200),
+  429s dispatch, and skips schedules once a repo is over; warn audits.
+  Dashboard Settings manages both.
+- Auto-supersede (`supersedeBranchRuns: push`): one run per branch head —
+  a new push cancels still-active jobs of earlier same-branch runs.
+
 ## [0.2.0] - 2026-10-07
 
 ### Added

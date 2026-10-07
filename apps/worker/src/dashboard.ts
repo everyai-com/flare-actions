@@ -225,6 +225,10 @@ form.inline input { flex: 1; min-width: 180px; }
 <form id="runsFilterForm" class="inline"><input id="runsFilter" placeholder="Filter by repo, branch, commit, status…" maxlength="64" aria-label="Filter runs"></form>
 <p class="muted" id="runsCount"></p>
 <div id="runsList"></div>
+<details id="bottlenecksBox" hidden>
+<summary>Slowest checks (last 14 days)</summary>
+<div id="bottlenecksBody" class="muted"></div>
+</details>
 <div id="runDetail" hidden></div>
 </section>
 <section id="accessPane" class="card" hidden>
@@ -334,6 +338,9 @@ form.inline input { flex: 1; min-width: 180px; }
 <p class="muted" id="schedInfo"></p>
 <form id="schedForm" class="inline">
 <input id="fairShareInput" placeholder="fair share per repo (0 = off)" maxlength="3" size="8">
+<input id="budgetInput" placeholder="monthly budget: owner/name=1200, other=600" maxlength="512" size="40" aria-label="Monthly compute budgets">
+<select id="budgetModeSelect" aria-label="Budget mode"><option value="warn">warn over budget</option><option value="block">block over budget</option></select>
+<label class="muted"><input id="supersedeCheck" type="checkbox"> one run per branch head (cancel superseded pushes)</label>
 <input id="gatewayInput" placeholder="AI gateway id (blank = direct)" maxlength="64">
 <input id="triageModelInput" placeholder="triage model (blank = default)" maxlength="128" size="30">
 <label><input type="checkbox" id="writeConfirmCheck"> MCP write-confirm</label>
@@ -1134,12 +1141,38 @@ form.inline input { flex: 1; min-width: 180px; }
     api("/v1/runs").then(function (data) {
       lastRuns = data.runs || [];
       renderRuns();
+      loadBottlenecks();
     }).catch(function () {
       list.textContent = "";
       var err = el("p"); err.appendChild(el("span", "Could not load runs. "));
       var retry = el("button", "Retry"); retry.className = "ghost";
       retry.addEventListener("click", function () { loadRuns(); });
       err.appendChild(retry); list.appendChild(err);
+    });
+  }
+  function loadBottlenecks() {
+    var box = document.getElementById("bottlenecksBox");
+    var body = document.getElementById("bottlenecksBody");
+    if (!lastRuns.length) { box.hidden = true; return; }
+    var repo = lastRuns[0].repo;
+    box.hidden = false;
+    body.textContent = "Loading…";
+    api("/v1/bottlenecks?repo=" + encodeURIComponent(repo) + "&days=14").then(function (data) {
+      body.textContent = "";
+      var checks = data.checks || [];
+      if (!checks.length) { body.textContent = repo + ": no finished jobs in the last 14 days."; return; }
+      var head = el("p", repo + " — run time p50/p95, median queue wait");
+      head.className = "muted";
+      body.appendChild(head);
+      checks.forEach(function (c) {
+        var row = el("p");
+        row.appendChild(el("code", c.check));
+        row.appendChild(el("span", " " + (c.p50Ms / 1000).toFixed(1) + "s p50 · " + (c.p95Ms / 1000).toFixed(1) + "s p95 · " +
+          (c.queueP50Ms / 1000).toFixed(1) + "s queue · " + c.jobs + " jobs" + (c.failures ? " · " + c.failures + " failed" : "")));
+        body.appendChild(row);
+      });
+    }).catch(function () {
+      body.textContent = "Could not load check timings for " + repo + ".";
     });
   }
   function appendRunRow(list, r) {
@@ -1640,6 +1673,14 @@ form.inline input { flex: 1; min-width: 180px; }
         (s.aiGatewaySource === "env" ? ", managed via environment." : ".") +
         " Web search grounds triage in live results (bills gateway credits).";
       document.getElementById("fairShareInput").value = String(s.fairSharePerRepo ?? 0);
+      var budgetPairs = [];
+      try {
+        var parsedBudget = JSON.parse(s.budgetMinutes || "{}");
+        Object.keys(parsedBudget).forEach(function (k) { budgetPairs.push(k + "=" + parsedBudget[k]); });
+      } catch (e) { /* leave empty on malformed stored value */ }
+      document.getElementById("budgetInput").value = budgetPairs.join(", ");
+      document.getElementById("budgetModeSelect").value = s.budgetMode || "warn";
+      document.getElementById("supersedeCheck").checked = s.supersedeBranchRuns === "push";
       document.getElementById("gatewayInput").value = s.aiGatewayId || "";
       document.getElementById("gatewayInput").disabled = s.aiGatewaySource === "env";
       document.getElementById("triageModelInput").value = s.triageModelSource === "default" ? "" : (s.triageModel || "");
@@ -1795,6 +1836,9 @@ form.inline input { flex: 1; min-width: 180px; }
     }
     var payload = {
       fairSharePerRepo: cap,
+      budgetMinutes: document.getElementById("budgetInput").value.trim(),
+      budgetMode: document.getElementById("budgetModeSelect").value,
+      supersedeBranchRuns: document.getElementById("supersedeCheck").checked ? "push" : "off",
       mcpWriteConfirm: document.getElementById("writeConfirmCheck").checked,
       triageWebSearch: document.getElementById("webSearchCheck").checked,
       healOnFailure: document.getElementById("healCheck").checked,
@@ -1811,7 +1855,7 @@ form.inline input { flex: 1; min-width: 180px; }
         ok.textContent = "Saved.";
         loadSettings();
       })
-      .catch(function () { err.textContent = "Could not save (gateway id must be a 1-64 char slug; model a Workers AI id)."; });
+      .catch(function () { err.textContent = "Could not save (budgets: owner/name=minutes; gateway id a 1-64 char slug; model a Workers AI id)."; });
   });
 
   function scheduleAction(path, method, body) {
