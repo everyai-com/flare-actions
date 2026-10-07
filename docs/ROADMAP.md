@@ -133,6 +133,31 @@ The recurring pains, in practitioners' own terms:
       cloud runs exactly (images, cache keys) so "works on my machine"
       and "in CI" are the same sentence
 
+### Agent-friendliness (checklist)
+
+- [x] Token-efficient digests with hard caps (bounded commands, triage,
+      output tails) and machine-readable per-step results
+- [x] Priority lanes, blocking wait, MCP `run_and_wait` — no polling
+- [ ] `--json` on every CLI command with versioned schemas
+- [ ] Machine-actionable errors (stable codes + next-step hints)
+- [ ] `flare explain <run-id>` — one narrative instead of raw rows
+- [ ] Dry-run dispatch (`flare run --dry-run` plans without spending)
+- [ ] Per-agent concurrency caps + per-agent run isolation (per-repo
+      fair-share caps shipped; identity is the missing half — also gates
+      anomaly attribution, see Known gaps)
+
+### Normal-person UX
+
+- [ ] One-click GitHub App → auto-detected pipeline (detect the stack
+      and suggest/convert a workflow)
+- [ ] Template gallery + migration wizard; feed-style dashboard with
+      one-click actions (rerun, open PR, fix)
+- [ ] Savings counter on the dashboard (spend avoided vs Actions list
+      price); mobile-friendly layout; attention-respecting notifications
+- [ ] Tailscale-style runner pairing (one command, zero config)
+- [x] Plain-English PR comments (one evolving run summary)
+- [x] 5-minute quickstart (README pick-your-path table, one-click deploy)
+
 ## Hosted & paid tiers (outside OSS scope)
 
 The OSS core is MIT and stays free forever, self-hosted on your own
@@ -140,15 +165,29 @@ Cloudflare account. Planned paid surfaces, for clarity:
 
 - **Flare Cloud** — the hosted control plane: one-click onboarding
   (no wrangler), usage dashboard + billing, managed seats autoscaling.
-  Founding price ~$49/concurrent runner/month.
+  Founding price ~$49/concurrent runner/month, validated with the first
+  design partners.
 - **Enterprise** (annual) — SSO/SAML + SCIM, RBAC, audit-log export /
   SIEM, policy engine (allowed repos/runners, org-wide budget caps),
-  DPA/trust center, SLA.
+  DPA/trust center, SLA; BYOC/in-VPC and data residency are satisfied by
+  construction ("no multi-tenant vendor storage of your code"); SOC 2
+  Type 2 is a funded milestone, not day one.
 - **Private tournaments** — flat per event; public tournaments stay free
   marketing.
 
-The sentence that sells it: **there is no multi-tenant vendor storage of
-your code — compute and artifacts live in your Cloudflare account.**
+**Pricing philosophy** (from 46+ pricing-sentiment sources): price
+capacity, not meters — unlimited minutes and seats, bill = concurrent
+runners ("how many things running at once is your bill"); one developer
+runs 10+ agents, so per-seat pricing is dead and per-minute billing taxes
+the behavior it should reward. BYO minutes are unlimited and free. No
+round-ups, no creeping meters. Enterprise bills as platform fee + runner
+pool + published overage + a hard cap: over-budget runs are rejected, not
+just alerted — "estimate next month's bill in under five minutes."
+
+**Agent purchasing** (hosted tier): [ ] `flare signup --agent`, prepaid
+credits (buy runner-months), approval-link top-ups, a skill buy-flow, and
+an x402 spike — mapped so an agent can buy capacity without a human
+billing event per run.
 
 ## Non-goals (for now)
 

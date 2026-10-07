@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); releases are
 tagged on `main` (`v0.1.0` is the first).
 
+## [Unreleased]
+
+### Changed
+
+- Roadmap absorbs the master plan's agent-friendliness checklist
+  (`--json` everywhere, `flare explain`, dry-run dispatch, per-agent
+  caps/isolation), the normal-person UX list (auto-detected pipeline,
+  template gallery, savings counter, runner pairing), and the
+  hosted-tier pricing philosophy + agent-purchasing surface.
+
 ## [0.3.0] - 2026-10-07
 
 ### Added
