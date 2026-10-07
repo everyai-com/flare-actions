@@ -1,0 +1,22 @@
+# Flare Actions
+
+> Open-source GitHub Actions alternative you host on your own Cloudflare account. Repos without a `flare.yml` run their existing `.github/workflows` files unchanged — no App required to start (public repos can use plain repo webhooks or token dispatch). Agent-native: MCP `run_and_wait`, token-efficient digests, priority lanes, no-commit verification, budgets, shards.
+
+## Docs
+
+- [README](https://github.com/everyai-com/flare-actions/blob/main/README.md): quickstart (one click, no App, dispatch-only, self-host), dashboard, CLI, API, pricing model.
+- [GitHub Actions compatibility](https://github.com/everyai-com/flare-actions/blob/main/docs/GITHUB-ACTIONS-COMPAT.md): trigger mapping, supported subset, App vs no-App matrix.
+- [Pipelines](https://github.com/everyai-com/flare-actions/blob/main/docs/PIPELINES.md): `flare.yml` reference — jobs, matrices, shards, cache, artifacts, conditions.
+- [MCP](https://github.com/everyai-com/flare-actions/blob/main/docs/MCP.md): agent tools (`run_and_wait`, `get_run_digest`, dispatch, rerun) and client config.
+- [Runners](https://github.com/everyai-com/flare-actions/blob/main/docs/RUNNERS.md): BYO runners (Linux/macOS/Windows/GPU) and managed seats.
+- [Operations](https://github.com/everyai-com/flare-actions/blob/main/docs/OPERATIONS.md): updating, D1 backups, secret rotation, monitoring.
+- [Roadmap](https://github.com/everyai-com/flare-actions/blob/main/docs/ROADMAP.md): shipped foundation, OSS roadmap, paid tiers.
+- [Dev speed](https://github.com/everyai-com/flare-actions/blob/main/docs/DEV-SPEED.md): the agent-scale check loop and measurements.
+- [API](https://github.com/everyai-com/flare-actions/blob/main/openapi.yaml): OpenAPI spec (served live at `GET /openapi.yaml`).
+
+## Agent quickstart
+
+- One-click deploy: `https://deploy.workers.cloudflare.com/?url=https://github.com/everyai-com/flare-actions`
+- MCP: `POST https://<worker>/mcp` with `Authorization: Bearer <token>` — verify loop: `run_and_wait` → `get_run_digest`.
+- CLI (from source or npm): `cli run owner/repo HEAD` dispatches, waits, and prints the digest; `cli local` runs the working tree with no commit; `cli bottlenecks owner/repo` reports the slowest checks.
+- Machine-readable plans: `pricing.json` (planned).

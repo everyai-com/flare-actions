@@ -47,6 +47,8 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
   [operations](docs/OPERATIONS.md), [roadmap](docs/ROADMAP.md),
   [Actions compatibility](docs/GITHUB-ACTIONS-COMPAT.md),
   [dev speed](docs/DEV-SPEED.md), [economics](docs/ECONOMICS.md)
+- [`llms.txt`](llms.txt) — model-readable index (docs, MCP config,
+  quickstart) for agents and LLM tooling
 
 ## Quickstart
 
@@ -94,6 +96,24 @@ GitHub login claims admin. Only set GitHub values as env secrets if
 you want the manual App flow instead (then also set `ADMIN_TOKEN`,
 which becomes the dashboard recovery password). Local dev:
 `npm run dev`.
+
+## Replace your GitHub Actions — pick your path
+
+Every path runs your existing `.github/workflows` files **unchanged** —
+nothing to migrate, no App required if you don't want one:
+
+| Path | Setup | What you get |
+| --- | --- | --- |
+| **One click + GitHub App** (recommended) | Deploy button → dashboard → **Connect GitHub** → install | Push/PR runs, commit statuses, Check Runs, PR comments, private repos |
+| **One click, no App** (public repos) | Deploy button → copy the webhook secret in Settings → add one repo webhook to `https://<worker>/webhooks/github` | Push/PR runs from your existing workflows — nothing installed on GitHub |
+| **Dispatch only** (agents, no webhooks) | Issue an API token → `cli run owner/repo HEAD` or MCP `run_and_wait` | Verify any commit — or an uncommitted working tree — on demand |
+| **Self-host from source** | `npm install && npm run setup` | Everything, fully under your control |
+
+If a repo has no `flare.yml`, its `.github/workflows` run as-is
+([support matrix](docs/GITHUB-ACTIONS-COMPAT.md)); `cli import` is
+optional if you later want the native format. Want zero ops? A hosted
+control plane is on the [roadmap](docs/ROADMAP.md) — the OSS core stays
+free forever.
 
 ## GitHub App setup
 

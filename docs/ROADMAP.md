@@ -5,133 +5,167 @@ for orchestration on Cloudflare's edge, executes on warm metal or
 scale-to-zero containers, and wraps it in an agent-native experience.
 Speed wins trials; price wins migrations; agents win the next decade.
 
-October 2026 sharpened the thesis: agent fleets turned CI from a cost
-center into the bottleneck — teams publishing that "CI is the top
-bottleneck" (Linear's write-up, multiple viral founder threads, developers
-disabling PR CI outright to dodge bills). Phase 6 is a direct answer to
-what those threads keep asking for.
+## Why now — the market evidence
 
-## Phase 1 — Dispatch core (shipped)
+October 2026 was the month agent fleets broke the per-push model in
+public: a 45K-view post on reworking agent-scale CI, a 650K-view "CI has
+become the top bottleneck of every engineering team" thread, Linear's
+write-up, HN discussions, and runaway-agent horror stories (an agent loop
+burning $4,700 of CI). Every feature below traces to a pain voiced in
+~100 customer/lead conversations or those public threads — tasks are
+ranked by the evidence, not by novelty.
 
-- GitHub App webhooks → edge dispatch → D1 + Queues + DLQ
-- Dashboard (runs, access tokens, first-run setup), CLI, one-click deploy,
-  branch previews, `npm run setup`, AGENTS.md.
+The recurring pains, in practitioners' own terms:
 
-## Phase 2 — Real execution (shipped)
+- "CI didn't get expensive, it got frequent" — agents push to learn
+  whether code builds; every attempt bills a full run.
+- "The queue is killing me" — 200+ PRs/day, congestion timeouts,
+  superseded pushes running to completion.
+- "12% of test files caught 90%+ of relevant tests" — test selection is
+  the biggest cost lever; also the scariest (skipping the one test that
+  mattered).
+- "The bill is unpredictable" — one runaway loop, one 3x month; nobody
+  wants to disable PR CI to survive it.
+- "Flaky tests are the silent budget killer" and "full suite takes over
+  an hour" — trust in verification is the bottleneck after speed.
+- "Run it on the same machine where the code gets made" — the agent
+  inner loop wants local parity, not a queue.
+- "Two agents took the same migration number within a minute" — fleet
+  coordination (merge queues, collisions) is the next wall.
 
-- [x] `flare.yml` pipelines: jobs + steps fetched at dispatch, fanned out
-- [x] Runner executes real shell steps with per-step results
-- [x] Repo checkout in runner (shallow, per-job temp dir; `GITHUB_TOKEN` for private)
-- [x] Docker executor: `container:` steps + `services:` on any docker runner
-- [x] R2 build cache (zero egress) + artifact store
-- [x] Matrix builds, service containers, concurrency groups, `needs:`, `runs-on:` labels
-- [x] Cloudflare Containers managed executor (scale-to-zero seats, see `docs/CONTAINERS.md`)
+## Shipped — the OSS foundation (MIT, free forever)
 
-## Phase 3 — Agentic layer (the moat, shipped)
+### Agent-native interface
 
-- [x] Machine-readable run results (per-step exit/duration/output)
-- [x] Failure triage: failing step → culprit file/command, fix suggestions (Workers AI, stored per job)
-- [x] MCP server: agents query runs, re-run jobs, read logs natively (`docs/MCP.md`)
-- [x] Natural-language pipelines ("test PRs, deploy main") compiled to `flare.yml`
-- [x] Flaky-test detection with evidence (`GET /v1/flaky`)
-- [x] Cost + time attribution per run vs Actions list price
+- [x] `run_and_wait` — one-call verify loop over MCP, zero polling
+- [x] MCP server with OAuth + tool discovery; token-efficient run digests
+- [x] No-commit dispatch: verify uncommitted working trees / tarballs
+- [x] `cli local` — local execution through the same orchestrator + warm cache
+- [x] Priority lanes (0–10) so agent verification jumps batch work
+- [x] Heartbeat + requeue — interrupted agents can't wedge the queue
 
-## Phase 4 — Finish the migration story (shipped)
+### GitHub compatibility
 
-- [x] GitHub Actions YAML importer (`cli import`, translates runs-on/steps automatically)
-- [x] Native `.github/workflows` drop-in: no flare.yml → matching workflow
-      files run as-is, triggers included (`docs/GITHUB-ACTIONS-COMPAT.md`)
-- [x] macOS remote story (Mac Mini / hosted Mac runners via label protocol, `docs/RUNNERS.md`)
-- [x] Windows BYO parity, status badges, required-checks UX (commit statuses)
+- [x] `.github/workflows` importer (`cli import`) + native drop-in: no
+      `flare.yml` → existing workflows run as-is, triggers included
+      (push branches/tags, `paths`, PR base branch, `workflow_dispatch`,
+      schedule cron; matrices, needs, concurrency, containers, cache,
+      artifacts; job guards evaluated) — `docs/GITHUB-ACTIONS-COMPAT.md`
+- [x] GitHub App (optional) + plain repo webhooks with HMAC verification
+- [x] Check Runs with inline annotations, PR failure comments, statuses
+- [x] macOS / Windows BYO parity, status badges, required-checks UX
 - [x] SOC 2-friendly audit log (who ran what, where, with which token)
 
-## Phase 5 — Agent-native (shipped)
+### Speed, waste-killing, caching
 
-- [x] Blocking wait + compact digests (`GET /v1/runs/:id/wait|digest`),
-      MCP `run_and_wait` — one call, zero sleep loops
-- [x] Priority lane (0–10) so verification jumps queued batch work
-- [x] `cli local`: run `flare.yml` in the working tree, warm cache, no server
-- [x] Source dispatch: run an uploaded working tree with no commit
-      (`cli run --source`) — something a forge-hosted CI cannot do
-- [x] Rich GitHub surfaces: per-job Check Runs with failing-command
-      output and inline annotations, one evolving PR summary comment
-- [x] Reliability: webhook delivery dedupe, scheduled runs with
-      last-dispatch visibility, per-job retries, `if:` conditionals
+- [x] R2-backed cache + artifact store (zero egress)
+- [x] Snapshot-backed caches (image-lineage keyed), scale-to-zero seats
+- [x] Superseded-run collapsing: opt-in one-run-per-branch-head
+      (`supersedeBranchRuns: push`) + concurrency groups
+- [x] Sharding: `shards: N` with `FLARE_SHARD_INDEX` / `FLARE_SHARD_TOTAL`
+- [x] `FLARE_CHANGED_FILES` + `paths:` filters (test-selection groundwork)
+- [x] Budgets (per-repo monthly compute-minute caps, warn/block) and
+      per-run cost + time attribution vs Actions list price
 
-## Phase 6 — Agent-fleet CI (in progress)
+### Visibility
 
-Context: at 100s of pushes/day the per-push model breaks — every attempt
-bills a full run, queues back up, and the wait tax lands on the agent loop
-itself. Everything below answers that, in the order teams hit it.
+- [x] Dashboard, full CLI, REST API (OpenAPI served live)
+- [x] Bottleneck report: per-check p50/p95 + median queue wait
+      (dashboard "Slowest checks", `GET /v1/bottlenecks`, `cli bottlenecks`)
+- [x] JUnit analytics, monitors, AI failure triage, NL pipeline generation,
+      healing (draft PR + verification run)
+- [x] D1 full-text log search, warm dev boxes, per-domain egress controls,
+      browser-test jobs
 
-### Already answering it
+### Tournaments
 
-- [x] Flat cost at agent volume: orchestration on Cloudflare's free tier,
-      BYO runners at box cost, no per-minute meter (managed seats are
-      convenience, not the pricing model).
-- [x] Agents don't poll: blocking wait + digest; MCP `run_and_wait`.
-- [x] No commit needed to verify: `cli local` (warm cache, no server) and
-      source dispatch (`cli run --source`).
-- [x] Supersede control: concurrency groups + `cancel-in-progress` kill
-      stale branch runs instead of letting every push pile up.
-- [x] Dead-agent safety: the 20-minute heartbeat sweep requeues orphaned
-      running jobs, so an interrupted agent can't wedge the queue.
-- [x] Fleet-shared cache: R2 per-repo cache is one warm cache for ten
-      worktrees/agents (plus local `~/.flare/cache` for `cli local`).
-- [x] Per-run cost + time attribution vs Actions list price (`cli usage`,
-      dashboard).
-- [x] Runtime priors (p50 per job) already order dispatch and inform the
-      dashboard.
+- [x] Race N agents on one task with real CI per attempt, deterministic
+      verdict + AI why, immutable ledger, collision radar
 
-### Next (queued)
+## OSS roadmap (free forever)
 
-- [x] Spend guardrails: per-repo monthly compute-minute budgets with
-      warn/block modes, audit rows, and a dashboard form.
-- [ ] Cost-per-merged-PR trend (the remaining slice of the budget story).
-- [x] "What's blocking the merge" report: p50/p95 per check + median
-      queue wait — dashboard card, `GET /v1/bottlenecks`, `cli
-      bottlenecks`.
-- [x] `paths:` trigger filters + `FLARE_CHANGED_FILES` exposed to steps,
-      unlocking changed-file test selection recipes (unknown changes run
-      conservatively, never silently skip).
-- [x] Sharding: native `shards: N` splits a job across parallel cells
-      with `FLARE_SHARD_INDEX`/`FLARE_SHARD_TOTAL` (setup overhead is what
-      limits sharding — cache and preinstalled toolchains keep it down).
-- [x] Auto-supersede: opt-in `one run per branch head` policy cancels
-      still-active jobs of earlier same-branch runs on push.
-- [x] Stale-job reclaims write a `[flare] requeued` line into the job log
-      (visible in the dashboard); dead executors can't wedge the queue.
-- [x] Recipes/docs: changed files, shards, and the check loop are covered
-      in `PIPELINES.md`, `GITHUB-ACTIONS-COMPAT.md`, and `DEV-SPEED.md`.
+### Now (days–weeks)
 
-### Research bets
+- [x] Superseded-run collapsing — shipped opt-in; remaining: default-on
+      for agent-authored pushes
+- [x] Bottleneck report — shipped; remaining: cache hit-rate and
+      flakiness-rate on the same card
+- [ ] Cost & wall-clock anomaly alerts — "your CI 3x'd today because
+      agent X pushed 200 times" (per-identity attribution on top of the
+      existing cost data; daily/weekly digest option)
+- [ ] Flaky auto-quarantine — detection exists; add quarantine out of the
+      blocking gate, PR annotation, dashboard, auto-reinstate after N green
+- [ ] Agent-led adoption: `flare init` (scaffold workflows + AGENTS.md
+      snippet + MCP config in one command), a flare-verify skill for
+      Claude Code / Codex / Cursor, AGENTS.md snippet generator
+- [x] `llms.txt` (model-readable index); [ ] MCP registry listings
+      (mcp.so, Smithery), `pricing.json` for the hosted tier
 
-- [ ] Merge queue for agent fleets: admission runs against the candidate
-      merge commit, batched, with supersede semantics and conflict
-      feedback — the `needs`/blocked-job machinery is the foundation.
-- [ ] Run attestation: signed, SHA-pinned run manifests (digest + artifact
-      hashes + executor identity) so a verification can be trusted without
-      re-running it — starts as verifiable records, not a full
-      supply-chain system.
-- [ ] Test-impact selection: changed files → affected tests as a
-      first-class pipeline helper (module graph or coverage map), with a
-      full-suite fallback on any doubt.
+### Next (weeks)
+
+- [ ] Smart test selection — diff → affected tests (import graph +
+      history), with a full-suite safety net on the merge candidate and
+      nightly, and a per-run report of what was skipped and why
+      (`FLARE_CHANGED_FILES` is the groundwork)
+- [ ] Budget kill switches — per-identity attribution, auto-pause on
+      runaway loops, alert (PR comment/webhook), resume in one click
+      (per-repo caps + warn/block shipped)
+- [ ] CI profiles — first-class "smoke per push / full suite nightly + on
+      the landing candidate" config block (the $0-bill pattern)
+- [ ] Shared-warm-cache stats — hit-rate over a week, published as the
+      "one cache, ten agents" proof (the #1 challenged claim; prove it)
+
+### Later (months)
+
+- [ ] Attestation — content-addressed verdict reuse: identical tree +
+      suite + environment → "this exact state already passed, here's the
+      receipt" (extends the tournament ledger; starts as verifiable
+      records, not a full supply-chain system)
+- [ ] Agent merge queue — serialize agent PRs against a moving main:
+      rebase, verify, land, with collision detection across concurrent
+      agents (generalizes the tournament collision radar)
+- [ ] Same-machine verify parity — `cli local` exists; remaining: mirror
+      cloud runs exactly (images, cache keys) so "works on my machine"
+      and "in CI" are the same sentence
+
+## Hosted & paid tiers (outside OSS scope)
+
+The OSS core is MIT and stays free forever, self-hosted on your own
+Cloudflare account. Planned paid surfaces, for clarity:
+
+- **Flare Cloud** — the hosted control plane: one-click onboarding
+  (no wrangler), usage dashboard + billing, managed seats autoscaling.
+  Founding price ~$49/concurrent runner/month.
+- **Enterprise** (annual) — SSO/SAML + SCIM, RBAC, audit-log export /
+  SIEM, policy engine (allowed repos/runners, org-wide budget caps),
+  DPA/trust center, SLA.
+- **Private tournaments** — flat per event; public tournaments stay free
+  marketing.
+
+The sentence that sells it: **there is no multi-tenant vendor storage of
+your code — compute and artifacts live in your Cloudflare account.**
+
+## Non-goals (for now)
+
+- Replacing GitHub the forge (repos, PRs, reviews stay where they are).
+- Managed Windows/macOS runners — BYO only (a capex game; we lose it on
+  purpose).
+- A $/minute price war with funded runner vendors — compete on the agent
+  interface, not the meter.
+- Generic "faster containers" claims — table stakes, not differentiation.
+- Building the review UI: we cut the diff tax (triage, digests, one PR
+  summary) but human review stays in GitHub.
+- Full cryptographic supply-chain infra: attestation starts with signed,
+  verifiable run records.
+- A marketplace of thousands of actions — ten excellent built-ins beat
+  ten thousand unmaintained YAML wrappers.
 
 ## Known gaps (unscheduled)
 
+- Cost-per-merged-PR trend (the remaining slice of the budget story).
 - Cache management: `restore-keys` semantics + a dashboard cache
   browser/eviction.
 - Step/job outputs and a richer `if:` expression subset.
 - MCP tools for artifacts and schedules (runs/jobs/flaky already exist).
 - Org-level allowlists for API tokens (repo allowlists shipped).
 - Runner auto-update for BYO fleets.
-
-## Non-goals (for now)
-
-- Replacing GitHub the forge (repos, PRs, reviews stay where they are).
-- Building the review UI: we cut the diff tax (triage, digests, one PR
-  summary) but human review stays in GitHub.
-- Full cryptographic supply-chain infra: attestation starts with signed,
-  verifiable run records.
-- A marketplace of thousands of actions — ten excellent built-ins beat ten
-  thousand unmaintained YAML wrappers.
