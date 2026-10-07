@@ -41,7 +41,7 @@ jobs:
         # (Workers Scripts Edit + D1 Edit + Queues Edit, one account). See docs/TOKENS.md.
         # Docs-only PRs skip the deploy: nothing to preview, no minutes burned.
         run: |
-          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN}" ]; then
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "No CLOUDFLARE_API_TOKEN secret; skipping preview deploy."
             exit 0
