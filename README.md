@@ -9,6 +9,15 @@
 Open-source GitHub Actions alternative you host on your own Cloudflare account.
 One click deploys the Worker and auto-provisions its D1 database and queues.
 
+**Already have Actions workflows? Keep them.** Repos without a `flare.yml`
+run their existing `.github/workflows/*.yml` unchanged — same triggers, jobs,
+steps, matrices, cache, and artifacts; unsupported actions are dropped with
+warnings instead of silently misbehaving ([support
+matrix](docs/GITHUB-ACTIONS-COMPAT.md)). No GitHub App? Public repos can run
+from a plain repo webhook. Want full control? The native `flare.yml` format
+always wins when present, and `cli import` migrates a workflow with a warning
+report.
+
 GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → external pull-runner → status callback. Dashboard + API + CLI.
 
 ## Why
@@ -17,6 +26,11 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
 - Easier: TypeScript + `wrangler.jsonc`, local `wrangler dev`, no YAML push-test loop.
 - Better: durable dispatch signals with Queue retry + DLQ, D1 run history,
   fully open and self-hosted.
+- Zero-step migration: existing `.github/workflows` run as-is; every run is
+  tagged in the dashboard with which pipeline ran it.
+- Agent-scale development: `npm run check` lints, type-checks, and tests only
+  what changed — serialized across worktrees so parallel sessions don't thrash
+  ([measurements](docs/DEV-SPEED.md)).
 
 ## Layout
 
@@ -98,6 +112,13 @@ the same permissions/events and webhook URL
 `GITHUB_APP_ID`, and `GITHUB_PRIVATE_KEY` via `wrangler secret put`
 (env takes precedence; Connect refuses while any of them is set).
 Install the App on your repo either way.
+
+**No App at all?** The App is only required for automatic push/PR runs on
+private repos and for GitHub-side surfaces (commit statuses, Check Runs, PR
+comments, GitHub login). Token dispatch (CLI/API/MCP), source runs, scheduled
+runs, and `cli local` work without it — and for **public repos** a plain repo
+webhook pointed at `https://<worker>/webhooks/github` (with the webhook
+secret from dashboard Settings) triggers runs with no App installed.
 
 ## Dashboard
 
@@ -434,12 +455,15 @@ See [Workers](https://developers.cloudflare.com/workers/platform/pricing/),
 Clone the repo and point any coding agent at it — [AGENTS.md](AGENTS.md)
 teaches it the stack, commands, architecture, and conventions.
 `npm run setup` is fully non-interactive (preview with
-`npm run setup -- --dry-run`), and `npm test` / `npm run typecheck`
-verify every change. For Cloudflare access, mint the agent a per-Worker
-**Editor** token (plus D1/Queues edit) as described above — never your
-account-wide credentials. (Cloudflare's new `cf` CLI, open beta since
-2026-09-28, looks promising for agent-driven Cloudflare work; until it
-stabilizes, wrangler remains this repo's supported path.)
+`npm run setup -- --dry-run`). The inner loop is `npm run check`: oxlint on
+changed files + one type check + only the affected tests, serialized across
+worktrees (see [docs/DEV-SPEED.md](docs/DEV-SPEED.md)); `npm run check --
+--full` plus `npm run deploy:dry` matches what CI gates on. For Cloudflare
+access, mint the agent a per-Worker **Editor** token (plus D1/Queues edit)
+as described above — never your account-wide credentials. (Cloudflare's new
+`cf` CLI, open beta since 2026-09-28, looks promising for agent-driven
+Cloudflare work; until it stabilizes, wrangler remains this repo's supported
+path.)
 
 ## License
 
