@@ -8,23 +8,6 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
-- `llms.txt`: a model-readable index (docs, MCP config, quickstart) for
-  agents and LLM tooling.
-
-### Changed
-
-- Roadmap restructured around the October 2026 market evidence: the
-  recurring pains in practitioners' terms, the shipped OSS foundation,
-  an OSS roadmap in Now/Next/Later waves, the planned hosted/paid tiers
-  (Flare Cloud, Enterprise, private tournaments), and an expanded
-  non-goals list (BYO-only Windows/macOS, no price war, no generic
-  container-speed claims).
-- README: a "Replace your GitHub Actions — pick your path" section —
-  one click with the App, one click without it (repo webhooks), dispatch
-  only, or self-host — all four run existing workflows unchanged.
-
-### Added (features)
-
 - `paths:` / `paths-ignore:` trigger filters for Actions-compatible
   workflows, matched against the run's changed files; `FLARE_CHANGED_FILES`
   exposes that list (newline-separated) to steps for changed-file test
@@ -41,6 +24,20 @@ tagged on `main` (`v0.1.0` is the first).
   Dashboard Settings manages both.
 - Auto-supersede (`supersedeBranchRuns: push`): one run per branch head —
   a new push cancels still-active jobs of earlier same-branch runs.
+- `llms.txt`: a model-readable index (docs, MCP config, quickstart) for
+  agents and LLM tooling.
+
+### Changed
+
+- Roadmap restructured around the October 2026 market evidence: the
+  recurring pains in practitioners' terms, the shipped OSS foundation,
+  an OSS roadmap in Now/Next/Later waves, the planned hosted/paid tiers
+  (Flare Cloud, Enterprise, private tournaments), and an expanded
+  non-goals list (BYO-only Windows/macOS, no price war, no generic
+  container-speed claims).
+- README: a "Replace your GitHub Actions — pick your path" section —
+  one click with the App, one click without it (repo webhooks), dispatch
+  only, or self-host — all four run existing workflows unchanged.
 
 ## [0.2.0] - 2026-10-07
 
