@@ -20,7 +20,6 @@ import {
   deleteSession,
   deleteUser,
   deleteUserSessions,
-  failingTestsForJob,
   flakyCandidates,
   flakyStats,
   getJob,
