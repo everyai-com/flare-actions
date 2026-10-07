@@ -33,6 +33,8 @@ Speed wins trials; price wins migrations; agents win the next decade.
 ## Phase 4 — Finish the migration story (shipped)
 
 - [x] GitHub Actions YAML importer (`cli import`, translates runs-on/steps automatically)
+- [x] Native `.github/workflows` drop-in: no flare.yml → matching workflow
+      files run as-is, triggers included (`docs/GITHUB-ACTIONS-COMPAT.md`)
 - [x] macOS remote story (Mac Mini / hosted Mac runners via label protocol, `docs/RUNNERS.md`)
 - [x] Windows BYO parity, status badges, required-checks UX (commit statuses)
 - [x] SOC 2-friendly audit log (who ran what, where, with which token)
