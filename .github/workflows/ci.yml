@@ -8,13 +8,14 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit --fund=false
       - run: npm run types
       - run: npm run typecheck
       - run: npm run lint
@@ -30,6 +31,7 @@ jobs:
 
   preview:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: verify
     if: github.event_name == 'pull_request'
     steps:
@@ -37,17 +39,29 @@ jobs:
       - id: gate
         # Least-privilege token for this job: `npm run token:mint -- --profile ci`
         # (Workers Scripts Edit + D1 Edit + Queues Edit, one account). See docs/TOKENS.md.
+        # Docs-only PRs skip the deploy: nothing to preview, no minutes burned.
         run: |
-          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN}" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "No CLOUDFLARE_API_TOKEN secret; skipping preview deploy."
+            exit 0
+          fi
+          BASE="${{ github.base_ref }}"
+          if [ -n "$BASE" ] && git fetch -q --depth 1 origin "$BASE"; then
+            CHANGED=$(git diff --name-only FETCH_HEAD...HEAD || true)
+            if [ -n "$CHANGED" ] && ! printf '%s\n' "$CHANGED" | grep -qEv '^(docs/|\.github/|.*\.md$)'; then
+              echo "relevant changes present"
+            else
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "Docs-only change; skipping preview deploy."
+            fi
           fi
       - uses: actions/setup-node@v7
         if: steps.gate.outputs.skip != 'true'
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit --fund=false
         if: steps.gate.outputs.skip != 'true'
       - name: Deploy branch preview
         id: preview
