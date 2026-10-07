@@ -285,7 +285,19 @@ npm run cli -- watch <runId>        # block on an existing run + digest
 npm run cli -- dispatch owner/repo main --priority 9   # fire and forget
 ```
 
-## Importing from GitHub Actions
+## Coming from GitHub Actions
+
+**Drop-in:** delete nothing. If a repo has no `flare.yml`, Flare reads its
+`.github/workflows/*.yml` at the commit and runs the matching workflows —
+`on: push` / `pull_request` / `workflow_dispatch` / `schedule` are
+honored, and `run:` steps, matrices, needs, concurrency, containers,
+services, `actions/cache`, and `actions/upload-artifact` translate as-is.
+JS/container actions and unsupported expressions are dropped **with
+warnings**, never guessed at. Full support matrix + trigger mapping:
+[docs/GITHUB-ACTIONS-COMPAT.md](docs/GITHUB-ACTIONS-COMPAT.md).
+
+**Full fidelity:** migrate to the native format (better fidelity, richer
+features like retries and egress allowlists):
 
 ```bash
 npm run cli -- import .github/workflows/ci.yml > flare.yml
@@ -294,6 +306,11 @@ npm run cli -- import .github/workflows/ci.yml > flare.yml
 Translates `runs-on`, steps, matrices, needs, concurrency, containers,
 services, caches, and artifacts; everything unmappable becomes a warning
 on stderr (exit stays 0) so you see exactly what needs a human eye.
+
+**No GitHub App?** For public repos, point a plain repo webhook at
+`https://<worker>/webhooks/github` with the secret from the dashboard
+(Settings → Webhooks) — runs trigger with no App installed. The App adds
+private repos, commit statuses, Check Runs, PR comments, and GitHub login.
 
 ## Status badges
 

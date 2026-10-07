@@ -35,6 +35,16 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `apps/worker/src/{pipeline,mcp,cache,artifacts,badge,cost,generate}.ts` —
   `flare.yml` parse/expand/serialize, MCP server, R2 cache/artifacts, badges,
   cost attribution, NL pipeline generation.
+- `apps/worker/src/actionsCompat.ts` — native `.github/workflows` drop-in:
+  `loadPipelineJobs` (index.ts) takes a `WorkflowEventContext` and, when no
+  `flare.yml` exists at the sha, fetches workflow files (public contents
+  listing then installation token), matches `on:` (push branches/tags,
+  pull_request base branch, workflow_dispatch, schedule cron), translates
+  via the SDK importer, prefixes base/needs when merging files (≤10 files,
+  64 KiB each, 32 jobs), and maps `${{ github.* }}` onto FLARE_* shell
+  envs — unknown expressions scrub with warnings, `secrets.*` stays for
+  the executor. `cli local` falls back to local workflows with the same
+  module. Executors set `FLARE_REF` (claim SELECT joins `runs.branch`).
 - `apps/worker/src/ratelimit.ts` — auth endpoint throttling (failure
   windows per email + hashed client IP in D1 `auth_attempts`).
 - `apps/worker/src/cron.ts` — 5-field UTC cron parser for scheduled

@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); releases are
 tagged on `main` (`v0.1.0` is the first).
 
+## [Unreleased]
+
+### Added
+
+- Native `.github/workflows` compatibility: without a `flare.yml`, Flare
+  fetches the repo's workflow files at the commit, matches `on:` triggers
+  (push branches/tags, pull_request base branch, workflow_dispatch,
+  schedule cron) and runs them — `cli local` falls back to local
+  workflows too. Bounded translation drops unsupported `uses:` and
+  expressions with warnings (`docs/GITHUB-ACTIONS-COMPAT.md`).
+- `${{ github.* }}` builtins map onto `FLARE_SHA` / `FLARE_REPO` /
+  `FLARE_RUN_ID` / `FLARE_JOB_ID` / `FLARE_REF` / `FLARE_WORKFLOW` (new
+  `FLARE_REF` env on runners and seats).
+- Job-guard evaluation: `if:` conditions comparing `github.event_name` /
+  `.ref` / `.ref_name` / `.repository` are decided at translation time, so
+  a job gated to another event is skipped exactly like Actions instead of
+  running (e.g. preview deploys no longer leak into push runs).
+- Job-level `if` translation in the Actions importer (bounded subset,
+  warned otherwise).
+
 ## [0.1.0] - 2026-10-04
 
 ### Added
