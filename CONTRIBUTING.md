@@ -14,14 +14,24 @@ npm run setup    # provision D1 + queues + R2, migrate, deploy, write .env
 
 `npm run setup -- --dry-run` previews everything without touching your account.
 
+### Fast inner loop
+
+While iterating, run `npm run check` instead of the full commands: it lints
+only changed files (oxlint), type-checks with the fast native compiler when
+available, and runs only the tests affected by your change. It serializes
+across worktrees (`FLARE_CHECK_SLOTS`, default 3) so parallel sessions don't
+thrash a laptop. See [docs/DEV-SPEED.md](docs/DEV-SPEED.md) for measurements
+and rationale.
+
 ## Before you open a PR
 
 Run the same gates CI runs:
 
 ```bash
-npm run types
 npm run typecheck
+npm run lint
 npm test
+npm run types
 npm run deploy:dry
 ```
 

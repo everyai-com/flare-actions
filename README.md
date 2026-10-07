@@ -31,7 +31,8 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
 - `docs/` — [pipeline reference](docs/PIPELINES.md),
   [runners](docs/RUNNERS.md), [MCP](docs/MCP.md),
   [operations](docs/OPERATIONS.md), [roadmap](docs/ROADMAP.md),
-  [economics](docs/ECONOMICS.md)
+  [Actions compatibility](docs/GITHUB-ACTIONS-COMPAT.md),
+  [dev speed](docs/DEV-SPEED.md), [economics](docs/ECONOMICS.md)
 
 ## Quickstart
 

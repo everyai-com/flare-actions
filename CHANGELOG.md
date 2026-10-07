@@ -8,6 +8,20 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Runs now record which pipeline produced their jobs (`pipeline_source`:
+  flare.yml / Actions / default / inline / source); the dashboard tags
+  every run row and the run detail explains it.
+- Dashboard Settings: "Coming from GitHub Actions?" card — drop-in
+  explanation, no-App repo-webhook recipe, and a link to the support
+  matrix.
+- Agent dev loop: `npm run check` (changed-file oxlint + one type check +
+  `vitest --changed`, serialized across worktrees via slots),
+  `npm run lint:fast` (oxlint), `npm run typecheck:fast` (TypeScript
+  native). CI still gates on type-aware eslint + tsc. See
+  `docs/DEV-SPEED.md`.
+- vitest persists module transforms between runs (`fsModuleCache`).
+- CI hygiene: `npm ci --prefer-offline --no-audit --fund=false`, explicit
+  job timeouts, and docs-only PRs skip the preview deploy.
 - Native `.github/workflows` compatibility: without a `flare.yml`, Flare
   fetches the repo's workflow files at the commit, matches `on:` triggers
   (push branches/tags, pull_request base branch, workflow_dispatch,

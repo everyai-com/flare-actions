@@ -19,7 +19,15 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   `@cloudflare/workers-types` and its globals shadow the newer `Tracing`/
   `Span`/`Container` APIs (red typecheck with no source change). Runtime
   globals come only from tsconfig `"types"`; the generated file is `Env`.
-- `npm run typecheck` — `tsc --noEmit`, must be clean
+- `npm run typecheck` — `tsc --noEmit`, must be clean (the CI gate)
+- `npm run typecheck:fast` — `tsgo --noEmit` (TypeScript native: ~2x faster,
+  half the memory; local speed only — CI keeps tsc)
+- `npm run lint` — eslint, must be clean (type-aware; the CI gate)
+- `npm run lint:fast` — oxlint (milliseconds; local speed pass)
+- `npm run check` — the agent loop: oxlint on changed files + one type
+  check + `vitest --changed HEAD`, serialized across worktrees via slot
+  locks (`FLARE_CHECK_SLOTS`, default 3). `-- --full` for everything.
+  See docs/DEV-SPEED.md.
 - `npm test` — vitest, colocated `*.test.ts`, must pass
 - `npm run deploy` / `npm run deploy:dry` — deploy / validate only
 - `npm run runner` — external pull-runner (reads `.env` automatically)

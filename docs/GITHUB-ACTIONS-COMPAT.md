@@ -16,6 +16,11 @@ Want a warning report before pushing? Run the importer locally:
 npm run cli -- import .github/workflows/ci.yml   # warnings on stderr
 ```
 
+Every run records which pipeline produced it (`flare.yml`, `Actions`,
+`default`, `inline`, or `source`) — the dashboard tags each run row with
+it, and the run detail explains it. The dashboard's Settings tab also has
+a "Coming from GitHub Actions?" card with the no-App webhook recipe.
+
 For maximum fidelity, migrate to the native format (`cli import > flare.yml`);
 `flare.yml` always wins when present.
 
