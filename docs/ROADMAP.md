@@ -5,6 +5,12 @@ for orchestration on Cloudflare's edge, executes on warm metal or
 scale-to-zero containers, and wraps it in an agent-native experience.
 Speed wins trials; price wins migrations; agents win the next decade.
 
+October 2026 sharpened the thesis: agent fleets turned CI from a cost
+center into the bottleneck — teams publishing that "CI is the top
+bottleneck" (Linear's write-up, multiple viral founder threads, developers
+disabling PR CI outright to dodge bills). Phase 6 is a direct answer to
+what those threads keep asking for.
+
 ## Phase 1 — Dispatch core (shipped)
 
 - GitHub App webhooks → edge dispatch → D1 + Queues + DLQ
@@ -52,8 +58,79 @@ Speed wins trials; price wins migrations; agents win the next decade.
 - [x] Reliability: webhook delivery dedupe, scheduled runs with
       last-dispatch visibility, per-job retries, `if:` conditionals
 
+## Phase 6 — Agent-fleet CI (in progress)
+
+Context: at 100s of pushes/day the per-push model breaks — every attempt
+bills a full run, queues back up, and the wait tax lands on the agent loop
+itself. Everything below answers that, in the order teams hit it.
+
+### Already answering it
+
+- [x] Flat cost at agent volume: orchestration on Cloudflare's free tier,
+      BYO runners at box cost, no per-minute meter (managed seats are
+      convenience, not the pricing model).
+- [x] Agents don't poll: blocking wait + digest; MCP `run_and_wait`.
+- [x] No commit needed to verify: `cli local` (warm cache, no server) and
+      source dispatch (`cli run --source`).
+- [x] Supersede control: concurrency groups + `cancel-in-progress` kill
+      stale branch runs instead of letting every push pile up.
+- [x] Dead-agent safety: the 20-minute heartbeat sweep requeues orphaned
+      running jobs, so an interrupted agent can't wedge the queue.
+- [x] Fleet-shared cache: R2 per-repo cache is one warm cache for ten
+      worktrees/agents (plus local `~/.flare/cache` for `cli local`).
+- [x] Per-run cost + time attribution vs Actions list price (`cli usage`,
+      dashboard).
+- [x] Runtime priors (p50 per job) already order dispatch and inform the
+      dashboard.
+
+### Next (queued)
+
+- [ ] Spend guardrails: per-repo budgets + alerts, warn/refuse dispatch
+      past a cap, cost-per-merged-PR trend (usage APIs exist).
+- [ ] "What's blocking the merge" report: p50/p95 per check, queue wait vs
+      run time, longest pole per repo — dashboard + CLI + one digest line
+      (analytics + priors data already exists).
+- [ ] `paths:` trigger filters + `FLARE_CHANGED_FILES` exposed to steps,
+      unlocking changed-file test selection recipes ("run the 12% that
+      matters", always with a full-suite fallback).
+- [ ] Sharding: docs recipe first, then a native `shards: N` that splits
+      test files across matrix cells, aggregates JUnit, and keeps setup
+      cost bounded (setup overhead is what limits sharding).
+- [ ] Auto-supersede: "one run per branch head" as the default policy for
+      agent-heavy repos (`cancel-in-progress` without hand-written groups).
+- [ ] Surface stale-job reclaims and slot behavior in the dashboard +
+      digest so fleet operators can see liveness at a glance.
+- [ ] Recipes/docs: "one cache, ten agents", "verify without committing",
+      "CI budget math at 300 pushes/day".
+
+### Research bets
+
+- [ ] Merge queue for agent fleets: admission runs against the candidate
+      merge commit, batched, with supersede semantics and conflict
+      feedback — the `needs`/blocked-job machinery is the foundation.
+- [ ] Run attestation: signed, SHA-pinned run manifests (digest + artifact
+      hashes + executor identity) so a verification can be trusted without
+      re-running it — starts as verifiable records, not a full
+      supply-chain system.
+- [ ] Test-impact selection: changed files → affected tests as a
+      first-class pipeline helper (module graph or coverage map), with a
+      full-suite fallback on any doubt.
+
+## Known gaps (unscheduled)
+
+- Cache management: `restore-keys` semantics + a dashboard cache
+  browser/eviction.
+- Step/job outputs and a richer `if:` expression subset.
+- MCP tools for artifacts and schedules (runs/jobs/flaky already exist).
+- Org-level allowlists for API tokens (repo allowlists shipped).
+- Runner auto-update for BYO fleets.
+
 ## Non-goals (for now)
 
 - Replacing GitHub the forge (repos, PRs, reviews stay where they are).
+- Building the review UI: we cut the diff tax (triage, digests, one PR
+  summary) but human review stays in GitHub.
+- Full cryptographic supply-chain infra: attestation starts with signed,
+  verifiable run records.
 - A marketplace of thousands of actions — ten excellent built-ins beat ten
   thousand unmaintained YAML wrappers.
