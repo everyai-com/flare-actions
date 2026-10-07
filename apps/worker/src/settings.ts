@@ -27,6 +27,8 @@ export const SETTING_KEYS = {
   budgetMinutes: "budget_minutes",
   budgetMode: "budget_mode",
   supersedeBranchRuns: "supersede_branch_runs",
+  // Internal: last hourly fleet check (anomaly alerts + flaky quarantine).
+  fleetCheckedAt: "fleet_checked_at",
 } as const;
 
 export function validateWebhookSecret(secret: unknown): string | null {

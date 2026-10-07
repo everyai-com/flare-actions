@@ -1,5 +1,6 @@
 import {
   audit,
+  activeQuarantineNames,
   bottleneckStats,
   cancelGroupJobs,
   cancelQueuedJobs,
@@ -19,6 +20,8 @@ import {
   deleteSession,
   deleteUser,
   deleteUserSessions,
+  failingTestsForJob,
+  flakyCandidates,
   flakyStats,
   getJob,
   getJobsForRun,
@@ -37,6 +40,7 @@ import {
   listAudit,
   listFailingTests,
   listMonitors,
+  listQuarantinedTests,
   listQueuedJobs,
   listRepoSecretNames,
   listRuns,
@@ -46,7 +50,12 @@ import {
   monthlyComputeMinutes,
   pruneOldRuns,
   pruneWebhookDeliveries,
+  quarantineDowngrade,
+  quarantineTest,
+  recentTestStatuses,
   releaseAdminMarker,
+  releaseQuarantinedTest,
+  repoUsageByDay,
   rerunJob,
   revokeToken,
   rollupRunStatus,
@@ -58,6 +67,10 @@ import {
   setScheduleEnabled,
   setSetting,
   setUserPassword,
+  shouldReinstate,
+  summarizeUsageAnomalies,
+  testTally,
+  topBranchForRepo,
   touchJob,
   touchScheduleRun,
   updateRunningJob,
@@ -122,7 +135,7 @@ import {
 } from "./pipeline";
 import { buildCompatJobs, fetchWorkflowFiles, type WorkflowEventContext } from "./actionsCompat";
 import { promoteBlockedJobs, maybeRetryJob, reportGitHubStatus, requeueStaleJobs, triageAndStore } from "./finish";
-import { notifyRunCompleted, resolveNotifySender } from "./notify";
+import { notifyMessage, notifyRunCompleted, resolveNotifySender } from "./notify";
 import {
   authThrottleBlocked,
   authThrottleKeys,
@@ -861,7 +874,12 @@ async function handleStatusCallback(
     }
     const result = typeof body.result === "string" ? body.result.slice(0, 65536) : undefined;
     const cappedLog = typeof body.log === "string" ? body.log.slice(0, 262144) : undefined;
-    const recorded = await updateRunningJob(env.DB, jobId, { status: body.status, log: cappedLog, result });
+    // Flaky auto-quarantine: an all-quarantined failure is downgraded to
+    // success before it lands, so triage/checks/notifications see green.
+    const q = await quarantineDowngrade(env.DB, jobId, body.status);
+    const effectiveStatus = q.status;
+    const effectiveLog = q.note ? `${cappedLog ?? ""}\n${q.note}`.trim() : cappedLog;
+    const recorded = await updateRunningJob(env.DB, jobId, { status: effectiveStatus, log: effectiveLog, result });
     if (!recorded) {
       // The row moved on (re-run or stale requeue): this report belongs
       // to a superseded execution, so drop it instead of clobbering.
@@ -883,9 +901,9 @@ async function handleStatusCallback(
         }
       })(),
     );
-    log("info", "status updated", { runId, jobId, status: body.status });
-    ctx.waitUntil(annotateSpan({ "run.id": runId, "job.id": jobId, status: body.status }));
-    if (isTerminal(body.status)) {
+    log("info", "status updated", { runId, jobId, status: effectiveStatus });
+    ctx.waitUntil(annotateSpan({ "run.id": runId, "job.id": jobId, status: effectiveStatus }));
+    if (isTerminal(effectiveStatus)) {
       const basin = basinSink(env, ctx);
       const promoted = await promoteBlockedJobs(env.DB, env.RUN_QUEUE, run.repo, (job) => wakeSeat(env, job.jobId), env.ANALYTICS, basin);
       if (promoted.length > 0) log("info", "blocked jobs promoted", { runId, promoted });
@@ -896,7 +914,7 @@ async function handleStatusCallback(
           repo: run.repo,
           runId,
           jobName: finishedJob.name,
-          status: body.status,
+          status: effectiveStatus,
           durationMs: jobDurationMs(finishedJob) ?? 0,
           executor: "runner",
           attempts: finishedJob.attempts,
@@ -906,7 +924,7 @@ async function handleStatusCallback(
             repo: run.repo,
             runId,
             jobName: finishedJob.name,
-            status: body.status,
+            status: effectiveStatus,
             durationMs: jobDurationMs(finishedJob) ?? 0,
             executor: "runner",
             attempts: finishedJob.attempts,
@@ -927,7 +945,7 @@ async function handleStatusCallback(
       }
       // Runtime prior: fold real durations (success/failure only —
       // cancels and infra errors carry no signal) into the hourly EMA.
-      if (finishedJob && (body.status === "success" || body.status === "failure")) {
+      if (finishedJob && (effectiveStatus === "success" || effectiveStatus === "failure")) {
         const durationMs = jobDurationMs(finishedJob);
         if (durationMs !== null && finishedJob.finished_at) {
           const prior = { repo: run.repo, name: finishedJob.name, finishedAt: finishedJob.finished_at, durationMs };
@@ -1012,7 +1030,7 @@ async function handleStatusCallback(
         })(),
       );
     }
-    if (body.status === "failure" || body.status === "error") {
+    if (effectiveStatus === "failure" || effectiveStatus === "error") {
       const jobs = await getJobsForRun(env.DB, runId);
       const jobName = jobs.find((j) => j.id === jobId)?.name ?? "";
       ctx.waitUntil(
@@ -2203,6 +2221,38 @@ export default {
         }
         return json({ repo, days, checks: await bottleneckStats(env.DB, repo, days) });
       }
+      if (url.pathname === "/v1/quarantine") {
+        if (request.method === "POST") {
+          const ident = await requireScope(request, env, "run");
+          if (!ident) return json({ error: "unauthorized" }, 401);
+          if (ident.scope !== "admin") return json({ error: "admin token required" }, 403);
+          const body = (await request.json().catch(() => ({}))) as { repo?: unknown; name?: unknown; action?: unknown };
+          const repo = typeof body.repo === "string" ? body.repo : "";
+          const name = typeof body.name === "string" ? body.name.trim() : "";
+          if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
+          if (!name || name.length > 200) return json({ error: "name must be 1-200 characters" }, 400);
+          if (body.action === "remove") {
+            await releaseQuarantinedTest(env.DB, repo, name);
+            await audit(env.DB, ident.actor, "quarantine.release", `${repo} ${name}`);
+            return json({ ok: true, status: "reinstated" });
+          }
+          if (body.action === "add") {
+            await quarantineTest(env.DB, repo, name, "manual");
+            await audit(env.DB, ident.actor, "quarantine.add", `${repo} ${name}`);
+            return json({ ok: true, status: "active" });
+          }
+          return json({ error: "action must be add or remove" }, 400);
+        }
+        if (request.method === "GET") {
+          const ident = await requireScope(request, env, "read");
+          if (!ident) return json({ error: "unauthorized" }, 401);
+          const repo = url.searchParams.get("repo") ?? "";
+          if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
+          if (!repoAllowed(ident, repo)) return json({ error: "token is not scoped to that repo" }, 403);
+          return json({ repo, tests: await listQuarantinedTests(env.DB, repo) });
+        }
+        return json({ error: "method not allowed" }, 405);
+      }
       if (request.method === "GET" && url.pathname === "/v1/flaky") {
         const ident = await requireScope(request, env, "read");
         if (!ident) return json({ error: "unauthorized" }, 401);
@@ -2981,6 +3031,63 @@ export default {
           await touchScheduleRun(env.DB, s.id).catch(() => undefined);
           log("warn", "scheduled dispatch failed", { scheduleId: s.id, error: String(err) });
         }
+      }
+      // Hourly fleet check: usage anomalies + flaky auto-quarantine. One
+      // gate row keeps it to at most once an hour regardless of ticks.
+      try {
+        const lastCheck = await getSetting(env.DB, SETTING_KEYS.fleetCheckedAt);
+        if (!lastCheck || Date.now() - Date.parse(lastCheck) > 3_600_000) {
+          await setSetting(env.DB, SETTING_KEYS.fleetCheckedAt, new Date().toISOString());
+          const today = new Date().toISOString().slice(0, 10);
+          const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+          const anomalies = summarizeUsageAnomalies(await repoUsageByDay(env.DB, 8), { today });
+          for (const anomaly of anomalies.slice(0, 3)) {
+            const top = await topBranchForRepo(env.DB, anomaly.repo, `${today}T00:00:00.000Z`);
+            const factor = anomaly.medianMinutes > 0 ? (anomaly.todayMinutes / anomaly.medianMinutes).toFixed(1) : "many";
+            const text = [
+              `CI usage anomaly: ${anomaly.repo}`,
+              `Today: ${anomaly.todayRuns} runs, ${anomaly.todayMinutes} compute-min (trailing median ${anomaly.medianRuns} runs, ${anomaly.medianMinutes} min — ${factor}x).`,
+              top ? `Busiest branch today: ${top.branch} (${top.runs} runs).` : "",
+              "If this is an agent loop, cap it: dashboard → Settings → Budgets (warn/block).",
+            ]
+              .filter(Boolean)
+              .join("\n");
+            await notifyMessage(env.DB, env, {
+              subject: `Flare: CI usage anomaly in ${anomaly.repo}`,
+              text,
+              html: text
+                .split("\n")
+                .map((line) => `<p>${line.replace(/[<>&]/g, "")}</p>`)
+                .join(""),
+              auditTag: "anomaly",
+            });
+            await audit(env.DB, "system", "anomaly.usage", `${anomaly.repo} ${anomaly.todayMinutes}/${anomaly.medianMinutes}min`);
+          }
+          // Flaky auto-quarantine + reinstate, bounded per tick.
+          const activeRepos = await env.DB.prepare("SELECT DISTINCT repo FROM runs WHERE created_at >= ? LIMIT 10")
+            .bind(weekAgo)
+            .all<{ repo: string }>();
+          for (const row of activeRepos.results) {
+            const active = await activeQuarantineNames(env.DB, row.repo);
+            const candidates = flakyCandidates(await testTally(env.DB, row.repo, weekAgo), active);
+            for (const candidate of candidates) {
+              await quarantineTest(env.DB, row.repo, candidate.name, candidate.reason);
+              await audit(env.DB, "system", "quarantine.auto", `${row.repo} ${candidate.name}`);
+            }
+            let reinstated = 0;
+            for (const test of (await listQuarantinedTests(env.DB, row.repo, "active")).slice(0, 50)) {
+              if (shouldReinstate(await recentTestStatuses(env.DB, row.repo, test.name, 5))) {
+                await releaseQuarantinedTest(env.DB, row.repo, test.name);
+                reinstated += 1;
+              }
+            }
+            if (candidates.length > 0 || reinstated > 0) {
+              log("info", "quarantine updated", { repo: row.repo, added: candidates.length, reinstated });
+            }
+          }
+        }
+      } catch (err) {
+        log("warn", "fleet check failed", { error: String(err) });
       }
       // Self-heal drain: pending failure claims become draft PRs plus
       // verification runs (bounded per tick; production only like

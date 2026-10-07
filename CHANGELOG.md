@@ -26,6 +26,21 @@ tagged on `main` (`v0.1.0` is the first).
   a new push cancels still-active jobs of earlier same-branch runs.
 - `llms.txt`: a model-readable index (docs, MCP config, quickstart) for
   agents and LLM tooling.
+- Cost & wall-clock anomaly alerts: an hourly fleet check compares each
+  repo's day against its trailing median and messages email + chat
+  webhook with the busiest branch when usage spikes ("agent stuck in a
+  loop" insurance).
+- Flaky auto-quarantine: tests that fail ≥2 times yet pass in the week
+  are quarantined automatically; a failure whose failing tests are all
+  quarantined lands as success with a log note on both executors, and
+  quarantined tests reinstate after 3 consecutive passes.
+  `cli quarantine list|add|remove`, `GET/POST /v1/quarantine`.
+- `cli init`: scaffolds `flare.yml` (converted from the repo's first
+  convertible workflow, or a starter), writes an idempotent AGENTS.md
+  snippet teaching the verify loop, and prints next steps.
+- `skills/flare-verify/SKILL.md`: an agent skill (Claude Code / Codex /
+  Cursor) for the one-call verify loop; `pricing.json` with
+  machine-readable plans.
 
 ### Changed
 

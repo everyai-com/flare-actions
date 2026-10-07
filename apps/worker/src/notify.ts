@@ -165,6 +165,63 @@ export async function postNotifyWebhook(url: string, text: string): Promise<bool
   }
 }
 
+// Generic multi-channel message: chat webhook (independent of email
+// config) + email to every registered user. Run notifications and
+// fleet alerts (anomalies, quarantine) both ride this.
+export async function notifyMessage(
+  db: Db,
+  mail: NotifyMailEnv,
+  input: { subject: string; text: string; html: string; auditTag: string; auditTarget?: string },
+): Promise<{ sent: number; webhook: boolean; skipped: string | null }> {
+  const target = input.auditTarget ?? input.auditTag;
+  try {
+    // Chat webhook: independent of email configuration.
+    let webhook = false;
+    const storedWebhook = await getSetting(db, SETTING_KEYS.notifyWebhookUrl);
+    if (storedWebhook) {
+      try {
+        const key = await resolveSecretsKey(db, mail.SECRETS_KEY);
+        const url = await decryptSettingValue(key, storedWebhook);
+        webhook = await postNotifyWebhook(url, `${input.subject}\n\n${input.text}`);
+        console.log(
+          JSON.stringify({ level: webhook ? "info" : "warn", msg: "webhook posted", tag: input.auditTag, ok: webhook }),
+        );
+        await audit(db, "notify", webhook ? `${input.auditTag}.webhook` : `${input.auditTag}.webhook_failed`, target);
+      } catch (err) {
+        console.log(JSON.stringify({ level: "warn", msg: "webhook failed", tag: input.auditTag, error: String(err) }));
+      }
+    }
+
+    const sender = resolveNotifySender(mail.NOTIFY_FROM_EMAIL, await getSetting(db, SETTING_KEYS.notifyFromEmail));
+    if (!sender) return { sent: 0, webhook, skipped: "no notify sender configured" };
+    const recipients = (await listUsers(db)).map((u) => u.email).filter((e) => e.includes("@"));
+    if (recipients.length === 0) return { sent: 0, webhook, skipped: "no recipients" };
+    const email = mail.EMAIL;
+    if (!email) return { sent: 0, webhook, skipped: "no EMAIL binding" };
+    const from = { name: "Flare Actions", email: sender };
+    const results = await Promise.all(
+      recipients.map(async (to) => {
+        try {
+          await email.send({ from, to, subject: input.subject, text: input.text, html: input.html });
+          return true;
+        } catch (err) {
+          console.log(JSON.stringify({ level: "warn", msg: "notify send failed", to, error: String(err) }));
+          return false;
+        }
+      }),
+    );
+    const sent = results.filter(Boolean).length;
+    console.log(
+      JSON.stringify({ level: "info", msg: "message notified", tag: input.auditTag, sent, recipients: recipients.length }),
+    );
+    await audit(db, "notify", `${input.auditTag}.notify`, `${target} ${sent}/${recipients.length}`);
+    return { sent, webhook, skipped: null };
+  } catch (err) {
+    console.log(JSON.stringify({ level: "warn", msg: "notify failed", error: String(err) }));
+    return { sent: 0, webhook: false, skipped: "error" };
+  }
+}
+
 export async function notifyRunCompleted(
   db: Db,
   mail: NotifyMailEnv,
@@ -176,50 +233,8 @@ export async function notifyRunCompleted(
       return { sent: 0, webhook: false, skipped: `mode ${mode} skips ${input.run.status}` };
     }
     const jobs = await getJobsForRun(db, input.run.id);
-    const { subject, text } = buildRunEmail({ run: input.run, jobs, origin: input.origin });
-
-    // Chat webhook: independent of email configuration.
-    let webhook = false;
-    const storedWebhook = await getSetting(db, SETTING_KEYS.notifyWebhookUrl);
-    if (storedWebhook) {
-      try {
-        const key = await resolveSecretsKey(db, mail.SECRETS_KEY);
-        const url = await decryptSettingValue(key, storedWebhook);
-        webhook = await postNotifyWebhook(url, `${subject}\n\n${text}`);
-        console.log(
-          JSON.stringify({ level: webhook ? "info" : "warn", msg: "run webhook posted", runId: input.run.id, ok: webhook }),
-        );
-        await audit(db, "notify", webhook ? "run.webhook" : "run.webhook_failed", input.run.id);
-      } catch (err) {
-        console.log(JSON.stringify({ level: "warn", msg: "run webhook failed", runId: input.run.id, error: String(err) }));
-      }
-    }
-
-    const sender = resolveNotifySender(mail.NOTIFY_FROM_EMAIL, await getSetting(db, SETTING_KEYS.notifyFromEmail));
-    if (!sender) return { sent: 0, webhook, skipped: "no notify sender configured" };
-    const recipients = (await listUsers(db)).map((u) => u.email).filter((e) => e.includes("@"));
-    if (recipients.length === 0) return { sent: 0, webhook, skipped: "no recipients" };
-    const email = mail.EMAIL;
-    if (!email) return { sent: 0, webhook, skipped: "no EMAIL binding" };
-    const { html } = buildRunEmail({ run: input.run, jobs, origin: input.origin });
-    const from = { name: "Flare Actions", email: sender };
-    const results = await Promise.all(
-      recipients.map(async (to) => {
-        try {
-          await email.send({ from, to, subject, text, html });
-          return true;
-        } catch (err) {
-          console.log(JSON.stringify({ level: "warn", msg: "notify send failed", to, error: String(err) }));
-          return false;
-        }
-      }),
-    );
-    const sent = results.filter(Boolean).length;
-    console.log(
-      JSON.stringify({ level: "info", msg: "run notified", runId: input.run.id, sent, recipients: recipients.length }),
-    );
-    await audit(db, "notify", "run.notify", `${input.run.id} ${sent}/${recipients.length}`);
-    return { sent, webhook, skipped: null };
+    const { subject, text, html } = buildRunEmail({ run: input.run, jobs, origin: input.origin });
+    return await notifyMessage(db, mail, { subject, text, html, auditTag: "run", auditTarget: input.run.id });
   } catch (err) {
     console.log(JSON.stringify({ level: "warn", msg: "notify failed", error: String(err) }));
     return { sent: 0, webhook: false, skipped: "error" };

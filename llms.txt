@@ -13,10 +13,12 @@
 - [Roadmap](https://github.com/everyai-com/flare-actions/blob/main/docs/ROADMAP.md): shipped foundation, OSS roadmap, paid tiers.
 - [Dev speed](https://github.com/everyai-com/flare-actions/blob/main/docs/DEV-SPEED.md): the agent-scale check loop and measurements.
 - [API](https://github.com/everyai-com/flare-actions/blob/main/openapi.yaml): OpenAPI spec (served live at `GET /openapi.yaml`).
+- [pricing.json](https://github.com/everyai-com/flare-actions/blob/main/pricing.json): machine-readable plans and limits.
+- [skills/flare-verify](https://github.com/everyai-com/flare-actions/blob/main/skills/flare-verify/SKILL.md): agent skill for the verify loop (Claude Code / Codex / Cursor).
 
 ## Agent quickstart
 
 - One-click deploy: `https://deploy.workers.cloudflare.com/?url=https://github.com/everyai-com/flare-actions`
 - MCP: `POST https://<worker>/mcp` with `Authorization: Bearer <token>` — verify loop: `run_and_wait` → `get_run_digest`.
-- CLI (from source or npm): `cli run owner/repo HEAD` dispatches, waits, and prints the digest; `cli local` runs the working tree with no commit; `cli bottlenecks owner/repo` reports the slowest checks.
-- Machine-readable plans: `pricing.json` (planned).
+- CLI (from source or npm): `cli run owner/repo HEAD` dispatches, waits, and prints the digest; `cli local` runs the working tree with no commit; `cli bottlenecks owner/repo` reports the slowest checks; `cli init` scaffolds a repo (flare.yml + AGENTS.md snippet).
+- Flaky tests don't block: `cli quarantine list|add|remove <repo> ...`.

@@ -8,6 +8,7 @@ import {
   getSeatSnapshot,
   isTerminal,
   markJobRetained,
+  quarantineDowngrade,
   releaseJob,
   rollupRunStatus,
   saveJobEgress,
@@ -1271,9 +1272,14 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       }),
     ).slice(0, SEAT_RESULT_CAP);
     const finalLog = mask(logParts.join("\n")).slice(0, SEAT_LOG_CAP);
+    // Flaky auto-quarantine: all-quarantined failures land as success so
+    // checks/triage/notifications see green (mirrors the BYO path).
+    const q = await quarantineDowngrade(deps.db, jobId, status);
+    const effectiveStatus = q.status;
+    const effectiveLog = q.note ? `${finalLog}\n${q.note}` : finalLog;
     const recorded = await updateRunningJob(deps.db, jobId, {
-      status,
-      log: finalLog,
+      status: effectiveStatus,
+      log: effectiveLog,
       result: resultJson,
     });
     if (!recorded) {
@@ -1285,7 +1291,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       return { status: "released", jobId, detail: "job was requeued before completion; result dropped" };
     }
     await rollupRunStatus(deps.db, job.run_id, deps.analytics, deps.basin);
-    await annotateSpan({ "flare.job.status": status, "seat.snapshot.restored": restored });
+    await annotateSpan({ "flare.job.status": effectiveStatus, "seat.snapshot.restored": restored });
     // FTS index slice for global log search (best-effort, like monitors).
     await indexJobLog(deps.db, {
       jobId,
@@ -1303,7 +1309,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         repo: run.repo,
         runId: job.run_id,
         jobName: finished.name,
-        status,
+        status: effectiveStatus,
         durationMs: seatDurationMs ?? 0,
         executor: "seat",
         attempts: finished.attempts,
@@ -1313,7 +1319,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
           repo: run.repo,
           runId: job.run_id,
           jobName: finished.name,
-          status,
+          status: effectiveStatus,
           durationMs: seatDurationMs ?? 0,
           executor: "seat",
           attempts: finished.attempts,
@@ -1331,7 +1337,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     try {
       await evaluateResultMonitors(deps.db, deps.mail ?? {}, run, {
         ...job,
-        status,
+        status: effectiveStatus,
         log: finalLog,
       });
       const promoted = await promoteBlockedJobs(deps.db, deps.queue, run.repo, (p) => deps.spawn?.(p.jobId), deps.analytics, deps.basin);
@@ -1343,7 +1349,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
           if (mailed.sent > 0) await note(`[seat] notified ${mailed.sent} recipient(s)`);
         }
       }
-      const ghState = status === "success" ? "success" : "failure";
+      const ghState = effectiveStatus === "success" ? "success" : "failure";
       await reportGitHubStatus({
         appId: deps.appId,
         privateKey: deps.appKey,
@@ -1362,9 +1368,9 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
           sha: run.sha,
           origin: "",
         },
-        { ...job, status, result: resultJson },
+        { ...job, status: effectiveStatus, result: resultJson },
       );
-      if (status === "failure") {
+      if (effectiveStatus === "failure") {
         const jobs = await getJobsForRun(deps.db, job.run_id);
         const jobName = jobs.find((j) => j.id === job.id)?.name ?? "";
         await triageAndStore(deps.db, deps.ai, run, job.id, jobName, mask(logParts.join("\n")), resultJson, {
@@ -1414,7 +1420,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     // Retain-on-failure (V2 only — the seat DO alarm enforces the
     // destroy deadline, and V1 has no alarm). The job row is already
     // terminal; the container simply stays up for debugging.
-    if (status === "failure" && spec.retainOnFailure && v2Image) {
+    if (effectiveStatus === "failure" && spec.retainOnFailure && v2Image) {
       const until = new Date(Date.now() + RETAIN_TTL_MS).toISOString();
       try {
         await markJobRetained(deps.db, jobId, until);

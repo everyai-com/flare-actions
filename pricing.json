@@ -1,0 +1,48 @@
+{
+  "updated": "2026-10-07",
+  "currency": "USD",
+  "notes": "Machine-readable plans for agents and procurement. The OSS core is free forever; hosted and enterprise tiers are planned (not yet purchasable).",
+  "plans": {
+    "oss": {
+      "name": "Flare Actions (self-hosted)",
+      "status": "available",
+      "price": 0,
+      "license": "MIT",
+      "includes": [
+        "agent-native verify loop (MCP run_and_wait, digests)",
+        "native .github/workflows drop-in + flare.yml pipelines",
+        "BYO runners, managed seats, R2 cache/artifacts",
+        "budgets, quarantine, bottleneck report, tournaments"
+      ],
+      "limits": {
+        "orchestration": "your Cloudflare account (free tier covers small fleets)",
+        "seats": "Workers Paid plan required for managed containers"
+      }
+    },
+    "cloud": {
+      "name": "Flare Cloud (hosted control plane)",
+      "status": "planned",
+      "price_per_concurrent_runner_month": 49,
+      "includes": [
+        "one-click onboarding (no wrangler)",
+        "usage dashboard + billing",
+        "managed seats autoscaling"
+      ]
+    },
+    "enterprise": {
+      "name": "Flare Enterprise",
+      "status": "planned",
+      "billing": "annual",
+      "includes": [
+        "SSO/SAML + SCIM",
+        "RBAC + audit-log export / SIEM",
+        "policy engine (allowed repos/runners, org-wide budget caps)",
+        "DPA, trust center, SLA"
+      ]
+    },
+    "tournaments": {
+      "public": { "status": "available", "price": 0 },
+      "private": { "status": "planned", "billing": "flat per event" }
+    }
+  }
+}

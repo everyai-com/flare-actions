@@ -100,6 +100,17 @@ export interface FlareBottleneck {
   failures: number;
 }
 
+// Flaky-test quarantine row: active tests don't block runs (failures that
+// are entirely quarantined land as success with a log note).
+export interface FlareQuarantinedTest {
+  repo: string;
+  name: string;
+  status: string;
+  reason: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface FlareTestTotals {
   total: number;
   passed: number;
@@ -467,6 +478,21 @@ export class FlareClient {
     if (!res.ok) throw new Error(`getBottlenecks failed: ${res.status}`);
     const data = (await res.json()) as { checks: FlareBottleneck[] };
     return data.checks;
+  }
+
+  async getQuarantine(repo: string): Promise<FlareQuarantinedTest[]> {
+    const res = await this.call(`/v1/quarantine?repo=${encodeURIComponent(repo)}`);
+    if (!res.ok) throw new Error(`getQuarantine failed: ${res.status}`);
+    const data = (await res.json()) as { tests: FlareQuarantinedTest[] };
+    return data.tests;
+  }
+
+  async setQuarantine(repo: string, name: string, action: "add" | "remove"): Promise<void> {
+    const res = await this.call("/v1/quarantine", {
+      method: "POST",
+      body: JSON.stringify({ repo, name, action }),
+    });
+    if (!res.ok) throw new Error(`setQuarantine failed: ${res.status}`);
   }
 
   async reportStatus(

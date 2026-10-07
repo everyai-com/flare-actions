@@ -148,6 +148,16 @@ export const SCHEMA_STATEMENTS = [
     created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_test_reports_run ON test_reports(run_id)`,
+  `CREATE TABLE IF NOT EXISTS quarantined_tests (
+    repo TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    reason TEXT NOT NULL DEFAULT '',
+    green_streak INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (repo, name)
+  )`,
   `CREATE TABLE IF NOT EXISTS test_results (
     id INTEGER PRIMARY KEY,
     job_id TEXT NOT NULL,

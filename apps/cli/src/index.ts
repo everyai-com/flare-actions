@@ -8,6 +8,7 @@ import {
 } from "flare-actions-runner-sdk";
 import { runLocal } from "./local.ts";
 import { dispatchSource } from "./source.ts";
+import { runInit } from "./init.ts";
 import { BoxManager } from "./devbox.ts";
 import { runDevboxMcpServer } from "./mcp-serve.ts";
 import { simulateDrain } from "../../worker/src/fairness.ts";
@@ -31,6 +32,10 @@ function usage(): never {
       "  cli rerun <runId> <jobId>                   reset a finished job to queued",
       "  cli flaky <repo> [days]                     per-job failure rates, worst first",
       "  cli bottlenecks <repo> [days]               slowest checks: p50/p95 run time + queue wait",
+      "  cli quarantine list <repo>                  quarantined (flaky) tests for a repo",
+      "  cli quarantine add <repo> <test>            move a test out of the blocking gate",
+      "  cli quarantine remove <repo> <test>         reinstate a quarantined test",
+      "  cli init [--force]                          scaffold flare.yml + AGENTS.md snippet + next steps",
       "  cli tests <runId>                           per-test results and failing tests",
       "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
       "  cli queue [labels]                        live queue + projected claim order (admin)",
@@ -221,6 +226,40 @@ try {
       console.log(`${c.check}\t${secs(c.p50Ms)}\t${secs(c.p95Ms)}\t${secs(c.queueP50Ms)}\t${c.jobs}\t${c.failures}`);
     }
     if (checks.length === 0) console.log("(no finished jobs in the window)");
+  } else if (cmd === "quarantine" && rest[0]) {
+    const sub = rest[0];
+    if (sub === "list" && rest[1]) {
+      const tests = await client().getQuarantine(rest[1]);
+      if (tests.length === 0) console.log("no quarantined tests");
+      for (const t of tests) console.log(`${t.status}\t${t.name}\t${t.reason}`);
+    } else if (sub === "add" && rest[1] && rest[2]) {
+      const name = rest.slice(2).join(" ");
+      await client().setQuarantine(rest[1], name, "add");
+      console.log(`quarantined: ${name}`);
+    } else if (sub === "remove" && rest[1] && rest[2]) {
+      const name = rest.slice(2).join(" ");
+      await client().setQuarantine(rest[1], name, "remove");
+      console.log(`reinstated: ${name}`);
+    } else {
+      console.error("usage: cli quarantine <list <repo> | add <repo> <test> | remove <repo> <test>>");
+      process.exit(2);
+    }
+  } else if (cmd === "init") {
+    const result = runInit({ cwd: process.cwd(), force: rest.includes("--force") });
+    if (result.error) {
+      console.error(result.error);
+      process.exit(2);
+    }
+    console.log(`wrote ${result.pipelinePath} (${result.pipelineSource === "converted" ? `from .github/workflows/${result.convertedFrom}` : "starter template"})`);
+    for (const warning of result.warnings.slice(0, 20)) console.log(`  warning: ${warning}`);
+    if (result.warnings.length > 20) console.log(`  … ${result.warnings.length - 20} more warnings`);
+    console.log(`updated ${result.agentsPath} (idempotent snippet; agents learn the verify loop)`);
+    console.log("");
+    console.log("next steps:");
+    console.log("  1. npx flare local                 # verify in this working tree, no server");
+    console.log("  2. npx flare mcp-config            # teach your agent the MCP verify loop");
+    console.log("  3. deploy: https://deploy.workers.cloudflare.com/?url=https://github.com/everyai-com/flare-actions");
+    console.log("  docs: docs/GITHUB-ACTIONS-COMPAT.md · docs/PIPELINES.md · skills/flare-verify");
   } else if (cmd === "tests" && rest[0]) {
     const t = await client().getRunTests(rest[0]);
     console.log(

@@ -473,8 +473,11 @@ See [Workers](https://developers.cloudflare.com/workers/platform/pricing/),
 ## Give it to your agent
 
 Clone the repo and point any coding agent at it — [AGENTS.md](AGENTS.md)
-teaches it the stack, commands, architecture, and conventions.
-`npm run setup` is fully non-interactive (preview with
+teaches it the stack, commands, architecture, and conventions. Scaffold a
+repo in one command with `npx flare init` (writes `flare.yml` + an
+AGENTS.md snippet teaching the verify loop), or install the
+[flare-verify skill](skills/flare-verify/SKILL.md) in Claude Code / Codex
+/ Cursor. `npm run setup` is fully non-interactive (preview with
 `npm run setup -- --dry-run`). The inner loop is `npm run check`: oxlint on
 changed files + one type check + only the affected tests, serialized across
 worktrees (see [docs/DEV-SPEED.md](docs/DEV-SPEED.md)); `npm run check --

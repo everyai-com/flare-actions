@@ -64,7 +64,13 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   earlier same-branch runs on push. `/v1/bottlenecks` (dashboard "Slowest
   checks", `cli bottlenecks`) percentiles per-check run time + queue wait
   from `summarizeBottlenecks`. `shards: N` (2-8) expands a job into
-  parallel cells with FLARE_SHARD_INDEX/TOTAL.
+  parallel cells with FLARE_SHARD_INDEX/TOTAL. The hourly fleet tick
+  (cron gate `fleet_checked_at`) alerts on usage anomalies (daily vs
+  trailing median via `summarizeUsageAnomalies` + `notifyMessage`) and
+  maintains flaky quarantine: `flakyCandidates` auto-add, 3-green
+  `shouldReinstate`, and both executors run `quarantineDowngrade` before
+  the terminal write so an all-quarantined failure lands as success
+  (log note, checks/notify see green).
 - `apps/worker/src/ratelimit.ts` — auth endpoint throttling (failure
   windows per email + hashed client IP in D1 `auth_attempts`).
 - `apps/worker/src/cron.ts` — 5-field UTC cron parser for scheduled

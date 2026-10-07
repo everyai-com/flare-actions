@@ -90,16 +90,21 @@ The recurring pains, in practitioners' own terms:
       for agent-authored pushes
 - [x] Bottleneck report — shipped; remaining: cache hit-rate and
       flakiness-rate on the same card
-- [ ] Cost & wall-clock anomaly alerts — "your CI 3x'd today because
-      agent X pushed 200 times" (per-identity attribution on top of the
-      existing cost data; daily/weekly digest option)
-- [ ] Flaky auto-quarantine — detection exists; add quarantine out of the
-      blocking gate, PR annotation, dashboard, auto-reinstate after N green
-- [ ] Agent-led adoption: `flare init` (scaffold workflows + AGENTS.md
-      snippet + MCP config in one command), a flare-verify skill for
-      Claude Code / Codex / Cursor, AGENTS.md snippet generator
-- [x] `llms.txt` (model-readable index); [ ] MCP registry listings
-      (mcp.so, Smithery), `pricing.json` for the hosted tier
+- [x] Cost & wall-clock anomaly alerts — an hourly fleet check compares
+      today's runs/compute-minutes per repo against the trailing median
+      and alerts (email + chat webhook) with the busiest branch, pointing
+      at budgets; per-agent identity attribution is the remaining slice
+- [x] Flaky auto-quarantine — flaky tests (≥2 failures and ≥1 pass in a
+      week) enter quarantine automatically; failures that are entirely
+      quarantined land as success with a log note (both executors), and
+      tests reinstate after 3 consecutive passes. `cli quarantine`,
+      `GET/POST /v1/quarantine`. Remaining: PR annotations + a dashboard
+      view
+- [x] Agent-led adoption: `cli init` (flare.yml converted from the repo's
+      workflows + an idempotent AGENTS.md snippet + next steps), the
+      `skills/flare-verify` skill for Claude Code / Codex / Cursor
+- [x] `llms.txt` + `pricing.json` (machine-readable plans); [ ] MCP
+      registry listings (mcp.so, Smithery) — manual submissions
 
 ### Next (weeks)
 
@@ -162,6 +167,10 @@ your code — compute and artifacts live in your Cloudflare account.**
 
 ## Known gaps (unscheduled)
 
+- Quarantine surface: PR annotations + a dashboard view for quarantined
+  tests (CLI/API exist).
+- Per-agent-identity attribution for anomaly alerts (repo + branch land
+  today).
 - Cost-per-merged-PR trend (the remaining slice of the budget story).
 - Cache management: `restore-keys` semantics + a dashboard cache
   browser/eviction.

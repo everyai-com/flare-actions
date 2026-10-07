@@ -5,10 +5,14 @@ import {
   claimAdminMarker,
   claimNextJob,
   claimWebhookDelivery,
+  flakyCandidates,
   isAdminMarkerClaimed,
   pruneWebhookDeliveries,
   releaseAdminMarker,
+  shouldDowngradeFailure,
+  shouldReinstate,
   summarizeBottlenecks,
+  summarizeUsageAnomalies,
   updateRunningJob,
   usageStats,
 } from "./db";
@@ -535,5 +539,57 @@ describe("summarizeBottlenecks", () => {
     ];
     const out = summarizeBottlenecks(rows, 2);
     expect(out.map((r) => r.check)).toEqual(["b", "c"]);
+  });
+});
+
+describe("quarantine decisions", () => {
+  it("downgrades only all-quarantined failures", () => {
+    const active = new Set(["t/one", "t/two"]);
+    expect(shouldDowngradeFailure([], active)).toBe(false);
+    expect(shouldDowngradeFailure(["t/one"], active)).toBe(true);
+    expect(shouldDowngradeFailure(["t/one", "t/two"], active)).toBe(true);
+    expect(shouldDowngradeFailure(["t/one", "t/other"], active)).toBe(false);
+  });
+
+  it("flags flaky tests and skips active ones", () => {
+    const out = flakyCandidates(
+      [
+        { name: "flaky", passes: 2, failures: 3 },
+        { name: "broken", passes: 0, failures: 4 },
+        { name: "solid", passes: 9, failures: 0 },
+        { name: "known", passes: 1, failures: 2 },
+      ],
+      new Set(["known"]),
+    );
+    expect(out.map((c) => c.name)).toEqual(["flaky"]);
+    expect(out[0].reason).toContain("3 failed / 2 passed");
+  });
+
+  it("reinstates only after a green streak", () => {
+    expect(shouldReinstate(["passed", "passed", "passed"])).toBe(true);
+    expect(shouldReinstate(["passed", "failed", "passed"])).toBe(false);
+    expect(shouldReinstate(["passed", "passed"])).toBe(false);
+  });
+});
+
+describe("summarizeUsageAnomalies", () => {
+  const day = (repo: string, d: string, runs: number, computeMinutes: number) => ({ repo, day: d, runs, computeMinutes });
+  it("fires on spikes over the trailing median, never on quiet repos", () => {
+    const rows = [
+      day("o/r", "2026-10-01", 10, 20),
+      day("o/r", "2026-10-02", 12, 22),
+      day("o/r", "2026-10-03", 11, 18),
+      day("o/r", "2026-10-04", 200, 480), // today: 20x runs, ~22x minutes
+      day("o/quiet", "2026-10-01", 1, 2),
+      day("o/quiet", "2026-10-02", 0, 0),
+      day("o/quiet", "2026-10-04", 3, 8), // spike but under the floors
+    ];
+    const out = summarizeUsageAnomalies(rows, { today: "2026-10-04" });
+    expect(out.map((a) => a.repo)).toEqual(["o/r"]);
+    expect(out[0]).toMatchObject({ todayRuns: 200, todayMinutes: 480, medianRuns: 11 });
+  });
+
+  it("ignores repos with a single day of data", () => {
+    expect(summarizeUsageAnomalies([day("o/new", "2026-10-04", 500, 900)], { today: "2026-10-04" })).toEqual([]);
   });
 });

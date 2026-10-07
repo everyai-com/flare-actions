@@ -870,6 +870,84 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/quarantine:
+    get:
+      tags: [analytics]
+      operationId: listQuarantinedTests
+      summary: Quarantined (flaky) tests for a repo
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: owner/name
+      responses:
+        '200':
+          description: Quarantine rows
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [repo, tests]
+                properties:
+                  repo:
+                    type: string
+                  tests:
+                    type: array
+                    items:
+                      type: object
+                      required: [repo, name, status, reason, created_at, updated_at]
+                      properties:
+                        repo:
+                          type: string
+                        name:
+                          type: string
+                        status:
+                          type: string
+                          enum: [active, reinstated]
+                        reason:
+                          type: string
+                        created_at:
+                          type: string
+                        updated_at:
+                          type: string
+    post:
+      tags: [analytics]
+      operationId: updateQuarantine
+      summary: Add or release a quarantined test (admin token)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, name, action]
+              properties:
+                repo:
+                  type: string
+                name:
+                  type: string
+                action:
+                  type: string
+                  enum: [add, remove]
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, status]
+                properties:
+                  ok:
+                    type: boolean
+                  status:
+                    type: string
   /v1/bottlenecks:
     get:
       tags: [analytics]

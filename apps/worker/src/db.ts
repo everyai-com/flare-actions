@@ -1093,6 +1093,238 @@ export async function bottleneckStats(db: Db, repo: string, days = 14, limit = 1
   return summarizeBottlenecks(res.results, limit);
 }
 
+export interface QuarantinedTestRow {
+  repo: string;
+  name: string;
+  status: string;
+  reason: string;
+  green_streak: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listQuarantinedTests(db: Db, repo: string, status?: string): Promise<QuarantinedTestRow[]> {
+  const base = "SELECT * FROM quarantined_tests WHERE repo = ?";
+  const res = status
+    ? await db.prepare(`${base} AND status = ? ORDER BY updated_at DESC LIMIT 500`).bind(repo, status).all<QuarantinedTestRow>()
+    : await db.prepare(`${base} ORDER BY updated_at DESC LIMIT 500`).bind(repo).all<QuarantinedTestRow>();
+  return res.results;
+}
+
+export async function quarantineTest(db: Db, repo: string, name: string, reason: string): Promise<void> {
+  const now = nowIso();
+  await db
+    .prepare(
+      `INSERT INTO quarantined_tests (repo, name, status, reason, green_streak, created_at, updated_at)
+       VALUES (?, ?, 'active', ?, 0, ?, ?)
+       ON CONFLICT(repo, name) DO UPDATE SET status = 'active', reason = excluded.reason, green_streak = 0, updated_at = excluded.updated_at`,
+    )
+    .bind(repo, name, reason.slice(0, 200), now, now)
+    .run();
+}
+
+export async function releaseQuarantinedTest(db: Db, repo: string, name: string): Promise<void> {
+  await db
+    .prepare("UPDATE quarantined_tests SET status = 'reinstated', updated_at = ? WHERE repo = ? AND name = ?")
+    .bind(nowIso(), repo, name)
+    .run();
+}
+
+export async function activeQuarantineNames(db: Db, repo: string): Promise<Set<string>> {
+  const res = await db
+    .prepare("SELECT name FROM quarantined_tests WHERE repo = ? AND status = 'active' LIMIT 1000")
+    .bind(repo)
+    .all<{ name: string }>();
+  return new Set(res.results.map((r) => r.name));
+}
+
+// Pure: a failing job is downgraded only when it has test failures and
+// EVERY failing test is under active quarantine.
+export function shouldDowngradeFailure(failing: string[], active: Set<string>): boolean {
+  return failing.length > 0 && failing.every((name) => active.has(name));
+}
+
+// Pure: flaky = failed in >= 2 runs and passed at least once in the
+// window; already-active names are skipped, capped per tick.
+export function flakyCandidates(
+  rows: { name: string; passes: number; failures: number }[],
+  active: Set<string>,
+): { name: string; reason: string }[] {
+  const out: { name: string; reason: string }[] = [];
+  for (const row of rows) {
+    if (row.failures < 2 || row.passes < 1 || active.has(row.name)) continue;
+    out.push({ name: row.name, reason: `auto: flaky (${row.failures} failed / ${row.passes} passed in 7d)` });
+  }
+  return out.slice(0, 10);
+}
+
+// Pure: reinstate after `needed` consecutive passes (newest first).
+export function shouldReinstate(recentStatuses: string[], needed = 3): boolean {
+  if (recentStatuses.length < needed) return false;
+  return recentStatuses.slice(0, needed).every((s) => s === "passed");
+}
+
+// Gate hook both executors call before writing a terminal status: a
+// failure whose failing tests are all quarantined becomes a success with
+// a log note, so flaky tests stop blocking runs.
+export async function quarantineDowngrade(
+  db: Db,
+  jobId: string,
+  status: string,
+): Promise<{ status: string; note: string | null }> {
+  if (status !== "failure" && status !== "error") return { status, note: null };
+  try {
+    const job = await db
+      .prepare("SELECT r.repo AS repo FROM jobs j JOIN runs r ON r.id = j.run_id WHERE j.id = ?")
+      .bind(jobId)
+      .first<{ repo: string }>();
+    if (!job) return { status, note: null };
+    const names = await failingTestsForJob(db, jobId);
+    const active = await activeQuarantineNames(db, job.repo);
+    if (!shouldDowngradeFailure(names, active)) return { status, note: null };
+    await audit(db, "quarantine", "job.downgraded", `${jobId} ${names.length} quarantined test(s)`);
+    return { status: "success", note: `[flare] ${names.length} failing test(s) are quarantined as flaky — not blocking` };
+  } catch {
+    return { status, note: null };
+  }
+}
+
+export interface RepoDayUsage {
+  repo: string;
+  day: string;
+  runs: number;
+  computeMinutes: number;
+}
+
+// Per-repo daily rollup over the trailing window (anomaly detection).
+export async function repoUsageByDay(db: Db, days = 8): Promise<RepoDayUsage[]> {
+  const cutoff = new Date(Date.now() - Math.min(30, Math.max(2, days)) * 86400000).toISOString();
+  const runRows = await db
+    .prepare("SELECT repo, substr(created_at, 1, 10) AS day, COUNT(*) AS n FROM runs WHERE created_at >= ? GROUP BY repo, day")
+    .bind(cutoff)
+    .all<{ repo: string; day: string; n: number }>();
+  const minuteRows = await db
+    .prepare(
+      `SELECT r.repo AS repo, substr(j.created_at, 1, 10) AS day,
+              COALESCE(SUM((julianday(j.finished_at) - julianday(j.started_at)) * 1440.0), 0) AS minutes
+       FROM jobs j JOIN runs r ON r.id = j.run_id
+       WHERE j.created_at >= ? AND j.started_at IS NOT NULL AND j.finished_at IS NOT NULL
+       GROUP BY r.repo, day`,
+    )
+    .bind(cutoff)
+    .all<{ repo: string; day: string; minutes: number }>();
+  const merged = new Map<string, RepoDayUsage>();
+  const keyOf = (repo: string, day: string) => `${repo}\u0000${day}`;
+  for (const row of runRows.results) {
+    merged.set(keyOf(row.repo, row.day), { repo: row.repo, day: row.day, runs: row.n, computeMinutes: 0 });
+  }
+  for (const row of minuteRows.results) {
+    const k = keyOf(row.repo, row.day);
+    const entry = merged.get(k) ?? { repo: row.repo, day: row.day, runs: 0, computeMinutes: 0 };
+    entry.computeMinutes = Math.round(Number(row.minutes ?? 0) * 10) / 10;
+    merged.set(k, entry);
+  }
+  return [...merged.values()];
+}
+
+export interface UsageAnomaly {
+  repo: string;
+  todayRuns: number;
+  todayMinutes: number;
+  medianRuns: number;
+  medianMinutes: number;
+}
+
+// Pure: today vs the trailing median. Fires only when today is at least
+// `factor`x the median AND above a floor, so quiet repos never alert.
+export function summarizeUsageAnomalies(
+  rows: RepoDayUsage[],
+  opts: { today: string; factor?: number; minMinutes?: number; minRuns?: number },
+): UsageAnomaly[] {
+  const factor = opts.factor ?? 3;
+  const minMinutes = opts.minMinutes ?? 30;
+  const minRuns = opts.minRuns ?? 20;
+  const byRepo = new Map<string, RepoDayUsage[]>();
+  for (const row of rows) {
+    const list = byRepo.get(row.repo) ?? [];
+    list.push(row);
+    byRepo.set(row.repo, list);
+  }
+  const median = (values: number[]): number => {
+    if (values.length === 0) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+  };
+  const out: UsageAnomaly[] = [];
+  for (const [repo, days] of byRepo) {
+    const today = days.find((d) => d.day === opts.today);
+    if (!today) continue;
+    const past = days.filter((d) => d.day !== opts.today);
+    if (past.length === 0) continue;
+    const medianRuns = median(past.map((d) => d.runs));
+    const medianMinutes = median(past.map((d) => d.computeMinutes));
+    const minuteSpike = today.computeMinutes >= minMinutes && today.computeMinutes >= factor * medianMinutes;
+    const runSpike = today.runs >= minRuns && today.runs >= factor * medianRuns;
+    if (minuteSpike || runSpike) {
+      out.push({ repo, todayRuns: today.runs, todayMinutes: today.computeMinutes, medianRuns, medianMinutes });
+    }
+  }
+  out.sort((a, b) => b.todayMinutes - a.todayMinutes || b.todayRuns - a.todayRuns);
+  return out.slice(0, 10);
+}
+
+// Busiest branch for a repo since `sinceIso` (anomaly attribution:
+// "agent X pushed 200 times" usually means one branch).
+export async function topBranchForRepo(db: Db, repo: string, sinceIso: string): Promise<{ branch: string; runs: number } | null> {
+  const row = await db
+    .prepare("SELECT branch, COUNT(*) AS n FROM runs WHERE repo = ? AND created_at >= ? GROUP BY branch ORDER BY n DESC LIMIT 1")
+    .bind(repo, sinceIso)
+    .first<{ branch: string; n: number }>();
+  return row ? { branch: row.branch, runs: row.n } : null;
+}
+
+// Per-test pass/fail tally over the window (flaky auto-quarantine input).
+export async function testTally(
+  db: Db,
+  repo: string,
+  sinceIso: string,
+): Promise<{ name: string; passes: number; failures: number }[]> {
+  const res = await db
+    .prepare(
+      `SELECT t.name AS name,
+              SUM(CASE WHEN t.status = 'passed' THEN 1 ELSE 0 END) AS passes,
+              SUM(CASE WHEN t.status IN ('failed', 'error') THEN 1 ELSE 0 END) AS failures
+       FROM test_results t JOIN runs r ON r.id = t.run_id
+       WHERE r.repo = ? AND r.created_at >= ?
+       GROUP BY t.name LIMIT 2000`,
+    )
+    .bind(repo, sinceIso)
+    .all<{ name: string; passes: number; failures: number }>();
+  return res.results.map((row) => ({ name: row.name, passes: Number(row.passes ?? 0), failures: Number(row.failures ?? 0) }));
+}
+
+// Recent statuses (newest first) for one test, for reinstate decisions.
+export async function recentTestStatuses(db: Db, repo: string, name: string, limit = 5): Promise<string[]> {
+  const res = await db
+    .prepare(
+      `SELECT t.status AS status FROM test_results t JOIN runs r ON r.id = t.run_id
+       WHERE r.repo = ? AND t.name = ? ORDER BY r.created_at DESC, t.id DESC LIMIT ?`,
+    )
+    .bind(repo, name, limit)
+    .all<{ status: string }>();
+  return res.results.map((row) => row.status);
+}
+
+// Per-job failing test names (quarantine downgrade input).
+export async function failingTestsForJob(db: Db, jobId: string): Promise<string[]> {
+  const res = await db
+    .prepare("SELECT DISTINCT name FROM test_results WHERE job_id = ? AND status IN ('failed', 'error') LIMIT 200")
+    .bind(jobId)
+    .all<{ name: string }>();
+  return res.results.map((row) => row.name).filter(Boolean);
+}
+
 // Per-job failure rates over the trailing window, worst first. Only
 // terminal jobs count; matrix cells roll up under their base name.
 export async function flakyStats(db: Db, repo: string, days: number): Promise<FlakyRow[]> {
