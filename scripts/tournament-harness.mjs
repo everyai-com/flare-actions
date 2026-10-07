@@ -169,7 +169,6 @@ async function main() {
   // 5. Assertions.
   check("tournament decided", board.tournament.state === "decided", board.tournament.state);
   check("3 attempts", board.attempts.length === 3, String(board.attempts.length));
-  const byAgent = Object.fromEntries(board.attempts.map((a) => [a.agent, a]));
   const runStatus = {};
   for (const a of board.attempts) {
     if (!a.run_id) continue;
