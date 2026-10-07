@@ -36,6 +36,13 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("healOnFailure");
   });
 
+  it("surfaces the Actions drop-in card and per-run pipeline source tags", () => {
+    expect(DASHBOARD_HTML).toContain("Coming from GitHub Actions?");
+    expect(DASHBOARD_HTML).toContain("pipelineSourceLabel");
+    expect(DASHBOARD_HTML).toContain("run-src");
+    expect(DASHBOARD_HTML).toContain("GITHUB-ACTIONS-COMPAT.md");
+  });
+
   it("wires the open-registration toggle and self-serve signup", () => {
     expect(DASHBOARD_HTML).toContain("openRegCheck");
     expect(DASHBOARD_HTML).toContain("openRegistration");

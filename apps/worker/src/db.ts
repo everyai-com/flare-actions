@@ -13,6 +13,7 @@ export interface RunRow {
   installation_id: number | null;
   branch: string;
   source: string | null;
+  pipeline_source: string;
   pr_number: number | null;
   pr_comment_id: number | null;
   heal_branch: string | null;
@@ -183,13 +184,14 @@ export async function createRun(
     installationId: number | null;
     branch?: string;
     source?: string | null;
+    pipelineSource?: string;
     prNumber?: number | null;
   },
 ): Promise<void> {
   const now = nowIso();
   await db
     .prepare(
-      "INSERT INTO runs (id, repo, sha, event, installation_id, branch, source, pr_number, pr_comment_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'queued', ?, ?)",
+      "INSERT INTO runs (id, repo, sha, event, installation_id, branch, source, pipeline_source, pr_number, pr_comment_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'queued', ?, ?)",
     )
     .bind(
       run.id,
@@ -199,6 +201,7 @@ export async function createRun(
       run.installationId,
       run.branch ?? "",
       run.source ?? null,
+      run.pipelineSource ?? "",
       run.prNumber ?? null,
       now,
       now,

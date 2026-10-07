@@ -73,6 +73,8 @@ div.notice p { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
 .run-main { flex: 1; min-width: 0; }
 .run-repo { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-meta { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-src { font-size: 11px; padding: 1px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
+.run-src.actions { border-color: #23354c; color: #bfdbfe; }
 .run-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
 details.step { border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; }
 details.step summary { cursor: pointer; padding: 8px 10px; }
@@ -280,6 +282,11 @@ form.inline input { flex: 1; min-width: 180px; }
 </form>
 <p id="settingsErr" class="err"></p>
 <p id="settingsOk"></p>
+<details id="actionsHelp">
+<summary>Coming from GitHub Actions?</summary>
+<p class="muted">Repos without a <span class="mono">flare.yml</span> run their existing <span class="mono">.github/workflows</span> files as-is: matching <span class="mono">on:</span> triggers, run steps, matrices, needs, cache, and artifacts translate automatically, and anything unsupported is dropped with a note in the worker log instead of being guessed at. Each run is tagged in the list with which pipeline ran. <a href="https://github.com/everyai-com/flare-actions/blob/main/docs/GITHUB-ACTIONS-COMPAT.md" target="_blank" rel="noopener">Support matrix</a></p>
+<p class="muted">No GitHub App? For public repos, add a plain repo webhook pointing at <span class="mono">https://&lt;this-worker&gt;/webhooks/github</span> with the secret above and pushes become runs. The App adds private repos, commit statuses, check runs, PR comments, and GitHub login.</p>
+</details>
 <h2>Run notifications</h2>
 <p class="muted" id="notifyInfo"></p>
 <form id="notifyForm" class="inline">
@@ -1086,7 +1093,15 @@ form.inline input { flex: 1; min-width: 180px; }
   var lastRuns = [];
   function runMatches(r, q) {
     if (!q) return true;
-    return ((r.repo || "") + " " + (r.branch || "") + " " + (r.sha || "") + " " + (r.status || "") + " " + (r.event || "")).toLowerCase().indexOf(q) !== -1;
+    return ((r.repo || "") + " " + (r.branch || "") + " " + (r.sha || "") + " " + (r.status || "") + " " + (r.event || "") + " " + (r.pipeline_source || "")).toLowerCase().indexOf(q) !== -1;
+  }
+  function pipelineSourceLabel(s) {
+    if (s === "flare") return "flare.yml";
+    if (s === "actions") return "Actions";
+    if (s === "inline") return "inline";
+    if (s === "source") return "source";
+    if (s === "default") return "default";
+    return "";
   }
   function renderRuns() {
     var list = document.getElementById("runsList");
@@ -1104,7 +1119,7 @@ form.inline input { flex: 1; min-width: 180px; }
       var empty = el("div"); empty.className = "empty";
       if (!lastRuns.length) {
         empty.appendChild(el("h3", "No runs yet"));
-        empty.appendChild(el("p", "Push to a repo with the GitHub App installed, or dispatch one from this page."));
+        empty.appendChild(el("p", "Push to a connected repo — flare.yml or existing .github/workflows both run — or dispatch one from this page."));
       } else {
         empty.appendChild(el("h3", "No runs match"));
         empty.appendChild(el("p", "Try a different filter."));
@@ -1138,6 +1153,13 @@ form.inline input { flex: 1; min-width: 180px; }
     var code = el("code", String(r.sha).slice(0, 7)); code.className = "mono"; meta.appendChild(code);
     var dur = runDuration(r);
     meta.appendChild(el("span", " · " + r.event + (dur ? " · " + dur : "")));
+    var srcLabel = pipelineSourceLabel(r.pipeline_source);
+    if (srcLabel) {
+      meta.appendChild(el("span", " · "));
+      var tag = el("span", srcLabel);
+      tag.className = "run-src" + (r.pipeline_source === "actions" ? " actions" : "");
+      meta.appendChild(tag);
+    }
     main.appendChild(meta);
     row.appendChild(main);
     var t = el("span", fmtAgo(r.updated_at)); t.className = "run-time"; t.title = fmtTime(r.updated_at); row.appendChild(t);
@@ -1169,6 +1191,15 @@ form.inline input { flex: 1; min-width: 180px; }
       if (data.summary) {
         box.appendChild(el("p", data.summary.finishedJobs + "/" + data.summary.jobs + " jobs finished, " +
           data.summary.computeMinutes + " compute-min (~$" + data.summary.actionsListUsd + " at Actions list price)"));
+      }
+      var srcLabel = pipelineSourceLabel(data.run.pipeline_source);
+      if (srcLabel) {
+        var srcLine = el("p");
+        srcLine.className = "muted";
+        srcLine.textContent = srcLabel === "Actions"
+          ? "Pipeline: .github/workflows (GitHub Actions drop-in)"
+          : "Pipeline: " + srcLabel;
+        box.appendChild(srcLine);
       }
       var testsBox = document.createElement("div");
       box.appendChild(testsBox);

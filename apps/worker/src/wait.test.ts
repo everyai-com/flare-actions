@@ -19,6 +19,7 @@ function runRow(over: Partial<RunRow> = {}): RunRow {
     created_at: "2026-10-02T10:00:00.000Z",
     updated_at: "2026-10-02T10:00:00.000Z",
     ...over,
+    pipeline_source: over.pipeline_source ?? "",
   };
 }
 
