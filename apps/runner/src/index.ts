@@ -80,6 +80,7 @@ async function pollOnce(): Promise<boolean> {
         FLARE_SHA: job.sha,
         FLARE_RUN_ID: job.run_id,
         FLARE_JOB_ID: job.id,
+        FLARE_REF: job.branch ?? "",
       },
       client,
       jobId: job.id,

@@ -53,7 +53,7 @@ class QueueDb implements Db {
     return {
       bind: (...values: unknown[]) => ({
         all: async <T,>(): Promise<{ results: T[] }> => {
-          if (norm.startsWith("SELECT j.*, r.repo, r.sha, r.source FROM jobs")) {
+          if (norm.startsWith("SELECT j.*, r.repo, r.sha, r.source, r.branch FROM jobs")) {
             this.selects += 1;
             return { results: this.select(norm, values) as T[] };
           }
