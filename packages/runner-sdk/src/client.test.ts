@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FlareClient } from "./index.ts";
+import { FlareApiError, FlareClient } from "./index.ts";
 
 interface Call {
   url: string;
@@ -54,6 +54,27 @@ describe("FlareClient", () => {
   it("throws with the status on failed calls", async () => {
     stubFetch(() => new Response("nope", { status: 401 }));
     await expect(new FlareClient("https://x", "t").listRuns()).rejects.toThrow("listRuns failed: 401");
+  });
+
+  it("carries the server code and hint on typed failures", async () => {
+    stubFetch(() => jsonResponse({ error: "token is not scoped to that repo", code: "repo_not_allowed", hint: "mint a token" }, 403));
+    const err = await new FlareClient("https://x", "t").dispatch("o/r", "abc").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlareApiError);
+    const typed = err as FlareApiError;
+    expect(typed.message).toBe("dispatch failed: 403 — token is not scoped to that repo");
+    expect(typed.status).toBe(403);
+    expect(typed.code).toBe("repo_not_allowed");
+    expect(typed.hint).toBe("mint a token");
+  });
+
+  it("degrades to null code and hint on uncoded bodies", async () => {
+    stubFetch(() => jsonResponse({ error: "boom" }, 500));
+    const err = await new FlareClient("https://x", "t").dispatch("o/r", "abc").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlareApiError);
+    const typed = err as FlareApiError;
+    expect(typed.code).toBeNull();
+    expect(typed.hint).toBeNull();
+    expect(typed.message).toBe("dispatch failed: 500 — boom");
   });
 
   it("reports status with the full body", async () => {

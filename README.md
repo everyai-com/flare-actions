@@ -16,7 +16,9 @@ warnings instead of silently misbehaving ([support
 matrix](docs/GITHUB-ACTIONS-COMPAT.md)). No GitHub App? Public repos can run
 from a plain repo webhook. Want full control? The native `flare.yml` format
 always wins when present, and `cli import` migrates a workflow with a warning
-report.
+report. Prefer to keep GitHub orchestrating? `runs-on: flare` hands your
+existing workflows Flare runners with a one-line change — checks, logs, and
+approvals stay on GitHub.
 
 GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → external pull-runner → status callback. Dashboard + API + CLI.
 
@@ -107,6 +109,7 @@ nothing to migrate, no App required if you don't want one:
 | **One click + GitHub App** (recommended) | Deploy button → dashboard → **Connect GitHub** → install | Push/PR runs, commit statuses, Check Runs, PR comments, private repos |
 | **One click, no App** (public repos) | Deploy button → copy the webhook secret in Settings → add one repo webhook to `https://<worker>/webhooks/github` | Push/PR runs from your existing workflows — nothing installed on GitHub |
 | **Dispatch only** (agents, no webhooks) | Issue an API token → `cli run owner/repo HEAD` or MCP `run_and_wait` | Verify any commit — or an uncommitted working tree — on demand |
+| **Runner mode** (stay on GitHub) | Settings → enable `runs-on: flare` → change one `runs-on:` line | GitHub keeps orchestrating; Flare supplies the runners — checks and logs stay put |
 | **Self-host from source** | `npm install && npm run setup` | Everything, fully under your control |
 
 If a repo has no `flare.yml`, its `.github/workflows` run as-is
@@ -114,6 +117,67 @@ If a repo has no `flare.yml`, its `.github/workflows` run as-is
 optional if you later want the native format. Want zero ops? A hosted
 control plane is on the [roadmap](docs/ROADMAP.md) — the OSS core stays
 free forever.
+
+## One command: `npx flare connect`
+
+From any repo, with `FLARE_ACTIONS_URL` pointed at your deployment:
+
+```bash
+npx flare connect              # probe, explain the wiring, dispatch HEAD, report the verdict
+npx flare connect --dry-run    # print the plan, change nothing
+npx flare connect owner/repo --wire   # also create the repo webhook (needs GITHUB_TOKEN + FLARE_ADMIN_TOKEN)
+```
+
+`connect` probes the deployment (claimed? App connected? install URL),
+detects your pipeline (`flare.yml` or existing workflows — both run
+unchanged), prints the exact wiring recipe for your situation, then
+dispatches HEAD with one bounded wait and a compact verdict. Exit 0
+means connected and verified, 1 means the verification run failed, 2
+means usage or environment error. If nothing picks the run up, it tells
+you how to start an executor instead of stalling.
+
+Or with your agent — paste this into Claude Code, Codex, Cursor, or
+OpenCode (the [flare-setup skill](skills/flare-setup/SKILL.md) teaches
+the same loop):
+
+```text
+Set up Flare Actions for this repo: probe $FLARE_ACTIONS_URL with
+`npx flare connect --dry-run`, wire whatever is missing (ask me before
+any GitHub-side change), start an executor, and verify HEAD with a run
+digest. Report the digest; never claim CI passed without one.
+```
+
+## Runner mode: `runs-on: flare`
+
+Two lanes, one deployment. Full Flare orchestration (above) replaces
+GitHub Actions end to end; runner mode keeps GitHub orchestrating and
+has Flare supply the machines:
+
+```yaml
+# .github/workflows/ci.yml — the only change
+jobs:
+  test:
+    runs-on: flare   # was: ubuntu-latest
+```
+
+Push, and GitHub routes the job to an ephemeral Flare runner: checks,
+logs, approvals, and branch protection stay exactly where they are.
+Enable it in dashboard Settings (off by default), run an executor with
+`npm run runner -- --github`, and read the trust model, limits, and
+BYO toolchain notes in [docs/GITHUB-RUNNERS.md](docs/GITHUB-RUNNERS.md).
+
+## Common questions
+
+- Do I change anything? No — delete nothing. Existing workflows run
+  as-is under full orchestration, and runner mode is one `runs-on:` line.
+- Where do logs live? Full orchestration: dashboard, CLI, and API
+  (plus Check Runs on your PRs). Runner mode: on GitHub, as today.
+- What do jobs run on? Your machines (`npm run runner`), managed seats
+  (Cloudflare Containers), or — in runner mode — Flare capacity behind
+  ephemeral GitHub runners.
+- How is this cheaper? BYO runners cost whatever your hardware costs;
+  every run reports compute minutes plus the Actions list-price
+  equivalent, so the gap is a number (`cli usage`).
 
 ## GitHub App setup
 
@@ -311,7 +375,9 @@ MCP, or CLI. No git ceremony, no sleep loops, no log spelunking.
   `pipeline`, or go further: `cli run <repo> --source` uploads a tarball
   of the working tree (50 MB cap, path-traversal-guarded on both
   executors) and runs it server-side with full parity — seats,
-  containers, services — with **no commit anywhere**.
+  containers, services — with **no commit anywhere**. Append `--dry-run`
+  to `run` / `dispatch` (incl. `--source`, no upload) to plan the
+  fan-out — queued/blocked + reasons, priors, budget — with zero writes.
 - **Measured, not claimed** — `npm run bench` (against `npm run dev` or a
   deployment) reports dispatch → job pickup → terminal latency: on a
   local worker, p50 ≈ 38 ms / 17 ms / 63 ms. Nothing here waits on a
@@ -411,6 +477,8 @@ npm run cli -- artifacts <runId>       # list artifacts
 npm run cli -- badge <repo> [branch]   # badge snippet
 npm run cli -- import <workflow.yml>   # Actions -> flare.yml
 npm run cli -- mcp-config              # MCP client config
+npm run cli -- connect [repo] [--wire] # probe, wire, and verify this repo in one command
+npm run cli -- github-jobs [repo]      # ephemeral runner-mode jobs (status, duration, list price)
 ```
 
 ## API

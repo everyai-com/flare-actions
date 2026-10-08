@@ -90,6 +90,21 @@ describe("buildPrComment", () => {
     expect(text).toContain("> assert False");
     expect(text).toContain("`test_flake`");
   });
+
+  it("names quarantined failures so the green check is honest", () => {
+    const text = buildPrComment(runRow({ status: "success" }), [jobRow({ status: "success" })], "", [],
+      [{ jobName: "test", suite: "test_auth", name: "test_flake", message: "timeout" }],
+    );
+    expect(text).toContain("**Flare passed**");
+    expect(text).toContain("#### Quarantined — not blocking (1 shown)");
+    expect(text).toContain("`test_flake` — test / test_auth");
+    expect(text).toContain("cli quarantine remove");
+  });
+
+  it("omits the quarantine section when nothing is quarantined", () => {
+    const text = buildPrComment(runRow(), [jobRow()], "");
+    expect(text).not.toContain("Quarantined");
+  });
 });
 
 describe("upsertPrComment", () => {

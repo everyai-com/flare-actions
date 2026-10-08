@@ -11,6 +11,7 @@
       "includes": [
         "agent-native verify loop (MCP run_and_wait, digests)",
         "native .github/workflows drop-in + flare.yml pipelines",
+        "one-line runs-on: flare runner mode (GitHub orchestrates, Flare supplies runners)",
         "BYO runners, managed seats, R2 cache/artifacts",
         "budgets, quarantine, bottleneck report, tournaments"
       ],

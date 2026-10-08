@@ -313,3 +313,35 @@ export async function openDraftPullRequest(
   })) as { html_url?: unknown } | null;
   return typeof data?.html_url === "string" ? data.html_url : null;
 }
+
+// Ephemeral JIT runner for GitHub runner mode (`runs-on: flare`):
+// GitHub mints a single-job configuration the official actions/runner
+// binary consumes via --jitconfig (expires after 1 hour). The returned
+// runner id lets a stale claim delete the orphaned registration before
+// requeueing, so a dead machine cannot double-run the job later.
+export async function generateJitConfig(
+  token: string,
+  repo: string,
+  input: { name: string; labels: string[] },
+): Promise<{ runnerId: number; jitConfig: string } | null> {
+  const data = (await githubJson(token, `/repos/${repo}/actions/runners/generate-jitconfig`, {
+    method: "POST",
+    body: JSON.stringify({ name: input.name, runner_group_id: 1, labels: input.labels }),
+  })) as { runner?: { id?: unknown }; encoded_jit_config?: unknown } | null;
+  if (!data || typeof data.encoded_jit_config !== "string" || !data.encoded_jit_config) return null;
+  const runnerId = typeof data.runner?.id === "number" ? data.runner.id : 0;
+  return { runnerId, jitConfig: data.encoded_jit_config };
+}
+
+export async function deleteRunner(token: string, repo: string, runnerId: number): Promise<boolean> {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/actions/runners/${runnerId}`, {
+      method: "DELETE",
+      headers: githubHeaders(token),
+    });
+    // 404 means it is already gone — a success for cleanup purposes.
+    return res.ok || res.status === 404;
+  } catch {
+    return false;
+  }
+}

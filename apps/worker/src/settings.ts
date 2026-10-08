@@ -27,6 +27,8 @@ export const SETTING_KEYS = {
   budgetMinutes: "budget_minutes",
   budgetMode: "budget_mode",
   supersedeBranchRuns: "supersede_branch_runs",
+  githubRunnerMode: "github_runner_mode",
+  githubRunnerLabels: "github_runner_labels",
   // Internal: last hourly fleet check (anomaly alerts + flaky quarantine).
   fleetCheckedAt: "fleet_checked_at",
 } as const;
@@ -224,6 +226,39 @@ export function parseSupersedeBranchRuns(value: unknown): { mode: "off" | "push"
   if (value === "off" || value === "push") return { mode: value };
   if (value === null || value === undefined || value === "" || value === "0" || value === "false") return { mode: "off" };
   return { error: "supersedeBranchRuns must be off or push" };
+}
+
+// GitHub runner mode (`runs-on: flare`): off by default. When on, jobs
+// whose runs-on includes one of the managed labels are handed an
+// ephemeral JIT runner instead of being executed by Flare's own
+// orchestrator — GitHub keeps orchestrating, Flare supplies capacity.
+export function parseGithubRunnerMode(value: unknown): { mode: "off" | "on" } | { error: string } {
+  if (value === "off" || value === "on") return { mode: value };
+  if (value === null || value === undefined || value === "" || value === "0" || value === "false") return { mode: "off" };
+  if (value === "1" || value === "true") return { mode: "on" };
+  return { error: "githubRunnerMode must be off or on" };
+}
+
+// The `runs-on` labels this deployment serves in GitHub runner mode
+// (default "flare"). Comma-separated; 1-5 labels, each a GitHub-safe
+// token. Case is normalized — GitHub matches labels case-insensitively.
+export function parseGithubRunnerLabels(value: unknown): { labels: string[] } | { error: string } {
+  if (value === null || value === undefined || value === "") return { labels: ["flare"] };
+  const list = typeof value === "string" ? value.split(",") : value;
+  if (!Array.isArray(list)) return { error: "githubRunnerLabels must be a comma-separated string or an array" };
+  const labels: string[] = [];
+  for (const item of list) {
+    if (typeof item !== "string") return { error: "githubRunnerLabels entries must be strings" };
+    const label = item.trim().toLowerCase();
+    if (!label) continue;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(label)) {
+      return { error: `githubRunnerLabels entry must be a label like "flare": ${item}` };
+    }
+    if (!labels.includes(label)) labels.push(label);
+  }
+  if (labels.length === 0) return { labels: ["flare"] };
+  if (labels.length > 5) return { error: "githubRunnerLabels supports at most 5 labels" };
+  return { labels };
 }
 
 // Billing-Read API token for the Billable Usage API (write-only,

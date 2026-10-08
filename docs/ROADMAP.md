@@ -74,8 +74,10 @@ The recurring pains, in practitioners' own terms:
       (dashboard "Slowest checks", `GET /v1/bottlenecks`, `cli bottlenecks`)
 - [x] JUnit analytics, monitors, AI failure triage, NL pipeline generation,
       healing (draft PR + verification run)
-- [x] D1 full-text log search, warm dev boxes, per-domain egress controls,
-      browser-test jobs
+- [x] D1 full-text log search, warm dev boxes, per-domain egress
+      report + per-job `egress.allow` enforcement (repo-level domain
+      policy still open), browser-test jobs (preview self-verification
+      still open)
 
 ### Tournaments
 
@@ -98,13 +100,18 @@ The recurring pains, in practitioners' own terms:
       week) enter quarantine automatically; failures that are entirely
       quarantined land as success with a log note (both executors), and
       tests reinstate after 3 consecutive passes. `cli quarantine`,
-      `GET/POST /v1/quarantine`. Remaining: PR annotations + a dashboard
-      view
+      `GET/POST /v1/quarantine`, PR comment section + dashboard Flaky
+      tab (shipped Oct 8).
 - [x] Agent-led adoption: `cli init` (flare.yml converted from the repo's
       workflows + an idempotent AGENTS.md snippet + next steps), the
       `skills/flare-verify` skill for Claude Code / Codex / Cursor
 - [x] `llms.txt` + `pricing.json` (machine-readable plans); [ ] MCP
       registry listings (mcp.so, Smithery) — manual submissions
+- [x] One-command adoption: `cli connect` (probe → wire → verify HEAD)
+      + the `skills/flare-setup` skill + README agent paste prompt
+- [x] `runs-on: flare` runner mode: opt-in ephemeral JIT runners so
+      GitHub keeps orchestrating while Flare supplies capacity
+      (`gh_runner_jobs`, `workflow_job` ingest, `runner -- --github`)
 
 ### Next (weeks)
 
@@ -138,10 +145,22 @@ The recurring pains, in practitioners' own terms:
 - [x] Token-efficient digests with hard caps (bounded commands, triage,
       output tails) and machine-readable per-step results
 - [x] Priority lanes, blocking wait, MCP `run_and_wait` — no polling
-- [ ] `--json` on every CLI command with versioned schemas
-- [ ] Machine-actionable errors (stable codes + next-step hints)
-- [ ] `flare explain <run-id>` — one narrative instead of raw rows
-- [ ] Dry-run dispatch (`flare run --dry-run` plans without spending)
+- [x] `--json` on every CLI command with versioned schemas
+      (shipped Oct 8: `{ version: 1, command, data }` on stdout,
+      failures keep stderr + exit codes; `mcp-config` stays paste-ready,
+      `mcp-serve` ignores the flag)
+- [x] Machine-actionable errors (stable codes + next-step hints)
+      (shipped Oct 8: `code` + `hint` on dispatch, dry-run, claim,
+      webhook, auth, and pairing failures — see `docs/ERRORS.md`;
+      SDK `FlareApiError` carries them, CLI prints `hint [code]`)
+- [x] `flare explain <run-id>` — one narrative instead of raw rows
+      (shipped Oct 8: verdict-first narrative + failing steps, tails,
+      triage, and rerun commands; `--json` included)
+- [x] Dry-run dispatch (`flare run --dry-run` plans without spending)
+      (shipped Oct 8: `POST /v1/runs/dispatch/dry-run` shares the real
+      load phase — queued/blocked + reasons, priors, live groups,
+      budget `wouldBlock` — with zero writes; `--dry-run` on `cli run` /
+      `cli dispatch`, incl. `--source` from the local `flare.yml`)
 - [ ] Per-agent concurrency caps + per-agent run isolation (per-repo
       fair-share caps shipped; identity is the missing half — also gates
       anomaly attribution, see Known gaps)
@@ -152,9 +171,15 @@ The recurring pains, in practitioners' own terms:
       and suggest/convert a workflow)
 - [ ] Template gallery + migration wizard; feed-style dashboard with
       one-click actions (rerun, open PR, fix)
-- [ ] Savings counter on the dashboard (spend avoided vs Actions list
-      price); mobile-friendly layout; attention-respecting notifications
-- [ ] Tailscale-style runner pairing (one command, zero config)
+- [ ] Savings counter on the dashboard (shipped Oct 8: 30d runs /
+      compute-min / list-price-avoided strip, 60s cache); mobile-friendly
+      layout (responsive pass shipped Oct 8 — checklist + cards adapt
+      under 640px; full pass still open); attention-respecting
+      notifications
+- [x] Tailscale-style runner pairing (one command, zero config —
+      shipped Oct 8: dashboard mints a single-use 10-min code,
+      `runner -- --pair CODE` exchanges it for a runner token and
+      writes `.env`, then polls; IP-throttled, atomic consume)
 - [x] Plain-English PR comments (one evolving run summary)
 - [x] 5-minute quickstart (README pick-your-path table, one-click deploy)
 
@@ -206,8 +231,12 @@ billing event per run.
 
 ## Known gaps (unscheduled)
 
-- Quarantine surface: PR annotations + a dashboard view for quarantined
-  tests (CLI/API exist).
+- Runner mode follow-ups (deliberate v1 limits, see
+  `docs/GITHUB-RUNNERS.md`): Windows executors, org-level runner
+  groups, log mirroring/digests for lane jobs, managed-seat JIT
+  runners (blocked: no docker-in-docker on Containers), PAT fallback.
+- Quarantine surface follow-ups: auto-suggest candidates in the Flaky
+  tab (flakyCandidates exists), per-test history sparklines.
 - Per-agent-identity attribution for anomaly alerts (repo + branch land
   today).
 - Cost-per-merged-PR trend (the remaining slice of the budget story).

@@ -62,15 +62,22 @@ describe("connect", () => {
     expect(m.setup_url).toBe("https://ci.example.com/dashboard");
     expect(m.redirect_url).toBe("https://ci.example.com/v1/admin/github/callback");
     expect(m.callback_urls).toEqual(["https://ci.example.com/v1/admin/github/oauth/callback"]);
-    expect(m.default_permissions).toEqual({ contents: "write", statuses: "write", checks: "write", pull_requests: "write" });
-    expect(m.default_events).toEqual(["push", "pull_request"]);
+    expect(m.default_permissions).toEqual({
+      contents: "write",
+      statuses: "write",
+      checks: "write",
+      pull_requests: "write",
+      actions: "read",
+      administration: "write",
+    });
+    expect(m.default_events).toEqual(["push", "pull_request", "workflow_job"]);
     expect(m.hook_attributes).toEqual({ url: "https://ci.example.com/webhooks/github", active: true });
   });
 
   it("backs every default event with a supporting permission", () => {
     // GitHub rejects manifests whose default_events lack a matching
     // default_permissions entry; keep this mapping in sync when adding events.
-    const backingPermission: Record<string, string> = { push: "contents", pull_request: "pull_requests" };
+    const backingPermission: Record<string, string> = { push: "contents", pull_request: "pull_requests", workflow_job: "actions" };
     const m = buildManifest("flare-actions-a1b2", "https://ci.example.com/");
     for (const event of m.default_events) {
       expect(m.default_permissions[backingPermission[event]]).toBeDefined();

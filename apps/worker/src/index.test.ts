@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isHexSha, validateDispatch, validateRegisterInput, validateScheduleInput, webhookSkipReason } from "./index";
+import { isHexSha, planFanOut, validateDispatch, validateRegisterInput, validateScheduleInput, webhookSkipReason } from "./index";
+import type { PipelineJob } from "./pipeline";
 
 const SHA = "4203928f77b90dec92b4cd47b9e0795378752ef7";
 const ZERO = "0000000000000000000000000000000000000000";
@@ -170,5 +171,29 @@ describe("validateRegisterInput", () => {
     expect(validateRegisterInput({ token: "tok", password: "short" }, true)).toHaveProperty("error");
     expect(validateRegisterInput({ email: "not-an-email", password: "long-enough" }, true)).toHaveProperty("error");
     expect(validateRegisterInput({ password: "long-enough" }, true)).toHaveProperty("error");
+  });
+});
+
+describe("planFanOut", () => {
+  const job = (over: Partial<PipelineJob> & { name: string }): PipelineJob => ({ steps: [], ...over });
+
+  it("queues independent jobs and parks jobs with needs", () => {
+    const planned = planFanOut(
+      [job({ name: "build" }), job({ name: "test", needs: ["build"] })],
+      () => false,
+    );
+    expect(planned[0]).toMatchObject({ status: "queued", blockedReason: null });
+    expect(planned[1]).toMatchObject({ status: "blocked", blockedReason: "needs", needs: ["build"] });
+  });
+
+  it("parks same-group jobs only while the group is active", () => {
+    const jobs = [job({ name: "deploy", group: "prod" })];
+    expect(planFanOut(jobs, () => true)[0]).toMatchObject({ status: "blocked", blockedReason: "group" });
+    expect(planFanOut(jobs, () => false)[0]).toMatchObject({ status: "queued", blockedReason: null });
+  });
+
+  it("lets cancel-in-progress skip the group block and flags the supersede", () => {
+    const planned = planFanOut([job({ name: "deploy", group: "prod", cancelInProgress: true })], () => true);
+    expect(planned[0]).toMatchObject({ status: "queued", wouldCancelInProgress: true });
   });
 });

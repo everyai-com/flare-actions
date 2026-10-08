@@ -15,10 +15,13 @@
 - [API](https://github.com/everyai-com/flare-actions/blob/main/openapi.yaml): OpenAPI spec (served live at `GET /openapi.yaml`).
 - [pricing.json](https://github.com/everyai-com/flare-actions/blob/main/pricing.json): machine-readable plans and limits.
 - [skills/flare-verify](https://github.com/everyai-com/flare-actions/blob/main/skills/flare-verify/SKILL.md): agent skill for the verify loop (Claude Code / Codex / Cursor).
+- [skills/flare-setup](https://github.com/everyai-com/flare-actions/blob/main/skills/flare-setup/SKILL.md): agent skill for one-command onboarding (`connect`, wiring, executor, verify).
+- [GitHub runners](https://github.com/everyai-com/flare-actions/blob/main/docs/GITHUB-RUNNERS.md): `runs-on: flare` runner mode — GitHub keeps orchestrating, Flare supplies ephemeral JIT runners.
 
 ## Agent quickstart
 
 - One-click deploy: `https://deploy.workers.cloudflare.com/?url=https://github.com/everyai-com/flare-actions`
 - MCP: `POST https://<worker>/mcp` with `Authorization: Bearer <token>` — verify loop: `run_and_wait` → `get_run_digest`.
-- CLI (from source or npm): `cli run owner/repo HEAD` dispatches, waits, and prints the digest; `cli local` runs the working tree with no commit; `cli bottlenecks owner/repo` reports the slowest checks; `cli init` scaffolds a repo (flare.yml + AGENTS.md snippet).
+- CLI (from source or npm): `cli run owner/repo HEAD` dispatches, waits, and prints the digest; `cli local` runs the working tree with no commit; `cli bottlenecks owner/repo` reports the slowest checks; `cli init` scaffolds a repo (flare.yml + AGENTS.md snippet); `npx flare connect [--wire] [--dry-run]` probes, wires, and verifies a repo in one command. Append `--dry-run` to `run` / `dispatch` to plan the fan-out with zero writes. Every command accepts `--json` for one versioned `{ version: 1, command, data }` envelope on stdout.
+- Runner mode: change one `runs-on:` line to `flare` (opt-in in dashboard Settings) and GitHub routes jobs to ephemeral Flare JIT runners — checks/logs stay on GitHub; `cli github-jobs` lists them.
 - Flaky tests don't block: `cli quarantine list|add|remove <repo> ...`.

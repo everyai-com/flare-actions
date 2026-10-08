@@ -123,6 +123,104 @@ paths:
                     type: array
                     items:
                       type: string
+  /v1/runs/dispatch/dry-run:
+    post:
+      tags: [runs]
+      operationId: dryRunDispatch
+      summary: Plan a dispatch (queued/blocked fan-out, priors, budget) with zero writes
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, sha]
+              properties:
+                repo:
+                  type: string
+                  description: owner/name
+                sha:
+                  type: string
+                  description: Commit SHA, branch, or tag (max 128 chars)
+                ref:
+                  type: string
+                  description: Optional branch label (max 128 chars)
+                pipeline:
+                  type: string
+                  description: Inline flare.yml (skips the repo fetch)
+                source:
+                  type: string
+                  description: '"dry-run" placeholder or an uploaded working-tree id (requires inline pipeline; the tree is never fetched)'
+      responses:
+        '200':
+          description: Dispatch plan (no run created)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [repo, sha, branch, pipelineSource, jobs, queued, blocked, totalPriorMs, budget]
+                properties:
+                  repo:
+                    type: string
+                  sha:
+                    type: string
+                  branch:
+                    type: string
+                  pipelineSource:
+                    type: string
+                  jobs:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, base, needs, group, labels, status, blockedReason, wouldCancelInProgress, priorMs]
+                      properties:
+                        name:
+                          type: string
+                        base:
+                          type: string
+                        needs:
+                          type: array
+                          items:
+                            type: string
+                        group:
+                          type: string
+                          nullable: true
+                        labels:
+                          type: array
+                          items:
+                            type: string
+                        status:
+                          type: string
+                          enum: [queued, blocked]
+                        blockedReason:
+                          type: string
+                          nullable: true
+                          enum: [needs, group, null]
+                        wouldCancelInProgress:
+                          type: boolean
+                        priorMs:
+                          type: integer
+                  queued:
+                    type: integer
+                  blocked:
+                    type: integer
+                  totalPriorMs:
+                    type: integer
+                  budget:
+                    nullable: true
+                    type: object
+                    required: [mode, usedMinutes, cap, wouldBlock]
+                    properties:
+                      mode:
+                        type: string
+                      usedMinutes:
+                        type: integer
+                      cap:
+                        type: integer
+                      wouldBlock:
+                        type: boolean
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -652,6 +750,93 @@ paths:
                     description: True when secret rows were undecryptable
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /v1/github/jobs:
+    get:
+      tags: [jobs]
+      operationId: listGithubRunnerJobs
+      summary: List runner-mode jobs (the flare lane), newest first
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: repo
+          in: query
+          schema:
+            type: string
+          description: Optional owner/name filter
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Runner-mode jobs (respects token repo scope)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobs]
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GithubRunnerJob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/github/jobs/next:
+    post:
+      tags: [jobs]
+      operationId: claimGithubRunnerJob
+      summary: Claim a runner-mode job and mint its ephemeral JIT config (runner poll)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                labels:
+                  type: array
+                  items:
+                    type: string
+                  description: Runner-declared extra labels (must cover the job's non-managed labels)
+      responses:
+        '200':
+          description: "Claimed job plus single-use JIT config, or {job: null} when empty"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job:
+                    $ref: '#/components/schemas/GithubRunnerJob'
+                    nullable: true
+                    description: Claimed runner-mode job (null when the lane is empty)
+                  jitConfig:
+                    type: string
+                    description: Single-use encoded JIT config for actions/runner --jitconfig (1h TTL)
+                  runnerName:
+                    type: string
+                    description: Ephemeral runner name the JIT config was minted for
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Installation token or JIT mint failed (claim was released)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/jobs/{jobId}/artifacts/{name}:
     get:
       tags: [artifacts]
@@ -1341,6 +1526,13 @@ paths:
                   type: boolean
                 openRegistration:
                   type: boolean
+                githubRunnerMode:
+                  type: string
+                  enum: [off, on]
+                  description: Runner mode (settings-gated) — off by default
+                githubRunnerLabels:
+                  type: string
+                  description: Comma-separated runs-on labels this deployment serves (default flare)
                 billingApiToken:
                   type: string
                 cloudflareAccountId:
@@ -2452,6 +2644,75 @@ paths:
       responses:
         '302':
           description: Redirect to the dashboard with the outcome
+  /v1/admin/pair-codes:
+    post:
+      tags: [auth]
+      operationId: createPairingCode
+      summary: Mint a single-use runner pairing code (10-minute TTL)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The code (shown once) and its expiry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, expiresAt]
+                properties:
+                  code:
+                    type: string
+                    description: XXXX-XXXX pairing code for `runner -- --pair`
+                  expiresAt:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/pair/exchange:
+    post:
+      tags: [auth]
+      operationId: exchangePairingCode
+      summary: Exchange a pairing code for a runner token (IP-throttled)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                name:
+                  type: string
+                  description: Runner name for the minted token
+      responses:
+        '201':
+          description: Runner token (shown once)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, name]
+                properties:
+                  token:
+                    type: string
+                  name:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: Code invalid or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Too many attempts from this IP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /webhooks/github:
     post:
       tags: [webhooks]
@@ -2813,6 +3074,12 @@ components:
       properties:
         error:
           type: string
+        code:
+          type: string
+          description: Stable machine-actionable code (core lanes; see docs/ERRORS.md)
+        hint:
+          type: string
+          description: Next step for the caller (present wherever code is)
     Tournament:
       type: object
       required: [id, intent, source_repo, state]
@@ -3089,6 +3356,58 @@ components:
     UsageStats:
       type: object
       description: Compute minutes and cost attribution rollup
+      properties:
+        githubRunnerJobs:
+          type: integer
+          description: Completed runner-mode jobs in the window
+        githubRunnerMinutes:
+          type: number
+          description: Runner-mode compute minutes in the window
+        githubRunnerListUsd:
+          type: number
+          description: Runner-mode minutes at Actions list price
+    GithubRunnerJob:
+      type: object
+      required: [id, repo, runId, jobName, labels, status, attempts]
+      properties:
+        id:
+          type: string
+          description: GitHub workflow_job id
+        repo:
+          type: string
+        runId:
+          type: string
+        runAttempt:
+          type: integer
+        jobName:
+          type: string
+        workflowName:
+          type: string
+        headSha:
+          type: string
+        labels:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [queued, claimed, running, completed]
+        conclusion:
+          type: string
+          nullable: true
+        runnerId:
+          type: integer
+          nullable: true
+        runnerName:
+          type: string
+        attempts:
+          type: integer
+        startedAt:
+          type: string
+          nullable: true
+        completedAt:
+          type: string
+          nullable: true
     LogHit:
       type: object
       description: FTS log match (run, job, line, rank)

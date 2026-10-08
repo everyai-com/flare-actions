@@ -6,6 +6,8 @@ import {
   parseBudgetMinutes,
   parseBudgetMode,
   parseFairSharePerRepo,
+  parseGithubRunnerLabels,
+  parseGithubRunnerMode,
   parseMcpWriteConfirm,
   parseOpenRegistration,
   parseStoredBudgets,
@@ -209,5 +211,27 @@ describe("budget guardrail settings", () => {
     expect(parseSupersedeBranchRuns("push")).toEqual({ mode: "push" });
     expect(parseSupersedeBranchRuns(null)).toEqual({ mode: "off" });
     expect("error" in parseSupersedeBranchRuns("always")).toBe(true);
+  });
+});
+
+describe("github runner mode settings", () => {
+  it("parses the mode toggle, defaulting off", () => {
+    expect(parseGithubRunnerMode("on")).toEqual({ mode: "on" });
+    expect(parseGithubRunnerMode("off")).toEqual({ mode: "off" });
+    expect(parseGithubRunnerMode(null)).toEqual({ mode: "off" });
+    expect(parseGithubRunnerMode("")).toEqual({ mode: "off" });
+    expect(parseGithubRunnerMode("1")).toEqual({ mode: "on" });
+    expect("error" in parseGithubRunnerMode("sometimes")).toBe(true);
+  });
+
+  it("parses the managed label list, defaulting to flare", () => {
+    expect(parseGithubRunnerLabels(null)).toEqual({ labels: ["flare"] });
+    expect(parseGithubRunnerLabels("")).toEqual({ labels: ["flare"] });
+    expect(parseGithubRunnerLabels("Flare, gpu")).toEqual({ labels: ["flare", "gpu"] });
+    expect(parseGithubRunnerLabels("flare,flare")).toEqual({ labels: ["flare"] });
+    expect(parseGithubRunnerLabels(["a", "b"])).toEqual({ labels: ["a", "b"] });
+    expect("error" in parseGithubRunnerLabels("a,b,c,d,e,f")).toBe(true);
+    expect("error" in parseGithubRunnerLabels("has space")).toBe(true);
+    expect("error" in parseGithubRunnerLabels(42)).toBe(true);
   });
 });

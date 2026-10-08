@@ -10,20 +10,53 @@ import {
   parseJobSpec,
   runJob,
 } from "flare-actions-runner-sdk";
+import { runGithubLoop } from "./github.ts";
+import { pairRunner } from "./pair.ts";
 
 loadEnv();
 const baseUrl = process.env["FLARE_ACTIONS_URL"];
-const token = process.env["RUNNER_TOKEN"];
+let token = process.env["RUNNER_TOKEN"];
+// Pairing first: this machine has no token yet by definition. The code
+// buys a runner token, persisted to ./.env, and polling continues below.
+const pairAt = process.argv.indexOf("--pair");
+if (pairAt !== -1) {
+  const code = process.argv[pairAt + 1] ?? "";
+  if (!baseUrl) {
+    console.error("Pairing needs FLARE_ACTIONS_URL — paste the full command from dashboard Access → Pair a runner");
+    process.exit(2);
+  }
+  if (!code || code.startsWith("--")) {
+    console.error("usage: npm run runner -- --pair <CODE> [--pair-name <name>]");
+    process.exit(2);
+  }
+  if (token) {
+    console.error("RUNNER_TOKEN is already set — unset it to re-pair this machine");
+    process.exit(2);
+  }
+  const nameAt = process.argv.indexOf("--pair-name");
+  const pairName = nameAt === -1 ? undefined : process.argv[nameAt + 1];
+  try {
+    const paired = await pairRunner({ baseUrl, code, ...(pairName ? { name: pairName } : {}), cwd: process.cwd() });
+    token = paired.token;
+    console.log(JSON.stringify({ msg: "runner paired", name: paired.name, env: paired.envPath }));
+  } catch (err) {
+    console.error(`pairing failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
 if (!baseUrl || !token) {
-  console.error("Run `npm run setup` first, or set FLARE_ACTIONS_URL and RUNNER_TOKEN");
+  console.error("Run `npm run setup` first, pair with --pair <CODE>, or set FLARE_ACTIONS_URL and RUNNER_TOKEN");
   process.exit(1);
 }
 
 // Labels this runner accepts jobs for: os + arch plus FLARE_LABELS
 // extras (e.g. "gpu,docker"). Label-less jobs match every runner.
+// (--github mode declares its own extras via --labels instead.)
 const OS_LABEL = platform() === "darwin" ? "macos" : platform() === "win32" ? "windows" : "linux";
 const LABELS = [OS_LABEL, arch(), ...(process.env["FLARE_LABELS"] ?? "").split(",").map((l) => l.trim()).filter(Boolean)];
-console.log(JSON.stringify({ msg: "runner labels", labels: LABELS }));
+if (!process.argv.includes("--github")) {
+  console.log(JSON.stringify({ msg: "runner labels", labels: LABELS }));
+}
 
 const client = new FlareClient(baseUrl, token);
 
@@ -120,4 +153,13 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+// Runner mode (the flare lane): this process serves GitHub-orchestrated
+// jobs with the official actions/runner binary instead of Flare jobs.
+// `--labels gpu,...` declares extra capabilities beyond the managed set.
+if (process.argv.includes("--github")) {
+  const at = process.argv.indexOf("--labels");
+  const extra = at === -1 ? [] : (process.argv[at + 1] ?? "").split(",").map((l) => l.trim()).filter(Boolean);
+  await runGithubLoop(client, { labels: extra });
+} else {
+  await main();
+}

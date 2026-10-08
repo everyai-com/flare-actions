@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  emitGhaJobCompleted,
   emitJobTerminal,
   emitRunDispatched,
   emitRunTerminal,
@@ -36,6 +37,21 @@ describe("analytics", () => {
     expect(events[1].doubles).toEqual([42000, 3]);
     expect(events[2].blobs).toEqual(["o/r", "run1", "test", "failure", "", "runner"]);
     expect(events[2].doubles).toEqual([40000, 1]);
+  });
+
+  it("emits runner-mode completions as their own event", () => {
+    const events: AnalyticsEngineDataPoint[] = [];
+    emitGhaJobCompleted(fakeBinding(events), {
+      repo: "o/r",
+      runId: "9",
+      jobName: "test",
+      conclusion: "success",
+      durationMs: 120000,
+      attempts: 1,
+    });
+    expect(events[0].indexes?.[0]).toBe("gha.job.completed");
+    expect(events[0].blobs).toEqual(["o/r", "9", "test", "success", "", "github-jit"]);
+    expect(events[0].doubles).toEqual([120000, 1]);
   });
 
   it("skips silently without a binding and never throws", () => {

@@ -16,6 +16,24 @@ without `runs-on` match every runner.
 FLARE_LABELS=gpu,docker npm run runner   # picks up runs-on: [linux, gpu] etc.
 ```
 
+## Pairing (zero-config machines)
+
+Dashboard Access → **Pair a runner** mints a short single-use code and
+shows one command. Paste it on the fresh box — no `.env` editing, no
+token copying:
+
+```bash
+FLARE_ACTIONS_URL=https://<your-worker>.workers.dev npm run runner -- --pair K7MD-Q2XA --pair-name ci-metal-01
+```
+
+The runner exchanges the code for a runner-scoped API token (shown
+once, like dashboard tokens), writes `.env` next to itself (0600,
+merging with existing keys), and starts polling. Codes expire after
+10 minutes, work exactly once, and the exchange throttles per IP like
+logins. Re-pairing needs the old `RUNNER_TOKEN` unset first (refusing
+to silently re-key a live machine). Revoke a paired machine like any
+token: Access tab → Revoke.
+
 ## Minimal setup (any OS)
 
 ```bash
@@ -26,6 +44,9 @@ export RUNNER_TOKEN=<runner token from the dashboard Access tab>
 export GITHUB_TOKEN=<optional, for private repos>
 npm run runner
 ```
+
+Prefer not to touch tokens at all? Use pairing (above) instead of the
+`RUNNER_TOKEN` export.
 
 Keep it alive with a service manager — a bare terminal dies with your
 session and queued jobs just sit there. Copy-paste units:

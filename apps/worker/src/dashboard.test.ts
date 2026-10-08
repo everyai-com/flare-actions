@@ -55,6 +55,16 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("supersedeCheck");
   });
 
+  it("renders the flaky tab with quarantine add and reinstate", () => {
+    expect(DASHBOARD_HTML).toContain("tabFlaky");
+    expect(DASHBOARD_HTML).toContain("flakyPane");
+    expect(DASHBOARD_HTML).toContain("loadFlaky");
+    expect(DASHBOARD_HTML).toContain("/v1/flaky?repo=");
+    expect(DASHBOARD_HTML).toContain("/v1/quarantine?repo=");
+    expect(DASHBOARD_HTML).toContain("quarantineForm");
+    expect(DASHBOARD_HTML).toContain("Reinstate");
+  });
+
   it("wires the open-registration toggle and self-serve signup", () => {
     expect(DASHBOARD_HTML).toContain("openRegCheck");
     expect(DASHBOARD_HTML).toContain("openRegistration");
@@ -62,4 +72,44 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("setEmailMode");
     expect(DASHBOARD_HTML).toContain("githubOpenHint");
   });
+
+  it("wires the runner-mode card to settings and the jobs lane", () => {
+    expect(DASHBOARD_HTML).toContain("ghRunnerCheck");
+    expect(DASHBOARD_HTML).toContain("ghRunnerLabelsInput");
+    expect(DASHBOARD_HTML).toContain("githubRunnerMode");
+    expect(DASHBOARD_HTML).toContain("githubRunnerLabels");
+    expect(DASHBOARD_HTML).toContain("loadGhRunnerJobs");
+    expect(DASHBOARD_HTML).toContain("/v1/github/jobs?limit=5");
+  });
+
+  it("renders the first-run onboarding checklist", () => {
+    expect(DASHBOARD_HTML).toContain("three steps to the first one");
+    expect(DASHBOARD_HTML).toContain("setupStep");
+    expect(DASHBOARD_HTML).toContain("ol.steps");
+    expect(DASHBOARD_HTML).toContain("Start an executor");
+    expect(DASHBOARD_HTML).toContain("Dispatch a run");
+  });
+
+  it("polishes auth and small screens", () => {
+    expect(DASHBOARD_HTML).toContain("oauthDivider");
+    expect(DASHBOARD_HTML).toContain("or continue with");
+    expect(DASHBOARD_HTML).toContain("@media (max-width: 640px)");
+  });
+
+  it("wires the runner pairing card", () => {
+    expect(DASHBOARD_HTML).toContain("pairForm");
+    expect(DASHBOARD_HTML).toContain("pairName");
+    expect(DASHBOARD_HTML).toContain("pairCmd");
+    expect(DASHBOARD_HTML).toContain("copyPairBtn");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/pair-codes");
+    expect(DASHBOARD_HTML).toContain("--pair ");
+  });
+
+  it("renders the savings counter strip", () => {
+    expect(DASHBOARD_HTML).toContain("usageStrip");
+    expect(DASHBOARD_HTML).toContain("loadUsageStrip");
+    expect(DASHBOARD_HTML).toContain("/v1/usage?days=30");
+    expect(DASHBOARD_HTML).toContain("spend avoided vs Actions list price");
+  });
+
 });

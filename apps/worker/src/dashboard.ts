@@ -99,6 +99,24 @@ form.inline input { flex: 1; min-width: 180px; }
 .btn-block { width: 100%; padding: 10px; }
 .btn-github { background: #232323; color: #fff; border: none; cursor: pointer; border-radius: 999px; font: inherit; padding: 10px; box-shadow: 0 0 0 1px #333333; }
 .btn-github:hover { background: #2a2a2a; }
+#githubBox .btn-block + .btn-block { margin-top: 8px; }
+.divider { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 12px; margin: 4px 0 2px; }
+.divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+ol.steps { margin: 10px 0 0; padding: 0; list-style: none; counter-reset: step; max-width: 64ch; }
+ol.steps li { counter-increment: step; display: flex; gap: 10px; align-items: flex-start; padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; }
+ol.steps li::before { content: counter(step); flex: none; width: 20px; height: 20px; border-radius: 999px; background: #2a2a2a; color: var(--ink); font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; margin-top: 1px; }
+ol.steps li.done::before { content: "✓"; background: #1f3a2d; color: #b1ebc5; }
+ol.steps .step-body { flex: 1; min-width: 0; }
+ol.steps .step-body p { margin: 0 0 6px; color: var(--muted); }
+ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
+@media (max-width: 640px) {
+  main { padding: 12px 12px 32px; }
+  section.card { padding: 14px; }
+  .auth-card { padding: 20px 16px; }
+  .run-row { flex-wrap: wrap; }
+  .run-time { width: 100%; }
+  form.inline input { min-width: 140px; }
+}
 </style>
 </head>
 <body>
@@ -133,6 +151,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <p id="connectErr" class="err"></p>
 </div>
 <div id="githubBox">
+<div class="divider" id="oauthDivider">or continue with</div>
 <button id="githubLoginBtn" class="btn-github btn-block">Login with GitHub</button>
 <p class="muted" id="githubOpenHint" hidden>Open registration is on — any GitHub user can log in (reader access).</p>
 <p id="authInstallBox" hidden><a id="authInstallLink" href="#" target="_blank" rel="noopener">Install the App on your repos first</a></p>
@@ -195,6 +214,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <button id="tabRuns" class="active">Runs</button>
 <button id="tabTournaments">Tournaments</button>
 <button id="tabSearch">Search</button>
+<button id="tabFlaky">Flaky</button>
 <button id="tabApps">Apps</button>
 <button id="tabAccess">Access</button>
 <button id="tabSettings">Settings</button>
@@ -212,6 +232,7 @@ form.inline input { flex: 1; min-width: 180px; }
 <p><button id="installNoticeBtn" class="ghost">Got it</button></p>
 </div>
 <h2>Runs</h2>
+<p id="usageStrip" class="muted"></p>
 <details id="dispatchBox">
 <summary>Dispatch a run…</summary>
 <form id="dispatchForm" class="inline">
@@ -247,6 +268,18 @@ form.inline input { flex: 1; min-width: 180px; }
 <p><button id="copyTokenBtn" class="ghost" type="button">Copy</button></p>
 </div>
 <div class="table-scroll"><table><thead><tr><th>Name</th><th>Scopes</th><th>Repos</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody id="tokensBody"></tbody></table></div>
+<h2>Pair a runner</h2>
+<p class="muted">Zero-config machines: mint a code, paste one command on the fresh box, and it exchanges the code for a runner token and starts polling. Single use, expires in 10 minutes.</p>
+<form id="pairForm" class="inline">
+<input id="pairName" placeholder="Runner name, e.g. ci-metal-01" maxlength="64">
+<button type="submit">Create pairing code</button>
+</form>
+<p id="pairErr" class="err"></p>
+<div id="pairBox" hidden>
+<p><strong>Run this on the new machine — the code works once.</strong></p>
+<code class="token" id="pairCmd"></code>
+<p><button id="copyPairBtn" class="ghost" type="button">Copy</button></p>
+</div>
 <h2>Connected apps</h2>
 <p class="muted">OAuth apps teammates authorized on the MCP endpoint (Claude, ChatGPT, Cursor, …). Revoking disconnects the app immediately.</p>
 <div class="table-scroll"><table><thead><tr><th>App</th><th>User</th><th>Scopes</th><th>Granted</th><th></th></tr></thead><tbody id="grantsBody"></tbody></table></div>
@@ -351,6 +384,17 @@ form.inline input { flex: 1; min-width: 180px; }
 </form>
 <p id="schedErr" class="err"></p>
 <p id="schedOk"></p>
+<h2>GitHub runners (the flare lane)</h2>
+<p class="muted">GitHub keeps orchestrating; Flare registers one ephemeral JIT runner per job whose runs-on includes a managed label. Off by default. Needs the App's actions:read + administration:write — existing installs re-run Connect GitHub to accept the permission change.</p>
+<form id="ghRunnerForm" class="inline">
+<label><input type="checkbox" id="ghRunnerCheck"> runner mode on</label>
+<input id="ghRunnerLabelsInput" placeholder="labels, e.g. flare, gpu" maxlength="128" size="30">
+<button type="submit">Save</button>
+</form>
+<p id="ghRunnerErr" class="err"></p>
+<p id="ghRunnerOk"></p>
+<p class="muted">Workflow change, one line: <code>runs-on: flare</code> — checks and logs stay on GitHub. Executors run <code>npm run runner -- --github</code>.</p>
+<div id="ghRunnerList"></div>
 <h2>Schedules</h2>
 <p class="muted">Run a repo on a cron schedule (UTC). &quot;last&quot; shows the most recent dispatch attempt, so a schedule that silently stops is visible instead of invisible.</p>
 <form id="scheduleForm" class="inline">
@@ -430,6 +474,23 @@ form.inline input { flex: 1; min-width: 180px; }
 </form>
 <p id="searchErr" class="err"></p>
 <div id="searchList"></div>
+</section>
+<section id="flakyPane" class="card" hidden>
+<h2>Flaky tests</h2>
+<p class="muted">Per-job failure rates plus the quarantine list. Quarantined tests stop blocking the merge, land the run as green, and are named on the PR comment. Adding or reinstating needs admin.</p>
+<form id="flakyForm" class="inline">
+<input id="flakyRepo" placeholder="owner/repo" maxlength="100" aria-label="Repository">
+<button type="submit">Load</button>
+</form>
+<p id="flakyErr" class="err"></p>
+<h3>Failure rates (30 days)</h3>
+<div class="table-scroll"><table><thead><tr><th>Job</th><th>Runs</th><th>Failures</th><th>Rate</th></tr></thead><tbody id="flakyBody"></tbody></table></div>
+<h3>Quarantined</h3>
+<div class="table-scroll"><table><thead><tr><th>Test</th><th>Status</th><th>Reason</th><th>Green streak</th><th>Updated</th><th></th></tr></thead><tbody id="quarantineBody"></tbody></table></div>
+<form id="quarantineForm" class="inline" hidden>
+<input id="quarantineName" placeholder="test name to quarantine" maxlength="200" aria-label="Test name">
+<button type="submit">Quarantine</button>
+</form>
 </section>
 <section id="appsPane" class="card" hidden>
 <h2>My apps</h2>
@@ -907,12 +968,14 @@ form.inline input { flex: 1; min-width: 180px; }
   var tabRuns = document.getElementById("tabRuns");
   var tabTournaments = document.getElementById("tabTournaments");
   var tabSearch = document.getElementById("tabSearch");
+  var tabFlaky = document.getElementById("tabFlaky");
   var tabApps = document.getElementById("tabApps");
   var tabAccess = document.getElementById("tabAccess");
   var tabSettings = document.getElementById("tabSettings");
   var runsPane = document.getElementById("runsPane");
   var tournamentsPane = document.getElementById("tournamentsPane");
   var searchPane = document.getElementById("searchPane");
+  var flakyPane = document.getElementById("flakyPane");
   var appsPane = document.getElementById("appsPane");
   var accessPane = document.getElementById("accessPane");
   var settingsPane = document.getElementById("settingsPane");
@@ -920,12 +983,14 @@ form.inline input { flex: 1; min-width: 180px; }
     tabRuns.className = name === "runs" ? "active" : "";
     tabTournaments.className = name === "tournaments" ? "active" : "";
     tabSearch.className = name === "search" ? "active" : "";
+    tabFlaky.className = name === "flaky" ? "active" : "";
     tabApps.className = name === "apps" ? "active" : "";
     tabAccess.className = name === "access" ? "active" : "";
     tabSettings.className = name === "settings" ? "active" : "";
     runsPane.hidden = name !== "runs";
     tournamentsPane.hidden = name !== "tournaments";
     searchPane.hidden = name !== "search";
+    flakyPane.hidden = name !== "flaky";
     appsPane.hidden = name !== "apps";
     accessPane.hidden = name !== "access";
     settingsPane.hidden = name !== "settings";
@@ -963,6 +1028,7 @@ form.inline input { flex: 1; min-width: 180px; }
   tabRuns.addEventListener("click", function () { selectTab("runs"); loadRuns(); });
   tabTournaments.addEventListener("click", function () { selectTab("tournaments"); loadTournaments(); });
   tabSearch.addEventListener("click", function () { selectTab("search"); });
+  tabFlaky.addEventListener("click", function () { selectTab("flaky"); });
   var currentTournamentId = "";
   var tournamentTimer = null;
   function stopTournamentTimer() {
@@ -1093,6 +1159,82 @@ form.inline input { flex: 1; min-width: 180px; }
       err.textContent = (e && e.message) || "Search failed";
     });
   }
+  document.getElementById("flakyForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    loadFlaky();
+  });
+  document.getElementById("quarantineForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var repo = document.getElementById("flakyRepo").value.trim();
+    var name = document.getElementById("quarantineName").value.trim();
+    var err = document.getElementById("flakyErr");
+    err.textContent = "";
+    if (!repo || !name) { err.textContent = "repo and test name are required"; return; }
+    api("/v1/quarantine", { method: "POST", body: JSON.stringify({ repo: repo, name: name, action: "add" }) }).then(function () {
+      document.getElementById("quarantineName").value = "";
+      loadFlaky();
+    }, function (e) {
+      err.textContent = (e && e.message) || "Quarantine failed";
+    });
+  });
+  function loadFlaky() {
+    var repo = document.getElementById("flakyRepo").value.trim();
+    var err = document.getElementById("flakyErr");
+    var flakyBody = document.getElementById("flakyBody");
+    var quarantineBody = document.getElementById("quarantineBody");
+    err.textContent = "";
+    flakyBody.textContent = "";
+    quarantineBody.textContent = "";
+    document.getElementById("quarantineForm").hidden = !isAdmin;
+    if (!repo) return;
+    api("/v1/flaky?repo=" + encodeURIComponent(repo) + "&days=30").then(function (res) {
+      var stats = (res && res.stats) || [];
+      if (stats.length === 0) {
+        var empty = el("tr"); var td = el("td", "No finished jobs in the last 30 days."); td.colSpan = 4; empty.appendChild(td); flakyBody.appendChild(empty);
+      }
+      stats.forEach(function (s) {
+        var tr = el("tr");
+        tr.appendChild(el("td", s.job));
+        tr.appendChild(el("td", String(s.runs)));
+        tr.appendChild(el("td", String(s.failures)));
+        var pct = typeof s.rate === "number" ? Math.round(s.rate * 100) + "%" : "-";
+        tr.appendChild(el("td", pct));
+        flakyBody.appendChild(tr);
+      });
+    }, function (e) {
+      err.textContent = (e && e.message) || "Flaky stats failed";
+    });
+    api("/v1/quarantine?repo=" + encodeURIComponent(repo)).then(function (res) {
+      var tests = (res && res.tests) || [];
+      if (tests.length === 0) {
+        var empty = el("tr"); var td = el("td", "Nothing quarantined."); td.colSpan = 6; empty.appendChild(td); quarantineBody.appendChild(empty);
+        return;
+      }
+      tests.forEach(function (t) {
+        var tr = el("tr");
+        var name = el("td", t.name); name.className = "mono"; tr.appendChild(name);
+        tr.appendChild(el("td", t.status));
+        tr.appendChild(el("td", t.reason || "-"));
+        tr.appendChild(el("td", String(t.green_streak)));
+        tr.appendChild(timeCell(t.updated_at));
+        var act = el("td");
+        if (isAdmin && t.status === "active") {
+          var btn = el("button", "Reinstate");
+          btn.className = "ghost";
+          btn.addEventListener("click", function () {
+            api("/v1/quarantine", { method: "POST", body: JSON.stringify({ repo: repo, name: t.name, action: "remove" }) }).then(loadFlaky, function (e) {
+              err.textContent = (e && e.message) || "Reinstate failed";
+            });
+          });
+          act.appendChild(btn);
+        }
+        tr.appendChild(act);
+        quarantineBody.appendChild(tr);
+      });
+    }, function (e) {
+      err.textContent = (e && e.message) || "Quarantine list failed";
+    });
+  }
   tabAccess.addEventListener("click", function () { selectTab("access"); loadTokens(); loadUsers(); loadAudit(); loadOAuthGrants(); });
   tabSettings.addEventListener("click", function () { selectTab("settings"); loadSettings(); });
 
@@ -1110,6 +1252,24 @@ form.inline input { flex: 1; min-width: 180px; }
     if (s === "default") return "default";
     return "";
   }
+  function setupStep(title, desc, done, action) {
+    var li = el("li");
+    if (done) li.className = "done";
+    var body = el("div"); body.className = "step-body";
+    var p = el("p");
+    p.appendChild(el("strong", title));
+    p.appendChild(document.createTextNode(" — " + desc));
+    body.appendChild(p);
+    if (action) {
+      var btn = el("button", action.label);
+      btn.className = "ghost";
+      btn.type = "button";
+      btn.addEventListener("click", action.fn);
+      body.appendChild(btn);
+    }
+    li.appendChild(body);
+    return li;
+  }
   function renderRuns() {
     var list = document.getElementById("runsList");
     list.textContent = "";
@@ -1122,11 +1282,35 @@ form.inline input { flex: 1; min-width: 180px; }
     if (!lastRuns.length) { count.textContent = ""; }
     else if (shown === lastRuns.length) { count.textContent = lastRuns.length + " runs"; }
     else { count.textContent = "Showing " + shown + " of " + lastRuns.length + " runs"; }
+    document.getElementById("runsFilterForm").style.display = lastRuns.length ? "" : "none";
     if (!list.children.length) {
       var empty = el("div"); empty.className = "empty";
       if (!lastRuns.length) {
-        empty.appendChild(el("h3", "No runs yet"));
-        empty.appendChild(el("p", "Push to a connected repo — flare.yml or existing .github/workflows both run — or dispatch one from this page."));
+        empty.appendChild(el("h3", "No runs yet — three steps to the first one"));
+        var appDone = !!(lastStatus && lastStatus.githubConnected);
+        var steps = el("ol"); steps.className = "steps";
+        steps.appendChild(setupStep(
+          "Connect a repo",
+          appDone ? "GitHub App connected." : "Connect the App, or add a repo webhook for public repos.",
+          appDone,
+          isAdmin && !appDone ? { label: "Open Settings", fn: function () { selectTab("settings"); loadSettings(); } } : null,
+        ));
+        steps.appendChild(setupStep(
+          "Start an executor",
+          "Runs wait for a machine: npm run runner from the Flare checkout, or managed seats.",
+          false,
+          null,
+        ));
+        steps.appendChild(setupStep(
+          "Trigger the first run",
+          "Push to a connected repo — flare.yml or existing .github/workflows both run — or dispatch from this page.",
+          false,
+          isAdmin ? { label: "Dispatch a run", fn: function () {
+            document.getElementById("dispatchBox").open = true;
+            document.getElementById("dispatchRepo").focus();
+          } } : null,
+        ));
+        empty.appendChild(steps);
       } else {
         empty.appendChild(el("h3", "No runs match"));
         empty.appendChild(el("p", "Try a different filter."));
@@ -1134,10 +1318,26 @@ form.inline input { flex: 1; min-width: 180px; }
       list.appendChild(empty);
     }
   }
+  var usageStripAt = 0;
+  function loadUsageStrip() {
+    // Usage moves slowly; the runs poll is fast — refetch at most
+    // once a minute so the strip never hammers the rollup query.
+    var now = Date.now();
+    if (now - usageStripAt < 60000 && document.getElementById("usageStrip").textContent) return;
+    usageStripAt = now;
+    api("/v1/usage?days=30").then(function (u) {
+      var list = (typeof u.actionsListUsd === "number" ? u.actionsListUsd : 0) +
+        (typeof u.githubRunnerListUsd === "number" ? u.githubRunnerListUsd : 0);
+      document.getElementById("usageStrip").textContent =
+        "Last 30d: " + u.runs + " runs · " + u.computeMinutes + " compute-min · ≈$" +
+        list.toFixed(2) + " spend avoided vs Actions list price";
+    }).catch(function () { /* strip stays empty when usage is unreachable */ });
+  }
   function loadRuns() {
     var list = document.getElementById("runsList");
     list.textContent = "";
     var loading = el("p", "Loading runs…"); loading.className = "muted"; list.appendChild(loading);
+    loadUsageStrip();
     api("/v1/runs").then(function (data) {
       lastRuns = data.runs || [];
       renderRuns();
@@ -1474,6 +1674,27 @@ form.inline input { flex: 1; min-width: 180px; }
       .catch(function () { err.textContent = "Could not create token (name required; repos must be owner/name entries)."; });
   });
 
+  document.getElementById("copyPairBtn").addEventListener("click", function () {
+    copyText(document.getElementById("pairCmd").textContent, this);
+  });
+  document.getElementById("pairForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("pairErr");
+    err.textContent = "";
+    document.getElementById("pairBox").hidden = true;
+    var name = document.getElementById("pairName").value.trim();
+    api("/v1/admin/pair-codes", { method: "POST", body: JSON.stringify({}) })
+      .then(function (data) {
+        var cmd = "FLARE_ACTIONS_URL=" + window.location.origin +
+          " npm run runner -- --pair " + data.code +
+          (name ? " --pair-name " + name : "");
+        document.getElementById("pairCmd").textContent = cmd;
+        document.getElementById("pairBox").hidden = false;
+        document.getElementById("pairName").value = "";
+      })
+      .catch(function () { err.textContent = "Could not create a pairing code."; });
+  });
+
   function loadMyApps() {
     var body = document.getElementById("myAppsBody");
     if (!body) return;
@@ -1691,6 +1912,10 @@ form.inline input { flex: 1; min-width: 180px; }
       document.getElementById("healCheck").checked = !!s.healOnFailure;
       document.getElementById("openRegCheck").checked = !!s.openRegistration;
       document.getElementById("schedOk").textContent = "";
+      document.getElementById("ghRunnerCheck").checked = s.githubRunnerMode === "on";
+      document.getElementById("ghRunnerLabelsInput").value = s.githubRunnerLabels || "flare";
+      document.getElementById("ghRunnerOk").textContent = "";
+      loadGhRunnerJobs();
       loadSchedules();
       loadMonitors();
       var g = s.githubApp || { source: "none", installUrl: null };
@@ -1857,6 +2082,50 @@ form.inline input { flex: 1; min-width: 180px; }
       })
       .catch(function () { err.textContent = "Could not save (budgets: owner/name=minutes; gateway id a 1-64 char slug; model a Workers AI id)."; });
   });
+
+  document.getElementById("ghRunnerForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("ghRunnerErr");
+    var ok = document.getElementById("ghRunnerOk");
+    err.textContent = ""; ok.textContent = "";
+    var payload = {
+      githubRunnerMode: document.getElementById("ghRunnerCheck").checked ? "on" : "off",
+      githubRunnerLabels: document.getElementById("ghRunnerLabelsInput").value.trim(),
+    };
+    api("/v1/admin/settings", { method: "POST", body: JSON.stringify(payload) })
+      .then(function () {
+        ok.textContent = "Saved.";
+        loadSettings();
+      })
+      .catch(function () { err.textContent = "Could not save (labels: comma-separated, 1-5, e.g. flare, gpu)."; });
+  });
+
+  function loadGhRunnerJobs() {
+    return api("/v1/github/jobs?limit=5").then(function (data) {
+      var list = document.getElementById("ghRunnerList");
+      list.textContent = "";
+      var rows = data.jobs || [];
+      if (rows.length === 0) {
+        var empty = el("p", "No runner-mode jobs yet.");
+        empty.className = "muted";
+        list.appendChild(empty);
+        return;
+      }
+      rows.forEach(function (j) {
+        var row = el("div");
+        row.className = "inline";
+        var info = el("span", j.repo + " " + j.jobName + " [" + (j.labels || []).join(", ") + "]");
+        info.className = "muted";
+        var state = el("span", j.status + (j.conclusion ? " / " + j.conclusion : "") + (j.runnerName ? " on " + j.runnerName : ""));
+        state.className = "muted";
+        row.appendChild(info);
+        row.appendChild(state);
+        list.appendChild(row);
+      });
+    }).catch(function () {
+      document.getElementById("ghRunnerErr").textContent = "Could not load runner-mode jobs.";
+    });
+  }
 
   function scheduleAction(path, method, body) {
     var err = document.getElementById("scheduleErr");

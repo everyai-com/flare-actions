@@ -190,6 +190,30 @@ export const SCHEMA_STATEMENTS = [
     PRIMARY KEY (job_id, host)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_job_egress_run ON job_egress(run_id)`,
+  `CREATE TABLE IF NOT EXISTS gh_runner_jobs (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    installation_id INTEGER,
+    run_id TEXT NOT NULL DEFAULT '',
+    run_attempt INTEGER NOT NULL DEFAULT 1,
+    job_name TEXT NOT NULL DEFAULT '',
+    workflow_name TEXT NOT NULL DEFAULT '',
+    head_sha TEXT NOT NULL DEFAULT '',
+    labels TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'queued',
+    conclusion TEXT,
+    runner_id INTEGER,
+    runner_name TEXT NOT NULL DEFAULT '',
+    claimed_at TEXT,
+    claimed_by TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT,
+    completed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_gh_runner_jobs_status_created ON gh_runner_jobs(status, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_gh_runner_jobs_repo_created ON gh_runner_jobs(repo, created_at)`,
   `CREATE VIRTUAL TABLE IF NOT EXISTS log_fts USING fts5(
     line, job_id UNINDEXED, run_id UNINDEXED, repo UNINDEXED,
     branch UNINDEXED, level UNINDEXED, created_at UNINDEXED
@@ -257,6 +281,12 @@ export const SCHEMA_STATEMENTS = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_attempts_tournament ON attempts(tournament_id)`,
   `CREATE INDEX IF NOT EXISTS idx_ledger_tournament ON ledger(tournament_id)`,
+  `CREATE TABLE IF NOT EXISTS pairing_codes (
+    code_hash TEXT PRIMARY KEY,
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  )`,
 ];
 
 // Additive columns for databases created before the matching migration.

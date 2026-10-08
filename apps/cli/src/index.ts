@@ -1,21 +1,32 @@
 import { readFileSync } from "node:fs";
 import {
   convertActionsWorkflow,
+  FlareApiError,
   FlareClient,
   isImportSuccess,
   loadEnv,
   type FlareRunDigest,
 } from "flare-actions-runner-sdk";
 import { runLocal } from "./local.ts";
-import { dispatchSource } from "./source.ts";
+import { dispatchSource, readLocalPipeline } from "./source.ts";
+import { formatPlan } from "./dryrun.ts";
 import { runInit } from "./init.ts";
+import { runConnect } from "./connect.ts";
 import { BoxManager } from "./devbox.ts";
 import { runDevboxMcpServer } from "./mcp-serve.ts";
 import { simulateDrain } from "../../worker/src/fairness.ts";
+import { ACTIONS_LIST_USD_PER_MIN } from "../../worker/src/cost.ts";
+import { hasJsonFlag, printJson, splitPassthrough, stripJsonFlag } from "./json.ts";
+import { explainDigest } from "./explain.ts";
 
 loadEnv();
 
-const [cmd, ...rest] = process.argv.slice(2);
+const [cmd, ...rawRest] = process.argv.slice(2);
+// --json anywhere before a `--` separator switches the command to its
+// versioned envelope; args past `--` (devbox exec) pass through verbatim.
+const { head, tail } = splitPassthrough(rawRest);
+const JSON_MODE = hasJsonFlag(head);
+const rest = [...stripJsonFlag(head), ...tail];
 
 function usage(): never {
   console.log(
@@ -23,9 +34,11 @@ function usage(): never {
       "usage:",
       "  cli runs                                  list recent runs",
       "  cli logs <runId>                           show run jobs, steps, triage, logs",
+      "  cli explain <runId>                        one narrative: verdict, failures, next command",
       "  cli local [job] [--file flare.yml]         run the pipeline in this directory (no server, warm cache)",
       "  cli run <repo> <sha|branch|tag> [ref]      dispatch, wait, print the compact digest (exit 1 on failure)",
       "  cli run <repo> --source [ref]              upload the working tree and run it (no commit needed)",
+      "  append --dry-run to run/dispatch           plan the fan-out (queued/blocked/budget) without creating a run",
       "  cli watch <runId>                          wait for a run and print the compact digest",
       "  cli cancel <runId>                         cancel queued/blocked jobs of a run",
       "  cli dispatch <repo> <sha|branch|tag> [ref]  trigger a run without waiting",
@@ -36,12 +49,14 @@ function usage(): never {
       "  cli quarantine add <repo> <test>            move a test out of the blocking gate",
       "  cli quarantine remove <repo> <test>         reinstate a quarantined test",
       "  cli init [--force]                          scaffold flare.yml + AGENTS.md snippet + next steps",
+      "  cli connect [repo] [--wire] [--dry-run]     probe, wire, and verify this repo in one command",
       "  cli tests <runId>                           per-test results and failing tests",
       "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
       "  cli queue [labels]                        live queue + projected claim order (admin)",
       "  cli cache list [prefix]                     list cache entries (admin)",
       "  cli cache purge [prefix]                    delete cache entries (admin)",
       "  cli usage [days] [repo]                     runs, jobs, compute-minutes for billing",
+      "  cli github-jobs [repo]                    ephemeral runner-mode jobs (status, duration, list price)",
       "  cli search <query...>                       search all job logs (branch:main level:error ...)",
       "  cli artifacts <runId>                       list a run's artifacts",
       "  cli badge <repo> [branch]                   print badge markdown + url",
@@ -58,6 +73,8 @@ function usage(): never {
       "  cli mcp-serve                               stdio MCP server for dev boxes (local agents)",
       "",
       "run/dispatch accept --priority N (0-10): higher jumps queued batch work.",
+      "every command accepts --json: stdout becomes one versioned envelope",
+      "  { version: 1, command, data } (mcp-config stays paste-ready, mcp-serve ignores it).",
       "cli local reads FLARE_SECRET_<NAME> for ${{ secrets.NAME }} placeholders.",
       "env: FLARE_ACTIONS_URL + RUNNER_TOKEN (from `npm run setup` or the dashboard).",
       "Reads accept readonly tokens; dispatch/rerun need runner scope.",
@@ -119,36 +136,46 @@ async function waitAndDigest(c: FlareClient, runId: string): Promise<FlareRunDig
     console.error(`still running (${Math.round((Date.now() - started) / 1000)}s)…`);
   }
   const digest = await c.getRunDigest(runId);
-  printDigest(digest);
+  if (!JSON_MODE) printDigest(digest);
   return digest;
 }
 
 try {
   if (cmd === "runs") {
     const runs = await client().listRuns();
-    for (const r of runs) console.log(`${r.status}\t${r.id}\t${r.repo}@${r.sha.slice(0, 7)}\t${r.event}`);
+    if (JSON_MODE) printJson("runs", { runs });
+    else for (const r of runs) console.log(`${r.status}\t${r.id}\t${r.repo}@${r.sha.slice(0, 7)}\t${r.event}`);
   } else if (cmd === "logs" && rest[0]) {
     const { run, jobs } = await client().getRun(rest[0]);
-    console.log(`run ${run.id} ${run.status} ${run.repo}@${run.sha}`);
-    for (const j of jobs) {
-      const label = j.name ? `${j.name} ${j.id.slice(0, 8)}` : j.id;
-      console.log(`--- job ${label} ${j.status} ---`);
-      try {
-        const parsed = JSON.parse(j.result || "") as {
-          steps?: { command?: string; exitCode?: number; durationMs?: number }[];
-        };
-        if (parsed && Array.isArray(parsed.steps)) {
-          for (const s of parsed.steps) {
-            const mark = s.exitCode === 0 ? "ok" : "FAIL";
-            console.log(`  [${mark}] ${s.command} (exit ${s.exitCode}, ${s.durationMs}ms)`);
+    if (JSON_MODE) {
+      printJson("logs", { run, jobs });
+    } else {
+      console.log(`run ${run.id} ${run.status} ${run.repo}@${run.sha}`);
+      for (const j of jobs) {
+        const label = j.name ? `${j.name} ${j.id.slice(0, 8)}` : j.id;
+        console.log(`--- job ${label} ${j.status} ---`);
+        try {
+          const parsed = JSON.parse(j.result || "") as {
+            steps?: { command?: string; exitCode?: number; durationMs?: number }[];
+          };
+          if (parsed && Array.isArray(parsed.steps)) {
+            for (const s of parsed.steps) {
+              const mark = s.exitCode === 0 ? "ok" : "FAIL";
+              console.log(`  [${mark}] ${s.command} (exit ${s.exitCode}, ${s.durationMs}ms)`);
+            }
           }
+        } catch {
+          // legacy jobs without structured results
         }
-      } catch {
-        // legacy jobs without structured results
+        if (j.triage) console.log(`AI triage:\n${j.triage}`);
+        console.log(j.log);
       }
-      if (j.triage) console.log(`AI triage:\n${j.triage}`);
-      console.log(j.log);
     }
+  } else if (cmd === "explain" && rest[0]) {
+    const digest = await client().getRunDigest(rest[0]);
+    const out = explainDigest(digest);
+    if (JSON_MODE) printJson("explain", out);
+    else console.log(out.narrative);
   } else if (cmd === "local") {
     let file: string | undefined;
     const positional: string[] = [];
@@ -159,50 +186,81 @@ try {
         positional.push(rest[i]);
       }
     }
-    const result = await runLocal({ cwd: process.cwd(), file, job: positional[0] });
+    const result = await runLocal({ cwd: process.cwd(), file, job: positional[0], ...(JSON_MODE ? { quiet: true } : {}) });
+    if (JSON_MODE) printJson("local", result);
     process.exitCode = result.ok ? 0 : 1;
   } else if (cmd === "run" && rest[0]) {
     const { args, priority } = takePriority(rest);
     const sourceMode = args.includes("--source");
-    const positional = args.filter((a) => a !== "--source");
+    const dryRun = args.includes("--dry-run");
+    const positional = args.filter((a) => a !== "--source" && a !== "--dry-run");
     const repo = positional[0];
     if (!repo || (!sourceMode && !positional[1])) usage();
-    if (sourceMode) {
+    if (dryRun) {
+      // Source dry-runs plan from the local flare.yml without uploading;
+      // the placeholder source id never leaves this branch.
+      const plan = sourceMode
+        ? await client().dryRunDispatch(repo, "", {
+            ref: positional[1],
+            pipeline: readLocalPipeline(process.cwd()),
+            source: "dry-run",
+          })
+        : await client().dryRunDispatch(repo, positional[1] as string, {
+            ...(positional[2] ? { ref: positional[2] } : {}),
+          });
+      if (JSON_MODE) printJson("run", plan);
+      else console.log(formatPlan(plan));
+    } else if (sourceMode) {
       const out = await dispatchSource(client(), {
         repo,
         ref: positional[1],
         cwd: process.cwd(),
         ...(priority !== undefined ? { priority } : {}),
       });
-      console.error(`source run ${out.runId} dispatched (upload ${out.sourceId.slice(0, 8)}…) — waiting for the digest…`);
+      if (!JSON_MODE) console.error(`source run ${out.runId} dispatched (upload ${out.sourceId.slice(0, 8)}…) — waiting for the digest…`);
       const digest = await waitAndDigest(client(), out.runId);
+      if (JSON_MODE) printJson("run", { runId: out.runId, sourceId: out.sourceId, digest });
       process.exitCode = digest.status === "success" ? 0 : 1;
     } else {
       const out = await client().dispatch(repo, positional[1] as string, {
         ...(positional[2] ? { ref: positional[2] } : {}),
         ...(priority !== undefined ? { priority } : {}),
       });
-      console.error(`run ${out.runId} dispatched — waiting for the digest…`);
+      if (!JSON_MODE) console.error(`run ${out.runId} dispatched — waiting for the digest…`);
       const digest = await waitAndDigest(client(), out.runId);
+      if (JSON_MODE) printJson("run", { runId: out.runId, digest });
       process.exitCode = digest.status === "success" ? 0 : 1;
     }
   } else if (cmd === "watch" && rest[0]) {
     const digest = await waitAndDigest(client(), rest[0]);
+    if (JSON_MODE) printJson("watch", { runId: rest[0], digest });
     process.exitCode = digest.status === "success" ? 0 : 1;
   } else if (cmd === "cancel" && rest[0]) {
     const cancelled = await client().cancelRun(rest[0]);
-    console.log(JSON.stringify({ ok: true, cancelled }));
+    if (JSON_MODE) printJson("cancel", { ok: true, cancelled });
+    else console.log(JSON.stringify({ ok: true, cancelled }));
   } else if (cmd === "dispatch" && rest[0] && rest[1]) {
     const { args, priority } = takePriority(rest);
-    if (!args[0] || !args[1]) usage();
-    const out = await client().dispatch(args[0], args[1], {
-      ...(args[2] ? { ref: args[2] } : {}),
-      ...(priority !== undefined ? { priority } : {}),
-    });
-    console.log(JSON.stringify(out));
+    const positional = args.filter((a) => a !== "--dry-run");
+    if (!positional[0] || !positional[1]) usage();
+    if (args.includes("--dry-run")) {
+      const plan = await client().dryRunDispatch(positional[0], positional[1], {
+        ...(positional[2] ? { ref: positional[2] } : {}),
+      });
+      if (JSON_MODE) printJson("dispatch", plan);
+      else console.log(formatPlan(plan));
+    } else {
+      const out = await client().dispatch(positional[0], positional[1], {
+        ...(positional[2] ? { ref: positional[2] } : {}),
+        ...(priority !== undefined ? { priority } : {}),
+      });
+      if (JSON_MODE) printJson("dispatch", out);
+      else console.log(JSON.stringify(out));
+    }
   } else if (cmd === "rerun" && rest[0] && rest[1]) {
     await client().rerun(rest[0], rest[1]);
-    console.log(JSON.stringify({ ok: true }));
+    if (JSON_MODE) printJson("rerun", { ok: true, runId: rest[0], jobId: rest[1] });
+    else console.log(JSON.stringify({ ok: true }));
   } else if (cmd === "flaky" && rest[0]) {
     const days = rest[1] === undefined ? 30 : Number(rest[1]);
     if (!Number.isInteger(days) || days < 1 || days > 365) {
@@ -210,8 +268,11 @@ try {
       process.exit(2);
     }
     const stats = await client().getFlaky(rest[0], days);
-    for (const s of stats) {
-      console.log(`${(s.rate * 100).toFixed(1)}%\t${s.failures}/${s.runs}\t${s.job}`);
+    if (JSON_MODE) printJson("flaky", { repo: rest[0], days, stats });
+    else {
+      for (const s of stats) {
+        console.log(`${(s.rate * 100).toFixed(1)}%\t${s.failures}/${s.runs}\t${s.job}`);
+      }
     }
   } else if (cmd === "bottlenecks" && rest[0]) {
     const days = rest[1] === undefined ? 14 : Number(rest[1]);
@@ -220,26 +281,34 @@ try {
       process.exit(2);
     }
     const checks = await client().getBottlenecks(rest[0], days);
-    console.log("check\tp50\tp95\tqueue p50\tjobs\tfailed");
-    for (const c of checks) {
-      const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
-      console.log(`${c.check}\t${secs(c.p50Ms)}\t${secs(c.p95Ms)}\t${secs(c.queueP50Ms)}\t${c.jobs}\t${c.failures}`);
+    if (JSON_MODE) printJson("bottlenecks", { repo: rest[0], days, checks });
+    else {
+      console.log("check\tp50\tp95\tqueue p50\tjobs\tfailed");
+      for (const c of checks) {
+        const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
+        console.log(`${c.check}\t${secs(c.p50Ms)}\t${secs(c.p95Ms)}\t${secs(c.queueP50Ms)}\t${c.jobs}\t${c.failures}`);
+      }
+      if (checks.length === 0) console.log("(no finished jobs in the window)");
     }
-    if (checks.length === 0) console.log("(no finished jobs in the window)");
   } else if (cmd === "quarantine" && rest[0]) {
     const sub = rest[0];
     if (sub === "list" && rest[1]) {
       const tests = await client().getQuarantine(rest[1]);
-      if (tests.length === 0) console.log("no quarantined tests");
-      for (const t of tests) console.log(`${t.status}\t${t.name}\t${t.reason}`);
+      if (JSON_MODE) printJson("quarantine", { action: "list", repo: rest[1], tests });
+      else {
+        if (tests.length === 0) console.log("no quarantined tests");
+        for (const t of tests) console.log(`${t.status}\t${t.name}\t${t.reason}`);
+      }
     } else if (sub === "add" && rest[1] && rest[2]) {
       const name = rest.slice(2).join(" ");
       await client().setQuarantine(rest[1], name, "add");
-      console.log(`quarantined: ${name}`);
+      if (JSON_MODE) printJson("quarantine", { action: "add", repo: rest[1], name, ok: true });
+      else console.log(`quarantined: ${name}`);
     } else if (sub === "remove" && rest[1] && rest[2]) {
       const name = rest.slice(2).join(" ");
       await client().setQuarantine(rest[1], name, "remove");
-      console.log(`reinstated: ${name}`);
+      if (JSON_MODE) printJson("quarantine", { action: "remove", repo: rest[1], name, ok: true });
+      else console.log(`reinstated: ${name}`);
     } else {
       console.error("usage: cli quarantine <list <repo> | add <repo> <test> | remove <repo> <test>>");
       process.exit(2);
@@ -250,67 +319,113 @@ try {
       console.error(result.error);
       process.exit(2);
     }
-    console.log(`wrote ${result.pipelinePath} (${result.pipelineSource === "converted" ? `from .github/workflows/${result.convertedFrom}` : "starter template"})`);
-    for (const warning of result.warnings.slice(0, 20)) console.log(`  warning: ${warning}`);
-    if (result.warnings.length > 20) console.log(`  … ${result.warnings.length - 20} more warnings`);
-    console.log(`updated ${result.agentsPath} (idempotent snippet; agents learn the verify loop)`);
-    console.log("");
-    console.log("next steps:");
-    console.log("  1. npx flare local                 # verify in this working tree, no server");
-    console.log("  2. npx flare mcp-config            # teach your agent the MCP verify loop");
-    console.log("  3. deploy: https://deploy.workers.cloudflare.com/?url=https://github.com/everyai-com/flare-actions");
-    console.log("  docs: docs/GITHUB-ACTIONS-COMPAT.md · docs/PIPELINES.md · skills/flare-verify");
+    if (JSON_MODE) {
+      printJson("init", result);
+    } else {
+      console.log(`wrote ${result.pipelinePath} (${result.pipelineSource === "converted" ? `from .github/workflows/${result.convertedFrom}` : "starter template"})`);
+      for (const warning of result.warnings.slice(0, 20)) console.log(`  warning: ${warning}`);
+      if (result.warnings.length > 20) console.log(`  … ${result.warnings.length - 20} more warnings`);
+      console.log(`updated ${result.agentsPath} (idempotent snippet; agents learn the verify loop)`);
+      console.log("");
+      console.log("next steps:");
+      console.log("  1. npx flare local                 # verify in this working tree, no server");
+      console.log("  2. npx flare mcp-config            # teach your agent the MCP verify loop");
+      console.log("  3. deploy: https://deploy.workers.cloudflare.com/?url=https://github.com/everyai-com/flare-actions");
+      console.log("  docs: docs/GITHUB-ACTIONS-COMPAT.md · docs/PIPELINES.md · skills/flare-verify");
+    }
+  } else if (cmd === "connect") {
+    const baseUrl = process.env["FLARE_ACTIONS_URL"];
+    if (!baseUrl) {
+      console.error("Set FLARE_ACTIONS_URL to your deployment first (from `npm run setup` or the dashboard)");
+      process.exit(2);
+    }
+    const token = process.env["RUNNER_TOKEN"];
+    const positional = rest.filter((a) => !a.startsWith("--"));
+    if (positional.length > 1) usage();
+    const dryRun = rest.includes("--dry-run");
+    const lines: string[] = [];
+    const out = await runConnect({
+      cwd: process.cwd(),
+      baseUrl,
+      ...(positional[0] ? { repo: positional[0] } : {}),
+      wire: rest.includes("--wire"),
+      dryRun,
+      client: token ? new FlareClient(baseUrl, token) : null,
+      ...(JSON_MODE ? { log: (l: string) => lines.push(l), err: () => undefined } : {}),
+    });
+    if (JSON_MODE) printJson("connect", { repo: out.repo, exitCode: out.exitCode, ...(dryRun ? { plan: lines } : {}) });
+    process.exitCode = out.exitCode;
   } else if (cmd === "tests" && rest[0]) {
     const t = await client().getRunTests(rest[0]);
-    console.log(
-      `${t.totals.total} tests: ${t.totals.passed} passed, ${t.totals.failed} failed, ${t.totals.errors} errors, ${t.totals.skipped} skipped`,
-    );
-    for (const j of t.jobs) {
-      console.log(`  ${j.jobName}: ${j.passed}/${j.total} passed${j.truncated ? " (truncated)" : ""}`);
-    }
-    for (const f of t.failing) {
-      console.log(`  FAIL ${f.name}${f.suite ? ` (${f.suite})` : ""} [${f.jobName}]`);
-      if (f.message) console.log(`       ${f.message.split("\n")[0]?.slice(0, 200)}`);
+    if (JSON_MODE) {
+      printJson("tests", t);
+    } else {
+      console.log(
+        `${t.totals.total} tests: ${t.totals.passed} passed, ${t.totals.failed} failed, ${t.totals.errors} errors, ${t.totals.skipped} skipped`,
+      );
+      for (const j of t.jobs) {
+        console.log(`  ${j.jobName}: ${j.passed}/${j.total} passed${j.truncated ? " (truncated)" : ""}`);
+      }
+      for (const f of t.failing) {
+        console.log(`  FAIL ${f.name}${f.suite ? ` (${f.suite})` : ""} [${f.jobName}]`);
+        if (f.message) console.log(`       ${f.message.split("\n")[0]?.slice(0, 200)}`);
+      }
     }
   } else if (cmd === "egress" && rest[0]) {
     const e = await client().getRunEgress(rest[0]);
-    console.log(`up ${e.totals.reqBytes}b / down ${e.totals.respBytes}b`);
-    for (const j of e.jobs) {
-      console.log(`  ${j.jobId} ${j.host}: up ${j.reqBytes}b / down ${j.respBytes}b`);
+    if (JSON_MODE) {
+      printJson("egress", e);
+    } else {
+      console.log(`up ${e.totals.reqBytes}b / down ${e.totals.respBytes}b`);
+      for (const j of e.jobs) {
+        console.log(`  ${j.jobId} ${j.host}: up ${j.reqBytes}b / down ${j.respBytes}b`);
+      }
     }
   } else if (cmd === "queue") {
     const q = await client().listQueue();
     const labels = (rest[0] ?? "").split(",").map((l) => l.trim()).filter(Boolean);
-    console.log(`${q.jobs.length} queued (fair-share cap: ${q.fairSharePerRepo === 0 ? "off" : `${q.fairSharePerRepo}/repo`})`);
-    for (const j of q.jobs) {
-      console.log(`  p${j.priority} ${j.repo} ${j.name} [${j.labels || "any"}] ${j.id}`);
-    }
     const claims = simulateDrain(
       q.jobs.map((j) => ({ id: j.id, repo: j.repo, priority: j.priority, priorMs: j.priorMs ?? 0, createdAt: j.createdAt, labels: j.labels })),
       [{ id: "you", labels }],
       q.fairSharePerRepo,
     );
-    console.log(`projected order for [${labels.join(",") || "unlabeled-only"}]:`);
-    for (const c of claims) {
-      console.log(`  ${c.jobId} (${c.repo})`);
+    if (JSON_MODE) {
+      printJson("queue", { jobs: q.jobs, fairSharePerRepo: q.fairSharePerRepo, labels, projectedOrder: claims });
+    } else {
+      console.log(`${q.jobs.length} queued (fair-share cap: ${q.fairSharePerRepo === 0 ? "off" : `${q.fairSharePerRepo}/repo`})`);
+      for (const j of q.jobs) {
+        console.log(`  p${j.priority} ${j.repo} ${j.name} [${j.labels || "any"}] ${j.id}`);
+      }
+      console.log(`projected order for [${labels.join(",") || "unlabeled-only"}]:`);
+      for (const c of claims) {
+        console.log(`  ${c.jobId} (${c.repo})`);
+      }
     }
   } else if (cmd === "cache" && rest[0] === "list") {
     const entries = await client().listCache(rest[1] ?? "");
-    for (const e of entries) {
-      console.log(`${e.key}\t${e.size}b\t${e.uploaded}`);
+    if (JSON_MODE) printJson("cache", { action: "list", prefix: rest[1] ?? "", entries });
+    else {
+      for (const e of entries) {
+        console.log(`${e.key}\t${e.size}b\t${e.uploaded}`);
+      }
     }
   } else if (cmd === "search") {
     const query = rest.join(" ").trim();
     if (!query) usage();
     const hits = await client().searchLogs(query);
-    for (const h of hits) {
-      console.log(`${h.created_at} ${h.repo}@${h.branch || "-"} [${h.level}] (${h.run_id.slice(0, 8)}/${h.job_id.slice(0, 8)})`);
-      console.log(`  ${h.line}`);
+    if (JSON_MODE) {
+      printJson("search", { query, hits });
+    } else {
+      for (const h of hits) {
+        console.log(`${h.created_at} ${h.repo}@${h.branch || "-"} [${h.level}] (${h.run_id.slice(0, 8)}/${h.job_id.slice(0, 8)})`);
+        console.log(`  ${h.line}`);
+      }
+      if (hits.length === 0) console.log("No matching log lines.");
     }
-    if (hits.length === 0) console.log("No matching log lines.");
   } else if (cmd === "cache" && rest[0] === "purge") {
     const out = await client().purgeCache(rest[1] ?? "");
-    console.log(JSON.stringify(out));
+    if (JSON_MODE) printJson("cache", { action: "purge", prefix: rest[1] ?? "", ...out });
+    else console.log(JSON.stringify(out));
   } else if (cmd === "usage") {
     let days = 30;
     let repo: string | undefined;
@@ -328,30 +443,66 @@ try {
     }
     const c = client();
     const u = await c.getUsage(days, repo);
-    console.log(
-      `${u.days}d: ${u.runs} runs, ${u.jobs} finished jobs, ${u.computeMinutes} compute-min (~$${u.actionsListUsd} at Actions list price)`,
-    );
-    for (const [status, n] of Object.entries(u.runsByStatus)) console.log(`  ${status}: ${n}`);
-    for (const r of u.topRepos) console.log(`  ${r.repo}: ${r.jobs} jobs, ${r.computeMinutes} compute-min`);
     // Real Cloudflare dollars when the caller is admin and billing is
     // configured; readonly tokens and outages print nothing extra.
-    if (!repo) {
-      const billable = await c.getBillableUsage(days).catch(() => null);
+    const billable = !repo ? await c.getBillableUsage(days).catch(() => null) : null;
+    if (JSON_MODE) {
+      printJson("usage", { usage: u, billableUsage: billable });
+    } else {
+      console.log(
+        `${u.days}d: ${u.runs} runs, ${u.jobs} finished jobs, ${u.computeMinutes} compute-min (~$${u.actionsListUsd} at Actions list price)`,
+      );
+      if ((u.githubRunnerJobs ?? 0) > 0) {
+        console.log(
+          `  runner-mode (flare lane): ${u.githubRunnerJobs} jobs, ${u.githubRunnerMinutes} compute-min (~$${u.githubRunnerListUsd} at Actions list price)`,
+        );
+      }
+      for (const [status, n] of Object.entries(u.runsByStatus)) console.log(`  ${status}: ${n}`);
+      for (const r of u.topRepos) console.log(`  ${r.repo}: ${r.jobs} jobs, ${r.computeMinutes} compute-min`);
       if (billable?.configured && typeof billable.totalCost === "number") {
         const fams = (billable.families ?? []).slice(0, 5).map((f) => `${f.family} $${f.cost}`).join(", ");
         console.log(`  Cloudflare billable (${billable.from}..${billable.to}): $${billable.totalCost} ${billable.currency ?? "USD"}${fams ? ` (${fams})` : ""}`);
       }
     }
+  } else if (cmd === "github-jobs") {
+    const jobs = await client().listGithubJobs(rest[0]);
+    if (JSON_MODE) {
+      printJson("github-jobs", {
+        repo: rest[0] ?? null,
+        jobs: jobs.map((j) => {
+          const ms = j.startedAt && j.completedAt ? Date.parse(j.completedAt) - Date.parse(j.startedAt) : null;
+          const ok = ms !== null && Number.isFinite(ms) && ms >= 0;
+          return { ...j, durationMs: ok ? ms : null, listUsd: ok && ms !== null ? Math.round(((ms / 60000) * ACTIONS_LIST_USD_PER_MIN) * 10000) / 10000 : null };
+        }),
+      });
+    } else {
+      console.log("status\tconclusion\trepo\tjob\tduration\test. list");
+      for (const j of jobs) {
+        const ms = j.startedAt && j.completedAt ? Date.parse(j.completedAt) - Date.parse(j.startedAt) : null;
+        const dur = ms === null || !Number.isFinite(ms) || ms < 0 ? "-" : `${(ms / 1000).toFixed(0)}s`;
+        const usd = ms === null || !Number.isFinite(ms) || ms < 0 ? "-" : `~$${((ms / 60000) * ACTIONS_LIST_USD_PER_MIN).toFixed(4)}`;
+        console.log(`${j.status}\t${j.conclusion ?? "-"}\t${j.repo}\t${j.jobName}\t${dur}\t${usd}`);
+      }
+      if (jobs.length === 0) console.log("(no runner-mode jobs)");
+    }
   } else if (cmd === "artifacts" && rest[0]) {
     const artifacts = await client().listArtifacts(rest[0]);
-    for (const a of artifacts) {
-      console.log(`${a.jobName}\t${a.name}\t${a.size}b\t${a.uploaded}`);
+    if (JSON_MODE) printJson("artifacts", { runId: rest[0], artifacts });
+    else {
+      for (const a of artifacts) {
+        console.log(`${a.jobName}\t${a.name}\t${a.size}b\t${a.uploaded}`);
+      }
     }
   } else if (cmd === "badge" && rest[0]) {
     const baseUrl = process.env["FLARE_ACTIONS_URL"];
     const qs = `repo=${encodeURIComponent(rest[0])}${rest[1] ? `&branch=${encodeURIComponent(rest[1])}` : ""}`;
-    console.log(`${baseUrl}/v1/badge.svg?${qs}`);
-    console.log(`[![flare](${baseUrl}/v1/badge.svg?${qs})](${baseUrl}/dashboard)`);
+    const svgUrl = `${baseUrl}/v1/badge.svg?${qs}`;
+    if (JSON_MODE) {
+      printJson("badge", { repo: rest[0], branch: rest[1] ?? null, svgUrl, markdown: `[![flare](${svgUrl})](${baseUrl}/dashboard)` });
+    } else {
+      console.log(svgUrl);
+      console.log(`[![flare](${svgUrl})](${baseUrl}/dashboard)`);
+    }
   } else if (cmd === "import" && rest[0]) {
     const text = readFileSync(rest[0], "utf8");
     const res = convertActionsWorkflow(text);
@@ -359,8 +510,12 @@ try {
       console.error(`import failed: ${res.error}`);
       process.exit(1);
     }
-    for (const w of res.warnings) console.error(`warn: ${w}`);
-    process.stdout.write(res.yaml);
+    if (JSON_MODE) {
+      printJson("import", { file: rest[0], yaml: res.yaml, warnings: res.warnings });
+    } else {
+      for (const w of res.warnings) console.error(`warn: ${w}`);
+      process.stdout.write(res.yaml);
+    }
   } else if (cmd === "devbox") {
     const boxes = new BoxManager();
     const [sub, ...dargs] = rest;
@@ -378,7 +533,8 @@ try {
     if (sub === "create" && dargs[0]) {
       const image = takeFlag("--image");
       const created = await boxes.create(dargs[0], { image });
-      console.log(`created ${created.name} (${created.container}, ${created.image})`);
+      if (JSON_MODE) printJson("devbox", { action: "create", ...created });
+      else console.log(`created ${created.name} (${created.container}, ${created.image})`);
     } else if (sub === "exec" && dargs[0]) {
       const sep = dargs.indexOf("--");
       const command = (sep === -1 ? dargs.slice(1) : dargs.slice(sep + 1)).filter((a) => a !== "--");
@@ -387,33 +543,46 @@ try {
         process.exit(2);
       }
       const res = await boxes.exec(dargs[0], command);
-      if (res.stdout) process.stdout.write(res.stdout.endsWith("\n") ? res.stdout : `${res.stdout}\n`);
-      if (res.stderr) process.stderr.write(res.stderr.endsWith("\n") ? res.stderr : `${res.stderr}\n`);
+      if (JSON_MODE) printJson("devbox", { action: "exec", box: dargs[0], command, ...res });
+      else {
+        if (res.stdout) process.stdout.write(res.stdout.endsWith("\n") ? res.stdout : `${res.stdout}\n`);
+        if (res.stderr) process.stderr.write(res.stderr.endsWith("\n") ? res.stderr : `${res.stderr}\n`);
+      }
       process.exitCode = res.exitCode;
     } else if (sub === "sync" && dargs[0]) {
       const dir = takeFlag("--dir") ?? process.cwd();
       const paths = dargs.slice(1);
       const res = await boxes.sync(dargs[0], dir, paths.length > 0 ? paths : ["."]);
-      console.log(`synced ${res.bytes} bytes (${res.paths.join(", ")}) into ${dargs[0]}:/work`);
+      if (JSON_MODE) printJson("devbox", { action: "sync", box: dargs[0], dir, ...res });
+      else console.log(`synced ${res.bytes} bytes (${res.paths.join(", ")}) into ${dargs[0]}:/work`);
     } else if (sub === "fetch" && dargs[0] && dargs[1]) {
       const res = await boxes.fetch(dargs[0], dargs[1], dargs[2] ?? process.cwd());
-      console.log(`fetched ${res.path} (${res.bytes} bytes) from ${dargs[0]} into ${dargs[2] ?? process.cwd()}`);
+      if (JSON_MODE) printJson("devbox", { action: "fetch", box: dargs[0], dir: dargs[2] ?? process.cwd(), ...res });
+      else console.log(`fetched ${res.path} (${res.bytes} bytes) from ${dargs[0]} into ${dargs[2] ?? process.cwd()}`);
     } else if (sub === "snapshot" && dargs[0]) {
       const snap = await boxes.snapshot(dargs[0], dargs[1]);
-      console.log(`snapshot ${dargs[0]}:${snap.tag}`);
+      if (JSON_MODE) printJson("devbox", { action: "snapshot", box: dargs[0], ...snap });
+      else console.log(`snapshot ${dargs[0]}:${snap.tag}`);
     } else if (sub === "restore" && dargs[0] && dargs[1]) {
       const restored = await boxes.restore(dargs[0], dargs[1]);
-      console.log(`restored ${dargs[0]} from ${dargs[1]} (${restored.image})`);
+      if (JSON_MODE) printJson("devbox", { action: "restore", box: dargs[0], tag: dargs[1], ...restored });
+      else console.log(`restored ${dargs[0]} from ${dargs[1]} (${restored.image})`);
     } else if (sub === "list") {
       const list = boxes.list();
-      if (list.length === 0) console.log("no dev boxes");
-      for (const b of list) {
-        console.log(`${b.name}\t${b.image}\t${b.workdir}\tsnapshots:${b.snapshots.map((s) => s.tag).join(",") || "-"}\t${b.createdAt}`);
+      if (JSON_MODE) printJson("devbox", { action: "list", boxes: list });
+      else {
+        if (list.length === 0) console.log("no dev boxes");
+        for (const b of list) {
+          console.log(`${b.name}\t${b.image}\t${b.workdir}\tsnapshots:${b.snapshots.map((s) => s.tag).join(",") || "-"}\t${b.createdAt}`);
+        }
       }
     } else if (sub === "destroy" && dargs[0]) {
       const destroyed = await boxes.destroy(dargs[0]);
-      console.log(`destroyed ${destroyed.name}`);
-      for (const img of destroyed.imagesKept) console.log(`  kept image ${img}`);
+      if (JSON_MODE) printJson("devbox", { action: "destroy", ...destroyed });
+      else {
+        console.log(`destroyed ${destroyed.name}`);
+        for (const img of destroyed.imagesKept) console.log(`  kept image ${img}`);
+      }
     } else {
       console.error("usage: cli devbox <create|exec|sync|fetch|snapshot|restore|list|destroy> ...");
       process.exit(2);
@@ -447,5 +616,8 @@ try {
   }
 } catch (err) {
   console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
+  if (err instanceof FlareApiError && err.hint) {
+    console.error(err.code ? `hint [${err.code}]: ${err.hint}` : `hint: ${err.hint}`);
+  }
   process.exit(1);
 }

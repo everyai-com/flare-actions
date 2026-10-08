@@ -136,6 +136,30 @@ export interface FlareFailingTest {
   message: string;
 }
 
+export interface DryRunPlannedJob {
+  name: string;
+  base: string;
+  needs: string[];
+  group: string | null;
+  labels: string[];
+  status: "queued" | "blocked";
+  blockedReason: "needs" | "group" | null;
+  wouldCancelInProgress: boolean;
+  priorMs: number;
+}
+
+export interface DryRunPlan {
+  repo: string;
+  sha: string;
+  branch: string;
+  pipelineSource: string;
+  jobs: DryRunPlannedJob[];
+  queued: number;
+  blocked: number;
+  totalPriorMs: number;
+  budget: { mode: string; usedMinutes: number; cap: number; wouldBlock: boolean } | null;
+}
+
 export interface FlareRunTests {
   runId: string;
   totals: FlareTestTotals;
@@ -186,6 +210,35 @@ export interface FlareUsage {
   computeMinutes: number;
   actionsListUsd: number;
   topRepos: { repo: string; jobs: number; computeMinutes: number }[];
+  githubRunnerJobs?: number;
+  githubRunnerMinutes?: number;
+  githubRunnerListUsd?: number;
+}
+
+// Runner mode (the flare lane): one ephemeral JIT-backed GitHub job,
+// as served by GET /v1/github/jobs and POST /v1/github/jobs/next.
+export interface GithubRunnerJob {
+  id: string;
+  repo: string;
+  runId: string;
+  runAttempt: number;
+  jobName: string;
+  workflowName: string;
+  headSha: string;
+  labels: string[];
+  status: string;
+  conclusion: string | null;
+  runnerId: number | null;
+  runnerName: string;
+  attempts: number;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface GithubRunnerClaim {
+  job: GithubRunnerJob;
+  jitConfig: string;
+  runnerName: string;
 }
 
 export interface FlareBillableUsage {
@@ -247,6 +300,30 @@ export interface FlareRun {
   updated_at: string;
 }
 
+export interface FlareApiErrorBody {
+  error?: unknown;
+  code?: unknown;
+  hint?: unknown;
+}
+
+// Typed API failure: the server's stable `code` + `hint` ride on the
+// Error so CLIs and agents can switch on the code and print the next
+// step. The message keeps the legacy `<op> failed: <status>` prefix.
+export class FlareApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+  readonly hint: string | null;
+
+  constructor(op: string, status: number, body: FlareApiErrorBody) {
+    const serverError = typeof body.error === "string" && body.error ? body.error : null;
+    super(serverError ? `${op} failed: ${status} — ${serverError}` : `${op} failed: ${status}`);
+    this.name = "FlareApiError";
+    this.status = status;
+    this.code = typeof body.code === "string" ? body.code : null;
+    this.hint = typeof body.hint === "string" ? body.hint : null;
+  }
+}
+
 export class FlareClient {
   private baseUrl: string;
   private token: string;
@@ -256,6 +333,13 @@ export class FlareClient {
     this.baseUrl = baseUrl;
     this.token = token;
     this.timeoutMs = timeoutMs;
+  }
+
+  // Throw a typed error for a non-2xx response, preserving the legacy
+  // message prefix. Non-JSON bodies degrade to the bare status.
+  private async throwApiError(op: string, res: Response): Promise<never> {
+    const body = ((await res.json().catch(() => ({}))) ?? {}) as FlareApiErrorBody;
+    throw new FlareApiError(op, res.status, body);
   }
 
   private headers(): Record<string, string> {
@@ -287,7 +371,7 @@ export class FlareClient {
   }> {
     const qs = labels.length > 0 ? `?labels=${encodeURIComponent(labels.join(","))}` : "";
     const res = await this.call(`/v1/jobs/next${qs}`);
-    if (!res.ok) throw new Error(`nextJob failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("nextJob", res);
     const data = (await res.json()) as {
       job: FlareJob | null;
       secrets?: Record<string, string>;
@@ -312,7 +396,7 @@ export class FlareClient {
   async getCache(key: string): Promise<Uint8Array | null> {
     const res = await this.call(`/v1/cache/${FlareClient.encodeKey(key)}`, undefined, 300000);
     if (res.status === 404) return null;
-    if (!res.ok) throw new Error(`getCache failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("getCache", res);
     return new Uint8Array(await res.arrayBuffer());
   }
 
@@ -322,7 +406,7 @@ export class FlareClient {
       headers: { "Content-Type": "application/octet-stream" },
       body: data as unknown as BodyInit,
     }, 300000);
-    if (!res.ok) throw new Error(`putCache failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("putCache", res);
   }
 
   async uploadArtifact(jobId: string, name: string, data: Uint8Array): Promise<void> {
@@ -331,7 +415,7 @@ export class FlareClient {
       headers: { "Content-Type": "application/octet-stream" },
       body: data as unknown as BodyInit,
     }, 300000);
-    if (!res.ok) throw new Error(`uploadArtifact failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("uploadArtifact", res);
   }
 
   async uploadTestReport(
@@ -343,7 +427,7 @@ export class FlareClient {
       headers: { "Content-Type": "application/xml" },
       body: xml,
     });
-    if (!res.ok) throw new Error(`uploadTestReport failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("uploadTestReport", res);
     return (await res.json()) as {
       total: number;
       passed: number;
@@ -356,38 +440,38 @@ export class FlareClient {
 
   async getRunTests(runId: string): Promise<FlareRunTests> {
     const res = await this.call(`/v1/runs/${runId}/tests`);
-    if (!res.ok) throw new Error(`getRunTests failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("getRunTests", res);
     return (await res.json()) as FlareRunTests;
   }
 
   async getRunEgress(runId: string): Promise<FlareRunEgress> {
     const res = await this.call(`/v1/runs/${runId}/egress`);
-    if (!res.ok) throw new Error(`getRunEgress failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("getRunEgress", res);
     return (await res.json()) as FlareRunEgress;
   }
 
   async listCache(prefix = "", limit = 100): Promise<FlareCacheEntry[]> {
     const res = await this.call(`/v1/admin/cache?prefix=${encodeURIComponent(prefix)}&limit=${limit}`);
-    if (!res.ok) throw new Error(`listCache failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("listCache", res);
     const data = (await res.json()) as { entries: FlareCacheEntry[] };
     return data.entries;
   }
 
   async purgeCache(prefix = ""): Promise<{ deleted: number; truncated: boolean }> {
     const res = await this.call(`/v1/admin/cache?prefix=${encodeURIComponent(prefix)}`, { method: "DELETE" });
-    if (!res.ok) throw new Error(`purgeCache failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("purgeCache", res);
     return (await res.json()) as { deleted: number; truncated: boolean };
   }
 
   async listQueue(limit = 200): Promise<FlareQueue> {
     const res = await this.call(`/v1/admin/queue?limit=${limit}`);
-    if (!res.ok) throw new Error(`listQueue failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("listQueue", res);
     return (await res.json()) as FlareQueue;
   }
 
   async searchLogs(query: string, limit = 50): Promise<FlareLogHit[]> {
     const res = await this.call(`/v1/search/logs?q=${encodeURIComponent(query)}&limit=${limit}`);
-    if (!res.ok) throw new Error(`searchLogs failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("searchLogs", res);
     const data = (await res.json()) as { hits: FlareLogHit[] };
     return data.hits;
   }
@@ -397,20 +481,20 @@ export class FlareClient {
     // Non-admin tokens (401) and upstream outages (502) degrade to
     // compute-only output; only the shape below throws.
     if (res.status === 401 || res.status === 502) return null;
-    if (!res.ok) throw new Error(`getBillableUsage failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("getBillableUsage", res);
     return (await res.json()) as FlareBillableUsage;
   }
 
   async getUsage(days = 30, repo?: string): Promise<FlareUsage> {
     const qs = `days=${days}${repo ? `&repo=${encodeURIComponent(repo)}` : ""}`;
     const res = await this.call(`/v1/usage?${qs}`);
-    if (!res.ok) throw new Error(`getUsage failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("getUsage", res);
     return (await res.json()) as FlareUsage;
   }
 
   async listArtifacts(runId: string): Promise<FlareArtifact[]> {
     const res = await this.call(`/v1/runs/${runId}/artifacts`);
-    if (!res.ok) throw new Error(`listArtifacts failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("listArtifacts", res);
     const data = (await res.json()) as { artifacts: FlareArtifact[] };
     return data.artifacts;
   }
@@ -425,8 +509,23 @@ export class FlareClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo, sha, ...opts }),
     });
-    if (!res.ok) throw new Error(`dispatch failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("dispatch", res);
     return (await res.json()) as { runId: string; jobIds: string[] };
+  }
+
+  // Dry-run dispatch: resolved pipeline plan with zero writes.
+  async dryRunDispatch(
+    repo: string,
+    sha: string,
+    opts?: { ref?: string; pipeline?: string; priority?: number; source?: string },
+  ): Promise<DryRunPlan> {
+    const res = await this.call("/v1/runs/dispatch/dry-run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo, sha, ...opts }),
+    });
+    if (!res.ok) await this.throwApiError("dryRunDispatch", res);
+    return (await res.json()) as DryRunPlan;
   }
 
   // Source dispatch: upload a gzipped tarball of a working tree, then
@@ -441,48 +540,48 @@ export class FlareClient {
       },
       300000,
     );
-    if (!res.ok) throw new Error(`putSource failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("putSource", res);
     const body = (await res.json()) as { id: string };
     return body.id;
   }
 
   async getSource(id: string): Promise<Uint8Array> {
     const res = await this.call(`/v1/source/${encodeURIComponent(id)}`, undefined, 300000);
-    if (!res.ok) throw new Error(`getSource failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("getSource", res);
     return new Uint8Array(await res.arrayBuffer());
   }
 
   async rerun(runId: string, jobId: string): Promise<void> {
     const res = await this.call(`/v1/runs/${runId}/jobs/${jobId}/rerun`, { method: "POST" });
-    if (!res.ok) throw new Error(`rerun failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("rerun", res);
   }
 
   // Explicit cancellation: queued/blocked jobs stop; running jobs have no
   // interrupt channel and finish naturally.
   async cancelRun(runId: string): Promise<number> {
     const res = await this.call(`/v1/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
-    if (!res.ok) throw new Error(`cancelRun failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("cancelRun", res);
     const body = (await res.json()) as { cancelled?: unknown };
     return typeof body.cancelled === "number" ? body.cancelled : 0;
   }
 
   async getFlaky(repo: string, days = 30): Promise<FlareFlakyStat[]> {
     const res = await this.call(`/v1/flaky?repo=${encodeURIComponent(repo)}&days=${days}`);
-    if (!res.ok) throw new Error(`getFlaky failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("getFlaky", res);
     const data = (await res.json()) as { stats: FlareFlakyStat[] };
     return data.stats;
   }
 
   async getBottlenecks(repo: string, days = 14): Promise<FlareBottleneck[]> {
     const res = await this.call(`/v1/bottlenecks?repo=${encodeURIComponent(repo)}&days=${days}`);
-    if (!res.ok) throw new Error(`getBottlenecks failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("getBottlenecks", res);
     const data = (await res.json()) as { checks: FlareBottleneck[] };
     return data.checks;
   }
 
   async getQuarantine(repo: string): Promise<FlareQuarantinedTest[]> {
     const res = await this.call(`/v1/quarantine?repo=${encodeURIComponent(repo)}`);
-    if (!res.ok) throw new Error(`getQuarantine failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("getQuarantine", res);
     const data = (await res.json()) as { tests: FlareQuarantinedTest[] };
     return data.tests;
   }
@@ -492,7 +591,7 @@ export class FlareClient {
       method: "POST",
       body: JSON.stringify({ repo, name, action }),
     });
-    if (!res.ok) throw new Error(`setQuarantine failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("setQuarantine", res);
   }
 
   async reportStatus(
@@ -507,7 +606,7 @@ export class FlareClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jobId, status, log, result }),
     });
-    if (!res.ok) throw new Error(`reportStatus failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("reportStatus", res);
   }
 
   // Liveness proof while a job runs: servers requeue running jobs that
@@ -517,19 +616,19 @@ export class FlareClient {
       `/v1/runs/${encodeURIComponent(runId)}/jobs/${encodeURIComponent(jobId)}/heartbeat`,
       { method: "POST" },
     );
-    if (!res.ok) throw new Error(`heartbeat failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("heartbeat", res);
   }
 
   async listRuns(): Promise<FlareRun[]> {
     const res = await this.call("/v1/runs");
-    if (!res.ok) throw new Error(`listRuns failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("listRuns", res);
     const data = (await res.json()) as { runs: FlareRun[] };
     return data.runs;
   }
 
   async getRun(runId: string): Promise<{ run: FlareRun; jobs: FlareJobDetail[] }> {
     const res = await this.call(`/v1/runs/${runId}`);
-    if (!res.ok) throw new Error(`getRun failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("getRun", res);
     return (await res.json()) as { run: FlareRun; jobs: FlareJobDetail[] };
   }
 
@@ -545,7 +644,7 @@ export class FlareClient {
       undefined,
       (timeoutSeconds + 15) * 1000,
     );
-    if (!res.ok) throw new Error(`waitRun failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("waitRun", res);
     return (await res.json()) as { run: FlareRun; jobs: FlareJobDetail[]; timedOut: boolean; waitedMs: number };
   }
 
@@ -553,7 +652,30 @@ export class FlareClient {
   // output tail, triage. The payload agents should feed their context loop.
   async getRunDigest(runId: string): Promise<FlareRunDigest> {
     const res = await this.call(`/v1/runs/${encodeURIComponent(runId)}/digest`);
-    if (!res.ok) throw new Error(`getRunDigest failed: ${res.status}`);
+    if (!res.ok) await this.throwApiError("getRunDigest", res);
     return (await res.json()) as FlareRunDigest;
+  }
+
+  // Runner mode claim: the job plus its single-use JIT blob (1h TTL).
+  // Callers must never log the blob.
+  async claimGithubJob(labels: string[] = []): Promise<GithubRunnerClaim | null> {
+    const res = await this.call("/v1/github/jobs/next", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ labels }),
+    });
+    if (!res.ok) await this.throwApiError("claimGithubJob", res);
+    const data = (await res.json()) as { job: GithubRunnerJob | null; jitConfig?: string; runnerName?: string };
+    if (!data.job) return null;
+    if (typeof data.jitConfig !== "string" || !data.jitConfig) throw new Error("claimGithubJob: missing jitConfig");
+    return { job: data.job, jitConfig: data.jitConfig, runnerName: data.runnerName ?? "" };
+  }
+
+  async listGithubJobs(repo?: string, limit = 20): Promise<GithubRunnerJob[]> {
+    const qs = `${repo ? `repo=${encodeURIComponent(repo)}&` : ""}limit=${limit}`;
+    const res = await this.call(`/v1/github/jobs?${qs}`);
+    if (!res.ok) await this.throwApiError("listGithubJobs", res);
+    const data = (await res.json()) as { jobs: GithubRunnerJob[] };
+    return Array.isArray(data.jobs) ? data.jobs : [];
   }
 }

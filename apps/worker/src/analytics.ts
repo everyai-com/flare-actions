@@ -22,6 +22,11 @@
 export const ANALYTICS_EVENT_DISPATCHED = "run.dispatched";
 export const ANALYTICS_EVENT_RUN_TERMINAL = "run.terminal";
 export const ANALYTICS_EVENT_JOB_TERMINAL = "job.terminal";
+// Runner mode (`runs-on: flare`): GitHub orchestrates, Flare supplies an
+// ephemeral JIT runner. A separate event (not job.terminal) so runner-mode
+// minutes never pollute Flare-orchestrated job stats. Same blob layout as
+// job.terminal; blob6 is always "github-jit".
+export const ANALYTICS_EVENT_GHA_JOB = "gha.job.completed";
 
 function blob(value: string): string {
   return value.slice(0, 200);
@@ -61,6 +66,18 @@ export function emitRunTerminal(
     ANALYTICS_EVENT_RUN_TERMINAL,
     [blob(e.repo), blob(e.runId), "", blob(e.status), blob(e.event), ""],
     [num(e.durationMs), num(e.jobCount)],
+  );
+}
+
+export function emitGhaJobCompleted(
+  ds: AnalyticsEngineDataset | undefined,
+  e: { repo: string; runId: string; jobName: string; conclusion: string; durationMs: number; attempts: number },
+): void {
+  emit(
+    ds,
+    ANALYTICS_EVENT_GHA_JOB,
+    [blob(e.repo), blob(e.runId), blob(e.jobName), blob(e.conclusion), "", "github-jit"],
+    [num(e.durationMs), num(e.attempts)],
   );
 }
 

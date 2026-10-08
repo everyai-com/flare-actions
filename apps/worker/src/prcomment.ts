@@ -33,6 +33,7 @@ export function buildPrComment(
   jobs: JobRow[],
   origin: string,
   failingTests: FailingTestSnippet[] = [],
+  quarantinedTests: FailingTestSnippet[] = [],
 ): string {
   const summary = summarizeRunCost(jobs);
   const duration = runDurationMs(run);
@@ -75,6 +76,14 @@ export function buildPrComment(
       if (t.message.trim()) lines.push(`  > ${t.message.slice(0, 300).replace(/\n/g, " ")}`);
     }
   }
+  if (quarantinedTests.length > 0) {
+    lines.push("", `#### Quarantined — not blocking (${quarantinedTests.length} shown)`, "");
+    for (const t of quarantinedTests.slice(0, 15)) {
+      const where = [t.jobName, t.suite].filter(Boolean).join(" / ");
+      lines.push(`- \`${t.name.slice(0, 160)}\`${where ? ` — ${where.slice(0, 120)}` : ""}`);
+    }
+    lines.push("", "> These failed but are quarantined as flaky, so the check stayed green. Reinstate from the dashboard Flaky tab or `cli quarantine remove`.");
+  }
   if (origin) {
     lines.push("", `[Open the run in the dashboard](${origin.replace(/\/$/, "")}/dashboard)`);
   }
@@ -99,13 +108,14 @@ export async function upsertPrComment(
   run: RunRow,
   jobs: JobRow[],
   failingTests: FailingTestSnippet[] = [],
+  quarantinedTests: FailingTestSnippet[] = [],
 ): Promise<number | null> {
   try {
     if (!env.appId || !env.privateKey || !env.installationId || !env.prNumber) return null;
     const jwt = await mintAppJwt(env.appId, env.privateKey);
     const token = await getInstallationToken(jwt, env.installationId);
     if (!token) return null;
-    const body = JSON.stringify({ body: buildPrComment(run, jobs, env.origin, failingTests) });
+    const body = JSON.stringify({ body: buildPrComment(run, jobs, env.origin, failingTests, quarantinedTests) });
     const headers = {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",

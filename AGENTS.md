@@ -56,6 +56,28 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   `FLARE_REF` and `FLARE_CHANGED_FILES` (claim SELECT joins
   `runs.branch`/`runs.changed_files`; the webhook fills changed files via
   `fetchChangedFiles`, bounded, "" = unknown).
+- Runner mode (`apps/worker/src/ghrunners.ts`, the flare lane): GitHub
+  keeps orchestrating, Flare supplies ephemeral JIT runners for jobs
+  whose `runs-on` includes a managed label (`github_runner_mode` off by
+  default, `github_runner_labels` default `flare`). `workflow_job`
+  webhooks mirror queued → running → completed into `gh_runner_jobs`
+  (always 202, never 5xx); `POST /v1/github/jobs/next` claims + mints
+  the JIT (conditional claim/stamp, release on GitHub failure);
+  `GET /v1/github/jobs` lists; the per-minute cron sweeps stale claims
+  (delete orphaned runner first, conditional release wins races);
+  completions emit `gha.job.completed` analytics. JIT blobs are
+  never logged. BYO side is `apps/runner --github`
+  (`apps/runner/src/github.ts`: official actions/runner under
+  `~/.flare/actions-runner/`, one job per process); `cli github-jobs`
+  + `cli usage` savings line surface it. Needs App `actions:read` +
+  `administration:write` (manifest in `connect.ts`); existing installs
+  re-run Connect. Docs: `docs/GITHUB-RUNNERS.md`.
+- `cli connect` (`apps/cli/src/connect.ts`): one-command adoption —
+  probes `GET /v1/admin/status`, detects the pipeline, prints the
+  wiring recipe (or `--wire`s the webhook with GITHUB_TOKEN +
+  FLARE_ADMIN_TOKEN), dispatches HEAD with one bounded wait; exit 0
+  verified, 1 run failed, 2 usage. Agent twin:
+  `skills/flare-setup/SKILL.md`.
 - Budgets + fleet controls (index.ts + settings + db): per-repo monthly
   compute-minute caps (`budget_minutes` JSON map, `budget_mode`
   warn|block) are checked on webhook/dispatch/schedule — block skips the
@@ -259,7 +281,12 @@ gaps so one-click deploys need zero `wrangler secret` commands.
   via `resolveAppCreds`.
 - API: legacy `RUNNER_TOKEN` env plus D1 `api_tokens` (`admin` =
   everything, `runner` = run+read, `readonly` = read). Hashes only in
-  D1; plaintext shown once at creation. Tokens carry an optional
+  D1; plaintext shown once at creation. Runner pairing
+  (`pairing.ts` + `apps/runner/src/pair.ts`): admin mints a single-use
+  10-min `XXXX-XXXX` code (hash-only `pairing_codes` table) via
+  `POST /v1/admin/pair-codes`; `POST /v1/pair/exchange` (public,
+  IP-throttled like logins) atomically consumes it and mints a
+  runner token; the runner writes `.env` (0600, merged) and polls. Tokens carry an optional
   repo allowlist (`repos`, empty = all): `repoAllowed` gates dispatch,
   claim (`claimNextJob` filters in SQL), runs list/get/wait/digest,
   artifacts, rerun, status, heartbeat, flaky, secrets, and schedules.

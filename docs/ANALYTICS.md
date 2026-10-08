@@ -9,7 +9,12 @@ fail a request.
 | Analytics Engine (`flare-actions-ci`) | Hot metrics: dashboards, flaky rates, duration percentiles | Short (AE window) | At-least-once, sampled under load |
 | Basin Pipeline stream (`flare-ci-events`) | Cold lake: Apache Iceberg rows in R2 for history, joins, audits | Long (your R2) | Exactly-once to R2 |
 
-Events: `run.dispatched`, `run.terminal`, `job.terminal`.
+Events: `run.dispatched`, `run.terminal`, `job.terminal`, plus
+`gha.job.completed` for runner-mode jobs (the flare lane — GitHub
+orchestrates, Flare supplies an ephemeral JIT runner). Runner mode
+gets its own event so its minutes never pollute Flare-orchestrated
+job stats; same blob layout as `job.terminal`, `blob6` always
+`github-jit`.
 Emitters: `apps/worker/src/analytics.ts` (AE, sync buffer) and
 `apps/worker/src/basin.ts` (Basin, via `ctx.waitUntil`).
 Both executors (BYO runners through `/v1/jobs/status`, seats inline)

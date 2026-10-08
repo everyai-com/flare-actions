@@ -55,14 +55,19 @@ export interface DispatchSourceOptions {
   priority?: number;
 }
 
+export function readLocalPipeline(cwd: string): string {
+  const file = join(cwd, "flare.yml");
+  if (!existsSync(file)) throw new Error(`no pipeline file at ${file}`);
+  const pipeline = readFileSync(file, "utf8");
+  if (!parsePipeline(pipeline)) throw new Error(`${file} failed validation (see docs/PIPELINES.md)`);
+  return pipeline;
+}
+
 export async function dispatchSource(
   client: Pick<FlareClient, "putSource" | "dispatch">,
   opts: DispatchSourceOptions,
 ): Promise<{ runId: string; jobIds: string[]; sourceId: string }> {
-  const file = join(opts.cwd, "flare.yml");
-  if (!existsSync(file)) throw new Error(`no pipeline file at ${file}`);
-  const pipeline = readFileSync(file, "utf8");
-  if (!parsePipeline(pipeline)) throw new Error(`${file} failed validation (see docs/PIPELINES.md)`);
+  const pipeline = readLocalPipeline(opts.cwd);
   const tar = await createSourceTar(opts.cwd);
   const sourceId = await client.putSource(tar);
   const out = await client.dispatch(opts.repo, "", {

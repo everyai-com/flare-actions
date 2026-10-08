@@ -5,9 +5,19 @@ the Cloudflare blog + changelog window Aug–Oct 2026 (57 posts) and 9
 Blacksmith engineering posts. Every item names the Cloudflare primitive it
 builds on — nothing here needs off-platform infrastructure.
 
-## Build status (Oct 6, 2026)
+## Build status (Oct 8, 2026)
 
 Shipped and tested (vitest green, tsc clean, seats dry-run green):
+
+Oct 8 additions: one-command adoption (`cli connect` — probe, wire,
+verify HEAD — plus the `skills/flare-setup` agent skill and a README
+agent paste prompt) and `runs-on: flare` runner mode (opt-in ephemeral
+JIT runners: `workflow_job` ingest, JIT claim lane, `runner -- --github`,
+`cli github-jobs`, dashboard card, `docs/GITHUB-RUNNERS.md`), plus a
+dashboard refresh (first-run onboarding checklist, auth divider,
+small-screen responsive pass), plus `--json` everywhere, `cli explain`,
+Tailscale-style runner pairing, and dry-run dispatch (`--dry-run` on
+`cli run` / `cli dispatch`). OpenAPI is at 75 paths (was 68).
 
 - **Phase 0**: V2 seats on the `durable_object` policy — `ContainerSeatV2`
   + `SEATS_V2` binding (additive; V1 keeps serving in-flight jobs, rollback
@@ -22,8 +32,9 @@ Shipped and tested (vitest green, tsc clean, seats dry-run green):
 - **Phase 1**: monitors, JUnit analytics, `cli cache`/`cli usage`,
   Turnstile, tracing, Issues flag, D1 free-tier audit
   (`docs/d1-free-tier-audit.md` — found and fixed seat report caps +
-  egress chunking). Still open: D1 FTS log search, K2 spike,
-  least-privilege setup tokens, Billable Usage API in `cli usage`.
+  egress chunking), D1 FTS5 log search (`search.ts`, Lucene-like query
+  UX). Still open: K2 spike, least-privilege setup tokens, Billable
+  Usage API in `cli usage`.
 - **Phase 2**: snapshot-backed caches (image-lineage keyed, fail-fast
   degraded handling), retain-on-failure (`retain-on-failure` YAML key,
   30-min TTL alarm, SSH), per-job egress report (measured R2 transfers
@@ -46,7 +57,7 @@ Shipped and tested (vitest green, tsc clean, seats dry-run green):
   HealingAgent self-heal runs (opt-in toggle, draft PR + verify run),
   evaluation spikes (K2/Forge/Workflows verdicts in `docs/SPIKES.md`),
   model refresh evals (second run + Clef judge gate), `openapi.yaml`
-  for the v1 API (68 paths, CI coverage gate), agent-traces for warm
+  for the v1 API (75 paths, CI coverage gate), agent-traces for warm
   boxes + heal + generate, and self-service OAuth grants (dashboard
   Apps tab + `GET`/`DELETE /v1/oauth/grants` with scope descriptions).
   The spec is served live (`/openapi.yaml` + `/docs`) with a Redocly
@@ -81,7 +92,11 @@ Console run history, flaky detection, PR failure comments, check runs with
 annotations, per-run cost attribution, R2 cache + artifacts, full CLI, GitHub
 App, notifications, retries/concurrency/schedules. Ahead on agent surface
 (MCP, `run_and_wait`, blocking wait, digests), AI failure triage, NL pipeline
-generation, Actions importer, self-hosted seats.
+generation, Actions importer, self-hosted seats — and, since Oct 8,
+one-command adoption (`cli connect`) plus a `runs-on: flare` runner mode
+that answers Jog-style "change one line" pitches without asking anyone
+to leave GitHub Actions (ephemeral JIT runners, checks/logs stay put;
+see `docs/GITHUB-RUNNERS.md`).
 
 ## Phase 0 — Seats platform migration (unblocks Phase 2)
 
@@ -308,8 +323,8 @@ Needs Phase 0 done:
   spec first, pipeline later. Forge (Sept 28, Apache-2.0) is young
   (`cf` CLI only in prod); our CLI/MCP surfaces are bespoke, not
   REST-mapped. The spec prerequisite shipped 2026-10-05
-  (`openapi.yaml`, 62 paths, CI-enforced); Forge re-evaluation is
-  future work once Forge matures past `cf`-CLI-only.
+  (`openapi.yaml`, 75 paths as of Oct 8, CI-enforced); Forge
+  re-evaluation is future work once Forge matures past `cf`-CLI-only.
 - **Agent-traces for agent features** (shipped 2026-10-05): OTel
   GenAI-convention spans on triage/generate/judge/heal inference plus
   root-span annotations for warm boxes (seat run/job/snapshot

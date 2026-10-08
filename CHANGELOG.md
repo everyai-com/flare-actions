@@ -6,6 +6,47 @@ tagged on `main` (`v0.1.0` is the first).
 
 ## [Unreleased]
 
+### Added
+
+- Dashboard savings counter: a 30-day runs / compute-min / spend-avoided
+  strip atop the Runs pane (60s cache so the runs poll never hammers
+  the rollup query).
+- `--json` on every CLI command: stdout becomes one versioned envelope
+  `{ version: 1, command, data }` (failures keep stderr + exit codes;
+  `mcp-config` stays paste-ready, `mcp-serve` ignores the flag).
+- `cli explain <run-id>`: one narrative instead of raw rows —
+  verdict-first summary plus failing steps, output tails, triage,
+  and exact rerun commands (`--json` included).
+- Dry-run dispatch: `POST /v1/runs/dispatch/dry-run` (and `--dry-run`
+  on `cli run` / `cli dispatch`, incl. `--source` from the local
+  `flare.yml` with no upload) plans the fan-out — resolved
+  pipeline, queued/blocked + reasons, runtime priors, live group
+  state, budget verdict — with zero writes, queue sends, or audits.
+- Machine-actionable errors on the core lanes: dispatch, dry-run,
+  claim, webhook, auth, and pairing failures now carry a stable
+  `code` + next-step `hint` (`docs/ERRORS.md` catalogs all 21).
+  Messages keep their wording; the SDK throws `FlareApiError`
+  (status/code/hint props) and the CLI prints `hint [code]`.
+- Quarantine surface: a dashboard Flaky tab (per-job failure rates +
+  quarantine list with admin add/reinstate) and a "Quarantined — not
+  blocking" section in the PR comment naming the skipped failures.
+- Tailscale-style runner pairing: dashboard Access mints a single-use
+  10-minute code, `npm run runner -- --pair CODE` exchanges it for a
+  runner token, writes `.env` (0600, merged), and starts polling —
+  one pasted command, zero config files. IP-throttled exchange,
+  atomic single-use consume, revoke like any token.
+- One-command adoption: `npx flare connect [--wire] [--dry-run]` probes
+  the deployment, prints the wiring recipe, optionally creates the repo
+  webhook, then dispatches HEAD with a compact verdict (exit 0 verified,
+  1 run failed, 2 usage). Plus the `skills/flare-setup` agent skill and
+  a README "Or with your agent" paste prompt.
+- `runs-on: flare` runner mode (opt-in, off by default): GitHub keeps
+  orchestrating and Flare supplies ephemeral JIT self-hosted runners —
+  one `runs-on:` line changes, checks/logs stay on GitHub. New
+  `gh_runner_jobs` table, `workflow_job` ingest, `POST
+  /v1/github/jobs/next` claim lane, `cli github-jobs`, `npm run runner
+  -- --github`, dashboard Settings card, and `docs/GITHUB-RUNNERS.md`.
+
 ### Changed
 
 - Roadmap absorbs the master plan's agent-friendliness checklist

@@ -50,8 +50,20 @@ export function buildManifest(name: string, origin: string): AppManifest {
     // merged, and only when the heal_on_failure toggle is on — but the
     // permission is manifest-wide, so apps connected before the heal
     // release must reinstall/accept it before heals can push).
-    default_permissions: { contents: "write", statuses: "write", checks: "write", pull_requests: "write" },
-    default_events: ["push", "pull_request"],
+    // actions:read subscribes to workflow_job; administration:write mints
+    // and deletes the ephemeral JIT runners of GitHub runner mode
+    // (`runs-on: flare`, off by default — like contents:write the
+    // permission is manifest-wide, so older installs must accept the
+    // pending permission request before the mode can register runners).
+    default_permissions: {
+      contents: "write",
+      statuses: "write",
+      checks: "write",
+      pull_requests: "write",
+      actions: "read",
+      administration: "write",
+    },
+    default_events: ["push", "pull_request", "workflow_job"],
     hook_attributes: { url: `${base}/webhooks/github`, active: true },
   };
 }

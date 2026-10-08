@@ -1650,6 +1650,21 @@ export async function listFailingTests(db: Db, runId: string, limit = 50): Promi
   return res.results;
 }
 
+// Failing tests of a run that are under active quarantine: the PR
+// comment names them so reviewers see what the green check skipped.
+export async function listQuarantinedFailingTests(db: Db, runId: string, repo: string, limit = 15): Promise<FailingTestRow[]> {
+  const res = await db
+    .prepare(
+      `SELECT t.job_id, j.name AS job_name, t.suite, t.name, t.classname, t.status, t.message
+       FROM test_results t JOIN jobs j ON j.id = t.job_id
+       JOIN quarantined_tests q ON q.repo = ? AND q.name = t.name AND q.status = 'active'
+       WHERE t.run_id = ? AND t.status IN ('failed', 'error') ORDER BY t.id ASC LIMIT ?`,
+    )
+    .bind(repo, runId, Math.max(1, Math.min(limit, 50)))
+    .all<FailingTestRow>();
+  return res.results;
+}
+
 export async function deleteJobTestData(db: Db, jobId: string): Promise<void> {
   await db.prepare("DELETE FROM test_results WHERE job_id = ?").bind(jobId).run();
   await db.prepare("DELETE FROM test_reports WHERE job_id = ?").bind(jobId).run();

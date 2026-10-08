@@ -38,6 +38,7 @@ import {
   latestRunStatus,
   listAudit,
   listFailingTests,
+  listQuarantinedFailingTests,
   listMonitors,
   listQuarantinedTests,
   listQueuedJobs,
@@ -75,7 +76,7 @@ import {
   updateRunningJob,
   usageStats,
 } from "./db";
-import { commitFilesToNewBranch, fetchChangedFiles, getDefaultBranch, getInstallationToken, getRepoTreePaths, MAX_CHANGED_FILES, mintAppJwt, openDraftPullRequest, resolveRefToSha, verifyGitHubSignature } from "./github";
+import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, generateJitConfig, getDefaultBranch, getInstallationToken, getRepoTreePaths, MAX_CHANGED_FILES, mintAppJwt, openDraftPullRequest, resolveRefToSha, verifyGitHubSignature } from "./github";
 import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
 import { DASHBOARD_HTML } from "./dashboard";
@@ -91,7 +92,7 @@ import {
   validateSecretName,
   validateSecretValue,
 } from "./secrets";
-import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseBudgetMinutes, parseBudgetMode, parseFairSharePerRepo, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseStoredBudgets, parseSupersedeBranchRuns, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
+import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseBudgetMinutes, parseBudgetMode, parseFairSharePerRepo, parseGithubRunnerLabels, parseGithubRunnerMode, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseStoredBudgets, parseSupersedeBranchRuns, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
 import {
   addAllowedUser,
   beginOAuth,
@@ -151,7 +152,22 @@ import {
   type AuthScope,
 } from "./tokens";
 import { badgeSvg } from "./badge";
-import { emitJobTerminal, emitRunDispatched } from "./analytics";
+import { createPairingCode, exchangePairingCode } from "./pairing";
+import { emitGhaJobCompleted, emitJobTerminal, emitRunDispatched } from "./analytics";
+import {
+  RESERVED_RUNNER_LABELS,
+  claimGhRunnerJob,
+  ghRunnerUsage,
+  handleWorkflowJobEvent,
+  listGhRunnerJobs,
+  parseStoredLabels,
+  releaseGhRunnerJob,
+  runnerManagedLabels,
+  runnerModeOn,
+  stampGhRunnerId,
+  sweepStaleGhRunnerJobs,
+  type GhRunnerJobRow,
+} from "./ghrunners";
 import { basinJobTerminal, basinRunDispatched, basinSink, sendBasin, type BasinSink } from "./basin";
 import { jobDurationMs, summarizeRunCost } from "./cost";
 import { runGenerateWithStatus } from "./generate";
@@ -184,6 +200,7 @@ import {
 import { MAX_JUNIT_BYTES, parseJUnit } from "./junit";
 import { compileLogQuery, indexJobLog, searchLogs } from "./search";
 import { lookupPriorMs, recordRuntimePrior } from "./priors";
+import { apiError, dispatchErrorCode } from "./errors";
 import { billableWindow, fetchBillableUsage, summarizeBillableUsage } from "./billing";
 import { TRIAGE_MODEL } from "./triage";
 import { upsertPrComment } from "./prcomment";
@@ -291,6 +308,44 @@ function repoAllowed(ident: { repos: string[] }, repo: string): boolean {
   if (ident.repos.length === 0) return true;
   const needle = repo.toLowerCase();
   return ident.repos.some((r) => r.toLowerCase() === needle);
+}
+
+// Runner-mode job over the API: parsed labels, camelCase stamps, and no
+// installation id (executor bookkeeping, not client data).
+function publicGhJob(row: GhRunnerJobRow): {
+  id: string;
+  repo: string;
+  runId: string;
+  runAttempt: number;
+  jobName: string;
+  workflowName: string;
+  headSha: string;
+  labels: string[];
+  status: string;
+  conclusion: string | null;
+  runnerId: number | null;
+  runnerName: string;
+  attempts: number;
+  startedAt: string | null;
+  completedAt: string | null;
+} {
+  return {
+    id: row.id,
+    repo: row.repo,
+    runId: row.run_id,
+    runAttempt: row.run_attempt,
+    jobName: row.job_name,
+    workflowName: row.workflow_name,
+    headSha: row.head_sha,
+    labels: parseStoredLabels(row.labels),
+    status: row.status,
+    conclusion: row.conclusion,
+    runnerId: row.runner_id,
+    runnerName: row.runner_name,
+    attempts: row.attempts,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+  };
 }
 
 async function authScope(request: Request, env: WorkerEnv): Promise<AuthScope | null> {
@@ -449,6 +504,23 @@ export interface GitHubWebhookPayload {
     head?: { sha?: string; ref?: string };
     base?: { ref?: string };
     number?: number;
+  };
+  action?: string;
+  // Runner mode (`runs-on: flare`): structurally matches ghrunners'
+  // WorkflowJobPayload so the parsed body passes through without casts.
+  workflow_job?: {
+    id?: number;
+    run_id?: number;
+    run_attempt?: number;
+    workflow_name?: string | null;
+    head_sha?: string | null;
+    name?: string;
+    labels?: string[];
+    conclusion?: string | null;
+    runner_id?: number | null;
+    runner_name?: string | null;
+    started_at?: string | null;
+    completed_at?: string | null;
   };
 }
 
@@ -687,24 +759,24 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     const secret = await getWebhookSecret(env);
     if (!secret) {
       log("error", "webhook secret not configured");
-      return json({ error: "webhook secret not configured — set it in the dashboard" }, 500);
+      return json(apiError("webhook_not_configured", "webhook secret not configured — set it in the dashboard"), 500);
     }
     const raw = await request.arrayBuffer();
     if (raw.byteLength > MAX_WEBHOOK_BYTES) {
-      return json({ error: "payload too large" }, 413);
+      return json(apiError("payload_too_large", "payload too large"), 413);
     }
     const valid = await verifyGitHubSignature(
       raw,
       request.headers.get("x-hub-signature-256"),
       secret,
     );
-    if (!valid) return json({ error: "invalid signature" }, 401);
+    if (!valid) return json(apiError("bad_signature", "invalid signature"), 401);
 
     // Idempotency: GitHub retries (and manual redeliveries) reuse the
     // delivery UUID. First claim wins; a duplicate is acknowledged.
     const delivery = request.headers.get("x-github-delivery");
     if (delivery) {
-      if (!/^[A-Za-z0-9-]{8,64}$/.test(delivery)) return json({ error: "invalid delivery id" }, 400);
+      if (!/^[A-Za-z0-9-]{8,64}$/.test(delivery)) return json(apiError("invalid_delivery", "invalid delivery id"), 400);
       if (!(await claimWebhookDelivery(env.DB, delivery))) {
         log("info", "webhook duplicate ignored", { delivery });
         return json({ skipped: "duplicate delivery" }, 200);
@@ -716,7 +788,30 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     try {
       payload = JSON.parse(new TextDecoder().decode(raw)) as GitHubWebhookPayload;
     } catch {
-      return json({ error: "invalid JSON payload" }, 400);
+      return json(apiError("invalid_json", "invalid JSON payload"), 400);
+    }
+    // Runner mode (`runs-on: flare`): mirror the workflow_job lifecycle
+    // into gh_runner_jobs. Always 202 — GitHub retries non-2xx, and a
+    // poison event must never redeliver-loop.
+    if (event === "workflow_job") {
+      try {
+        const out = await handleWorkflowJobEvent(env.DB, payload, {
+          modeOn: await runnerModeOn(env.DB),
+          managedLabels: await runnerManagedLabels(env.DB),
+        });
+        if (out.handled && out.action === "completed" && out.terminal) {
+          emitGhaJobCompleted(env.ANALYTICS, { ...out.terminal });
+        }
+        log("info", "workflow_job webhook", {
+          action: payload.action ?? "",
+          handled: out.handled,
+          reason: out.handled ? out.action : out.reason,
+        });
+        return json(out.handled ? { ok: true, action: out.action, id: out.id } : { ok: true, skipped: out.reason }, 202);
+      } catch (err) {
+        log("warn", "workflow_job ingest failed", { error: String(err) });
+        return json({ ok: true, skipped: "ingest failed" }, 202);
+      }
     }
     const skip = webhookSkipReason(event, payload);
     if (skip) {
@@ -725,7 +820,7 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     }
     const repo = payload.repository?.full_name;
     const sha = payload.after ?? payload.pull_request?.head?.sha;
-    if (!repo || !sha) return json({ error: "missing repo or sha" }, 400);
+    if (!repo || !sha) return json(apiError("missing_repo_or_sha", "missing repo or sha"), 400);
     // Budget guard: block-mode repos over their monthly cap are skipped
     // (200 so GitHub stops retrying); warn-mode dispatches and audits.
     const verdict = await budgetVerdict(env, repo);
@@ -967,6 +1062,7 @@ async function handleStatusCallback(
             (async () => {
               const jobs = await getJobsForRun(env.DB, runId);
               const failing = await listFailingTests(env.DB, runId, 15).catch(() => []);
+              const quarantined = await listQuarantinedFailingTests(env.DB, runId, run.repo, 15).catch(() => []);
               const id = await upsertPrComment(
                 {
                   appId: creds?.appId,
@@ -980,6 +1076,7 @@ async function handleStatusCallback(
                 finalRun,
                 jobs,
                 failing.map((f) => ({ jobName: f.job_name, suite: f.suite, name: f.name, message: f.message })),
+                quarantined.map((f) => ({ jobName: f.job_name, suite: f.suite, name: f.name, message: f.message })),
               );
               if (id && !run.pr_comment_id) await setRunPrComment(env.DB, runId, id).catch(() => undefined);
             })(),
@@ -1127,22 +1224,26 @@ export function validateScheduleInput(
   return { repo, ref, cron: (cron as string).trim() };
 }
 
-async function dispatchRun(
+export interface DispatchInput {
+  repo: string;
+  sha: string;
+  ref: string;
+  pipeline?: string;
+  event?: string;
+  priority?: number;
+  source?: string;
+  // Firing cron for schedule events; matches `on.schedule` entries in
+  // Actions-compatible workflow files.
+  cron?: string;
+}
+
+// Read-only half of a dispatch: resolve the ref and load the pipeline.
+// Shared by dispatchRun (which fans out for real) and the dry-run
+// planner (which only describes what would happen).
+async function loadDispatchJobs(
   env: WorkerEnv,
-  input: {
-    repo: string;
-    sha: string;
-    ref: string;
-    pipeline?: string;
-    event?: string;
-    priority?: number;
-    source?: string;
-    // Firing cron for schedule events; matches `on.schedule` entries in
-    // Actions-compatible workflow files.
-    cron?: string;
-  },
-  basin?: BasinSink,
-): Promise<{ runId: string; jobIds: string[]; queuedIds: string[] }> {
+  input: DispatchInput,
+): Promise<{ sha: string; branch: string; installationId: number | null; jobs: PipelineJob[]; pipelineSource: PipelineSource }> {
   // Dispatch accepts a SHA, branch, or tag: non-SHA refs resolve to the
   // head commit (installation token when the repo has App history, else
   // the public API), so the stored run always pins a real commit. The
@@ -1193,6 +1294,49 @@ async function dispatchRun(
       pipelineSource = loaded.source;
     }
   }
+  return { sha, branch, installationId, jobs, pipelineSource };
+}
+
+export interface PlannedJob {
+  name: string;
+  base: string;
+  needs: string[];
+  group: string | null;
+  labels: string[];
+  status: "queued" | "blocked";
+  blockedReason: "needs" | "group" | null;
+  wouldCancelInProgress: boolean;
+}
+
+// Pure mirror of createRunAndFanOut's per-job status call: needs park
+// the job, otherwise an active same-group job parks it unless the job
+// cancels in progress (which instead supersedes the group). The dry-run
+// route feeds live group state; unit tests feed fakes.
+export function planFanOut(jobs: PipelineJob[], groupActive: (group: string) => boolean): PlannedJob[] {
+  return jobs.map((job) => {
+    const base = job.base ?? job.name;
+    const needsBlocked = (job.needs?.length ?? 0) > 0;
+    const groupBlocked = !!job.group && !job.cancelInProgress && groupActive(job.group);
+    const status = needsBlocked || groupBlocked ? "blocked" : "queued";
+    return {
+      name: job.name,
+      base,
+      needs: job.needs ?? [],
+      group: job.group ?? null,
+      labels: job.labels ?? [],
+      status,
+      blockedReason: needsBlocked ? "needs" : groupBlocked ? "group" : null,
+      wouldCancelInProgress: !!job.group && !!job.cancelInProgress,
+    };
+  });
+}
+
+async function dispatchRun(
+  env: WorkerEnv,
+  input: DispatchInput,
+  basin?: BasinSink,
+): Promise<{ runId: string; jobIds: string[]; queuedIds: string[] }> {
+  const { sha, branch, installationId, jobs, pipelineSource } = await loadDispatchJobs(env, input);
   const { runId, jobIds, queuedIds } = await createRunAndFanOut(env, {
     repo: input.repo,
     sha,
@@ -1323,6 +1467,8 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       budgetMinutes?: unknown;
       budgetMode?: unknown;
       supersedeBranchRuns?: unknown;
+      githubRunnerMode?: unknown;
+      githubRunnerLabels?: unknown;
       billingApiToken?: unknown;
       cloudflareAccountId?: unknown;
       triageModel?: unknown;
@@ -1348,13 +1494,15 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
     const hasBudget = body.budgetMinutes !== undefined;
     const hasBudgetMode = body.budgetMode !== undefined;
     const hasSupersede = body.supersedeBranchRuns !== undefined;
+    const hasGhMode = body.githubRunnerMode !== undefined;
+    const hasGhLabels = body.githubRunnerLabels !== undefined;
     const hasBillingToken = body.billingApiToken !== undefined;
     const hasAccountId = body.cloudflareAccountId !== undefined;
     const hasTriageModel = body.triageModel !== undefined;
     if (
       !hasWebhook && !hasNotifyFrom && !hasNotifyMode && !hasNotifyWebhook && !hasBadgeHidden &&
       !hasTurnstileSite && !hasTurnstileSecret && !hasFairShare && !hasGateway && !hasWriteConfirm && !hasWebSearch &&
-      !hasHeal && !hasOpenReg && !hasBudget && !hasBudgetMode && !hasSupersede && !hasBillingToken && !hasAccountId && !hasTriageModel
+      !hasHeal && !hasOpenReg && !hasBudget && !hasBudgetMode && !hasSupersede && !hasGhMode && !hasGhLabels && !hasBillingToken && !hasAccountId && !hasTriageModel
     ) {
       return json({ error: "no settings provided" }, 400);
     }
@@ -1505,6 +1653,18 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       if ("error" in parsed) return json({ error: parsed.error }, 400);
       await setSetting(env.DB, SETTING_KEYS.supersedeBranchRuns, parsed.mode);
       await audit(env.DB, ident.actor, "settings.supersede_branch_runs", parsed.mode);
+    }
+    if (hasGhMode) {
+      const parsed = parseGithubRunnerMode(body.githubRunnerMode);
+      if ("error" in parsed) return json({ error: parsed.error }, 400);
+      await setSetting(env.DB, SETTING_KEYS.githubRunnerMode, parsed.mode);
+      await audit(env.DB, ident.actor, "settings.github_runner_mode", parsed.mode);
+    }
+    if (hasGhLabels) {
+      const parsed = parseGithubRunnerLabels(body.githubRunnerLabels);
+      if ("error" in parsed) return json({ error: parsed.error }, 400);
+      await setSetting(env.DB, SETTING_KEYS.githubRunnerLabels, parsed.labels.join(","));
+      await audit(env.DB, ident.actor, "settings.github_runner_labels", parsed.labels.join(","));
     }
     if (hasBillingToken) {
       if (env.BILLING_API_TOKEN) {
@@ -1728,11 +1888,11 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/v1/runs/dispatch") {
         const ident = await requireScope(request, env, "run");
-        if (!ident) return json({ error: "unauthorized" }, 401);
+        if (!ident) return json(apiError("unauthorized", "unauthorized", "dispatch needs a run-scope token (or admin): Authorization: Bearer <token>"), 401);
         const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
         const valid = validateDispatch(body);
-        if ("error" in valid) return json({ error: valid.error }, 400);
-        if (!repoAllowed(ident, valid.repo)) return json({ error: "token is not scoped to that repo" }, 403);
+        if ("error" in valid) return json(apiError("invalid_request", valid.error), 400);
+        if (!repoAllowed(ident, valid.repo)) return json(apiError("repo_not_allowed", "token is not scoped to that repo"), 403);
         const verdict = await budgetVerdict(env, valid.repo);
         if (verdict) {
           const kind = verdict.mode === "block" ? "budget.blocked" : "budget.warn";
@@ -1740,7 +1900,7 @@ export default {
           if (verdict.mode === "block") {
             return json(
               {
-                error: `monthly budget exceeded for ${valid.repo} (${verdict.usedMinutes}/${verdict.cap} compute-minutes)`,
+                ...apiError("budget_exceeded", `monthly budget exceeded for ${valid.repo} (${verdict.usedMinutes}/${verdict.cap} compute-minutes)`),
                 usedMinutes: verdict.usedMinutes,
                 cap: verdict.cap,
               },
@@ -1755,7 +1915,64 @@ export default {
           ctx.waitUntil(annotateSpan({ "run.id": out.runId, "repo": valid.repo, "actor": ident.actor }));
           return json({ runId: out.runId, jobIds: out.jobIds }, 202);
         } catch (err) {
-          return json({ error: String(err instanceof Error ? err.message : err) }, 400);
+          const message = String(err instanceof Error ? err.message : err);
+          return json(apiError(dispatchErrorCode(message), message), 400);
+        }
+      }
+      // Dry-run dispatch: the exact load phase of a real dispatch
+      // (ref resolution, pipeline/inline/source resolution, budget
+      // verdict, fan-out simulation with live group state and runtime
+      // priors) with zero writes, queue sends, analytics, or audits.
+      if (request.method === "POST" && url.pathname === "/v1/runs/dispatch/dry-run") {
+        const ident = await requireScope(request, env, "run");
+        if (!ident) return json(apiError("unauthorized", "unauthorized", "dry-run needs a run-scope token (or admin): Authorization: Bearer <token>"), 401);
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        // Source dry-runs plan from the caller's inline pipeline without
+        // an upload: the documented "dry-run" placeholder stands in for
+        // a tree id. The nil UUID never reaches storage (no writes) and
+        // the tree is never fetched on this route.
+        if (body.source === "dry-run") body.source = "00000000-0000-0000-0000-000000000000";
+        const valid = validateDispatch(body);
+        if ("error" in valid) return json(apiError("invalid_request", valid.error), 400);
+        if (!repoAllowed(ident, valid.repo)) return json(apiError("repo_not_allowed", "token is not scoped to that repo"), 403);
+        try {
+          const loaded = await loadDispatchJobs(env, { ...valid, event: "dispatch" });
+          const seen: Record<string, boolean> = {};
+          const groupActive = (group: string): boolean => seen[group] ?? false;
+          for (const job of loaded.jobs) {
+            if (job.group && !job.cancelInProgress && seen[job.group] === undefined) {
+              try {
+                seen[job.group] = await hasActiveGroupJob(env.DB, valid.repo, job.group);
+              } catch {
+                seen[job.group] = false;
+              }
+            }
+          }
+          const planned = planFanOut(loaded.jobs, groupActive);
+          const jobs = await Promise.all(
+            planned.map(async (job) => ({
+              ...job,
+              priorMs: await lookupPriorMs(env.DB, valid.repo, job.base).catch(() => 0),
+            })),
+          );
+          const verdict = await budgetVerdict(env, valid.repo);
+          const queued = jobs.filter((job) => job.status === "queued").length;
+          return json({
+            repo: valid.repo,
+            sha: loaded.sha,
+            branch: loaded.branch,
+            pipelineSource: loaded.pipelineSource,
+            jobs,
+            queued,
+            blocked: jobs.length - queued,
+            totalPriorMs: jobs.reduce((sum, job) => sum + job.priorMs, 0),
+            budget: verdict
+              ? { mode: verdict.mode, usedMinutes: verdict.usedMinutes, cap: verdict.cap, wouldBlock: verdict.mode === "block" }
+              : null,
+          });
+        } catch (err) {
+          const message = String(err instanceof Error ? err.message : err);
+          return json(apiError(dispatchErrorCode(message), message), 400);
         }
       }
       if (request.method === "GET" && url.pathname === "/v1/runs") {
@@ -1902,7 +2119,7 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/v1/jobs/next") {
         const ident = await requireScope(request, env, "run");
-        if (!ident) return json({ error: "unauthorized" }, 401);
+        if (!ident) return json(apiError("unauthorized", "unauthorized", "claiming needs a run-scope token (or admin): Authorization: Bearer <token>"), 401);
         const labels = (url.searchParams.get("labels") ?? "")
           .split(",")
           .map((l) => l.trim())
@@ -1926,6 +2143,71 @@ export default {
           await audit(env.DB, "system", "secrets.decrypt_failed", job.repo).catch(() => undefined);
         }
         return json({ job, secrets, secretsError });
+      }
+      // Runner mode (`runs-on: flare`) claim lane: mints an ephemeral
+      // JIT config at claim time (1h TTL, single job). The JIT blob is
+      // single-use and is never logged.
+      if (request.method === "POST" && url.pathname === "/v1/github/jobs/next") {
+        const ident = await requireScope(request, env, "run");
+        if (!ident) return json(apiError("unauthorized", "unauthorized", "claiming needs a run-scope token (or admin): Authorization: Bearer <token>"), 401);
+        if (!(await runnerModeOn(env.DB))) return json({ job: null }, 200);
+        const managed = await runnerManagedLabels(env.DB);
+        const body = (await request.json().catch(() => ({}))) as { labels?: unknown };
+        let labels: string[] = [];
+        if (body.labels !== undefined) {
+          if (!Array.isArray(body.labels) || body.labels.some((l) => typeof l !== "string")) {
+            return json(apiError("invalid_request", "labels must be a string array"), 400);
+          }
+          labels = (body.labels as string[]).map((l) => l.trim()).filter(Boolean).slice(0, 20);
+        }
+        const job = await claimGhRunnerJob(env.DB, labels, managed, ident.repos, ident.actor);
+        if (!job) return json({ job: null }, 200);
+        const token = await mintInstallationTokenFor(env, job.installation_id);
+        if (!token) {
+          await releaseGhRunnerJob(env.DB, job.id);
+          return json(apiError("token_mint_failed", "could not mint an installation token"), 503);
+        }
+        // The JIT runner's labels must cover the job's runs-on (GitHub
+        // matches job labels ⊆ runner labels): keep self-hosted so
+        // `runs-on: [self-hosted, flare]` jobs assign, strip OS/arch
+        // (implied by the runner binary), keep managed + extra labels.
+        const jitLabels = [...new Set(["self-hosted", ...parseStoredLabels(job.labels)])].filter(
+          (l) => l.toLowerCase() === "self-hosted" || !RESERVED_RUNNER_LABELS.has(l.toLowerCase()),
+        ).slice(0, 20);
+        const runnerName = `flare-${job.id}-${crypto.randomUUID().slice(0, 8)}`;
+        const jit = await generateJitConfig(token, job.repo, { name: runnerName, labels: jitLabels });
+        if (!jit) {
+          await releaseGhRunnerJob(env.DB, job.id);
+          return json(apiError("jit_mint_failed", "GitHub JIT mint failed"), 503);
+        }
+        // A concurrent terminal event (GitHub assigned the job
+        // elsewhere) wins over the stamp; the unused JIT is deleted so
+        // no stray registration lingers.
+        if (!(await stampGhRunnerId(env.DB, job.id, jit.runnerId, runnerName))) {
+          await deleteRunner(token, job.repo, jit.runnerId);
+          return json({ job: null }, 200);
+        }
+        log("info", "runner-mode job claimed", { jobId: job.id, repo: job.repo, runnerId: jit.runnerId });
+        return json({ job: publicGhJob({ ...job, runner_id: jit.runnerId, runner_name: runnerName }), jitConfig: jit.jitConfig, runnerName });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/github/jobs") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json(apiError("unauthorized", "unauthorized", "listing needs a read-scope token (or admin): Authorization: Bearer <token>"), 401);
+        const repo = url.searchParams.get("repo") ?? "";
+        if (repo) {
+          if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json(apiError("invalid_request", "repo must be owner/name"), 400);
+          if (!repoAllowed(ident, repo)) return json(apiError("repo_not_allowed", "token is not scoped to that repo"), 403);
+        }
+        const limit = Number(url.searchParams.get("limit") ?? "20");
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+          return json(apiError("invalid_request", "limit must be an integer 1-100"), 400);
+        }
+        const jobs = await listGhRunnerJobs(env.DB, {
+          ...(repo ? { repo } : {}),
+          limit,
+          allowedRepos: ident.repos,
+        });
+        return json({ jobs: jobs.map(publicGhJob) });
       }
       const runCancelMatch = /^\/v1\/runs\/([^/]+)\/cancel$/.exec(url.pathname);
       if (request.method === "POST" && runCancelMatch) {
@@ -2178,9 +2460,13 @@ export default {
         if (repo) {
           if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
           if (!repoAllowed(ident, repo)) return json({ error: "token is not scoped to that repo" }, 403);
-          return json(await usageStats(env.DB, Math.floor(days), [repo]));
+          const stats = await usageStats(env.DB, Math.floor(days), [repo]);
+          const gh = await ghRunnerUsage(env.DB, Math.floor(days), [repo]);
+          return json({ ...stats, githubRunnerJobs: gh.jobs, githubRunnerMinutes: gh.computeMinutes, githubRunnerListUsd: gh.actionsListUsd });
         }
-        return json(await usageStats(env.DB, Math.floor(days), ident.repos));
+        const stats = await usageStats(env.DB, Math.floor(days), ident.repos);
+        const gh = await ghRunnerUsage(env.DB, Math.floor(days), ident.repos);
+        return json({ ...stats, githubRunnerJobs: gh.jobs, githubRunnerMinutes: gh.computeMinutes, githubRunnerListUsd: gh.actionsListUsd });
       }
       // Real Cloudflare dollars from the Billable Usage API (admin-only:
       // account spend). Unconfigured credentials degrade to
@@ -2277,6 +2563,44 @@ export default {
         if (!ok) return json({ error: "token not found" }, 404);
         await audit(env.DB, ident.actor, "token.revoke", revokeMatch[1]);
         return json({ ok: true });
+      }
+      // Runner pairing, admin half: mint a short single-use code the
+      // dashboard shows once. The runner half is POST /v1/pair/exchange.
+      if (request.method === "POST" && url.pathname === "/v1/admin/pair-codes") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        const { code, expiresAt } = await createPairingCode(env.DB, ident.actor);
+        await audit(env.DB, ident.actor, "pair.create", "");
+        return json({ code, expiresAt });
+      }
+      // Runner pairing, runner half: exchange a code for a runner token.
+      // Public by design (the machine has no credentials yet), so it
+      // throttles per IP exactly like the login routes.
+      if (request.method === "POST" && url.pathname === "/v1/pair/exchange") {
+        const body = (await request.json().catch(() => ({}))) as { code?: unknown; name?: unknown };
+        const ipKey = await ipThrottleKey(request);
+        const keys = ipKey ? [ipKey] : [];
+        if (await authThrottleBlocked(env.DB, keys)) {
+          return json(apiError("rate_limited", "too many attempts — try again later"), 429);
+        }
+        const fail = async (res: Response): Promise<Response> => {
+          await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
+          return res;
+        };
+        if (typeof body.code !== "string" || !body.code) return await fail(json(apiError("pairing_required", "pairing code required"), 400));
+        const name = typeof body.name === "string" && body.name.trim() ? body.name.trim().slice(0, 64) : "paired runner";
+        const exchanged = await exchangePairingCode(env.DB, body.code.trim().toUpperCase());
+        if (!exchanged.ok) {
+          log("info", "pairing exchange denied", { reason: exchanged.reason });
+          return await fail(json(apiError("pairing_invalid", "pairing code invalid or expired"), 404));
+        }
+        const id = crypto.randomUUID();
+        const value = newTokenValue();
+        await createToken(env.DB, { id, name, tokenHash: await hashToken(value), scopes: "runner", repos: "" });
+        await clearAuthFailures(env.DB, keys);
+        await audit(env.DB, `pair:${id.slice(0, 8)}`, "pair.exchange", name);
+        log("info", "runner paired", { name });
+        return json({ token: value, name }, 201);
       }
       // Self-service connected apps: any logged-in dashboard user
       // lists and revokes their own OAuth grants. Session-cookie only
@@ -2482,26 +2806,26 @@ export default {
         const body = (await request.json().catch(() => ({}))) as { token?: unknown; email?: unknown; password?: unknown; turnstileToken?: unknown };
         const keys = await authThrottleKeys(request, typeof body.email === "string" ? normalizeEmail(body.email) : undefined);
         if (await authThrottleBlocked(env.DB, keys)) {
-          return json({ error: "too many attempts — try again later" }, 429);
+          return json(apiError("rate_limited", "too many attempts — try again later"), 429);
         }
         const fail = async (res: Response): Promise<Response> => {
           await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
           return res;
         };
         const captchaErr = await checkTurnstile(env.DB, env, body.turnstileToken, request.headers.get("cf-connecting-ip") ?? undefined);
-        if (captchaErr) return await fail(json({ error: captchaErr }, 400));
+        if (captchaErr) return await fail(json(apiError("invalid_request", captchaErr), 400));
         const input = validateRegisterInput(body, await isOpenRegistration(env));
-        if ("error" in input) return await fail(json({ error: input.error }, 400));
+        if ("error" in input) return await fail(json(apiError("invalid_request", input.error), 400));
         let email: string;
         if (input.mode === "invite") {
           const invite = await consumeInvite(env.DB, input.token);
-          if (!invite) return await fail(json({ error: "invite invalid or expired" }, 404));
+          if (!invite) return await fail(json(apiError("invite_invalid", "invite invalid or expired"), 404));
           email = invite.email;
         } else {
           email = input.email;
         }
         if (await getUser(env.DB, email)) {
-          return await fail(json({ error: "that email already has an account" }, 409));
+          return await fail(json(apiError("email_taken", "that email already has an account"), 409));
         }
         await createUser(env.DB, { email, passwordHash: await hashPassword(input.password), isAdmin: false });
         await clearAuthFailures(env.DB, keys);
@@ -2516,26 +2840,26 @@ export default {
         });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/bootstrap") {
-        if (await isClaimed(env)) return json({ error: "already claimed" }, 403);
+        if (await isClaimed(env)) return json(apiError("already_claimed", "already claimed"), 403);
         const body = (await request.json().catch(() => ({}))) as { email?: unknown; password?: unknown; turnstileToken?: unknown };
         const keys = await authThrottleKeys(request, typeof body.email === "string" ? normalizeEmail(body.email) : undefined);
         if (await authThrottleBlocked(env.DB, keys)) {
-          return json({ error: "too many attempts — try again later" }, 429);
+          return json(apiError("rate_limited", "too many attempts — try again later"), 429);
         }
         const fail = async (res: Response): Promise<Response> => {
           await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
           return res;
         };
         const captchaErr = await checkTurnstile(env.DB, env, body.turnstileToken, request.headers.get("cf-connecting-ip") ?? undefined);
-        if (captchaErr) return await fail(json({ error: captchaErr }, 400));
+        if (captchaErr) return await fail(json(apiError("invalid_request", captchaErr), 400));
         const emailErr = validateEmail(body.email);
-        if (emailErr) return await fail(json({ error: emailErr }, 400));
+        if (emailErr) return await fail(json(apiError("invalid_request", emailErr), 400));
         const pwErr = validatePassword(body.password);
-        if (pwErr) return await fail(json({ error: pwErr }, 400));
+        if (pwErr) return await fail(json(apiError("invalid_request", pwErr), 400));
         const email = normalizeEmail(body.email as string);
         // Atomic gate: concurrent first requests can otherwise both pass
         // the isClaimed() read above and both create an admin.
-        if (!(await claimAdminMarker(env.DB))) return json({ error: "already claimed" }, 403);
+        if (!(await claimAdminMarker(env.DB))) return json(apiError("already_claimed", "already claimed"), 403);
         try {
           await createUser(env.DB, { email, passwordHash: await hashPassword(body.password as string), isAdmin: true });
           await setSetting(env.DB, SETTING_KEYS.adminEmail, email);
@@ -2558,24 +2882,24 @@ export default {
       if (request.method === "POST" && url.pathname === "/v1/admin/login") {
         const body = (await request.json().catch(() => ({}))) as { email?: unknown; password?: unknown; turnstileToken?: unknown };
         if (validateEmail(body.email) || typeof body.password !== "string") {
-          return json({ error: "invalid email or password" }, 401);
+          return json(apiError("invalid_credentials", "invalid email or password"), 401);
         }
         const email = normalizeEmail(body.email as string);
         const keys = await authThrottleKeys(request, email);
         if (await authThrottleBlocked(env.DB, keys)) {
           log("warn", "login throttled", { email });
-          return json({ error: "too many attempts — try again later" }, 429);
+          return json(apiError("rate_limited", "too many attempts — try again later"), 429);
         }
         const captchaErr = await checkTurnstile(env.DB, env, body.turnstileToken, request.headers.get("cf-connecting-ip") ?? undefined);
         if (captchaErr) {
           await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
-          return json({ error: captchaErr }, 400);
+          return json(apiError("invalid_request", captchaErr), 400);
         }
         const user = await getUser(env.DB, email);
         const ok = await verifyPassword(body.password, user?.password_hash ?? dummyPasswordHash());
         if (!user || !ok) {
           await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
-          return json({ error: "invalid email or password" }, 401);
+          return json(apiError("invalid_credentials", "invalid email or password"), 401);
         }
         await clearAuthFailures(env.DB, keys);
         const sessionId = await createLoginSession(env.DB, { kind: "email", login: email, isAdmin: user.is_admin === 1 });
@@ -2702,6 +3026,8 @@ export default {
           budgetMinutes: (await getSetting(env.DB, SETTING_KEYS.budgetMinutes)) ?? "",
           budgetMode: (await getSetting(env.DB, SETTING_KEYS.budgetMode)) ?? "warn",
           supersedeBranchRuns: (await getSetting(env.DB, SETTING_KEYS.supersedeBranchRuns)) ?? "off",
+          githubRunnerMode: (await getSetting(env.DB, SETTING_KEYS.githubRunnerMode)) ?? "off",
+          githubRunnerLabels: (await getSetting(env.DB, SETTING_KEYS.githubRunnerLabels)) ?? "flare",
           aiGatewayId: env.AI_GATEWAY_ID ?? (await getSetting(env.DB, SETTING_KEYS.aiGatewayId)) ?? "",
           aiGatewaySource: gatewaySource,
           mcpWriteConfirm: "on" in writeConfirmParsed ? writeConfirmParsed.on : false,
@@ -3003,6 +3329,20 @@ export default {
       if (env.ENVIRONMENT !== "production") return;
       const now = new Date(controller.scheduledTime);
       await evaluateDurationMonitors(env.DB, env);
+      // Runner mode (`runs-on: flare`): requeue claims that never went
+      // `running`, deleting each orphaned JIT runner first so a dead
+      // machine's registration cannot double-run the job later.
+      try {
+        const { swept } = await sweepStaleGhRunnerJobs(env.DB, 15, async (stale) => {
+          if (!stale.runner_id) return;
+          const token = await mintInstallationTokenFor(env, stale.installation_id);
+          if (!token) return;
+          await deleteRunner(token, stale.repo, stale.runner_id);
+        });
+        if (swept > 0) log("info", "stale runner-mode claims swept", { swept });
+      } catch (err) {
+        log("warn", "runner-mode sweep failed", { error: String(err) });
+      }
       const schedules = await listSchedules(env.DB);
       for (const s of schedules) {
         if (s.enabled !== 1 || !cronMatches(s.cron, now)) continue;

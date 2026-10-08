@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fetchChangedFiles, resolveRefToSha, timingSafeEqualHex, verifyGitHubSignature } from "./github";
+import { deleteRunner, fetchChangedFiles, generateJitConfig, resolveRefToSha, timingSafeEqualHex, verifyGitHubSignature } from "./github";
 
 async function sign(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -164,6 +164,76 @@ describe("fetchChangedFiles", () => {
       expect(forbidden.length).toBe(2);
       expect(forbidden[0].headers.Authorization).toBe("Bearer tok");
       expect(forbidden[1].headers.Authorization).toBeUndefined();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+describe("jit runners", () => {
+  const realFetch = globalThis.fetch;
+
+  function stub(handler: (url: string, init?: RequestInit) => { ok: boolean; status?: number; body?: unknown }) {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      const out = handler(String(input), init);
+      return { ok: out.ok, status: out.status ?? (out.ok ? 200 : 500), json: async () => out.body ?? null };
+    }) as typeof fetch;
+    return calls;
+  }
+
+  it("mints a JIT config and returns the runner id", async () => {
+    const calls = stub((url) => {
+      if (!url.endsWith("/repos/o/r/actions/runners/generate-jitconfig")) return { ok: false, status: 404 };
+      return { ok: true, body: { runner: { id: 77 }, encoded_jit_config: "blob" } };
+    });
+    try {
+      const out = await generateJitConfig("tok", "o/r", { name: "flare-1", labels: ["self-hosted", "flare"] });
+      expect(out).toEqual({ runnerId: 77, jitConfig: "blob" });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].init?.method).toBe("POST");
+      expect(String(calls[0].init?.body)).toContain("flare-1");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("returns null when the mint fails or the blob is missing", async () => {
+    stub(() => ({ ok: false, status: 403 }));
+    try {
+      expect(await generateJitConfig("tok", "o/r", { name: "n", labels: [] })).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    const calls = stub(() => ({ ok: true, body: { runner: { id: 1 } } }));
+    try {
+      expect(await generateJitConfig("tok", "o/r", { name: "n", labels: [] })).toBeNull();
+      expect(calls).toHaveLength(1);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("deletes runners, treating gone as done and errors as failed", async () => {
+    let calls = stub(() => ({ ok: true }));
+    try {
+      expect(await deleteRunner("tok", "o/r", 77)).toBe(true);
+      expect(calls[0].url).toContain("/repos/o/r/actions/runners/77");
+      expect(calls[0].init?.method).toBe("DELETE");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    calls = stub(() => ({ ok: false, status: 404 }));
+    try {
+      expect(await deleteRunner("tok", "o/r", 77)).toBe(true);
+      expect(calls).toHaveLength(1);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    globalThis.fetch = (async () => { throw new Error("down"); }) as typeof fetch;
+    try {
+      expect(await deleteRunner("tok", "o/r", 77)).toBe(false);
     } finally {
       globalThis.fetch = realFetch;
     }
