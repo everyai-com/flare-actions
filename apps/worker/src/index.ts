@@ -85,7 +85,7 @@ import {
   updateRunningJob,
   usageStats,
 } from "./db";
-import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, generateJitConfig, getDefaultBranch, getInstallationToken, getRepoTreePaths, MAX_CHANGED_FILES, mintAppJwt, openDraftPullRequest, resolveRefToSha, verifyGitHubSignature } from "./github";
+import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, generateJitConfig, getDefaultBranch, getInstallationToken, getRepoTreePaths, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, updatePullRequestBranch, verifyGitHubSignature } from "./github";
 import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
 import { DASHBOARD_HTML } from "./dashboard";
@@ -198,6 +198,18 @@ import {
 } from "./tournaments";
 import { verdictPass } from "./verdict";
 import { artifactsRemoteFor, fastForwardPass, resolvePass } from "./promote";
+import {
+  cancelMergeEntry,
+  detectMergeCollisions,
+  enqueueMergeEntry,
+  getMergeEntry,
+  isMergeActive,
+  listMergeQueue,
+  MERGE_QUEUE_EVENT,
+  processMergeQueue,
+  toMergeEntry,
+  validateMergeEnqueue,
+} from "./mergequeue";
 import git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
 import { MemoryFS } from "./memory-fs";
@@ -2025,6 +2037,53 @@ export async function runTournamentTick(env: WorkerEnv): Promise<TournamentTickR
   return out;
 }
 
+// One merge-queue pass: finalize green/red verifications (land, fail,
+// or re-queue on a moved base) and start the next queued PR per repo.
+// Every GitHub op is best-effort inside processMergeQueue; a tick-level
+// throw degrades to zero counts, never a 500.
+async function runMergeQueueTick(
+  env: WorkerEnv,
+  ctx: ExecutionContext,
+): Promise<{ started: number; landed: number; failed: number; requeued: number }> {
+  try {
+    return await processMergeQueue({
+      db: env.DB,
+      dispatch: async (input) => {
+        const out = await dispatchRun(
+          env,
+          { repo: input.repo, sha: input.sha, ref: input.ref, event: MERGE_QUEUE_EVENT, agent: input.agent },
+          basinSink(env, ctx),
+        );
+        for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
+        return { runId: out.runId };
+      },
+      github: {
+        baseHead: async (repo, branch) => {
+          const token = await mintInstallationTokenFor(env, await latestInstallationId(env.DB, repo));
+          return resolveRefToSha(token, repo, branch);
+        },
+        updateBranch: async (repo, pr) => {
+          const token = await mintInstallationTokenFor(env, await latestInstallationId(env.DB, repo));
+          if (!token) return false;
+          return updatePullRequestBranch(token, repo, pr);
+        },
+        prFiles: async (repo, pr) => {
+          const token = await mintInstallationTokenFor(env, await latestInstallationId(env.DB, repo));
+          return fetchChangedFiles(repo, { prNumber: pr }, token);
+        },
+        mergePr: async (repo, pr, headSha) => {
+          const token = await mintInstallationTokenFor(env, await latestInstallationId(env.DB, repo));
+          if (!token) return { merged: false, detail: "no GitHub App installation for this repo" };
+          return mergePullRequest(token, repo, pr, headSha);
+        },
+      },
+    });
+  } catch (err) {
+    log("warn", "merge queue tick failed", { error: String(err) });
+    return { started: 0, landed: 0, failed: 0, requeued: 0 };
+  }
+}
+
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -2323,6 +2382,43 @@ export default {
           verifyReason: verification.reason,
           runStatus: verification.runStatus,
         });
+      }
+      // Agent merge queue: enqueue a PR for serialized verify-then-land,
+      // list a repo's queue with the collision radar, cancel a live entry.
+      if (request.method === "POST" && url.pathname === "/v1/merge-queue") {
+        const ident = await requireScope(request, env, "run");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const valid = validateMergeEnqueue(body);
+        if ("error" in valid) return json({ error: valid.error }, 400);
+        if (!repoAllowed(ident, valid.repo)) return json({ error: "token is not scoped to that repo" }, 403);
+        const out = await enqueueMergeEntry(env.DB, valid);
+        if ("error" in out) return json({ error: out.error }, out.error === "duplicate" ? 409 : 429);
+        await audit(env.DB, ident.actor, "merge-queue.enqueue", `${valid.repo}#${valid.pr}`);
+        return json({ id: out.id }, 201);
+      }
+      if (request.method === "GET" && url.pathname === "/v1/merge-queue") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const repo = url.searchParams.get("repo") ?? "";
+        if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
+        if (!repoAllowed(ident, repo)) return json({ error: "token is not scoped to that repo" }, 403);
+        const rows = await listMergeQueue(env.DB, repo);
+        const entries = rows.map(toMergeEntry);
+        const collisions = detectMergeCollisions(
+          entries.filter((e) => isMergeActive(e.status)).map((e) => ({ id: e.id, pr: e.pr, files: e.files })),
+        );
+        return json({ repo, entries, collisions });
+      }
+      const mergeQueueMatch = /^\/v1\/merge-queue\/([^/]+)$/.exec(url.pathname);
+      if (mergeQueueMatch && request.method === "DELETE") {
+        const ident = await requireScope(request, env, "run");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const row = await getMergeEntry(env.DB, mergeQueueMatch[1]);
+        if (!row || !repoAllowed(ident, row.repo)) return json({ error: "queue entry not found" }, 404);
+        const cancelled = await cancelMergeEntry(env.DB, row.id);
+        if (cancelled) await audit(env.DB, ident.actor, "merge-queue.cancel", `${row.repo}#${row.pr_number}`);
+        return json({ ok: true, cancelled });
       }
       const runMatch = /^\/v1\/runs\/([^/]+)$/.exec(url.pathname);
       if (request.method === "GET" && runMatch) {
@@ -3887,6 +3983,10 @@ export default {
       if (tick.verdicts.decided > 0) log("info", "tournament verdicts decided", { ...tick.verdicts });
       if (tick.resolved.resolved > 0) log("info", "tournaments resolved", { ...tick.resolved });
       if (tick.pushed.pushed > 0) log("info", "tournaments promoted", { ...tick.pushed });
+      const mq = await runMergeQueueTick(env, ctx);
+      if (mq.started > 0 || mq.landed > 0 || mq.failed > 0 || mq.requeued > 0) {
+        log("info", "merge queue tick finished", { ...mq });
+      }
     } catch (err) {
       log("error", "scheduled handler failed", { error: String(err) });
     }

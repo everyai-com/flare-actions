@@ -56,6 +56,9 @@ function usage(): never {
       "  cli tests <runId>                           per-test results and failing tests",
       "  cli selection <runId>                       smart test selection: what was skipped and why",
       "  cli attestation <receiptId>                 verify a reused-verdict receipt",
+      "  cli mergequeue enqueue <repo> <pr> <sha>   queue a PR for verify-then-land (--base, --agent)",
+      "  cli mergequeue status <repo>                queue entries + file-collision radar",
+      "  cli mergequeue cancel <entryId>             cancel a queued/verifying entry",
       "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
       "  cli queue [labels]                        live queue + projected claim order (admin)",
       "  cli cache list [prefix]                     list cache entries (admin)",
@@ -451,6 +454,48 @@ try {
       for (const j of a.jobs) {
         console.log(`  ${j.status} ${j.name}`);
       }
+    }
+  } else if (cmd === "mergequeue" && rest[0]) {
+    const sub = rest[0];
+    if (sub === "enqueue" && rest[1] && rest[2] && rest[3]) {
+      const pr = Number(rest[2]);
+      if (!Number.isInteger(pr) || pr < 1) {
+        console.error("pr must be a pull request number");
+        process.exit(2);
+      }
+      const takeFlag = (flag: string): string | undefined => {
+        const i = rest.indexOf(flag);
+        return i === -1 ? undefined : rest[i + 1];
+      };
+      const baseBranch = takeFlag("--base");
+      const agent = takeFlag("--agent");
+      const out = await client().enqueueMerge(rest[1], pr, rest[3], {
+        ...(baseBranch ? { baseBranch } : {}),
+        ...(agent ? { agent } : {}),
+      });
+      if (JSON_MODE) printJson("mergequeue", { action: "enqueue", repo: rest[1], pr, ...out });
+      else console.log(`enqueued ${rest[1]}#${pr} as ${out.id}`);
+    } else if (sub === "status" && rest[1]) {
+      const q = await client().getMergeQueue(rest[1]);
+      if (JSON_MODE) {
+        printJson("mergequeue", { action: "status", ...q });
+      } else if (q.entries.length === 0) {
+        console.log(`merge queue for ${rest[1]} is empty`);
+      } else {
+        for (const e of q.entries) {
+          console.log(`${e.status}\t#${e.pr}\t${e.headSha.slice(0, 7)}${e.agent ? `\t@${e.agent}` : ""}\t${e.note || "-"}\t${e.id.slice(0, 8)}`);
+        }
+        for (const c of q.collisions) {
+          console.log(`collision: #${c.prs[0]} x #${c.prs[1]}: ${c.paths.join(", ")}`);
+        }
+      }
+    } else if (sub === "cancel" && rest[1]) {
+      const out = await client().cancelMerge(rest[1]);
+      if (JSON_MODE) printJson("mergequeue", { action: "cancel", entryId: rest[1], ...out });
+      else console.log(out.cancelled ? `cancelled ${rest[1]}` : `${rest[1]} was already terminal`);
+    } else {
+      console.error("usage: cli mergequeue <enqueue <repo> <pr> <sha> [--base b] [--agent a] | status <repo> | cancel <entryId>>");
+      process.exit(2);
     }
   } else if (cmd === "egress" && rest[0]) {
     const e = await client().getRunEgress(rest[0]);

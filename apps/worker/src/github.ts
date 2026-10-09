@@ -333,6 +333,45 @@ export async function generateJitConfig(
   return { runnerId, jitConfig: data.encoded_jit_config };
 }
 
+// Merge queue: fold the base branch into the PR (the queue's "rebase
+// onto current head") and merge the PR on green. Both best-effort —
+// false/null parks the entry visibly, never throws.
+export async function updatePullRequestBranch(token: string, repo: string, pr: number): Promise<boolean> {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/pulls/${pr}/update-branch`, {
+      method: "PUT",
+      headers: githubHeaders(token),
+      body: JSON.stringify({}),
+    });
+    // 422 = already up to date or unmergeable; the verify-then-land
+    // checks decide, so only transport success counts here.
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function mergePullRequest(
+  token: string,
+  repo: string,
+  pr: number,
+  headSha: string,
+): Promise<{ merged: boolean; detail: string }> {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/pulls/${pr}/merge`, {
+      method: "PUT",
+      headers: githubHeaders(token),
+      body: JSON.stringify({ sha: headSha, merge_method: "merge" }),
+    });
+    const data = (await res.json().catch(() => null)) as { merged?: unknown; message?: unknown } | null;
+    if (res.ok && data?.merged === true) return { merged: true, detail: `PR #${pr} merged` };
+    const detail = typeof data?.message === "string" && data.message ? data.message.slice(0, 200) : `merge rejected (HTTP ${res.status})`;
+    return { merged: false, detail };
+  } catch {
+    return { merged: false, detail: "merge call failed" };
+  }
+}
+
 export async function deleteRunner(token: string, repo: string, runnerId: number): Promise<boolean> {
   try {
     const res = await fetch(`https://api.github.com/repos/${repo}/actions/runners/${runnerId}`, {

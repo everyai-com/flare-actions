@@ -156,9 +156,15 @@ The recurring pains, in practitioners' own terms:
       the recorded verdict with receipt id + audit row + digest note,
       `GET /v1/attestations/:id` re-verifies from the witness run,
       `cli attestation`; never reuses across repos)
-- [ ] Agent merge queue — serialize agent PRs against a moving main:
+- [x] Agent merge queue — serialize agent PRs against a moving main:
       rebase, verify, land, with collision detection across concurrent
       agents (generalizes the tournament collision radar)
+      (shipped Oct 8: `merge_queue` rows with per-PR status, one live
+      verification per repo on the per-minute tick, update-branch rebase
+      onto the current head, real-CI verify runs, merge-on-green with
+      re-queue when the base moves, file-collision radar over live
+      entries, `POST|GET /v1/merge-queue` + `DELETE /v1/merge-queue/:id`,
+      `cli mergequeue`, dashboard Merge queue tab — `docs/MERGE-QUEUE.md`)
 - [ ] Same-machine verify parity — `cli local` exists; remaining: mirror
       cloud runs exactly (images, cache keys) so "works on my machine"
       and "in CI" are the same sentence

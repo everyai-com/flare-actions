@@ -786,6 +786,126 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/merge-queue:
+    get:
+      tags: [runs]
+      operationId: listMergeQueue
+      summary: Merge queue entries for a repo, with the cross-PR collision radar
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: owner/name
+      responses:
+        '200':
+          description: Queue entries (newest first) plus live-entry file collisions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [repo, entries, collisions]
+                properties:
+                  repo:
+                    type: string
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MergeQueueEntry'
+                  collisions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MergeCollision'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [runs]
+      operationId: enqueueMerge
+      summary: Enqueue a PR for serialized verify-then-land
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, pr, headSha]
+              properties:
+                repo:
+                  type: string
+                  description: owner/name
+                pr:
+                  type: integer
+                  description: Pull request number
+                headSha:
+                  type: string
+                  description: PR head commit to verify
+                baseBranch:
+                  type: string
+                  description: Branch to land onto (default main)
+                agent:
+                  type: string
+                  description: Agent tag for attribution
+      responses:
+        '201':
+          description: Enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id:
+                    type: string
+                    description: Queue entry id (stable handle for cancel)
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: That PR already has a live queue entry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error:
+                    type: string
+  /v1/merge-queue/{entryId}:
+    delete:
+      tags: [runs]
+      operationId: cancelMerge
+      summary: Cancel a queued or verifying merge queue entry
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/MergeEntryId'
+      responses:
+        '200':
+          description: Cancel outcome (false when the entry was already terminal)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, cancelled]
+                properties:
+                  ok:
+                    type: boolean
+                  cancelled:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/jobs/next:
     get:
       tags: [jobs]
@@ -3200,6 +3320,13 @@ components:
       in: path
       required: true
       schema:
+        type: string
+    MergeEntryId:
+      name: entryId
+      in: path
+      required: true
+      schema:
+        type: string
     Limit50:
       name: limit
       in: query
@@ -3556,6 +3683,73 @@ components:
           type: string
           nullable: true
           description: Current status of the witness run (null when pruned)
+    MergeQueueEntry:
+      type: object
+      required: [id, repo, pr, baseBranch, headSha, baseSha, agent, status, runId, files, note, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          description: Queue entry id (stable handle for cancel)
+        repo:
+          type: string
+          description: owner/name
+        pr:
+          type: integer
+          description: Pull request number
+        baseBranch:
+          type: string
+          description: Branch the PR lands onto
+        headSha:
+          type: string
+          description: PR head commit under verification
+        baseSha:
+          type: string
+          description: Base head the entry is verified against (empty until first verify)
+        agent:
+          type: string
+          description: Agent tag for attribution (empty when untagged)
+        status:
+          type: string
+          enum: [queued, verifying, landed, failed, cancelled]
+        runId:
+          type: string
+          nullable: true
+          description: Live verification run (null when not verifying)
+        files:
+          type: array
+          items:
+            type: string
+          description: PR file list feeding the collision radar (empty = unknown)
+        note:
+          type: string
+          description: Human-visible state (verify target, re-queue reason, land outcome)
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+    MergeCollision:
+      type: object
+      required: [entries, prs, paths]
+      properties:
+        entries:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            type: string
+          description: Colliding queue entry ids
+        prs:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            type: integer
+          description: Colliding PR numbers
+        paths:
+          type: array
+          items:
+            type: string
+          description: Shared files (bounded to 10)
     DigestSelection:
       type: object
       required: [mode, reason, selected, skipped]

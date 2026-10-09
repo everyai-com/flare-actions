@@ -215,6 +215,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <button id="tabTournaments">Tournaments</button>
 <button id="tabSearch">Search</button>
 <button id="tabFlaky">Flaky</button>
+<button id="tabMerge">Merge queue</button>
 <button id="tabApps">Apps</button>
 <button id="tabAccess">Access</button>
 <button id="tabSettings">Settings</button>
@@ -496,6 +497,24 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <button type="submit">Quarantine</button>
 </form>
 </section>
+<section id="mergePane" class="card" hidden>
+<h2>Merge queue</h2>
+<p class="muted">Agent PRs land one at a time: each entry rebases onto the current head, verifies with real CI, and merges on green. One verification runs per repo; entries whose base moves re-queue instead of landing stale.</p>
+<form id="mergeForm" class="inline">
+<input id="mergeRepo" placeholder="owner/repo" maxlength="100" aria-label="Repository">
+<button type="submit">Load</button>
+</form>
+<p id="mergeErr" class="err"></p>
+<h3>Entries</h3>
+<div class="table-scroll"><table><thead><tr><th>PR</th><th>Status</th><th>Agent</th><th>Head</th><th>Note</th><th></th></tr></thead><tbody id="mergeBody"></tbody></table></div>
+<h3>Collisions</h3>
+<p class="muted">Live entries touching the same files — land order matters here.</p>
+<div id="mergeCollisions"></div>
+<form id="mergeEnqueueForm" class="inline">
+<input id="mergePr" placeholder="PR number" maxlength="7" size="10" aria-label="PR number">
+<input id="mergeSha" placeholder="head SHA" maxlength="64" size="16" aria-label="Head SHA">
+<button type="submit">Enqueue</button>
+</form>
 <section id="appsPane" class="card" hidden>
 <h2>My apps</h2>
 <p class="muted">OAuth apps you authorized on the MCP endpoint (Claude, ChatGPT, Cursor, …). Revoking disconnects the app immediately.</p>
@@ -973,6 +992,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
   var tabTournaments = document.getElementById("tabTournaments");
   var tabSearch = document.getElementById("tabSearch");
   var tabFlaky = document.getElementById("tabFlaky");
+  var tabMerge = document.getElementById("tabMerge");
   var tabApps = document.getElementById("tabApps");
   var tabAccess = document.getElementById("tabAccess");
   var tabSettings = document.getElementById("tabSettings");
@@ -980,6 +1000,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
   var tournamentsPane = document.getElementById("tournamentsPane");
   var searchPane = document.getElementById("searchPane");
   var flakyPane = document.getElementById("flakyPane");
+  var mergePane = document.getElementById("mergePane");
   var appsPane = document.getElementById("appsPane");
   var accessPane = document.getElementById("accessPane");
   var settingsPane = document.getElementById("settingsPane");
@@ -988,6 +1009,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     tabTournaments.className = name === "tournaments" ? "active" : "";
     tabSearch.className = name === "search" ? "active" : "";
     tabFlaky.className = name === "flaky" ? "active" : "";
+    tabMerge.className = name === "merge" ? "active" : "";
     tabApps.className = name === "apps" ? "active" : "";
     tabAccess.className = name === "access" ? "active" : "";
     tabSettings.className = name === "settings" ? "active" : "";
@@ -995,6 +1017,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     tournamentsPane.hidden = name !== "tournaments";
     searchPane.hidden = name !== "search";
     flakyPane.hidden = name !== "flaky";
+    mergePane.hidden = name !== "merge";
     appsPane.hidden = name !== "apps";
     accessPane.hidden = name !== "access";
     settingsPane.hidden = name !== "settings";
@@ -1237,6 +1260,73 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       });
     }, function (e) {
       err.textContent = (e && e.message) || "Quarantine list failed";
+    });
+  }
+  tabMerge.addEventListener("click", function () { selectTab("merge"); });
+  document.getElementById("mergeForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    loadMergeQueue();
+  });
+  document.getElementById("mergeEnqueueForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var repo = document.getElementById("mergeRepo").value.trim();
+    var pr = Number(document.getElementById("mergePr").value.trim());
+    var headSha = document.getElementById("mergeSha").value.trim();
+    var err = document.getElementById("mergeErr");
+    err.textContent = "";
+    if (!repo || !Number.isInteger(pr) || pr < 1 || !headSha) { err.textContent = "repo, PR number, and head SHA are required"; return; }
+    api("/v1/merge-queue", { method: "POST", body: JSON.stringify({ repo: repo, pr: pr, headSha: headSha }) }).then(function () {
+      document.getElementById("mergePr").value = "";
+      document.getElementById("mergeSha").value = "";
+      loadMergeQueue();
+    }, function (e) {
+      err.textContent = (e && e.message) || "Enqueue failed";
+    });
+  });
+  function loadMergeQueue() {
+    var repo = document.getElementById("mergeRepo").value.trim();
+    var err = document.getElementById("mergeErr");
+    var body = document.getElementById("mergeBody");
+    var radar = document.getElementById("mergeCollisions");
+    err.textContent = "";
+    body.textContent = "";
+    radar.textContent = "";
+    if (!repo) return;
+    api("/v1/merge-queue?repo=" + encodeURIComponent(repo)).then(function (res) {
+      var entries = (res && res.entries) || [];
+      if (entries.length === 0) {
+        var empty = el("tr"); var td = el("td", "Queue is empty."); td.colSpan = 6; empty.appendChild(td); body.appendChild(empty);
+      }
+      entries.forEach(function (e) {
+        var tr = el("tr");
+        tr.appendChild(el("td", "#" + e.pr));
+        tr.appendChild(el("td", e.status));
+        tr.appendChild(el("td", e.agent || "-"));
+        var head = el("td", (e.headSha || "").slice(0, 7)); head.className = "mono"; tr.appendChild(head);
+        tr.appendChild(el("td", e.note || "-"));
+        var act = el("td");
+        if (e.status === "queued" || e.status === "verifying") {
+          var btn = el("button", "Cancel");
+          btn.className = "ghost";
+          btn.addEventListener("click", function () {
+            api("/v1/merge-queue/" + encodeURIComponent(e.id), { method: "DELETE" }).then(loadMergeQueue, function (fail) {
+              err.textContent = (fail && fail.message) || "Cancel failed";
+            });
+          });
+          act.appendChild(btn);
+        }
+        tr.appendChild(act);
+        body.appendChild(tr);
+      });
+      var collisions = (res && res.collisions) || [];
+      if (collisions.length === 0) { radar.textContent = "No file collisions between live entries."; return; }
+      collisions.forEach(function (c) {
+        var row = el("p", "#" + c.prs[0] + " x #" + c.prs[1] + ": " + (c.paths || []).join(", "));
+        row.className = "mono";
+        radar.appendChild(row);
+      });
+    }, function (e) {
+      err.textContent = (e && e.message) || "Merge queue failed";
     });
   }
   tabAccess.addEventListener("click", function () { selectTab("access"); loadTokens(); loadUsers(); loadAudit(); loadOAuthGrants(); });

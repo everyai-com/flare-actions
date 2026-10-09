@@ -366,6 +366,36 @@ export interface FlareAttestation {
   runStatus: string | null;
 }
 
+// Agent merge queue: one serialized verify-then-land lane per repo,
+// plus the cross-PR collision radar (shared files between live entries).
+export interface FlareMergeEntry {
+  id: string;
+  repo: string;
+  pr: number;
+  baseBranch: string;
+  headSha: string;
+  baseSha: string;
+  agent: string;
+  status: string;
+  runId: string | null;
+  files: string[];
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FlareMergeCollision {
+  entries: [string, string];
+  prs: [number, number];
+  paths: string[];
+}
+
+export interface FlareMergeQueue {
+  repo: string;
+  entries: FlareMergeEntry[];
+  collisions: FlareMergeCollision[];
+}
+
 // Smart test selection claim decision: the server owns the full-suite
 // safety net and the failure history; the executor walks its checkout.
 export interface FlareClaimSelection {
@@ -774,6 +804,33 @@ export class FlareClient {
     const res = await this.call(`/v1/attestations/${encodeURIComponent(receiptId)}`);
     if (!res.ok) await this.throwApiError("getAttestation", res);
     return (await res.json()) as FlareAttestation;
+  }
+
+  async enqueueMerge(
+    repo: string,
+    pr: number,
+    headSha: string,
+    opts?: { baseBranch?: string; agent?: string },
+  ): Promise<{ id: string }> {
+    const res = await this.call("/v1/merge-queue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo, pr, headSha, ...opts }),
+    });
+    if (!res.ok) await this.throwApiError("enqueueMerge", res);
+    return (await res.json()) as { id: string };
+  }
+
+  async getMergeQueue(repo: string): Promise<FlareMergeQueue> {
+    const res = await this.call(`/v1/merge-queue?repo=${encodeURIComponent(repo)}`);
+    if (!res.ok) await this.throwApiError("getMergeQueue", res);
+    return (await res.json()) as FlareMergeQueue;
+  }
+
+  async cancelMerge(entryId: string): Promise<{ ok: boolean; cancelled: boolean }> {
+    const res = await this.call(`/v1/merge-queue/${encodeURIComponent(entryId)}`, { method: "DELETE" });
+    if (!res.ok) await this.throwApiError("cancelMerge", res);
+    return (await res.json()) as { ok: boolean; cancelled: boolean };
   }
 
   // Liveness proof while a job runs: servers requeue running jobs that

@@ -8,6 +8,16 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Agent merge queue: agent PRs land one at a time against a moving
+  main — enqueue, rebase onto the current head (update-branch), verify
+  with a real CI run, merge on green. One live verification per repo
+  (per-minute tick); entries whose base moves re-queue for a fresh
+  verify instead of landing stale; GitHub failures park visibly in the
+  entry note, never 500. A file-collision radar generalizes the
+  tournament radar to queued PRs. `POST|GET /v1/merge-queue`,
+  `DELETE /v1/merge-queue/:id`, `cli mergequeue
+  <enqueue|status|cancel>`, and a dashboard Merge queue tab
+  (`docs/MERGE-QUEUE.md`).
 - Attestation (content-addressed verdict reuse): dispatch computes a
   stable SHA-256 over repo + sha + CI profile + job set (names,
   definitions, labels), terminal runs file verdict receipts in D1, and
