@@ -55,6 +55,11 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("supersedeCheck");
   });
 
+  it("wires the per-agent fair-share cap", () => {
+    expect(DASHBOARD_HTML).toContain("agentShareInput");
+    expect(DASHBOARD_HTML).toContain("fairSharePerAgent");
+  });
+
   it("wires the kill switch multiplier and paused resume", () => {
     expect(DASHBOARD_HTML).toContain("killMultiplierInput");
     expect(DASHBOARD_HTML).toContain("pausedBox");

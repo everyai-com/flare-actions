@@ -6,7 +6,7 @@ import { jobDurationMs } from "./cost";
 import type { RunDigest } from "./digest";
 import { runGenerateWithStatus } from "./generate";
 import { getTournamentBoard } from "./tournaments";
-import { SETTING_KEYS } from "./settings";
+import { SETTING_KEYS, parseAgentTag } from "./settings";
 import type { AiBinding } from "./triage";
 
 // MCP server over Streamable HTTP: POST JSON-RPC to /mcp. Stateless —
@@ -125,6 +125,16 @@ export interface McpDispatchInput {
   ref?: string;
   pipeline?: string;
   priority?: number;
+  agent?: string;
+}
+
+// The X-Flare-Agent header doubles as the run's identity tag — but only
+// when it is already a clean slug. Free-form User-Agent strings stay
+// out of runs.agent (audit keeps the raw value either way).
+export function mcpAgentTag(header: string | undefined): string | undefined {
+  if (!header) return undefined;
+  const tag = parseAgentTag(header);
+  return "agent" in tag ? tag.agent : undefined;
 }
 
 export interface McpDeps {
@@ -284,7 +294,7 @@ async function execTool(name: string, args: Record<string, unknown>, deps: McpDe
       if (priority === null || (priority !== undefined && (!Number.isInteger(priority) || priority < 0 || priority > 10))) {
         return fail(id, -32602, "priority must be an integer 0-10");
       }
-      const dispatched = await deps.dispatchRun({ repo, sha, ref, pipeline, priority });
+      const dispatched = await deps.dispatchRun({ repo, sha, ref, pipeline, priority, agent: mcpAgentTag(deps.agent) });
       return toolResult(id, dispatched);
     }
     case "run_and_wait": {
@@ -310,7 +320,7 @@ async function execTool(name: string, args: Record<string, unknown>, deps: McpDe
       if (timeoutSeconds === null || timeoutSeconds < 1 || timeoutSeconds > 90) {
         return fail(id, -32602, "timeoutSeconds must be 1-90");
       }
-      const dispatched = await deps.dispatchRun({ repo, sha, ref, pipeline, priority });
+      const dispatched = await deps.dispatchRun({ repo, sha, ref, pipeline, priority, agent: mcpAgentTag(deps.agent) });
       const waited = await deps.waitForRun(dispatched.runId, Math.floor(timeoutSeconds) * 1000);
       const digest = await deps.digestRun(dispatched.runId);
       return toolResult(id, {

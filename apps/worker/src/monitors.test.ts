@@ -41,6 +41,7 @@ const run: RunRow = {
   pr_comment_id: null,
   heal_branch: null,
   heal_pr_url: null,
+  agent: "",
   status: "failure",
   created_at: "2026-10-01T09:00:00.000Z",
   updated_at: "2026-10-01T09:02:30.000Z",

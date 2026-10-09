@@ -20,6 +20,7 @@ export interface RunRow {
   pr_comment_id: number | null;
   heal_branch: string | null;
   heal_pr_url: string | null;
+  agent: string;
   status: string;
   created_at: string;
   updated_at: string;
@@ -189,12 +190,13 @@ export async function createRun(
     pipelineSource?: string;
     changedFiles?: string;
     prNumber?: number | null;
+    agent?: string;
   },
 ): Promise<void> {
   const now = nowIso();
   await db
     .prepare(
-      "INSERT INTO runs (id, repo, sha, event, installation_id, branch, source, pipeline_source, changed_files, pr_number, pr_comment_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'queued', ?, ?)",
+      "INSERT INTO runs (id, repo, sha, event, installation_id, branch, source, pipeline_source, changed_files, pr_number, pr_comment_id, agent, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 'queued', ?, ?)",
     )
     .bind(
       run.id,
@@ -207,6 +209,7 @@ export async function createRun(
       run.pipelineSource ?? "",
       run.changedFiles ?? "",
       run.prNumber ?? null,
+      run.agent ?? "",
       now,
       now,
     )
@@ -222,11 +225,22 @@ export async function listRuns(
   limit = 50,
   offset = 0,
   allowedRepos: string[] = [],
+  agent?: string,
 ): Promise<RunRow[]> {
-  const filter = allowedRepos.length > 0 ? ` WHERE repo IN (${allowedRepos.map(() => "?").join(", ")})` : "";
+  const clauses: string[] = [];
+  const binds: unknown[] = [];
+  if (allowedRepos.length > 0) {
+    clauses.push(`repo IN (${allowedRepos.map(() => "?").join(", ")})`);
+    binds.push(...allowedRepos);
+  }
+  if (agent) {
+    clauses.push("agent = ?");
+    binds.push(agent);
+  }
+  const filter = clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : "";
   const res = await db
     .prepare(`SELECT * FROM runs${filter} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
-    .bind(...allowedRepos, limit, offset)
+    .bind(...binds, limit, offset)
     .all<RunRow>();
   return res.results;
 }
@@ -511,6 +525,7 @@ export type JobWithSource = JobRow & {
   source: string | null;
   branch: string | null;
   changed_files: string | null;
+  agent: string;
 };
 
 // Poll-and-claim loop: walk matching queued jobs highest-priority-first
@@ -524,7 +539,7 @@ export async function claimNextJob(
   db: Db,
   runnerLabels: string[] = [],
   allowedRepos: string[] = [],
-  opts: { fairSharePerRepo?: number } = {},
+  opts: { fairSharePerRepo?: number; fairSharePerAgent?: number } = {},
 ): Promise<JobWithSource | null> {
   // Artifacts runs execute seats-only (BYO runners check out from GitHub
   // and cannot reach Artifacts remotes), so both scans below exclude
@@ -544,6 +559,18 @@ export async function claimNextJob(
       .all<{ repo: string; c: number }>();
     for (const row of counts.results) runningByRepo.set(row.repo, row.c);
   }
+  // Per-agent cap: same idea keyed on the run's agent tag. Untagged
+  // runs ('') bypass it — humans and webhooks are never throttled by
+  // an agent's burst.
+  const agentCap = opts.fairSharePerAgent ?? 0;
+  const runningByAgent = new Map<string, number>();
+  if (agentCap > 0) {
+    const counts = await db
+      .prepare("SELECT r.agent AS agent, COUNT(*) AS c FROM jobs j JOIN runs r ON r.id = j.run_id WHERE j.status = 'running' AND r.agent != '' GROUP BY r.agent")
+      .bind()
+      .all<{ agent: string; c: number }>();
+    for (const row of counts.results) runningByAgent.set(row.agent, row.c);
+  }
   let afterPriority = 0;
   let afterPriorMs = 0;
   let afterCreated: string | null = null;
@@ -554,14 +581,14 @@ export async function claimNextJob(
       afterCreated === null
         ? await db
             .prepare(
-              `SELECT j.*, r.repo, r.sha, r.source, r.branch, r.changed_files FROM jobs j JOIN runs r ON r.id = j.run_id
+              `SELECT j.*, r.repo, r.sha, r.source, r.branch, r.changed_files, r.agent FROM jobs j JOIN runs r ON r.id = j.run_id
                WHERE j.status = 'queued'${repoFilter} ${noArtifacts} ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
             .bind(...allowedRepos, CLAIM_PAGE_SIZE)
             .all<JobWithSource>()
         : await db
             .prepare(
-              `SELECT j.*, r.repo, r.sha, r.source, r.branch, r.changed_files FROM jobs j JOIN runs r ON r.id = j.run_id
+              `SELECT j.*, r.repo, r.sha, r.source, r.branch, r.changed_files, r.agent FROM jobs j JOIN runs r ON r.id = j.run_id
                WHERE j.status = 'queued'${repoFilter} ${noArtifacts} AND (j.priority < ? OR (j.priority = ? AND (j.prior_ms < ? OR (j.prior_ms = ? AND (j.created_at > ? OR (j.created_at = ? AND j.id > ?))))))
                ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
@@ -571,6 +598,7 @@ export async function claimNextJob(
     for (const job of res.results) {
       if (!labelsMatch(job.labels ?? "", runnerLabels)) continue;
       if (cap > 0 && (runningByRepo.get(job.repo) ?? 0) >= cap) continue;
+      if (agentCap > 0 && job.agent && (runningByAgent.get(job.agent) ?? 0) >= agentCap) continue;
       if (await claimJob(db, job.id)) return { ...job, status: "running" };
     }
     const last = res.results[res.results.length - 1];
@@ -592,6 +620,7 @@ export interface QueuedJobRow {
   labels: string;
   created_at: string;
   repo: string;
+  agent: string;
 }
 
 // The live queue in claim order (priority, longest-predicted, oldest).
@@ -599,7 +628,7 @@ export interface QueuedJobRow {
 export async function listQueuedJobs(db: Db, limit = 200): Promise<QueuedJobRow[]> {
   const res = await db
     .prepare(
-      `SELECT j.id, j.run_id, j.name, j.priority, j.prior_ms, j.labels, j.created_at, r.repo FROM jobs j JOIN runs r ON r.id = j.run_id
+      `SELECT j.id, j.run_id, j.name, j.priority, j.prior_ms, j.labels, j.created_at, r.repo, r.agent FROM jobs j JOIN runs r ON r.id = j.run_id
        WHERE j.status = 'queued' ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
     )
     .bind(Math.min(Math.max(limit, 1), 500))

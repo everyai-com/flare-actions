@@ -20,10 +20,12 @@ export const SCHEMA_STATEMENTS = [
     heal_branch TEXT,
     heal_pr_url TEXT,
     status TEXT NOT NULL DEFAULT 'queued',
+    agent TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_runs_status_created ON runs(status, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agent)`,
   `CREATE INDEX IF NOT EXISTS idx_runs_repo_branch ON runs(repo, branch)`,
   `CREATE TABLE IF NOT EXISTS webhook_deliveries (
     id TEXT PRIMARY KEY,
@@ -310,6 +312,7 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE runs ADD COLUMN heal_pr_url TEXT`,
   `ALTER TABLE runs ADD COLUMN pipeline_source TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE runs ADD COLUMN changed_files TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE runs ADD COLUMN agent TEXT NOT NULL DEFAULT ''`,
 ];
 
 let schemaPromise: Promise<void> | null = null;

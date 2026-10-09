@@ -35,6 +35,11 @@ tagged on `main` (`v0.1.0` is the first).
   `GET|DELETE /v1/admin/paused` lists (with per-actor attribution) and
   resumes, `cli paused` / `cli resume`, a dashboard Budgets resume
   button, and dry-run `paused` reporting.
+- Per-agent identity + concurrency caps: dispatch tags runs with an
+  `agent` slug (API, `cli run|dispatch --agent`, MCP `X-Flare-Agent`
+  header fallback), `fairSharePerAgent` caps concurrently running jobs
+  per agent (untagged runs bypass), `GET /v1/runs?agent=`, `cli runs
+  [agent]`, and agent tags in the queue view.
 - Tailscale-style runner pairing: dashboard Access mints a single-use
   10-minute code, `npm run runner -- --pair CODE` exchanges it for a
   runner token, writes `.env` (0600, merged), and starts polling —

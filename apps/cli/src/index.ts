@@ -32,11 +32,12 @@ function usage(): never {
   console.log(
     [
       "usage:",
-      "  cli runs                                  list recent runs",
+      "  cli runs [agent]                          list recent runs, optionally one agent's",
       "  cli logs <runId>                           show run jobs, steps, triage, logs",
       "  cli explain <runId>                        one narrative: verdict, failures, next command",
       "  cli local [job] [--file flare.yml]         run the pipeline in this directory (no server, warm cache)",
       "  cli run <repo> <sha|branch|tag> [ref]      dispatch, wait, print the compact digest (exit 1 on failure)",
+      "  run/dispatch accept --agent <tag>          tag the run for per-agent caps + attribution",
       "  cli run <repo> --source [ref]              upload the working tree and run it (no commit needed)",
       "  append --dry-run to run/dispatch           plan the fan-out (queued/blocked/budget) without creating a run",
       "  cli watch <runId>                          wait for a run and print the compact digest",
@@ -109,6 +110,19 @@ function takePriority(args: string[]): { args: string[]; priority?: number } {
   return { args: out, priority: value };
 }
 
+function takeAgent(args: string[]): { args: string[]; agent?: string } {
+  const out = args.slice();
+  const i = out.indexOf("--agent");
+  if (i === -1) return { args: out };
+  const value = out[i + 1] ?? "";
+  if (!/^[\w.-]{1,64}$/.test(value)) {
+    console.error("--agent must be 1-64 chars: letters, digits, dot, dash, underscore");
+    process.exit(2);
+  }
+  out.splice(i, 2);
+  return { args: out, agent: value };
+}
+
 function printDigest(d: FlareRunDigest): void {
   const secs = d.durationMs === null ? "?" : `${Math.round(d.durationMs / 1000)}s`;
   console.log(`${d.status}  ${d.repo}@${d.sha.slice(0, 7)} (${d.branch || "-"}, ${secs})  ${d.failedJobs}/${d.totalJobs} failed`);
@@ -144,9 +158,9 @@ async function waitAndDigest(c: FlareClient, runId: string): Promise<FlareRunDig
 
 try {
   if (cmd === "runs") {
-    const runs = await client().listRuns();
-    if (JSON_MODE) printJson("runs", { runs });
-    else for (const r of runs) console.log(`${r.status}\t${r.id}\t${r.repo}@${r.sha.slice(0, 7)}\t${r.event}`);
+    const runs = await client().listRuns(rest[0]);
+    if (JSON_MODE) printJson("runs", { runs, agent: rest[0] ?? null });
+    else for (const r of runs) console.log(`${r.status}\t${r.id}\t${r.repo}@${r.sha.slice(0, 7)}\t${r.event}${r.agent ? `\t@${r.agent}` : ""}`);
   } else if (cmd === "logs" && rest[0]) {
     const { run, jobs } = await client().getRun(rest[0]);
     if (JSON_MODE) {
@@ -191,8 +205,11 @@ try {
     const result = await runLocal({ cwd: process.cwd(), file, job: positional[0], ...(JSON_MODE ? { quiet: true } : {}) });
     if (JSON_MODE) printJson("local", result);
     process.exitCode = result.ok ? 0 : 1;
+      if (JSON_MODE) printJson("local", result);
+      process.exitCode = result.ok ? 0 : 1;
   } else if (cmd === "run" && rest[0]) {
-    const { args, priority } = takePriority(rest);
+    const { args: noPriority, priority } = takePriority(rest);
+    const { args, agent } = takeAgent(noPriority);
     const sourceMode = args.includes("--source");
     const dryRun = args.includes("--dry-run");
     const positional = args.filter((a) => a !== "--source" && a !== "--dry-run");
@@ -218,6 +235,7 @@ try {
         ref: positional[1],
         cwd: process.cwd(),
         ...(priority !== undefined ? { priority } : {}),
+        ...(agent !== undefined ? { agent } : {}),
       });
       if (!JSON_MODE) console.error(`source run ${out.runId} dispatched (upload ${out.sourceId.slice(0, 8)}…) — waiting for the digest…`);
       const digest = await waitAndDigest(client(), out.runId);
@@ -227,6 +245,7 @@ try {
       const out = await client().dispatch(repo, positional[1] as string, {
         ...(positional[2] ? { ref: positional[2] } : {}),
         ...(priority !== undefined ? { priority } : {}),
+        ...(agent !== undefined ? { agent } : {}),
       });
       if (!JSON_MODE) console.error(`run ${out.runId} dispatched — waiting for the digest…`);
       const digest = await waitAndDigest(client(), out.runId);
@@ -242,7 +261,8 @@ try {
     if (JSON_MODE) printJson("cancel", { ok: true, cancelled });
     else console.log(JSON.stringify({ ok: true, cancelled }));
   } else if (cmd === "dispatch" && rest[0] && rest[1]) {
-    const { args, priority } = takePriority(rest);
+    const { args: noPriority, priority } = takePriority(rest);
+    const { args, agent } = takeAgent(noPriority);
     const positional = args.filter((a) => a !== "--dry-run");
     if (!positional[0] || !positional[1]) usage();
     if (args.includes("--dry-run")) {
@@ -255,6 +275,7 @@ try {
       const out = await client().dispatch(positional[0], positional[1], {
         ...(positional[2] ? { ref: positional[2] } : {}),
         ...(priority !== undefined ? { priority } : {}),
+        ...(agent !== undefined ? { agent } : {}),
       });
       if (JSON_MODE) printJson("dispatch", out);
       else console.log(JSON.stringify(out));
@@ -392,11 +413,12 @@ try {
       q.fairSharePerRepo,
     );
     if (JSON_MODE) {
-      printJson("queue", { jobs: q.jobs, fairSharePerRepo: q.fairSharePerRepo, labels, projectedOrder: claims });
+      printJson("queue", { jobs: q.jobs, fairSharePerRepo: q.fairSharePerRepo, fairSharePerAgent: q.fairSharePerAgent, labels, projectedOrder: claims });
     } else {
-      console.log(`${q.jobs.length} queued (fair-share cap: ${q.fairSharePerRepo === 0 ? "off" : `${q.fairSharePerRepo}/repo`})`);
+      const caps = [`repo: ${q.fairSharePerRepo === 0 ? "off" : q.fairSharePerRepo}`, `agent: ${q.fairSharePerAgent === 0 ? "off" : q.fairSharePerAgent}`];
+      console.log(`${q.jobs.length} queued (fair-share ${caps.join(", ")})`);
       for (const j of q.jobs) {
-        console.log(`  p${j.priority} ${j.repo} ${j.name} [${j.labels || "any"}] ${j.id}`);
+        console.log(`  p${j.priority} ${j.repo} ${j.name}${j.agent ? ` @${j.agent}` : ""} [${j.labels || "any"}] ${j.id}`);
       }
       console.log(`projected order for [${labels.join(",") || "unlabeled-only"}]:`);
       for (const c of claims) {

@@ -128,6 +128,13 @@ jobs:
   bypass the shim (as with attribution), and connectionless UDP is
   unenforced. BYO runners and `cli local` fail closed on the key.
   Absent the key, seats observe without enforcing.
+Two splits remain by design:
+- **Images**: `container:` jobs pull the same ref through docker on
+  both sides (seats hand such jobs to BYO). Without `container:`,
+  steps run natively — on your kernel locally, on the seat's Linux or
+  the runner host in the cloud. Pin exact tags or digests: `:latest`
+  (or an untagged ref) can resolve to different bytes per pull.
+- **Cache keys**: the key string is identical and validated by the
 
 ## Limits
 

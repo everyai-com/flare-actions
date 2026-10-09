@@ -14,7 +14,7 @@ function runRow(over: Partial<RunRow> = {}): RunRow {
     pr_number: null,
     pr_comment_id: null,
     heal_branch: null,
-    heal_pr_url: null,
+    heal_pr_url: null, agent: "",
     status: "failure",
     created_at: "2026-10-02T10:00:00.000Z",
     updated_at: "2026-10-02T10:01:30.000Z",

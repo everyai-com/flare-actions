@@ -3,9 +3,11 @@ import {
   isBadgeHiddenRepo,
   parseAiGatewayId,
   parseBadgeHiddenRepos,
+  parseAgentTag,
   parseBudgetMinutes,
   parseBudgetMode,
   parseBudgetKillMultiplier,
+  parseFairSharePerAgent,
   parsePausedRepos,
   parseFairSharePerRepo,
   parseGithubRunnerLabels,
@@ -232,6 +234,25 @@ describe("budget guardrail settings", () => {
     expect(parsePausedRepos('{"o/r":"2026-10-08T00:00:00.000Z","bad":1}')).toEqual({ "o/r": "2026-10-08T00:00:00.000Z" });
   });
 
+  it("parses the per-agent fair-share cap", () => {
+    expect(parseFairSharePerAgent(0)).toEqual({ cap: 0 });
+    expect(parseFairSharePerAgent(3)).toEqual({ cap: 3 });
+    expect(parseFairSharePerAgent("2")).toEqual({ cap: 2 });
+    expect("error" in parseFairSharePerAgent(null)).toBe(true);
+    expect("error" in parseFairSharePerAgent("")).toBe(true);
+    expect("error" in parseFairSharePerAgent(-1)).toBe(true);
+    expect("error" in parseFairSharePerAgent(101)).toBe(true);
+    expect("error" in parseFairSharePerAgent("nope")).toBe(true);
+  });
+
+  it("parses agent identity tags", () => {
+    expect(parseAgentTag("atlas-1")).toEqual({ agent: "atlas-1" });
+    expect(parseAgentTag("a.b_c-d")).toEqual({ agent: "a.b_c-d" });
+    expect("error" in parseAgentTag("")).toBe(true);
+    expect("error" in parseAgentTag("has space")).toBe(true);
+    expect("error" in parseAgentTag("x".repeat(65))).toBe(true);
+    expect("error" in parseAgentTag(null)).toBe(true);
+  });
 });
 
 describe("github runner mode settings", () => {

@@ -166,9 +166,14 @@ The recurring pains, in practitioners' own terms:
       load phase — queued/blocked + reasons, priors, live groups,
       budget `wouldBlock` — with zero writes; `--dry-run` on `cli run` /
       `cli dispatch`, incl. `--source` from the local `flare.yml`)
-- [ ] Per-agent concurrency caps + per-agent run isolation (per-repo
+- [x] Per-agent concurrency caps + per-agent run isolation (per-repo
       fair-share caps shipped; identity is the missing half — also gates
       anomaly attribution, see Known gaps)
+      (shipped Oct 8: `agent` tag on runs via API/CLI/MCP-header,
+      `fair_share_per_agent` claim cap with untagged bypass,
+      `GET /v1/runs?agent=`, `cli runs [agent]`, queue agent tags;
+      isolation = caps + attribution + filter — dedicated runner
+      partitions stay future work)
 
 ### Normal-person UX
 

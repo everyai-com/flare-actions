@@ -371,6 +371,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <p class="muted" id="schedInfo"></p>
 <form id="schedForm" class="inline">
 <input id="fairShareInput" placeholder="fair share per repo (0 = off)" maxlength="3" size="8">
+<input id="agentShareInput" placeholder="fair share per agent (0 = off)" maxlength="3" size="8" aria-label="Fair share per agent">
 <input id="budgetInput" placeholder="monthly budget: owner/name=1200, other=600" maxlength="512" size="40" aria-label="Monthly compute budgets">
 <select id="budgetModeSelect" aria-label="Budget mode"><option value="warn">warn over budget</option><option value="block">block over budget</option></select>
 <input id="killMultiplierInput" placeholder="kill at Nx cap (0 = off)" maxlength="3" size="8" aria-label="Kill switch multiplier">
@@ -1896,6 +1897,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
         (s.aiGatewaySource === "env" ? ", managed via environment." : ".") +
         " Web search grounds triage in live results (bills gateway credits).";
       document.getElementById("fairShareInput").value = String(s.fairSharePerRepo ?? 0);
+      document.getElementById("agentShareInput").value = String(s.fairSharePerAgent ?? 0);
       var budgetPairs = [];
       try {
         var parsedBudget = JSON.parse(s.budgetMinutes || "{}");
@@ -2063,7 +2065,12 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       err.textContent = "Fair share must be an integer 0-100.";
       return;
     }
+    var agentCapRaw = document.getElementById("agentShareInput").value.trim();
+    var agentCap = agentCapRaw === "" ? 0 : parseInt(agentCapRaw, 10);
+    if (isNaN(agentCap) || agentCap < 0 || agentCap > 100) {
+      err.textContent = "Per-agent share must be an integer 0-100.";
       return;
+    }
     var killRaw = document.getElementById("killMultiplierInput").value.trim();
     var kill = killRaw === "" ? 0 : parseInt(killRaw, 10);
     if (isNaN(kill) || kill < 0 || kill > 100 || (killRaw !== "" && kill < 1)) {
@@ -2072,6 +2079,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     }
     var payload = {
       fairSharePerRepo: cap,
+      fairSharePerAgent: agentCap,
       budgetMinutes: document.getElementById("budgetInput").value.trim(),
       budgetMode: document.getElementById("budgetModeSelect").value,
       budgetKillMultiplier: kill,

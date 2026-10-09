@@ -18,8 +18,8 @@ import {
 } from "./db";
 
 function jobRow(
-  over: Partial<JobRow & { repo: string; sha: string; event: string }> = {},
-): JobRow & { repo: string; sha: string; event: string } {
+  over: Partial<JobRow & { repo: string; sha: string; event: string; agent: string }> = {},
+): JobRow & { repo: string; sha: string; event: string; agent: string } {
   return {
     id: "job-1",
     run_id: "run-1",
@@ -41,13 +41,14 @@ function jobRow(
     repo: "o/r",
     sha: "abc123",
     event: "push",
+    agent: "",
     ...over,
   };
 }
 
 // Routes only the SQL claimNextJob issues, against an in-memory queue.
 class QueueDb implements Db {
-  constructor(public jobs: (JobRow & { repo: string; sha: string; event: string })[]) {}
+  constructor(public jobs: (JobRow & { repo: string; sha: string; event: string; agent: string })[]) {}
 
   // Ids whose conditional claim loses (poller race simulation).
   raced = new Set<string>();
@@ -58,7 +59,7 @@ class QueueDb implements Db {
     return {
       bind: (...values: unknown[]) => ({
         all: async <T,>(): Promise<{ results: T[] }> => {
-          if (norm.startsWith("SELECT j.*, r.repo, r.sha, r.source, r.branch, r.changed_files FROM jobs")) {
+          if (norm.startsWith("SELECT j.*, r.repo, r.sha, r.source, r.branch, r.changed_files, r.agent FROM jobs")) {
             this.selects += 1;
             return { results: this.select(norm, values) as T[] };
           }
@@ -68,6 +69,13 @@ class QueueDb implements Db {
               if (j.status === "running") counts.set(j.repo, (counts.get(j.repo) ?? 0) + 1);
             }
             return { results: [...counts].map(([repo, c]) => ({ repo, c })) as T[] };
+          }
+          if (norm.startsWith("SELECT r.agent AS agent, COUNT(*)")) {
+            const counts = new Map<string, number>();
+            for (const j of this.jobs) {
+              if (j.status === "running" && j.agent) counts.set(j.agent, (counts.get(j.agent) ?? 0) + 1);
+            }
+            return { results: [...counts].map(([agent, c]) => ({ agent, c })) as T[] };
           }
           throw new Error(`unrouted all: ${norm}`);
         },
@@ -276,6 +284,28 @@ describe("claimNextJob", () => {
     expect((await claimNextJob(new QueueDb(jobs()), [], [], { fairSharePerRepo: 1 }))?.id).toBe("job-b");
     // Cap 0 (default) keeps strict oldest-first across repos.
     expect((await claimNextJob(new QueueDb(jobs()), [], []))?.id).toBe("job-a");
+  });
+
+  it("skips agents at their fair-share running cap, untagged bypass", async () => {
+    const jobs = () => [
+      jobRow({ id: "job-busy", agent: "atlas", status: "running", created_at: "2026-10-02T09:00:00.000Z" }),
+      jobRow({ id: "job-a", agent: "atlas", created_at: "2026-10-02T09:30:00.000Z" }),
+      jobRow({ id: "job-b", agent: "boreas", created_at: "2026-10-02T10:00:00.000Z" }),
+      jobRow({ id: "job-human", agent: "", created_at: "2026-10-02T10:30:00.000Z" }),
+    ];
+    // Cap 1 with atlas already running: atlas waits, boreas flows.
+    expect((await claimNextJob(new QueueDb(jobs()), [], [], { fairSharePerAgent: 1 }))?.id).toBe("job-b");
+    // Cap 0 keeps strict oldest-first.
+    expect((await claimNextJob(new QueueDb(jobs()), [], []))?.id).toBe("job-a");
+  });
+
+  it("lets untagged jobs flow when every tagged agent is capped", async () => {
+    const jobs = () => [
+      jobRow({ id: "job-busy", agent: "atlas", status: "running", created_at: "2026-10-02T09:00:00.000Z" }),
+      jobRow({ id: "job-a", agent: "atlas", created_at: "2026-10-02T09:30:00.000Z" }),
+      jobRow({ id: "job-human", agent: "", created_at: "2026-10-02T10:30:00.000Z" }),
+    ];
+    expect((await claimNextJob(new QueueDb(jobs()), [], [], { fairSharePerAgent: 1 }))?.id).toBe("job-human");
   });
 });
 

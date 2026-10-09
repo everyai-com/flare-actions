@@ -55,6 +55,11 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Limit50'
         - $ref: '#/components/parameters/Offset'
+        - name: agent
+          in: query
+          schema:
+            type: string
+          description: Only runs tagged with this agent identity
       responses:
         '200':
           description: Paginated runs (repo-scoped tokens see only their repos)
@@ -108,6 +113,9 @@ paths:
                 source:
                   type: string
                   description: Uploaded working-tree id (requires inline pipeline)
+                agent:
+                  type: string
+                  description: Agent identity tag for per-agent caps + attribution (1-64 slug chars)
       responses:
         '202':
           description: Run accepted
@@ -1677,9 +1685,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [fairSharePerRepo, jobs]
+                required: [fairSharePerRepo, fairSharePerAgent, jobs]
                 properties:
                   fairSharePerRepo:
+                    type: integer
+                  fairSharePerAgent:
                     type: integer
                   jobs:
                     type: array
@@ -3258,6 +3268,8 @@ components:
           type: string
         event:
           type: string
+        agent:
+          type: string
         installation_id:
           type: integer
           nullable: true
@@ -3623,6 +3635,8 @@ components:
         name:
           type: string
         repo:
+          type: string
+        agent:
           type: string
         priority:
           type: integer

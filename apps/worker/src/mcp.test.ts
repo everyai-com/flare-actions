@@ -1,7 +1,7 @@
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { describe, expect, it } from "vitest";
 import type { Db } from "./db";
-import { buildMcpServer, mcpDiscovery, MCP_TOOLS, type McpDeps } from "./mcp";
+import { buildMcpServer, mcpAgentTag, mcpDiscovery, MCP_TOOLS, type McpDeps } from "./mcp";
 
 function fakeDb(routes: { all?: unknown[]; first?: unknown }): Db {
   return {
@@ -464,5 +464,15 @@ describe("mcp", () => {
       { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_runs", arguments: {} } },
     );
     expect(runs.filter((r) => r.sql.startsWith("INSERT INTO audit_log"))).toHaveLength(0);
+  });
+});
+
+describe("mcpAgentTag", () => {
+  it("passes clean slugs through and drops free-form user agents", () => {
+    expect(mcpAgentTag("atlas-1")).toBe("atlas-1");
+    expect(mcpAgentTag(undefined)).toBeUndefined();
+    expect(mcpAgentTag("")).toBeUndefined();
+    expect(mcpAgentTag("Mozilla/5.0 (Macintosh)")).toBeUndefined();
+    expect(mcpAgentTag("has space")).toBeUndefined();
   });
 });

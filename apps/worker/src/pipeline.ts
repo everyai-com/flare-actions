@@ -17,6 +17,9 @@ export interface PipelineStep {
 const STEP_CONDITION_FUNCTIONS = ["always()", "success()", "failure()", "cancelled()"];
 const SHELL_RE = /^[\w./-]{1,32}$/;
 
+// one slug alphabet (same as agent tags) so CLI/MCP/API validation matches.
+export const PROFILE_NAME_RE = /^[\w.-]{1,64}$/;
+
 export function normalizeStepCondition(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const norm = raw.trim().toLowerCase();

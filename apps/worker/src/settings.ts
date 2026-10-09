@@ -16,6 +16,7 @@ export const SETTING_KEYS = {
   turnstileSiteKey: "turnstile_site_key",
   turnstileSecretKey: "turnstile_secret_key",
   fairSharePerRepo: "fair_share_per_repo",
+  fairSharePerAgent: "fair_share_per_agent",
   aiGatewayId: "ai_gateway_id",
   mcpWriteConfirm: "mcp_write_confirm",
   triageWebSearch: "triage_web_search",
@@ -122,6 +123,21 @@ export function parseFairSharePerRepo(value: unknown): { cap: number } | { error
   const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
   if (!Number.isInteger(n) || n < 0 || n > 100) return { error: "fairSharePerRepo must be an integer 0-100 (0 disables)" };
   return { cap: n };
+}
+
+export function parseFairSharePerAgent(value: unknown): { cap: number } | { error: string } {
+  const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+  if (!Number.isInteger(n) || n < 0 || n > 100) return { error: "fairSharePerAgent must be an integer 0-100 (0 disables)" };
+  return { cap: n };
+}
+
+// Agent identity tag for per-agent caps and attribution: a short slug.
+// Shared by API validation and the MCP header fallback.
+export function parseAgentTag(value: unknown): { agent: string } | { error: string } {
+  if (typeof value !== "string" || !/^[\w.-]{1,64}$/.test(value)) {
+    return { error: "agent must be 1-64 chars: letters, digits, dot, dash, underscore" };
+  }
+  return { agent: value };
 }
 
 // AI Gateway id fronting inference (unified billing/logging/attribution).

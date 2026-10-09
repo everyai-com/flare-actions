@@ -97,7 +97,7 @@ import {
   validateSecretName,
   validateSecretValue,
 } from "./secrets";
-import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseBudgetMinutes, parseBudgetMode, parseBudgetKillMultiplier, parseFairSharePerRepo, parseGithubRunnerLabels, parseGithubRunnerMode, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseStoredBudgets, parseSupersedeBranchRuns, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
+import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseBudgetMinutes, parseBudgetMode, parseBudgetKillMultiplier, parseFairSharePerRepo, parseFairSharePerAgent, parseAgentTag, parseGithubRunnerLabels, parseGithubRunnerMode, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseStoredBudgets, parseSupersedeBranchRuns, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
 import {
   addAllowedUser,
   beginOAuth,
@@ -403,7 +403,7 @@ async function serveMcpRequest(
           await audit(env.DB, props.actor, "budget.blocked", `${input.repo} ${verdict.usedMinutes}/${verdict.cap}`);
           throw new Error(`monthly budget exceeded for ${input.repo} (${verdict.usedMinutes}/${verdict.cap} compute-minutes)`);
         }
-        const out = await dispatchRun(env, { repo: input.repo, sha: input.sha, ref: input.ref ?? "", pipeline: input.pipeline }, basin);
+        const out = await dispatchRun(env, { repo: input.repo, sha: input.sha, ref: input.ref ?? "", pipeline: input.pipeline, agent: input.agent }, basin);
         await audit(env.DB, props.actor, "run.dispatch", out.runId);
         for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
         return { runId: out.runId, jobIds: out.jobIds };
@@ -720,6 +720,7 @@ async function createRunAndFanOut(
     pipelineSource?: PipelineSource;
     changedFiles?: string;
     prNumber?: number | null;
+    agent?: string;
   },
   basin?: BasinSink,
 ): Promise<{ runId: string; jobIds: string[]; queuedIds: string[]; blocked: number }> {
@@ -735,6 +736,7 @@ async function createRunAndFanOut(
     pipelineSource: input.pipelineSource,
     changedFiles: input.changedFiles,
     prNumber: input.prNumber ?? null,
+    agent: input.agent ?? "",
   });
   const jobIds: string[] = [];
   const queuedIds: string[] = [];
@@ -1223,8 +1225,8 @@ export function validateRegisterInput(
 
 export function validateDispatch(
   body: Record<string, unknown>,
-): { repo: string; sha: string; ref: string; pipeline?: string; priority: number; source?: string } | { error: string } {
-  const { repo, sha, ref, pipeline, priority, source } = body;
+): { repo: string; sha: string; ref: string; pipeline?: string; priority: number; source?: string; agent: string } | { error: string } {
+  const { repo, sha, ref, pipeline, priority, source, agent } = body;
   if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return { error: "repo must be owner/name" };
   if (ref !== undefined && (typeof ref !== "string" || ref.length > 128)) return { error: "invalid ref" };
   if (pipeline !== undefined && (typeof pipeline !== "string" || !pipeline.trim() || pipeline.length > 65536)) {
@@ -1234,6 +1236,13 @@ export function validateDispatch(
   if (priority !== undefined && (typeof priority !== "number" || !Number.isInteger(priority) || priority < 0 || priority > 10)) {
     return { error: "priority must be an integer 0-10" };
   }
+  // Agent identity tag for per-agent caps and attribution ("" = untagged).
+  let parsedAgent = "";
+  if (agent !== undefined) {
+    const tag = parseAgentTag(agent);
+    if ("error" in tag) return { error: tag.error };
+    parsedAgent = tag.agent;
+  }
   const parsedPriority = typeof priority === "number" ? priority : 0;
   const parsedRef = typeof ref === "string" ? ref : "";
   // Source runs execute an uploaded working tree: no commit, no ref —
@@ -1242,7 +1251,7 @@ export function validateDispatch(
   if (source !== undefined) {
     if (typeof source !== "string" || !SOURCE_ID_RE.test(source)) return { error: "invalid source id" };
     if (typeof pipeline !== "string") return { error: "source runs need an inline pipeline" };
-    return { repo, sha: "", ref: parsedRef, pipeline, priority: parsedPriority, source };
+    return { repo, sha: "", ref: parsedRef, pipeline, priority: parsedPriority, source, agent: parsedAgent };
   }
   if (typeof sha !== "string" || !/^[\w./-]+$/.test(sha) || sha.length > 128 || sha.includes("..")) {
     return { error: "sha must be a commit SHA, branch, or tag" };
@@ -1253,6 +1262,7 @@ export function validateDispatch(
     ref: parsedRef,
     pipeline: typeof pipeline === "string" ? pipeline : undefined,
     priority: parsedPriority,
+    agent: parsedAgent,
   };
 }
 
@@ -1280,6 +1290,7 @@ export interface DispatchInput {
   // Firing cron for schedule events; matches `on.schedule` entries in
   // Actions-compatible workflow files.
   cron?: string;
+  agent?: string;
 }
 
 // Read-only half of a dispatch: resolve the ref and load the pipeline.
@@ -1392,6 +1403,7 @@ async function dispatchRun(
     priority: input.priority ?? 0,
     source: input.source ?? null,
     pipelineSource,
+    agent: input.agent ?? "",
   }, basin);
   log("info", "run dispatched", { runId, repo: input.repo, sha, event: input.event ?? "dispatch", source: input.source ?? null });
   emitRunDispatched(env.ANALYTICS, { repo: input.repo, runId, event: input.event ?? "dispatch", jobCount: jobIds.length });
@@ -1504,6 +1516,7 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       turnstileSiteKey?: unknown;
       turnstileSecretKey?: unknown;
       fairSharePerRepo?: unknown;
+      fairSharePerAgent?: unknown;
       aiGatewayId?: unknown;
       mcpWriteConfirm?: unknown;
       triageWebSearch?: unknown;
@@ -1532,6 +1545,7 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
     const hasTurnstileSite = body.turnstileSiteKey !== undefined;
     const hasTurnstileSecret = body.turnstileSecretKey !== undefined;
     const hasFairShare = body.fairSharePerRepo !== undefined;
+    const hasAgentShare = body.fairSharePerAgent !== undefined;
     const hasGateway = body.aiGatewayId !== undefined;
     const hasWriteConfirm = body.mcpWriteConfirm !== undefined;
     const hasWebSearch = body.triageWebSearch !== undefined;
@@ -1548,6 +1562,7 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
     const hasTriageModel = body.triageModel !== undefined;
     if (
       !hasWebhook && !hasNotifyFrom && !hasNotifyMode && !hasNotifyWebhook && !hasBadgeHidden &&
+      !hasTurnstileSite && !hasTurnstileSecret && !hasFairShare && !hasAgentShare && !hasGateway && !hasWriteConfirm && !hasWebSearch &&
       !hasHeal && !hasOpenReg && !hasBudget && !hasBudgetMode && !hasKillMultiplier && !hasSupersede && !hasGhMode && !hasGhLabels && !hasBillingToken && !hasAccountId && !hasTriageModel
     ) {
       return json({ error: "no settings provided" }, 400);
@@ -1636,6 +1651,12 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       if ("error" in parsed) return json({ error: parsed.error }, 400);
       await setSetting(env.DB, SETTING_KEYS.fairSharePerRepo, String(parsed.cap));
       await audit(env.DB, ident.actor, "settings.fair_share", String(parsed.cap));
+    }
+    if (hasAgentShare) {
+      const parsed = parseFairSharePerAgent(body.fairSharePerAgent);
+      if ("error" in parsed) return json({ error: parsed.error }, 400);
+      await setSetting(env.DB, SETTING_KEYS.fairSharePerAgent, String(parsed.cap));
+      await audit(env.DB, ident.actor, "settings.fair_share_agent", String(parsed.cap));
     }
     if (hasGateway) {
       // Env-managed gateway wins over D1, like every other credential.
@@ -2049,7 +2070,11 @@ export default {
         if (!Number.isInteger(offset) || offset < 0 || offset > 100000) {
           return json({ error: "offset must be an integer 0-100000" }, 400);
         }
-        return json({ runs: await listRuns(env.DB, limit, offset, ident.repos) });
+        const agentFilter = url.searchParams.get("agent") ?? "";
+        if (agentFilter && "error" in parseAgentTag(agentFilter)) {
+          return json({ error: "agent must be 1-64 chars: letters, digits, dot, dash, underscore" }, 400);
+        }
+        return json({ runs: await listRuns(env.DB, limit, offset, ident.repos, agentFilter || undefined) });
       }
       if (request.method === "POST" && url.pathname === "/v1/tournaments") {
         const ident = await requireScope(request, env, "run");
@@ -2188,8 +2213,10 @@ export default {
           .map((l) => l.trim())
           .filter(Boolean);
         const fairShare = parseFairSharePerRepo(await getSetting(env.DB, SETTING_KEYS.fairSharePerRepo));
+        const agentShare = parseFairSharePerAgent(await getSetting(env.DB, SETTING_KEYS.fairSharePerAgent));
         const job = await claimNextJob(env.DB, labels, ident.repos, {
           fairSharePerRepo: "cap" in fairShare ? fairShare.cap : 0,
+          fairSharePerAgent: "cap" in agentShare ? agentShare.cap : 0,
         });
         if (!job) return json({ job: null }, 200);
         await rollupRunStatus(env.DB, job.run_id, env.ANALYTICS, basinSink(env, ctx));
@@ -2499,14 +2526,17 @@ export default {
         const limit = Number(url.searchParams.get("limit") ?? "200");
         if (!Number.isFinite(limit) || limit < 1 || limit > 500) return json({ error: "limit must be 1-500" }, 400);
         const fairShare = parseFairSharePerRepo(await getSetting(env.DB, SETTING_KEYS.fairSharePerRepo));
+        const agentShare = parseFairSharePerAgent(await getSetting(env.DB, SETTING_KEYS.fairSharePerAgent));
         const jobs = await listQueuedJobs(env.DB, Math.floor(limit));
         return json({
           fairSharePerRepo: "cap" in fairShare ? fairShare.cap : 0,
+          fairSharePerAgent: "cap" in agentShare ? agentShare.cap : 0,
           jobs: jobs.map((j) => ({
             id: j.id,
             runId: j.run_id,
             name: j.name,
             repo: j.repo,
+            agent: j.agent,
             priority: j.priority,
             priorMs: j.prior_ms ?? 0,
             labels: j.labels,
@@ -3094,6 +3124,7 @@ export default {
             ? "d1"
             : "none";
         const fairShareParsed = parseFairSharePerRepo(await getSetting(env.DB, SETTING_KEYS.fairSharePerRepo));
+        const agentShareParsed = parseFairSharePerAgent(await getSetting(env.DB, SETTING_KEYS.fairSharePerAgent));
         const gatewaySource = env.AI_GATEWAY_ID ? "env" : ((await getSetting(env.DB, SETTING_KEYS.aiGatewayId)) ? "d1" : "none");
         const writeConfirmParsed = parseMcpWriteConfirm(await getSetting(env.DB, SETTING_KEYS.mcpWriteConfirm));
         const webSearchParsed = parseTriageWebSearch(await getSetting(env.DB, SETTING_KEYS.triageWebSearch));
@@ -3114,6 +3145,7 @@ export default {
           turnstileSiteSource: turnstileSource,
           turnstileSecretSet: !!env.TURNSTILE_SECRET_KEY || !!(await getSetting(env.DB, SETTING_KEYS.turnstileSecretKey)),
           fairSharePerRepo: "cap" in fairShareParsed ? fairShareParsed.cap : 0,
+          fairSharePerAgent: "cap" in agentShareParsed ? agentShareParsed.cap : 0,
           budgetMinutes: (await getSetting(env.DB, SETTING_KEYS.budgetMinutes)) ?? "",
           budgetMode: (await getSetting(env.DB, SETTING_KEYS.budgetMode)) ?? "warn",
           budgetKillMultiplier: (await getSetting(env.DB, SETTING_KEYS.budgetKillMultiplier)) ?? "0",

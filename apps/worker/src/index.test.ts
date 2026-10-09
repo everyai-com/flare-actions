@@ -62,6 +62,7 @@ describe("validateDispatch", () => {
       ref: "",
       pipeline: undefined,
       priority: 0,
+      agent: "",
     });
     expect(validateDispatch({ repo: "o/r", sha: "feature/x", ref: "feature/x" })).toEqual({
       repo: "o/r",
@@ -69,8 +70,17 @@ describe("validateDispatch", () => {
       ref: "feature/x",
       pipeline: undefined,
       priority: 0,
+      agent: "",
     });
     expect(validateDispatch({ repo: "o/r", sha: "v1.2.3", pipeline: "jobs: {}" })).toMatchObject({ pipeline: "jobs: {}" });
+  });
+
+  it("parses the agent identity tag", () => {
+    expect(validateDispatch({ repo: "o/r", sha: "main", agent: "atlas-1" })).toMatchObject({ agent: "atlas-1" });
+    expect(validateDispatch({ repo: "o/r", sha: "main" })).toMatchObject({ agent: "" });
+    expect(validateDispatch({ repo: "o/r", sha: "main", agent: "has space" })).toHaveProperty("error");
+    expect(validateDispatch({ repo: "o/r", sha: "main", agent: "x".repeat(65) })).toHaveProperty("error");
+    expect(validateDispatch({ repo: "o/r", sha: "main", agent: 42 })).toHaveProperty("error");
   });
 
   it("parses the agent priority lane", () => {
@@ -90,6 +100,7 @@ describe("validateDispatch", () => {
       pipeline: "jobs: {}",
       priority: 0,
       source: id,
+      agent: "",
     });
     expect(validateDispatch({ repo: "o/r", pipeline: "jobs: {}", source: id, priority: 5, ref: "local" })).toMatchObject({
       priority: 5,

@@ -184,9 +184,12 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   before inference; model picks are eval-pinned (`npm run
   eval:models`, `docs/MODEL-EVAL.md`).
 - Scheduling fairness (`fairness.ts`, dependency-free — the CLI imports it
-  directly): `claimNextJob` takes an optional per-repo running cap (D1
-  `fair_share_per_repo`, 0 = off); `simulateDrain` replays claim order
-  deterministically for `cli queue` (live queue: `GET /v1/admin/queue`).
+  directly): `claimNextJob` takes optional per-repo and per-agent
+  running caps (D1 `fair_share_per_repo` / `fair_share_per_agent`, 0 =
+  off; untagged runs bypass the agent cap); `simulateDrain` replays
+  claim order deterministically for `cli queue` (live queue:
+  `GET /v1/admin/queue`). Runs carry an `agent` tag (API `agent` field,
+  `cli --agent`, MCP `X-Flare-Agent` slug fallback; `GET /v1/runs?agent=`).
 - MCP (`mcp.ts`): stateless Streamable HTTP, Bearer [REDACTED] Protocol
   negotiates `2026-07-28` + legacy eras via the MCP SDK's
   `createMcpHandler` (stateless per-request servers; `mcp-oauth.ts` pure

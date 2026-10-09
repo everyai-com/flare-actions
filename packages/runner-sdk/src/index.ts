@@ -201,6 +201,7 @@ export interface FlareQueuedJob {
   runId: string;
   name: string;
   repo: string;
+  agent: string;
   priority: number;
   priorMs: number;
   labels: string;
@@ -209,6 +210,7 @@ export interface FlareQueuedJob {
 
 export interface FlareQueue {
   fairSharePerRepo: number;
+  fairSharePerAgent: number;
   jobs: FlareQueuedJob[];
 }
 
@@ -306,6 +308,7 @@ export interface FlareRun {
   sha: string;
   event: string;
   status: string;
+  agent: string;
   created_at: string;
   updated_at: string;
 }
@@ -512,7 +515,7 @@ export class FlareClient {
   async dispatch(
     repo: string,
     sha: string,
-    opts?: { ref?: string; pipeline?: string; priority?: number; source?: string },
+    opts?: { ref?: string; pipeline?: string; priority?: number; source?: string; agent?: string },
   ): Promise<{ runId: string; jobIds: string[] }> {
     const res = await this.call("/v1/runs/dispatch", {
       method: "POST",
@@ -642,8 +645,8 @@ export class FlareClient {
     if (!res.ok) await this.throwApiError("heartbeat", res);
   }
 
-  async listRuns(): Promise<FlareRun[]> {
-    const res = await this.call("/v1/runs");
+  async listRuns(agent?: string): Promise<FlareRun[]> {
+    const res = await this.call(agent ? `/v1/runs?agent=${encodeURIComponent(agent)}` : "/v1/runs");
     if (!res.ok) await this.throwApiError("listRuns", res);
     const data = (await res.json()) as { runs: FlareRun[] };
     return data.runs;
