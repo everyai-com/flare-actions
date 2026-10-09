@@ -32,6 +32,7 @@ export const ERROR_CODES = [
   "runner_group_unknown",
   "plan_limit_exceeded",
   "hosted_only",
+  "topup_invalid",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -64,6 +65,7 @@ export const ERROR_HINTS: Record<ErrorCode, string> = {
   runner_group_unknown: "create the runner group in the org (or fix its name in Settings), then retry",
   plan_limit_exceeded: "raise the concurrent-runner cap in Flare Cloud billing, or wait for running jobs to drain",
   hosted_only: "that surface runs on Flare Cloud only (FLARE_CLOUD=1) — self-hosted deploys stay free and unlimited",
+  topup_invalid: "top-up links are single-use and expire — ask an admin for a fresh link",
 };
 
 export interface ApiErrorBody {

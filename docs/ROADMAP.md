@@ -270,9 +270,11 @@ just alerted — "estimate next month's bill in under five minutes."
 **Agent purchasing** (hosted tier): [x] scaffold shipped Oct 9 —
 `FLARE_CLOUD` flag seam, plan entitlements, prepaid credit ledger,
 and `GET /v1/cloud/status` probe (docs/HOSTED.md; inert on OSS).
-[ ] `flare signup --agent`, approval-link top-ups, a skill
-buy-flow, and an x402 spike — mapped so an agent can buy capacity
-without a human billing event per run.
+[x] `cli signup --agent` (either plane), approval-link top-ups,
+and an x402 spike — mapped so an agent can buy capacity without a
+human billing event per run (docs/X402-SPIKE.md).
+[ ] a skill buy-flow, x402 settlement wiring, zero-balance
+enforcement (future Cloud overage policy, not the scaffold).
 
 ## Non-goals (for now)
 

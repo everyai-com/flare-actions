@@ -32,7 +32,7 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `npm test` — vitest, colocated `*.test.ts`, must pass
 - `npm run deploy` / `npm run deploy:dry` — deploy / validate only
 - `npm run runner` — external pull-runner (reads `.env` automatically)
-- `npm run cli -- <runs|logs|explain|local|run|watch|cancel|dispatch|rerun|flaky|bottlenecks|quarantine|init|connect|tests|egress|queue|cache|usage|github-jobs|search|artifacts|badge|import|mcp-config|devbox|mcp-serve>`
+- `npm run cli -- <runs|logs|explain|local|run|watch|cancel|dispatch|rerun|flaky|bottlenecks|quarantine|init|connect|tests|egress|queue|cache|usage|github-jobs|search|artifacts|badge|import|mcp-config|devbox|mcp-serve|credits|signup>`
   — CLI (reads `.env` automatically)
 
 ## Architecture
@@ -110,7 +110,10 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   `credit_ledger` tracks prepaid grants + exactly-once run spend
   (1¢/min, `run:<id>` refs) behind `cloud_metering`, threaded into
   every terminal rollup (worker + seats); admin settings provision
-  both; `GET /v1/cloud/status` probes. Docs: `docs/HOSTED.md`.
+  both; `GET /v1/cloud/status` probes. Agent purchasing rides it:
+  single-use top-up links (`pairing.ts`, unfurl-safe preview +
+  throttled redeem), tokenless `cli signup`, `cli credits`, and the
+  x402 quote spike. Docs: `docs/HOSTED.md`, `docs/X402-SPIKE.md`.
 - `apps/worker/src/ratelimit.ts` — auth endpoint throttling (failure
   windows per email + hashed client IP in D1 `auth_attempts`).
 - `apps/worker/src/cron.ts` — 5-field UTC cron parser for scheduled

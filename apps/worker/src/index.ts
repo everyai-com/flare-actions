@@ -195,7 +195,7 @@ import { convertActionsWorkflow, isImportSuccess } from "../../../packages/runne
 import { initialJobStatus } from "../../../packages/runner-sdk/src/conditions.ts";
 import { getTemplate, listTemplateMeta } from "../../../packages/runner-sdk/src/templates.ts";
 import { badgeSvg } from "./badge";
-import { createPairingCode, exchangePairingCode } from "./pairing";
+import { TOPUP_DEFAULT_TTL_HOURS, createPairingCode, createTopupLink, exchangePairingCode, previewTopupLink, redeemTopupLink } from "./pairing";
 import { emitGhaJobCompleted, emitJobTerminal, emitRunDispatched } from "./analytics";
 import {
   RESERVED_RUNNER_LABELS,
@@ -215,7 +215,7 @@ import {
 } from "./ghrunners";
 import { basinJobTerminal, basinRunDispatched, basinSink, sendBasin, type BasinSink } from "./basin";
 import { ACTIONS_LIST_USD_PER_MIN, jobDurationMs, summarizeRunCost } from "./cost";
-import { cloudMetering, creditBalance, grantCredits, hostedMode, parseCloudEntitlements, recentLedger } from "./cloud";
+import { cloudMetering, creditBalance, grantCredits, hostedMode, parseCloudEntitlements, recentLedger, x402Quote } from "./cloud";
 import { runGenerateWithStatus } from "./generate";
 import { getCacheStats, handleCacheGet, handleCachePut, listCacheEntries, parseRestoreKeysParam, pruneCacheStats, purgeCachePrefix, recordCacheOutcome } from "./cache";
 import { deleteJobArtifacts, handleArtifactGet, handleArtifactPut, listRunArtifacts, pruneOldCache } from "./artifacts";
@@ -3756,6 +3756,77 @@ export default {
         if (!hostedMode(env)) return json(apiError("hosted_only", "the credit ledger runs on Flare Cloud only"), 501);
         const limit = Number(url.searchParams.get("limit") ?? "20");
         return json({ balanceCents: await creditBalance(env.DB), recent: await recentLedger(env.DB, limit) });
+      }
+      // Mint a single-use top-up link (admin, hosted-only). The code is
+      // shown once — only its hash rests in D1.
+      if (request.method === "POST" && url.pathname === "/v1/cloud/topup-links") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        if (!hostedMode(env)) return json(apiError("hosted_only", "top-up links run on Flare Cloud only"), 501);
+        const body = (await request.json().catch(() => ({}))) as { amountCents?: unknown; memo?: unknown; ttlHours?: unknown };
+        const out = await createTopupLink(env.DB, {
+          amountCents: body.amountCents as number,
+          memo: typeof body.memo === "string" ? body.memo : "",
+          ttlHours: body.ttlHours === undefined ? TOPUP_DEFAULT_TTL_HOURS : (body.ttlHours as number),
+          createdBy: ident.actor,
+          origin: url.origin,
+        });
+        if (!out.ok) return json({ error: out.error }, 400);
+        await audit(env.DB, ident.actor, "cloud.topup_mint", `${out.link.amountCents}c`);
+        return json(out.link);
+      }
+      // Approval-link preview: what a click would redeem, WITHOUT
+      // consuming (unfurlers must never burn the code). Public +
+      // IP-throttled like the pairing exchange, since the holder of
+      // the link is the credential.
+      if (request.method === "GET" && url.pathname === "/v1/cloud/topup-links/redeem") {
+        if (!hostedMode(env)) return json(apiError("hosted_only", "top-up links run on Flare Cloud only"), 501);
+        const ipKey = await ipThrottleKey(request);
+        const keys = ipKey ? [ipKey] : [];
+        if (await authThrottleBlocked(env.DB, keys)) {
+          return json(apiError("rate_limited", "too many attempts — try again later"), 429);
+        }
+        const code = (url.searchParams.get("code") ?? "").trim().toUpperCase();
+        const preview = await previewTopupLink(env.DB, code);
+        if (!preview.ok) {
+          await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
+          return json(apiError("topup_invalid", "top-up link invalid or expired"), 404);
+        }
+        return json({ amountCents: preview.amountCents, memo: preview.memo, expiresAt: preview.expiresAt });
+      }
+      // Approval-link redeem: single-use consume + credit grant.
+      if (request.method === "POST" && url.pathname === "/v1/cloud/topup-links/redeem") {
+        if (!hostedMode(env)) return json(apiError("hosted_only", "top-up links run on Flare Cloud only"), 501);
+        const body = (await request.json().catch(() => ({}))) as { code?: unknown };
+        const ipKey = await ipThrottleKey(request);
+        const keys = ipKey ? [ipKey] : [];
+        if (await authThrottleBlocked(env.DB, keys)) {
+          return json(apiError("rate_limited", "too many attempts — try again later"), 429);
+        }
+        const fail = async (res: Response): Promise<Response> => {
+          await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
+          return res;
+        };
+        if (typeof body.code !== "string" || !body.code) {
+          return await fail(json(apiError("topup_invalid", "top-up code required"), 400));
+        }
+        const redeemed = await redeemTopupLink(env.DB, body.code.trim().toUpperCase());
+        if (!redeemed.ok) {
+          log("info", "top-up redeem denied", { reason: redeemed.reason });
+          return await fail(json(apiError("topup_invalid", "top-up link invalid or expired"), 404));
+        }
+        await audit(env.DB, "topup-link", "cloud.topup_redeem", `${redeemed.amountCents}c`);
+        return json({ ok: true, amountCents: redeemed.amountCents, balanceCents: await creditBalance(env.DB) });
+      }
+      // x402 spike: quote whole runner-months (public pricing).
+      // payTo stays null until Cloud provisions settlement — the
+      // scaffold quotes, it never takes money. See docs/X402-SPIKE.md.
+      if (request.method === "POST" && url.pathname === "/v1/cloud/x402/quote") {
+        if (!hostedMode(env)) return json(apiError("hosted_only", "x402 quotes run on Flare Cloud only"), 501);
+        const body = (await request.json().catch(() => ({}))) as { runners?: unknown };
+        const out = x402Quote(body.runners as number);
+        if (!out.ok) return json({ error: out.error }, 400);
+        return json(out.quote);
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/logout") {
         const sessionId = parseSessionCookie(request);

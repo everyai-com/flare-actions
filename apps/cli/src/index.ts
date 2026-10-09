@@ -68,6 +68,8 @@ function usage(): never {
       "  cli cache stats                             shared warm-cache hit rate (7d)",
       "  cli usage [days] [repo]                     runs, jobs, compute-minutes for billing",
       "  cli usage --merged-pr <repo> [weeks]       cost-per-merged-PR trend (needs the GitHub App)",
+      "  cli credits [limit]                       prepaid balance + ledger (hosted; self-hosted is free)",
+      "  cli signup [--agent <tag>]                 onboard this deployment (tokenless probe + next steps)",
       "  cli paused                                  repos auto-paused for runaway spend (admin)",
       "  cli resume <repo>                           resume a paused repo (admin)",
       "  cli github-jobs [repo]                    ephemeral runner-mode jobs (status, duration, list price)",
@@ -713,6 +715,65 @@ try {
           );
         }
       }
+    }
+  } else if (cmd === "credits") {
+    const limit = rest[0] === undefined ? 20 : Number(rest[0]);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      console.error("limit must be an integer 1-100");
+      process.exit(2);
+    }
+    const baseUrl = process.env["FLARE_ACTIONS_URL"];
+    if (!baseUrl) {
+      console.error("Set FLARE_ACTIONS_URL to your deployment first (from `npm run setup` or the dashboard)");
+      process.exit(2);
+    }
+    const probe = new FlareClient(baseUrl, process.env["RUNNER_TOKEN"] ?? "");
+    const status = await probe.getCloudStatus();
+    if (!status.hosted) {
+      if (JSON_MODE) printJson("credits", { hosted: false, balanceCents: null, recent: [] });
+      else console.log(`self-hosted deploy at ${baseUrl}: no credit ledger — runs are unlimited and free.`);
+    } else {
+      const { balanceCents, recent } = await client().getCreditBalance(limit);
+      if (JSON_MODE) {
+        printJson("credits", { hosted: true, balanceCents, recent });
+      } else {
+        console.log(`balance: $${(balanceCents / 100).toFixed(2)} (${balanceCents}c)`);
+        for (const r of recent) {
+          const sign = r.kind === "grant" ? "+" : "-";
+          console.log(`  ${r.createdAt.slice(0, 10)}  ${sign}${r.amountCents}c  ${r.memo || r.ref}`);
+        }
+      }
+    }
+  } else if (cmd === "signup") {
+    const { args, agent } = takeAgent(rest);
+    if (args.length > 0) usage();
+    const baseUrl = process.env["FLARE_ACTIONS_URL"];
+    if (!baseUrl) {
+      console.error("Set FLARE_ACTIONS_URL to your deployment first (from `npm run setup` or the dashboard)");
+      process.exit(2);
+    }
+    // Tokenless by design: onboarding happens before credentials exist.
+    const status = await new FlareClient(baseUrl, "").getCloudStatus();
+    const agentLine = agent ? `tag agent runs: cli run --agent ${agent} (per-agent caps + attribution)` : null;
+    const steps = status.hosted
+      ? [
+          `open ${baseUrl} and finish signup in the dashboard`,
+          "connect the GitHub App (dashboard Connect walks the manifest)",
+          "fund the account: an admin mints a top-up link, or grant credits via the API",
+          ...(agentLine ? [agentLine] : ["tag agent runs with --agent <tag> for per-agent caps + attribution"]),
+        ]
+      : [
+          `open ${baseUrl} — first login claims admin`,
+          "connect the GitHub App: dashboard Connect (or `cli connect --wire` with GITHUB_TOKEN)",
+          "pair a runner: mint a code in dashboard Access, then run the pairing command on the machine",
+          "verify without committing: `cli local`, then `cli run owner/repo HEAD`",
+          ...(agentLine ? [agentLine] : []),
+        ];
+    if (JSON_MODE) {
+      printJson("signup", { hosted: status.hosted, baseUrl, ...(agent ? { agent } : {}), steps });
+    } else {
+      console.log(status.hosted ? `Flare Cloud at ${baseUrl}` : `self-hosted Flare at ${baseUrl}`);
+      for (const [i, s] of steps.entries()) console.log(`  ${i + 1}. ${s}`);
     }
   } else if (cmd === "github-jobs" && rest.includes("--logs")) {
     const args = rest.filter((a) => a !== "--logs");

@@ -17,6 +17,40 @@ export const CLOUD_CENTS_PER_MINUTE = 1;
 // a business rule; larger movements split into multiple rows).
 const MAX_LEDGER_CENTS = 1_000_000_000;
 
+// Founding Cloud price: $49 per concurrent runner per month (see
+// docs/ROADMAP.md pricing). The x402 quote prices whole runner-months;
+// settlement wiring is future (docs/X402-SPIKE.md).
+export const CLOUD_RUNNER_MONTH_CENTS = 4900;
+export const X402_QUOTE_TTL_MS = 15 * 60000;
+
+export interface X402Quote {
+  runners: number;
+  amountCents: number;
+  asset: string;
+  network: string;
+  // Null until Cloud provisions a settlement address: the scaffold
+  // quotes, it never takes money. See docs/X402-SPIKE.md.
+  payTo: string | null;
+  expiresAt: string;
+}
+
+export function x402Quote(runners: number): { ok: true; quote: X402Quote } | { ok: false; error: string } {
+  if (!Number.isInteger(runners) || runners < 1 || runners > 1000) {
+    return { ok: false, error: "runners must be an integer 1..1000" };
+  }
+  return {
+    ok: true,
+    quote: {
+      runners,
+      amountCents: runners * CLOUD_RUNNER_MONTH_CENTS,
+      asset: "USDC",
+      network: "base",
+      payTo: null,
+      expiresAt: new Date(Date.now() + X402_QUOTE_TTL_MS).toISOString(),
+    },
+  };
+}
+
 // Hosted control plane? Env-only by design (see module comment).
 export function hostedMode(env: { FLARE_CLOUD?: string }): boolean {
   return env.FLARE_CLOUD === "1";

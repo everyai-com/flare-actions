@@ -306,4 +306,26 @@ describe("FlareClient", () => {
     expect(hits).toEqual([hit]);
     expect(calls[0].url).toBe("https://x/v1/search/logs?q=branch%3Amain%20boom&limit=10");
   });
+
+  it("probes cloud status tokenlessly and reads the ledger", async () => {
+    const calls = stubFetch((url) =>
+      url.endsWith("/v1/cloud/status")
+        ? jsonResponse({ hosted: true, metering: true, maxConcurrentJobs: 4 })
+        : jsonResponse({ balanceCents: 498, recent: [{ id: 2, kind: "spend", amountCents: 2, memo: "run r1", ref: "run:r1", createdAt: "c" }] }),
+    );
+    const client = new FlareClient("https://x", "");
+    expect(await client.getCloudStatus()).toEqual({ hosted: true, metering: true, maxConcurrentJobs: 4 });
+    const balance = await client.getCreditBalance(5);
+    expect(balance.balanceCents).toBe(498);
+    expect(balance.recent).toHaveLength(1);
+    expect(calls[0].url).toBe("https://x/v1/cloud/status");
+    expect(calls[1].url).toBe("https://x/v1/cloud/credits/balance?limit=5");
+  });
+
+  it("surfaces hosted_only on OSS deploys", async () => {
+    stubFetch(() => jsonResponse({ error: "nope", code: "hosted_only", hint: "cloud only" }, 501));
+    const err = await new FlareClient("https://x", "t").getCreditBalance().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlareApiError);
+    expect((err as FlareApiError).code).toBe("hosted_only");
+  });
 });

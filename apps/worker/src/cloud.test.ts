@@ -12,6 +12,7 @@ import {
   recordRunSpend,
   runComputeMs,
   runSpendCents,
+  x402Quote,
 } from "./cloud";
 
 // Ledger + settings + jobs fake: UNIQUE ref on INSERT OR IGNORE,
@@ -208,5 +209,22 @@ describe("cloud settings validators", () => {
     expect(validateCloudMetering("on")).toBeNull();
     expect(validateCloudMetering("off")).toBeNull();
     expect(validateCloudMetering("yes")).not.toBeNull();
+  });
+});
+
+describe("x402Quote", () => {
+  it("prices whole runner-months at the $49 founding rate", () => {
+    const out = x402Quote(3);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.quote).toMatchObject({ runners: 3, amountCents: 14700, asset: "USDC", network: "base", payTo: null });
+    expect(Date.parse(out.quote.expiresAt) - Date.now()).toBeGreaterThan(14 * 60000);
+  });
+  it("rejects non-positive and absurd runner counts", () => {
+    for (const runners of [0, -1, 1.5, 1001, Number.NaN]) {
+      expect(x402Quote(runners).ok).toBe(false);
+    }
+    expect(x402Quote(1).ok).toBe(true);
+    expect(x402Quote(1000).ok).toBe(true);
   });
 });

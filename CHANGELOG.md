@@ -8,6 +8,14 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Agent purchasing scaffold (hosted, inert on OSS): single-use
+  prepaid top-up links (mint + unfurl-safe preview + pairing-style
+  throttled redeem, grant-then-consume so money is never created or
+  lost), tokenless `cli signup [--agent]` onboarding for either
+  plane, `cli credits` ledger reader, and an x402 spike
+  (`POST /v1/cloud/x402/quote` prices runner-months at $49;
+  `payTo` null until settlement exists). See docs/HOSTED.md and
+  docs/X402-SPIKE.md.
 - Flare Cloud scaffold (hosted seam, inert on OSS): env-only
   `FLARE_CLOUD=1` flag, concurrent-runner plan entitlements enforced
   at every dispatch entry (429 `plan_limit_exceeded` on API/MCP,

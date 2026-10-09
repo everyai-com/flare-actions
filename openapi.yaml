@@ -3551,6 +3551,168 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /v1/cloud/topup-links:
+    post:
+      tags: [cloud]
+      operationId: cloudMintTopupLink
+      summary: Mint a single-use prepaid top-up link (hosted admin; 501 in OSS)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amountCents]
+              properties:
+                amountCents:
+                  type: integer
+                  minimum: 1
+                  maximum: 1000000000
+                memo:
+                  type: string
+                  maxLength: 280
+                ttlHours:
+                  type: integer
+                  minimum: 1
+                  maximum: 720
+                  default: 72
+      responses:
+        '200':
+          description: Code + approval link (code shown once)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, link, amountCents, expiresAt]
+                properties:
+                  code:
+                    type: string
+                  link:
+                    type: string
+                  amountCents:
+                    type: integer
+                  expiresAt:
+                    type: string
+        '501':
+          description: OSS deploy (hosted_only)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/cloud/topup-links/redeem:
+    get:
+      tags: [cloud]
+      operationId: cloudPreviewTopupLink
+      summary: Preview a top-up link without consuming it (public, throttled)
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The offer behind the link
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [amountCents, memo, expiresAt]
+                properties:
+                  amountCents:
+                    type: integer
+                  memo:
+                    type: string
+                  expiresAt:
+                    type: string
+        '404':
+          description: Unknown or expired (topup_invalid)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags: [cloud]
+      operationId: cloudRedeemTopupLink
+      summary: Redeem a top-up link for credits (public, throttled, single-use)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        '200':
+          description: Redeemed (granted amount + balance)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, amountCents, balanceCents]
+                properties:
+                  ok:
+                    type: boolean
+                  amountCents:
+                    type: integer
+                  balanceCents:
+                    type: integer
+        '404':
+          description: Unknown or expired (topup_invalid)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/cloud/x402/quote:
+    post:
+      tags: [cloud]
+      operationId: cloudX402Quote
+      summary: Quote whole runner-months for x402 settlement (hosted; 501 in OSS)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [runners]
+              properties:
+                runners:
+                  type: integer
+                  minimum: 1
+                  maximum: 1000
+      responses:
+        '200':
+          description: Quote (payTo null until Cloud provisions settlement)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runners, amountCents, asset, network, payTo, expiresAt]
+                properties:
+                  runners:
+                    type: integer
+                  amountCents:
+                    type: integer
+                  asset:
+                    type: string
+                  network:
+                    type: string
+                  payTo:
+                    type: string
+                    nullable: true
+                  expiresAt:
+                    type: string
+        '501':
+          description: OSS deploy (hosted_only)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/admin/github/connect:
     post:
       tags: [admin]

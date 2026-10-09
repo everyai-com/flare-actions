@@ -173,6 +173,28 @@ export interface FlareBottleneck {
   failures: number;
 }
 
+// Flare Cloud capability probe + prepaid ledger page. Self-hosted
+// deploys answer hosted:false (no ledger — runs are unlimited).
+export interface FlareCloudStatus {
+  hosted: boolean;
+  metering: boolean;
+  maxConcurrentJobs: number | null;
+}
+
+export interface FlareLedgerRow {
+  id: number;
+  kind: string;
+  amountCents: number;
+  memo: string;
+  ref: string;
+  createdAt: string;
+}
+
+export interface FlareCreditBalance {
+  balanceCents: number;
+  recent: FlareLedgerRow[];
+}
+
 // Flaky-test quarantine row: active tests don't block runs (failures that
 // are entirely quarantined land as success with a log note).
 export interface FlareQuarantinedTest {
@@ -905,6 +927,18 @@ export class FlareClient {
     if (!res.ok) await this.throwApiError("getBottlenecks", res);
     const data = (await res.json()) as { checks: FlareBottleneck[] };
     return data.checks;
+  }
+
+  async getCloudStatus(): Promise<FlareCloudStatus> {
+    const res = await this.call("/v1/cloud/status");
+    if (!res.ok) await this.throwApiError("getCloudStatus", res);
+    return (await res.json()) as FlareCloudStatus;
+  }
+
+  async getCreditBalance(limit = 20): Promise<FlareCreditBalance> {
+    const res = await this.call(`/v1/cloud/credits/balance?limit=${limit}`);
+    if (!res.ok) await this.throwApiError("getCreditBalance", res);
+    return (await res.json()) as FlareCreditBalance;
   }
 
   async getQuarantine(repo: string): Promise<FlareQuarantinedTest[]> {

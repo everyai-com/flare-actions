@@ -40,9 +40,24 @@ and shaped so Cloud can provision without touching OSS behavior.
 - **Capability probe** — public `GET /v1/cloud/status`
   (`{ hosted, metering, maxConcurrentJobs }`) so CLIs and agents
   adapt before calling anything gated.
+- **Top-up links** — single-use prepaid codes (`POST
+  /v1/cloud/topup-links` mints a code + approval link, `GET ...
+  /redeem?code=` previews without consuming so unfurlers never burn
+  it, `POST .../redeem` consumes + grants). Pairing-style public
+  redeem with IP throttling; grant-then-consume ordering with an
+  idempotent `topup:<hash>` ref means a crash between the two
+  retries safely — money is never created or lost.
 
-Agent purchasing (signup flow, top-up links, x402 sketch) builds on
-this seam next; the ledger and probe are its foundation.
+## Agent purchasing
+
+`cli signup [--agent <tag>]` onboards against either plane from a
+tokenless probe: hosted servers return the Cloud signup flow, OSS
+servers print the self-host checklist (admin claim, Connect, pairing,
+local verify). `cli credits` reads the ledger on hosted (on OSS it
+says the deploy is unlimited and free). Prepaid credits (above) and
+top-up links cover agent-held budgets; the x402 spike
+(`docs/X402-SPIKE.md`, `POST /v1/cloud/x402/quote`) maps
+machine-to-machine payment without a human billing event per run.
 
 ## What stays OSS-only (never gated)
 
