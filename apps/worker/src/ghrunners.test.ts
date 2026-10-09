@@ -43,6 +43,22 @@ function row(over: Partial<GhRunnerJobRow> = {}): GhRunnerJobRow {
   };
 }
 
+// Emulates the shared repoAllowSql filter: exact IN binds first, then
+// org LIKE patterns (prefix before the trailing %, escapes undone).
+function scopeMatch(norm: string, values: unknown[]): (repo: string) => boolean {
+  const inMatch = /lower\(repo\) IN \(([^)]*)\)/.exec(norm);
+  const exactCount = inMatch ? ((inMatch[1].match(/\?/g) ?? []).length) : 0;
+  const likeCount = (norm.match(/lower\(repo\) LIKE \?/g) ?? []).length;
+  const exact = (values.slice(0, exactCount) as string[]).map((s) => s.toLowerCase());
+  const patterns = values.slice(exactCount, exactCount + likeCount) as string[];
+  if (exactCount + likeCount === 0) return () => true;
+  return (repo: string) => {
+    const low = repo.toLowerCase();
+    if (exact.includes(low)) return true;
+    return patterns.some((p) => low.startsWith(p.replace(/\\(.)/g, "$1").replace(/%$/, "")));
+  };
+}
+
 // Routes the SQL ghrunners.ts issues against an in-memory row store.
 class GhDb implements Db {
   rows = new Map<string, GhRunnerJobRow>();
@@ -74,9 +90,9 @@ class GhDb implements Db {
   private selectAll(norm: string, values: unknown[]): GhRunnerJobRow[] {
     const copy = (r: GhRunnerJobRow): GhRunnerJobRow => ({ ...r });
     if (norm.startsWith("SELECT * FROM gh_runner_jobs WHERE status = 'queued'")) {
-      const repos = norm.includes("repo IN") ? (values as string[]) : [];
+      const match = scopeMatch(norm, values);
       return this.ordered()
-        .filter((r) => r.status === "queued" && (repos.length === 0 || repos.includes(r.repo)))
+        .filter((r) => r.status === "queued" && match(r.repo))
         .map(copy);
     }
     if (norm.startsWith("SELECT * FROM gh_runner_jobs WHERE status = 'claimed'")) {
@@ -93,11 +109,11 @@ class GhDb implements Db {
         .slice(0, values[1] as number)
         .map(copy);
     }
-    if (norm.startsWith("SELECT * FROM gh_runner_jobs WHERE repo IN")) {
-      const repos = values.slice(0, -1) as string[];
+    if (norm.startsWith("SELECT * FROM gh_runner_jobs WHERE (lower(repo)")) {
+      const match = scopeMatch(norm, values.slice(0, -1));
       const limit = values[values.length - 1] as number;
       return [...this.rows.values()]
-        .filter((r) => repos.includes(r.repo))
+        .filter((r) => match(r.repo))
         .sort((a, b) => b.created_at.localeCompare(a.created_at))
         .slice(0, limit)
         .map(copy);
@@ -122,12 +138,12 @@ class GhDb implements Db {
     }
     if (norm.startsWith("SELECT COUNT(*) AS n")) {
       const cutoff = values[0] as string;
-      const repos = norm.includes("repo IN") ? (values.slice(1) as string[]) : [];
+      const match = scopeMatch(norm, values.slice(1));
       let n = 0;
       let secs = 0;
       for (const r of this.rows.values()) {
         if (r.status !== "completed" || !r.completed_at || !r.started_at || r.created_at < cutoff) continue;
-        if (repos.length > 0 && !repos.includes(r.repo)) continue;
+        if (!match(r.repo)) continue;
         n += 1;
         secs += Math.max(0, (Date.parse(r.completed_at) - Date.parse(r.started_at)) / 1000);
       }
@@ -349,6 +365,13 @@ describe("claimGhRunnerJob", () => {
     db.rows.set("101", row({ repo: "other/repo" }));
     expect(await claimGhRunnerJob(db, [], ["flare"], ["o/r"], "runner-1")).toBeNull();
     expect(await claimGhRunnerJob(db, [], ["flare"], [], "runner-1")).not.toBeNull();
+  });
+  it("claims through org/* wildcards", async () => {
+    const db = new GhDb();
+    db.rows.set("101", row({ id: "101", repo: "acme/web" }));
+    db.rows.set("102", row({ id: "102", repo: "acmex/evil", created_at: "2026-10-08T09:00:00.000Z" }));
+    expect((await claimGhRunnerJob(db, [], ["flare"], ["acme/*"], "runner-1"))?.id).toBe("101");
+    expect(await claimGhRunnerJob(db, [], ["flare"], ["acme/*"], "runner-1")).toBeNull();
   });
   it("a lost claim race falls through to the next job", async () => {
     const db = new GhDb();

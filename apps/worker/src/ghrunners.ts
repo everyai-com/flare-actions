@@ -1,5 +1,5 @@
 import { ACTIONS_LIST_USD_PER_MIN } from "./cost";
-import { getSetting, nowIso, type Db } from "./db";
+import { getSetting, nowIso, repoAllowSql, type Db } from "./db";
 import { parseGithubRunnerLabels, parseGithubRunnerMode, SETTING_KEYS } from "./settings";
 
 // GitHub runner mode (`runs-on: flare`): GitHub keeps orchestrating and
@@ -233,10 +233,11 @@ export async function claimGhRunnerJob(
   allowedRepos: string[],
   claimedBy: string,
 ): Promise<GhRunnerJobRow | null> {
-  const repoFilter = allowedRepos.length > 0 ? ` AND repo IN (${allowedRepos.map(() => "?").join(", ")})` : "";
+  const scope = repoAllowSql(allowedRepos, "repo");
+  const repoFilter = scope.clause ? ` AND ${scope.clause}` : "";
   const rows = await db
     .prepare(`SELECT * FROM gh_runner_jobs WHERE status = 'queued'${repoFilter} ORDER BY created_at ASC, id ASC LIMIT 200`)
-    .bind(...allowedRepos)
+    .bind(...scope.binds)
     .all<GhRunnerJobRow>();
   for (const row of rows.results) {
     if (!ghLabelsMatch(parseStoredLabels(row.labels), runnerLabels, managedLabels)) continue;
@@ -304,13 +305,14 @@ export interface GhRunnerUsage {
 
 export async function ghRunnerUsage(db: Db, days: number, allowedRepos: string[] = []): Promise<GhRunnerUsage> {
   const cutoff = new Date(Date.now() - Math.max(1, Math.min(days, 365)) * 86_400_000).toISOString();
-  const filter = allowedRepos.length > 0 ? ` AND repo IN (${allowedRepos.map(() => "?").join(", ")})` : "";
+  const scope = repoAllowSql(allowedRepos, "repo");
+  const filter = scope.clause ? ` AND ${scope.clause}` : "";
   const row = await db
     .prepare(
       `SELECT COUNT(*) AS n, COALESCE(SUM(strftime('%s', completed_at) - strftime('%s', started_at)), 0) AS secs
        FROM gh_runner_jobs WHERE status = 'completed' AND completed_at IS NOT NULL AND started_at IS NOT NULL AND created_at >= ?${filter}`,
     )
-    .bind(cutoff, ...allowedRepos)
+    .bind(cutoff, ...scope.binds)
     .first<{ n: number; secs: number }>();
   const computeMinutes = Math.round((((row?.secs ?? 0) / 60) || 0) * 1000) / 1000;
   return {
@@ -327,7 +329,8 @@ export async function listGhRunnerJobs(
   const limit = Math.max(1, Math.min(opts.limit ?? 20, 100));
   const allowed = opts.allowedRepos ?? [];
   // Repo-scoped tokens only list their repos (empty = all).
-  const scopeFilter = !opts.repo && allowed.length > 0 ? ` WHERE repo IN (${allowed.map(() => "?").join(", ")})` : "";
+  const scope = repoAllowSql(allowed, "repo");
+  const scopeFilter = !opts.repo && scope.clause ? ` WHERE ${scope.clause}` : "";
   if (opts.repo) {
     const rows = await db
       .prepare("SELECT * FROM gh_runner_jobs WHERE repo = ? ORDER BY created_at DESC LIMIT ?")
@@ -337,7 +340,7 @@ export async function listGhRunnerJobs(
   }
   const rows = await db
     .prepare(`SELECT * FROM gh_runner_jobs${scopeFilter} ORDER BY created_at DESC LIMIT ?`)
-    .bind(...allowed, limit)
+    .bind(...scope.binds, limit)
     .all<GhRunnerJobRow>();
   return rows.results;
 }

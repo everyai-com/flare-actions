@@ -2033,7 +2033,7 @@ paths:
                   maxItems: 50
                   items:
                     type: string
-                  description: owner/name allowlist (empty = all repos)
+                  description: owner/name or org/* allowlist (empty = all repos)
       responses:
         '200':
           description: Created token with one-time plaintext

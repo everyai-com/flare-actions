@@ -42,8 +42,14 @@ export function normalizeScopes(input: unknown): TokenScope[] | null {
 
 // Per-token repo scoping: an empty list means "all repos" (backwards
 // compatible with existing tokens); otherwise the token only sees the
-// listed owner/name entries.
+// listed entries — exact `owner/name` repos or `org/*` org wildcards
+// (one level only: `*`, `*/x`, `org/` and `org/*/x` never validate).
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+const ORG_WILDCARD_RE = /^[\w.-]+\/\*$/;
+
+function isAllowlistEntry(entry: string): boolean {
+  return REPO_RE.test(entry) || ORG_WILDCARD_RE.test(entry);
+}
 
 export function normalizeRepos(input: unknown): string[] | null {
   if (input === undefined || input === null || input === "") return [];
@@ -54,7 +60,7 @@ export function normalizeRepos(input: unknown): string[] | null {
     if (typeof item !== "string") return null;
     const repo = item.trim();
     if (!repo) continue;
-    if (!REPO_RE.test(repo)) return null;
+    if (!isAllowlistEntry(repo)) return null;
     if (!out.includes(repo)) out.push(repo);
   }
   if (out.length > 50) return null;
@@ -65,7 +71,21 @@ export function parseRepos(raw: string): string[] {
   return raw
     .split(",")
     .map((r) => r.trim())
-    .filter((r) => REPO_RE.test(r));
+    .filter((r) => isAllowlistEntry(r));
+}
+
+// Allowlist match for one repo: empty list sees everything, exact
+// entries compare case-insensitively, and `org/*` matches every repo
+// under that owner (the trailing slash pins the boundary, so `org/*`
+// never matches `orgx/y`). Shared by the API gate and the MCP lane.
+export function reposAllow(repos: string[], repo: string): boolean {
+  if (repos.length === 0) return true;
+  const needle = repo.toLowerCase();
+  return repos.some((entry) => {
+    const want = entry.toLowerCase();
+    if (want.endsWith("/*")) return needle.startsWith(want.slice(0, -1));
+    return want === needle;
+  });
 }
 
 export type AuthScope = "admin" | "runner" | "readonly";

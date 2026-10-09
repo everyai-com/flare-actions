@@ -16,6 +16,7 @@ import {
   pruneSeatSnapshots,
   pruneWebhookDeliveries,
   releaseAdminMarker,
+  repoAllowSql,
   shouldDowngradeFailure,
   shouldReinstate,
   summarizeBottlenecks,
@@ -128,11 +129,18 @@ class QueueDb implements Db {
   private select(norm: string, values: unknown[]) {
     let rows = this.jobs.filter((j) => j.status === "queued");
     if (norm.includes("r.event !=")) rows = rows.filter((j) => (j.event ?? "push") !== "artifacts");
-    const inMatch = /r\.repo IN \(([^)]*)\)/.exec(norm);
-    const repoCount = inMatch ? ((inMatch[1].match(/\?/g) ?? []).length) : 0;
+    const inMatch = /lower\(r\.repo\) IN \(([^)]*)\)/.exec(norm);
+    const exactCount = inMatch ? ((inMatch[1].match(/\?/g) ?? []).length) : 0;
+    const likeCount = (norm.match(/lower\(r\.repo\) LIKE \?/g) ?? []).length;
+    const repoCount = exactCount + likeCount;
     if (repoCount > 0) {
-      const repos = values.slice(0, repoCount) as string[];
-      rows = rows.filter((j) => repos.includes(j.repo));
+      const exact = (values.slice(0, exactCount) as string[]).map((s) => s.toLowerCase());
+      const patterns = values.slice(exactCount, repoCount) as string[];
+      rows = rows.filter((j) => {
+        const repo = j.repo.toLowerCase();
+        if (exact.includes(repo)) return true;
+        return patterns.some((p) => repo.startsWith(p.replace(/\\(.)/g, "$1").replace(/%$/, "")));
+      });
     }
     if (norm.includes("j.priority < ?")) {
       const [priority, , priorMs, , created, , id] = values.slice(repoCount) as [
@@ -225,6 +233,17 @@ describe("claimNextJob", () => {
       jobRow({ id: "job-b", repo: "o/b", created_at: "2026-10-02T08:00:00.000Z" }),
     ]);
     expect((await claimNextJob(db, [], ["o/a"]))?.id).toBe("job-a");
+    expect((await claimNextJob(db, []))?.id).toBe("job-b");
+  });
+
+  it("claims through org/* wildcards without crossing org boundaries", async () => {
+    const db = new QueueDb([
+      jobRow({ id: "job-a", repo: "acme/web", created_at: "2026-10-02T09:00:00.000Z" }),
+      jobRow({ id: "job-b", repo: "acmex/evil", created_at: "2026-10-02T08:00:00.000Z" }),
+    ]);
+    expect((await claimNextJob(db, [], ["acme/*"]))?.id).toBe("job-a");
+    expect(await claimNextJob(db, [], ["acme/*"])).toBeNull();
+    expect(await claimNextJob(db, [], ["ACME/*"])).toBeNull();
     expect((await claimNextJob(db, []))?.id).toBe("job-b");
   });
 
@@ -808,5 +827,31 @@ describe("buildNeedsContext", () => {
   it("readNeedsContext short-circuits empty bases without a query", async () => {
     const db = { prepare: () => { throw new Error("must not query"); } } as unknown as Db;
     await expect(readNeedsContext(db, "r1", [])).resolves.toEqual({ needs: {}, truncated: false, warnings: [] });
+  });
+});
+
+describe("repoAllowSql", () => {
+  it("returns no filter for an empty allowlist", () => {
+    expect(repoAllowSql([], "repo")).toEqual({ clause: "", binds: [] });
+  });
+
+  it("matches exact repos case-insensitively", () => {
+    expect(repoAllowSql(["MyOrg/Repo"], "repo")).toEqual({
+      clause: "(lower(repo) IN (?))",
+      binds: ["myorg/repo"],
+    });
+  });
+
+  it("matches org wildcards by prefix with the boundary slash", () => {
+    expect(repoAllowSql(["myorg/*"], "r.repo")).toEqual({
+      clause: `(lower(r.repo) LIKE ? ESCAPE '\\')`,
+      binds: ["myorg/%"],
+    });
+  });
+
+  it("combines exact and org entries and escapes LIKE metacharacters", () => {
+    const out = repoAllowSql(["o/a", "my_org/*"], "repo");
+    expect(out.clause).toBe(`(lower(repo) IN (?) OR lower(repo) LIKE ? ESCAPE '\\')`);
+    expect(out.binds).toEqual(["o/a", "my\\_org/%"]);
   });
 });

@@ -182,6 +182,7 @@ import {
   newTokenValue,
   normalizeRepos,
   normalizeScopes,
+  reposAllow,
   type AuthScope,
 } from "./tokens";
 import { convertActionsWorkflow, isImportSuccess } from "../../../packages/runner-sdk/src/importActions.ts";
@@ -362,11 +363,10 @@ async function authIdentity(request: Request, env: WorkerEnv): Promise<{ scope: 
   return session.is_admin ? { scope: "admin", actor, repos: [] } : { scope: "readonly", actor, repos: [] };
 }
 
-// Repo-scoped tokens: empty allowlist means every repo.
+// Repo-scoped tokens: empty allowlist means every repo (exact
+// entries plus `org/*` wildcards — see tokens.reposAllow).
 function repoAllowed(ident: { repos: string[] }, repo: string): boolean {
-  if (ident.repos.length === 0) return true;
-  const needle = repo.toLowerCase();
-  return ident.repos.some((r) => r.toLowerCase() === needle);
+  return reposAllow(ident.repos, repo);
 }
 
 // Runner-mode job over the API: parsed labels, camelCase stamps, and no
@@ -1842,7 +1842,7 @@ async function handleCreateToken(request: Request, env: WorkerEnv): Promise<Resp
     const scopes = body.scopes === undefined ? ["runner"] : normalizeScopes(body.scopes);
     if (!scopes) return json({ error: "scopes must be a non-empty array of runner|readonly|admin" }, 400);
     const repos = normalizeRepos(body.repos);
-    if (repos === null) return json({ error: "repos must be owner/name entries (max 50)" }, 400);
+    if (repos === null) return json({ error: "repos must be owner/name or org/* entries (max 50)" }, 400);
     const id = crypto.randomUUID();
     const value = newTokenValue();
     await createToken(env.DB, {

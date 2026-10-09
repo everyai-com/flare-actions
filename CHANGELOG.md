@@ -8,6 +8,14 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Org-level API token allowlists: token `repos` entries accept
+  `org/*` wildcards (one level only) alongside exact `owner/name`
+  repos, matched case-insensitively everywhere — the API/MCP gate,
+  job claims (BYO + GitHub runner lanes), run lists, log search,
+  usage rollups, and runner-job lists share one SQL builder with
+  LIKE-metachar escaping (`my_org/*` cannot match `myXorg/y`).
+  Exact matching also went case-insensitive in SQL, fixing scoped
+  tokens silently missing mixed-case repos in list/claim queries.
 - Richer `if:` + needs context: step/job conditions take comparisons
   over settled needs and earlier steps (`needs.build.result`,
   `needs.build.outputs.tag`, `steps.prep.outputs.sha`) with `&&`/`||`/

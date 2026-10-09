@@ -231,6 +231,31 @@ export async function getRun(db: Db, id: string): Promise<RunRow | null> {
   return db.prepare("SELECT * FROM runs WHERE id = ?").bind(id).first<RunRow>();
 }
 
+// Token allowlist as SQL over a repo column: exact entries via IN,
+// `org/*` entries via a prefix LIKE. Both sides compare lowercased —
+// stored repos keep GitHub's canonical case, so a case-sensitive IN
+// would silently hide rows from a token the API gate (case-insensitive
+// tokens.reposAllow) accepts. LIKE metacharacters are escaped (`_` is
+// in the org charset, so `my_org/*` must not match `myXorg/y`).
+// Returns the parenthesized OR group plus binds; callers splice it
+// after WHERE or AND. Empty list = no filter.
+export function repoAllowSql(allowedRepos: string[], column: string): { clause: string; binds: string[] } {
+  const exact = allowedRepos.filter((r) => !r.endsWith("/*"));
+  const orgs = allowedRepos.filter((r) => r.endsWith("/*")).map((r) => r.slice(0, -2).toLowerCase());
+  const parts: string[] = [];
+  const binds: string[] = [];
+  if (exact.length > 0) {
+    parts.push(`lower(${column}) IN (${exact.map(() => "?").join(", ")})`);
+    binds.push(...exact.map((r) => r.toLowerCase()));
+  }
+  for (const org of orgs) {
+    parts.push(`lower(${column}) LIKE ? ESCAPE '\\'`);
+    binds.push(`${org.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}/%`);
+  }
+  if (parts.length === 0) return { clause: "", binds: [] };
+  return { clause: `(${parts.join(" OR ")})`, binds };
+}
+
 export async function listRuns(
   db: Db,
   limit = 50,
@@ -240,9 +265,10 @@ export async function listRuns(
 ): Promise<RunRow[]> {
   const clauses: string[] = [];
   const binds: unknown[] = [];
-  if (allowedRepos.length > 0) {
-    clauses.push(`repo IN (${allowedRepos.map(() => "?").join(", ")})`);
-    binds.push(...allowedRepos);
+  const scope = repoAllowSql(allowedRepos, "repo");
+  if (scope.clause) {
+    clauses.push(scope.clause);
+    binds.push(...scope.binds);
   }
   if (agent) {
     clauses.push("agent = ?");
@@ -641,7 +667,8 @@ export async function claimNextJob(
   // event 'artifacts' in SQL. Seats claim their woken jobs by id.
   const noArtifacts = `AND r.event != 'artifacts'`;
   // Repo-scoped tokens only claim jobs from their repos (empty = all).
-  const repoFilter = allowedRepos.length > 0 ? ` AND r.repo IN (${allowedRepos.map(() => "?").join(", ")})` : "";
+  const scope = repoAllowSql(allowedRepos, "r.repo");
+  const repoFilter = scope.clause ? ` AND ${scope.clause}` : "";
   // Fair share: skip repos already at their running cap so one tenant's
   // burst cannot starve the shared poll pool. Best-effort snapshot —
   // concurrent claims can still overrun by a job, which is fine.
@@ -679,7 +706,7 @@ export async function claimNextJob(
               `SELECT j.*, r.repo, r.sha, r.source, r.branch, r.changed_files, r.agent FROM jobs j JOIN runs r ON r.id = j.run_id
                WHERE j.status = 'queued'${repoFilter} ${noArtifacts} ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
-            .bind(...allowedRepos, CLAIM_PAGE_SIZE)
+            .bind(...scope.binds, CLAIM_PAGE_SIZE)
             .all<JobWithSource>()
         : await db
             .prepare(
@@ -687,7 +714,7 @@ export async function claimNextJob(
                WHERE j.status = 'queued'${repoFilter} ${noArtifacts} AND (j.priority < ? OR (j.priority = ? AND (j.prior_ms < ? OR (j.prior_ms = ? AND (j.created_at > ? OR (j.created_at = ? AND j.id > ?))))))
                ORDER BY j.priority DESC, j.prior_ms DESC, j.created_at ASC, j.id ASC LIMIT ?`,
             )
-            .bind(...allowedRepos, afterPriority, afterPriority, afterPriorMs, afterPriorMs, afterCreated, afterCreated, afterId, CLAIM_PAGE_SIZE)
+            .bind(...scope.binds, afterPriority, afterPriority, afterPriorMs, afterPriorMs, afterCreated, afterCreated, afterId, CLAIM_PAGE_SIZE)
             .all<JobWithSource>();
     if (res.results.length === 0) return null;
     for (const job of res.results) {
@@ -2115,10 +2142,11 @@ export interface UsageStats {
 // compute minutes over a trailing window, token-scoped like listRuns.
 export async function usageStats(db: Db, days: number, allowedRepos: string[] = []): Promise<UsageStats> {
   const cutoff = new Date(Date.now() - Math.max(1, Math.min(days, 365)) * 86400000).toISOString();
-  const filter = allowedRepos.length > 0 ? ` AND repo IN (${allowedRepos.map(() => "?").join(", ")})` : "";
+  const scope = repoAllowSql(allowedRepos, "repo");
+  const filter = scope.clause ? ` AND ${scope.clause}` : "";
   const runRows = await db
     .prepare(`SELECT status, COUNT(*) AS n FROM runs WHERE created_at >= ?${filter} GROUP BY status`)
-    .bind(cutoff, ...allowedRepos)
+    .bind(cutoff, ...scope.binds)
     .all<{ status: string; n: number }>();
   const runsByStatus: Record<string, number> = {};
   let runs = 0;
@@ -2126,14 +2154,15 @@ export async function usageStats(db: Db, days: number, allowedRepos: string[] = 
     runsByStatus[r.status] = r.n;
     runs += r.n;
   }
-  const jobFilter = allowedRepos.length > 0 ? ` AND r.repo IN (${allowedRepos.map(() => "?").join(", ")})` : "";
+  const jobScope = repoAllowSql(allowedRepos, "r.repo");
+  const jobFilter = jobScope.clause ? ` AND ${jobScope.clause}` : "";
   const jobRows = await db
     .prepare(
       `SELECT COUNT(*) AS n, COALESCE(SUM(strftime('%s', j.finished_at) - strftime('%s', j.started_at)), 0) AS secs
        FROM jobs j JOIN runs r ON r.id = j.run_id
        WHERE r.created_at >= ? AND j.finished_at IS NOT NULL AND j.started_at IS NOT NULL${jobFilter}`,
     )
-    .bind(cutoff, ...allowedRepos)
+    .bind(cutoff, ...jobScope.binds)
     .first<{ n: number; secs: number }>();
   const jobs = jobRows?.n ?? 0;
   const computeMinutes = Math.round(((jobRows?.secs ?? 0) / 60) * 1000) / 1000;
@@ -2144,7 +2173,7 @@ export async function usageStats(db: Db, days: number, allowedRepos: string[] = 
        WHERE r.created_at >= ? AND j.finished_at IS NOT NULL AND j.started_at IS NOT NULL${jobFilter}
        GROUP BY r.repo ORDER BY secs DESC LIMIT 10`,
     )
-    .bind(cutoff, ...allowedRepos)
+    .bind(cutoff, ...jobScope.binds)
     .all<{ repo: string; n: number; secs: number }>();
   return {
     days,

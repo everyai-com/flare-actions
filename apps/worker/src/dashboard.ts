@@ -315,7 +315,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <form id="tokenForm" class="inline">
 <input id="tokenName" placeholder="Token name, e.g. ci-laptop" maxlength="64">
 <select id="tokenScope"><option value="runner">runner</option><option value="readonly">readonly</option><option value="admin">admin</option></select>
-<input id="tokenRepos" placeholder="optional: owner/repo, owner/repo2 (blank = all repos)" maxlength="2000">
+<input id="tokenRepos" placeholder="optional: owner/repo, org/* (blank = all repos)" maxlength="2000">
 <button type="submit">Create token</button>
 </form>
 <p id="tokenErr" class="err"></p>

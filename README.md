@@ -243,7 +243,8 @@ issue named tokens in the Access tab.
   tokens pull jobs and report status (CI machines, teammates),
   `readonly` tokens only view runs, `admin` tokens do everything (CLI
   admin commands). Each token can be **scoped to specific repos**
-  (`repos: owner/name, …`); unscoped tokens see everything. Each token
+  (`repos: owner/name, …`) or whole orgs (`org/*`); unscoped tokens
+  see everything. Each token
   is shown once at creation; revoke any token and it stops working
   immediately. **Pair a runner** mints a single-use 10-minute code —
   paste one command on a fresh machine and it exchanges the code for

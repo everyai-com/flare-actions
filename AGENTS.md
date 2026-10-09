@@ -319,9 +319,12 @@ gaps so one-click deploys need zero `wrangler secret` commands.
   `POST /v1/admin/pair-codes`; `POST /v1/pair/exchange` (public,
   IP-throttled like logins) atomically consumes it and mints a
   runner token; the runner writes `.env` (0600, merged) and polls. Tokens carry an optional
-  repo allowlist (`repos`, empty = all): `repoAllowed` gates dispatch,
-  claim (`claimNextJob` filters in SQL), runs list/get/wait/digest,
-  artifacts, rerun, status, heartbeat, flaky, secrets, and schedules.
+  repo allowlist (`repos`, empty = all; exact `owner/name` or `org/*`):
+  `reposAllow` (tokens.ts) gates dispatch,
+  claim (`claimNextJob` filters in SQL via `repoAllowSql`, shared with
+  run lists, log search, usage, and the GitHub-runner lane), runs
+  list/get/wait/digest, artifacts, rerun, status, heartbeat, flaky,
+  secrets, and schedules.
   Cache keys are opaque and stay run-scope only. Password reset
   (`/v1/admin/reset[/confirm]`) is self-serve, single-use (1h), generic
   200 (no enumeration), and needs a mail sender + EMAIL binding;

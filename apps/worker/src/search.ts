@@ -2,7 +2,7 @@
 // bounded head+tail slice of its log (level-classified); the Lucene-like
 // query language compiles to a parameterized FTS5 MATCH plus equality
 // filters, so user input never reaches SQLite unescaped.
-import type { Db } from "./db";
+import { repoAllowSql, type Db } from "./db";
 
 export interface LogHit {
   job_id: string;
@@ -263,9 +263,10 @@ export async function searchLogs(db: Db, compiled: CompiledLogQuery, allowedRepo
     clauses.push("job_id = ?");
     values.push(compiled.jobId);
   }
-  if (allowedRepos.length > 0) {
-    clauses.push(`repo IN (${allowedRepos.map(() => "?").join(", ")})`);
-    values.push(...allowedRepos);
+  const scope = repoAllowSql(allowedRepos, "repo");
+  if (scope.clause) {
+    clauses.push(scope.clause);
+    values.push(...scope.binds);
   }
   const res = await db
     .prepare(

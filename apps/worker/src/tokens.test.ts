@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DASHBOARD_HTML } from "./dashboard";
-import { hashToken, newTokenValue, normalizeRepos, normalizeScopes, parseRepos, parseScopes, scopesAllow } from "./tokens";
+import { hashToken, newTokenValue, normalizeRepos, normalizeScopes, parseRepos, parseScopes, reposAllow, scopesAllow } from "./tokens";
 
 describe("hashToken", () => {
   it("is deterministic and hex-shaped", async () => {
@@ -64,6 +64,31 @@ describe("repo scoping", () => {
     expect(normalizeRepos(Array.from({ length: 51 }, (_, i) => `o/r${i}`))).toBeNull();
     expect(parseRepos("o/a, bad entry, o/b")).toEqual(["o/a", "o/b"]);
     expect(parseRepos("")).toEqual([]);
+  });
+
+  it("accepts org/* wildcards and rejects wildcard soup", () => {
+    expect(normalizeRepos("myorg/*")).toEqual(["myorg/*"]);
+    expect(normalizeRepos(["o/a", "o2/*"])).toEqual(["o/a", "o2/*"]);
+    expect(normalizeRepos("*")).toBeNull();
+    expect(normalizeRepos("*/x")).toBeNull();
+    expect(normalizeRepos("o/")).toBeNull();
+    expect(normalizeRepos("o/*/x")).toBeNull();
+    expect(normalizeRepos("*/*")).toBeNull();
+    expect(parseRepos("o/*, junk, a/b")).toEqual(["o/*", "a/b"]);
+  });
+
+  it("matches exact repos and org prefixes case-insensitively", () => {
+    expect(reposAllow([], "o/a")).toBe(true);
+    expect(reposAllow(["o/a"], "o/a")).toBe(true);
+    expect(reposAllow(["o/a"], "O/A")).toBe(true);
+    expect(reposAllow(["o/a"], "o/b")).toBe(false);
+    expect(reposAllow(["myorg/*"], "myorg/anything")).toBe(true);
+    expect(reposAllow(["myorg/*"], "MyOrg/Deep")).toBe(true);
+    expect(reposAllow(["myorg/*"], "myorgx/y")).toBe(false);
+    expect(reposAllow(["myorg/*"], "other/y")).toBe(false);
+    expect(reposAllow(["o/a", "big/*"], "big/repo")).toBe(true);
+    expect(reposAllow(["o/a", "big/*"], "o/a")).toBe(true);
+    expect(reposAllow(["o/a", "big/*"], "small/repo")).toBe(false);
   });
 });
 

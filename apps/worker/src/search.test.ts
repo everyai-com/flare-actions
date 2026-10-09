@@ -74,11 +74,18 @@ class MemDb implements Db {
       } else if (c === "job_id = ?") {
         const v = eat();
         out = out.filter((r) => r.job_id === v);
-      } else if (c.startsWith("repo IN (")) {
-        const n = (c.match(/\?/g) ?? []).length;
-        const allowed = new Set(values.slice(vi, vi + n) as string[]);
-        vi += n;
-        out = out.filter((r) => allowed.has(r.repo));
+      } else if (c.startsWith("(lower(repo)")) {
+        const inM = /IN \(([^)]*)\)/.exec(c);
+        const nExact = inM ? ((inM[1].match(/\?/g) ?? []).length) : 0;
+        const nLike = (c.match(/LIKE \?/g) ?? []).length;
+        const exact = new Set((values.slice(vi, vi + nExact) as string[]).map((s) => s.toLowerCase()));
+        const patterns = values.slice(vi + nExact, vi + nExact + nLike) as string[];
+        vi += nExact + nLike;
+        out = out.filter((r) => {
+          const low = r.repo.toLowerCase();
+          if (exact.has(low)) return true;
+          return patterns.some((p) => low.startsWith(p.replace(/\\(.)/g, "$1").replace(/%$/, "")));
+        });
       }
     }
     return out.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
@@ -224,5 +231,7 @@ describe("index + search round trip", () => {
     await indexJobLog(db, { ...job, jobId: "job-2", repo: "o/other", log: "boom there" });
     expect(await searchLogs(db, mustCompile("boom"), ["o/r"], 50)).toHaveLength(1);
     expect(await searchLogs(db, mustCompile("boom"), [], 50)).toHaveLength(2);
+    expect(await searchLogs(db, mustCompile("boom"), ["o/*"], 50)).toHaveLength(2);
+    expect(await searchLogs(db, mustCompile("boom"), ["other/*"], 50)).toHaveLength(0);
   });
 });
