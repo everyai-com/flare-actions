@@ -8,6 +8,19 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Per-Worker API token scoping: `token:mint --worker <script>`
+  (repeatable, ci + debug profiles) replaces the account-wide
+  Workers Scripts group with the Individual Workers group on nested
+  script resources — a leaked CI token can no longer touch other
+  Workers, and debug agents get code-blind Metadata Read-Only.
+  Resolution is live and fail-closed; billing/setup stay
+  account-level by nature.
+- R2 bandwidth pairing for usage dollars: `/v1/usage/billable`
+  best-effort attaches per-bucket ingress/egress bytes (GraphQL,
+  31-day window, needs Account Analytics Read on the billing
+  token), `cli usage` prints an R2 line with the top bucket,
+  over-cap responses are labeled partial (`truncated`/`totalRows`),
+  and the dashboard strip appends real dollars for admins.
 - Sandbox SDK 1.0 file utilities for seats: `Files` (JUnit discovery
   and the egress-log read prefer it, with exec fallbacks for pre-shim
   images), `S3Mount` + `DirectoryBackup` plumbed behind gateway

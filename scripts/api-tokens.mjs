@@ -8,12 +8,20 @@ export const TOKEN_PROFILES = {
   ci: {
     description: "CI preview deploys (wrangler preview only)",
     groups: ["Workers Scripts Edit", "D1 Edit", "Queues Edit"],
+    // Per-Worker scoping (--worker): the account-wide scripts group is
+    // replaced by the Individual Workers edit group on nested script
+    // resources, so a leaked CI token cannot touch other Workers.
+    workerScoped: { replaces: "Workers Scripts Edit", access: "edit" },
   },
   // Read-only debugging for agents and humans: inspect workers, query
   // D1/queues, read settings and audit log. No writes anywhere.
   debug: {
     description: "read-only debugging (agents and humans)",
     groups: ["Workers Scripts Read", "D1 Read", "Queues Read", "Account Settings Read", "Audit Logs Read"],
+    // Per-Worker scoping (--worker): metadata (settings, metrics,
+    // logs, traces) on the named Workers instead of account-wide
+    // code reads. D1/queues reads stay account-wide by design.
+    workerScoped: { replaces: "Workers Scripts Read", access: "metadata" },
   },
   // Billable Usage API reads for `cli usage` dollars. Nothing else.
   billing: {
@@ -65,17 +73,48 @@ export function resolvePermissionIds(groups, names) {
   return { missing, candidates: candidates.slice(0, 12) };
 }
 
-export function buildMintBody(name, accountId, groupIds) {
-  return {
-    name,
-    policies: [
-      {
-        effect: "allow",
-        resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
-        permission_groups: groupIds,
-      },
-    ],
-  };
+// Worker script tags for per-Worker scoping (dashboard "Specified
+// Workers" shape, nested under the account resource).
+export const WORKER_SCRIPT_TAG_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/;
+
+export function buildMintBody(name, accountId, groupIds, opts = {}) {
+  const accountKey = `com.cloudflare.api.account.${accountId}`;
+  const policies = [
+    {
+      effect: "allow",
+      resources: { [accountKey]: "*" },
+      permission_groups: groupIds,
+    },
+  ];
+  const scripts = opts.workerScripts ?? [];
+  if (scripts.length > 0) {
+    for (const tag of scripts) {
+      if (!WORKER_SCRIPT_TAG_RE.test(tag)) throw new Error(`invalid worker script tag: ${JSON.stringify(tag)}`);
+    }
+    if (!opts.workerGroupIds || opts.workerGroupIds.length === 0) {
+      throw new Error("worker scoping needs workerGroupIds (resolve the Individual Workers groups first)");
+    }
+    const nested = {};
+    for (const tag of scripts) nested[`com.cloudflare.edge.worker.script.${tag}`] = "*";
+    policies.push({
+      effect: "allow",
+      resources: { [accountKey]: nested },
+      permission_groups: opts.workerGroupIds,
+    });
+  }
+  return { name, policies };
+}
+
+// Resolve the Individual Workers group for per-Worker scoping against
+// the live list (no hardcoded ids): edit for deploys, metadata for
+// code-blind debugging. Fails closed on missing/ambiguous matches.
+export function resolveWorkerGroupIds(groups, access) {
+  const names = (groups ?? []).map((g) => ({ name: String(g?.name ?? ""), id: String(g?.id ?? "") }));
+  const want = access === "edit" ? /edit|write/i : /metadata/i;
+  const hits = names.filter((g) => /individual/i.test(g.name) && /worker/i.test(g.name) && /script/i.test(g.name) && want.test(g.name) && g.id);
+  if (hits.length === 1) return { ids: [{ id: hits[0].id }], group: hits[0].name };
+  const individual = names.filter((g) => /individual/i.test(g.name) && /worker/i.test(g.name)).map((g) => g.name);
+  return { missing: [`Individual Workers Scripts (${access})`], candidates: individual.slice(0, 12) };
 }
 
 export async function mintToken(apiBase, parentToken, body, fetchImpl = fetch) {

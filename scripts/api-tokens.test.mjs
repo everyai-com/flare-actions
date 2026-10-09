@@ -5,6 +5,7 @@ import {
   mintToken,
   permissionHint,
   resolvePermissionIds,
+  resolveWorkerGroupIds,
   TOKEN_PROFILES,
 } from "./api-tokens.mjs";
 
@@ -44,6 +45,55 @@ describe("buildMintBody", () => {
     expect(body.policies).toEqual([
       { effect: "allow", resources: { "com.cloudflare.api.account.acct1": "*" }, permission_groups: [{ id: "g1" }] },
     ]);
+  });
+  it("nests per-worker resources under the account key when scoped", () => {
+    const body = buildMintBody("flare-actions-ci", "acct1", [{ id: "g2" }], {
+      workerScripts: ["flare-actions", "flare-actions-seats"],
+      workerGroupIds: [{ id: "gw" }],
+    });
+    expect(body.policies).toHaveLength(2);
+    expect(body.policies[1]).toEqual({
+      effect: "allow",
+      resources: {
+        "com.cloudflare.api.account.acct1": {
+          "com.cloudflare.edge.worker.script.flare-actions": "*",
+          "com.cloudflare.edge.worker.script.flare-actions-seats": "*",
+        },
+      },
+      permission_groups: [{ id: "gw" }],
+    });
+  });
+  it("rejects bad script tags and missing worker groups", () => {
+    expect(() => buildMintBody("x", "a", [], { workerScripts: ["../evil"], workerGroupIds: [{ id: "g" }] })).toThrow(
+      "invalid worker script tag",
+    );
+    expect(() => buildMintBody("x", "a", [], { workerScripts: ["ok"] })).toThrow("workerGroupIds");
+  });
+});
+
+describe("resolveWorkerGroupIds", () => {
+  const groups = [
+    { id: "g1", name: "Workers Scripts Edit" },
+    { id: "gw-edit", name: "Individual Workers Scripts Edit" },
+    { id: "gw-meta", name: "Individual Workers Scripts Metadata Read-Only" },
+  ];
+  it("picks the edit flavor for deploys and metadata for debugging", () => {
+    expect(resolveWorkerGroupIds(groups, "edit")).toEqual({ ids: [{ id: "gw-edit" }], group: "Individual Workers Scripts Edit" });
+    expect(resolveWorkerGroupIds(groups, "metadata")).toEqual({
+      ids: [{ id: "gw-meta" }],
+      group: "Individual Workers Scripts Metadata Read-Only",
+    });
+  });
+  it("fails closed with candidates on missing or ambiguous matches", () => {
+    const missing = resolveWorkerGroupIds([{ id: "g1", name: "Workers Scripts Edit" }], "edit");
+    expect(missing.missing).toEqual(["Individual Workers Scripts (edit)"]);
+    expect(missing.candidates).toEqual([]);
+    const ambiguous = resolveWorkerGroupIds(
+      [...groups, { id: "gw2", name: "Individual Workers Scripts Write" }],
+      "edit",
+    );
+    expect(ambiguous.missing).toEqual(["Individual Workers Scripts (edit)"]);
+    expect(ambiguous.candidates).toContain("Individual Workers Scripts Edit");
   });
 });
 

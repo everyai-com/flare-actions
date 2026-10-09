@@ -322,6 +322,16 @@ export interface FlareBillableUsage {
   to?: string;
   totalCost?: number;
   families?: { family: string; cost: number; rows: number }[];
+  skippedRows?: number;
+  truncated?: boolean;
+  totalRows?: number;
+  r2?: {
+    from: string;
+    to: string;
+    ingressBytes: number;
+    egressBytes: number;
+    buckets: { bucket: string; ingressBytes: number; egressBytes: number }[];
+  } | null;
 }
 
 export interface FlareLogHit {

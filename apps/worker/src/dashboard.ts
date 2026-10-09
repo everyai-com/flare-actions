@@ -1529,9 +1529,16 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     api("/v1/usage?days=30").then(function (u) {
       var list = (typeof u.actionsListUsd === "number" ? u.actionsListUsd : 0) +
         (typeof u.githubRunnerListUsd === "number" ? u.githubRunnerListUsd : 0);
-      document.getElementById("usageStrip").textContent =
-        "Last 30d: " + u.runs + " runs · " + u.computeMinutes + " compute-min · ≈$" +
+      var base = "Last 30d: " + u.runs + " runs · " + u.computeMinutes + " compute-min · ≈$" +
         list.toFixed(2) + " spend avoided vs Actions list price";
+      document.getElementById("usageStrip").textContent = base;
+      // Real dollars for admins (401/502 keep the list-price line).
+      api("/v1/usage/billable?days=30").then(function (b) {
+        if (!b || b.configured !== true || typeof b.totalCost !== "number") return;
+        var extra = " · $" + b.totalCost.toFixed(2) + " real Cloudflare spend";
+        if (b.truncated === true) extra += " (partial)";
+        document.getElementById("usageStrip").textContent = base + extra;
+      }).catch(function () { /* list-price line stands alone */ });
     }).catch(function () { /* strip stays empty when usage is unreachable */ });
   }
   var cacheStatsAt = 0;

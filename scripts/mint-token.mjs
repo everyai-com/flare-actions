@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Mint a least-privilege Cloudflare API token for one profile.
-// Usage: npm run token:mint -- --profile ci [--account <id>] [--dry-run]
+// Usage: npm run token:mint -- --profile ci [--account <id>] [--worker <script>...] [--dry-run]
 // Needs a parent credential with API Tokens Write: CLOUDFLARE_API_TOKEN
 // env, else wrangler's stored OAuth token. Without either (or without
 // list permission), prints the exact dashboard checklist instead of
@@ -8,7 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { TOKEN_PROFILES, buildMintBody, listPermissionGroups, mintToken, profileNames, resolvePermissionIds } from "./api-tokens.mjs";
+import { TOKEN_PROFILES, buildMintBody, listPermissionGroups, mintToken, profileNames, resolvePermissionIds, resolveWorkerGroupIds } from "./api-tokens.mjs";
 
 const API_BASE = "https://api.cloudflare.com/client/v4";
 const DASH_TOKENS = "https://dash.cloudflare.com/profile/api-tokens";
@@ -18,8 +18,17 @@ function arg(flag) {
   return i === -1 ? null : (process.argv[i + 1] ?? null);
 }
 
+function argAll(flag) {
+  const out = [];
+  for (let i = 0; i < process.argv.length; i++) {
+    if (process.argv[i] === flag && process.argv[i + 1] !== undefined) out.push(process.argv[i + 1]);
+  }
+  return out;
+}
+
 const profile = arg("--profile") ?? "ci";
 const dryRun = process.argv.includes("--dry-run");
+const workerScripts = argAll("--worker");
 let accountId = arg("--account") ?? process.env.CLOUDFLARE_ACCOUNT_ID ?? null;
 
 if (!TOKEN_PROFILES[profile]) {
@@ -27,12 +36,21 @@ if (!TOKEN_PROFILES[profile]) {
   process.exit(1);
 }
 const spec = TOKEN_PROFILES[profile];
+if (workerScripts.length > 0 && !spec.workerScoped) {
+  console.error(`--worker scoping needs a workerScoped profile (ci, debug); "${profile}" is account-level by nature`);
+  process.exit(1);
+}
 
 function printChecklist() {
   console.log(`Least-privilege token checklist (${profile}: ${spec.description}):`);
   console.log(`1. Open ${DASH_TOKENS} -> Create Token -> Custom token`);
   console.log("2. Permissions (account scope):");
-  for (const g of spec.groups) console.log(`   - ${g}`);
+  const accountGroups = workerScripts.length > 0 ? spec.groups.filter((g) => g !== spec.workerScoped.replaces) : spec.groups;
+  for (const g of accountGroups) console.log(`   - ${g}`);
+  if (workerScripts.length > 0) {
+    console.log(`   + Individual Workers Scripts (${spec.workerScoped.access}) on Specified Workers: ${workerScripts.join(", ")}`);
+    console.log(`   (replaces account-wide "${spec.workerScoped.replaces}")`);
+  }
   console.log("3. Account Resources: Include -> the one account (never All accounts)");
   if (accountId) console.log(`   (this deploy's account id: ${accountId})`);
   console.log("4. Create, then store as CLOUDFLARE_API_TOKEN (+ CLOUDFLARE_ACCOUNT_ID) in CI secrets.");
@@ -41,6 +59,7 @@ function printChecklist() {
 if (dryRun) {
   console.log(`(dry-run) profile "${profile}": ${spec.description}`);
   for (const g of spec.groups) console.log(`  allow: ${g}`);
+  if (workerScripts.length > 0) console.log(`  worker-scoped to: ${workerScripts.join(", ")} (${spec.workerScoped.access})`);
   printChecklist();
   process.exit(0);
 }
@@ -75,13 +94,26 @@ try {
   printChecklist();
   process.exit(0);
 }
-const resolved = resolvePermissionIds(groups, spec.groups);
+const accountGroups = workerScripts.length > 0 ? spec.groups.filter((g) => g !== spec.workerScoped.replaces) : spec.groups;
+const resolved = resolvePermissionIds(groups, accountGroups);
 if ("missing" in resolved) {
   console.error(`Refusing to mint: unknown permission groups: ${resolved.missing.join(", ")}`);
   if (resolved.candidates.length > 0) console.error(`Close matches: ${resolved.candidates.join(", ")}`);
   process.exit(1);
 }
-const body = buildMintBody(`flare-actions-${profile}`, accountId, resolved.ids);
+let workerGroupIds;
+if (workerScripts.length > 0) {
+  const wresolved = resolveWorkerGroupIds(groups, spec.workerScoped.access);
+  if ("missing" in wresolved) {
+    console.error(`Refusing to mint: ${wresolved.missing.join(", ")} not in the live permission list`);
+    if (wresolved.candidates.length > 0) console.error(`Individual Workers groups seen: ${wresolved.candidates.join(", ")}`);
+    else console.error("No Individual Workers groups seen — the account may predate granular Worker permissions.");
+    process.exit(1);
+  }
+  workerGroupIds = wresolved.ids;
+  console.log(`Worker scoping via "${wresolved.group}" on: ${workerScripts.join(", ")}`);
+}
+const body = buildMintBody(`flare-actions-${profile}`, accountId, resolved.ids, { workerScripts, workerGroupIds });
 try {
   const minted = await mintToken(API_BASE, parent, body);
   console.log("Minted least-privilege token (shown once — store it now):");

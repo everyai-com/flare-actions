@@ -129,6 +129,8 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("loadUsageStrip");
     expect(DASHBOARD_HTML).toContain("/v1/usage?days=30");
     expect(DASHBOARD_HTML).toContain("spend avoided vs Actions list price");
+    expect(DASHBOARD_HTML).toContain("/v1/usage/billable?days=30");
+    expect(DASHBOARD_HTML).toContain("real Cloudflare spend");
   });
 
   it("renders the feed with one-click rerun, open-PR, and fix actions", () => {

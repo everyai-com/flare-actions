@@ -239,7 +239,7 @@ import { MAX_JUNIT_BYTES, parseJUnit } from "./junit";
 import { compileLogQuery, indexJobLog, searchLogs } from "./search";
 import { lookupPriorMs, recordRuntimePrior } from "./priors";
 import { apiError, dispatchErrorCode } from "./errors";
-import { billableWindow, fetchBillableUsage, summarizeBillableUsage } from "./billing";
+import { billableWindow, fetchBillableUsage, fetchR2Bandwidth, summarizeBillableUsage, type R2BandwidthSummary } from "./billing";
 import { TRIAGE_MODEL } from "./triage";
 import { upsertPrComment } from "./prcomment";
 import { decideSelectionMode, DEFAULT_HISTORY_DAYS, parseSelectionReport, readTestSelectionConfig } from "./testselect";
@@ -3075,8 +3075,21 @@ export default {
         if (!token || !accountId) return json({ configured: false });
         const { from, to } = billableWindow(Math.floor(days));
         try {
-          const { rows, skippedRows } = await fetchBillableUsage(token, accountId, from, to);
-          return json({ configured: true, ...summarizeBillableUsage(rows, from, to), skippedRows });
+          const { rows, skippedRows, truncated, totalRows } = await fetchBillableUsage(token, accountId, from, to);
+          // R2 pairing is best-effort (31d GraphQL cap, needs Account
+          // Analytics Read on the billing token): dollars still serve.
+          let r2: R2BandwidthSummary | null = null;
+          try {
+            const r2win = billableWindow(Math.min(Math.floor(days), 31));
+            r2 = await fetchR2Bandwidth(token, accountId, r2win.from, r2win.to);
+          } catch (err) {
+            log("warn", "r2 bandwidth fetch failed", { error: String(err) });
+          }
+          return json({
+            configured: true,
+            ...summarizeBillableUsage(rows, from, to, { skippedRows, truncated, totalRows }),
+            r2,
+          });
         } catch (err) {
           log("warn", "billable usage fetch failed", { error: String(err) });
           return json({ error: "billable usage unavailable" }, 502);

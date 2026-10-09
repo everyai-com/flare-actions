@@ -37,11 +37,11 @@ tab + PR-comment section). OpenAPI is at 75 paths (was 68).
   (`docs/d1-free-tier-audit.md` — found and fixed seat report caps +
   egress chunking), D1 FTS5 log search (`search.ts`, Lucene-like query
   UX), least-privilege setup tokens (`scripts/mint-token.mjs`, 4
-  profiles, `docs/TOKENS.md`), Billable Usage API in `cli usage`
-  (`/v1/usage/billable` + SDK + CLI + dashboard strip). K2 spiked,
-  no adoption (`docs/SPIKES.md`). Still open: per-Worker token
-  scoping, R2-bandwidth pairing for usage dollars, billable totals
-  past the 2000-row fetch cap.
+  profiles, `docs/TOKENS.md`, per-Worker `--worker` scoping for ci +
+  debug), Billable Usage API in `cli usage` (`/v1/usage/billable` +
+  SDK + CLI + dashboard strip, R2-bandwidth pairing, truncation
+  reporting past the 2000-row fetch cap). K2 spiked, no adoption
+  (`docs/SPIKES.md`).
 - **Phase 2**: snapshot-backed caches (image-lineage keyed, fail-fast
   degraded handling), retain-on-failure (`retain-on-failure` YAML key,
   30-min TTL alarm, SSH), per-job egress report (measured R2 transfers
@@ -163,9 +163,9 @@ Ship while Phase 0 bakes. Pure Worker + D1 + R2 + cron:
   data, Billable Usage API dollars via `/v1/usage/billable` + SDK +
   CLI + dashboard strip): cost attribution shows real Cloudflare
   dollars (FOCUS-shaped, self-serve, daily rows) next to the
-  GitHub-list-price comparison. Still open: pairing with R2
-  bandwidth metrics (Sept 24) and R2 Data Access Logs (Sept 4), and
-  totals past the 2000-row fetch cap.
+  GitHub-list-price comparison, paired with R2 bandwidth metrics
+  (GraphQL, best-effort) and labeled partial past the 2000-row
+  fetch cap. Still open: R2 Data Access Logs (Sept 4) pairing.
 - **Global log search**: D1 FTS5 confirmed available — build the Lucene-like
   query UX Blacksmith validated
   (`branch:main level:error (failure OR panic) -"econn refused"` compiled
@@ -195,9 +195,9 @@ Ship while Phase 0 bakes. Pure Worker + D1 + R2 + cron:
   dashboard checklist in `docs/TOKENS.md`, enriched-403 hints in
   setup): tokens mint at account scope with granular groups (one
   account only, never All), and debug composes explicit read groups
-  rather than a single metadata role. Still open: per-Worker
-  resource scoping in the mint body (today: tighten in the dashboard
-  after minting).
+  rather than a single metadata role. Per-Worker scoping shipped via
+  `--worker` (ci: Individual Workers edit replaces Scripts Edit;
+  debug: per-Worker Metadata Read-Only replaces code reads).
 - **cf CLI tracking** (open beta Sept 28): JSON-first, 3,000+ ops,
   `cloudflare.config.ts`, Vite-based. Wrangler gets a final major + 18
   months maintenance after beta ends. No migration yet; track for setup

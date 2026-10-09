@@ -1802,6 +1802,59 @@ paths:
                 properties:
                   configured:
                     type: boolean
+                  currency:
+                    type: string
+                  from:
+                    type: string
+                  to:
+                    type: string
+                  totalCost:
+                    type: number
+                  families:
+                    type: array
+                    items:
+                      type: object
+                      required: [family, cost, rows]
+                      properties:
+                        family:
+                          type: string
+                        cost:
+                          type: number
+                        rows:
+                          type: integer
+                  skippedRows:
+                    type: integer
+                  truncated:
+                    type: boolean
+                    description: "True when the vendor returned more than the 2000-row cap; totals cover the first 2000 only"
+                  totalRows:
+                    type: integer
+                  r2:
+                    type: object
+                    nullable: true
+                    description: "R2 bandwidth pairing (null when the token lacks Account Analytics Read)"
+                    required: [from, to, ingressBytes, egressBytes, buckets]
+                    properties:
+                      from:
+                        type: string
+                      to:
+                        type: string
+                      ingressBytes:
+                        type: integer
+                      egressBytes:
+                        type: integer
+                      buckets:
+                        type: array
+                        items:
+                          type: object
+                          required: [bucket, ingressBytes, egressBytes]
+                          properties:
+                            bucket:
+                              type: string
+                            ingressBytes:
+                              type: integer
+                            egressBytes:
+                              type: integer
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':

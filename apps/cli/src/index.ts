@@ -145,6 +145,25 @@ function takeProfile(args: string[]): { args: string[]; profile?: string } {
   return { args: out, profile: value };
 }
 
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "?";
+  if (n < 1024) return `${Math.round(n)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u += 1;
+  }
+  return `${v >= 100 ? Math.round(v) : Math.round(v * 10) / 10} ${units[u]}`;
+}
+
+function topR2Bucket(buckets: { bucket: string; ingressBytes: number; egressBytes: number }[] | undefined): string {
+  if (!buckets || buckets.length === 0) return "";
+  const top = buckets[0];
+  return ` (top: ${top.bucket} ${formatBytes(top.ingressBytes + top.egressBytes)})`;
+}
+
 function printDigest(d: FlareRunDigest): void {
   const secs = d.durationMs === null ? "?" : `${Math.round(d.durationMs / 1000)}s`;
   console.log(`${d.status}  ${d.repo}@${d.sha.slice(0, 7)} (${d.branch || "-"}, ${secs})  ${d.failedJobs}/${d.totalJobs} failed`);
@@ -659,7 +678,13 @@ try {
       for (const r of u.topRepos) console.log(`  ${r.repo}: ${r.jobs} jobs, ${r.computeMinutes} compute-min`);
       if (billable?.configured && typeof billable.totalCost === "number") {
         const fams = (billable.families ?? []).slice(0, 5).map((f) => `${f.family} $${f.cost}`).join(", ");
-        console.log(`  Cloudflare billable (${billable.from}..${billable.to}): $${billable.totalCost} ${billable.currency ?? "USD"}${fams ? ` (${fams})` : ""}`);
+        const partial = billable.truncated ? ` (partial: ${billable.totalRows ?? "?"} rows, first 2000 kept)` : "";
+        console.log(`  Cloudflare billable (${billable.from}..${billable.to}): $${billable.totalCost} ${billable.currency ?? "USD"}${fams ? ` (${fams})` : ""}${partial}`);
+        if (billable.r2 && typeof billable.r2.egressBytes === "number") {
+          console.log(
+            `  R2 bandwidth (${billable.r2.from}..${billable.r2.to}): ${formatBytes(billable.r2.ingressBytes)} in / ${formatBytes(billable.r2.egressBytes)} out${topR2Bucket(billable.r2.buckets)}`,
+          );
+        }
       }
     }
   } else if (cmd === "github-jobs") {

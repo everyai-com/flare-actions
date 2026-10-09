@@ -35,8 +35,33 @@ below, one account only). The value prints once: store it as
 
 Group names are resolved against the live permission-groups list at
 mint time; any miss aborts with near-matches rather than minting a
-half-permissioned token. Per-worker scoping can be tightened further
-in the dashboard after minting.
+half-permissioned token.
+
+## Per-Worker scoping (`--worker`)
+
+`ci` and `debug` mint per-Worker when named scripts are passed
+(repeatable; dashboard "Specified Workers" shape, nested under the
+account resource):
+
+```bash
+npm run token:mint -- --profile ci --worker flare-actions --account <id>
+npm run token:mint -- --profile debug --worker flare-actions --account <id>
+```
+
+- `ci --worker` replaces account-wide Workers Scripts Edit with the
+  Individual Workers edit group on those scripts (D1/Queues stay
+  account-wide); a leaked CI token can no longer touch other Workers.
+- `debug --worker` replaces account-wide code reads with per-Worker
+  Metadata Read-Only (settings, metrics, logs, traces — no code).
+- `billing` and `setup` reject `--worker`: billing is account-level
+  by nature, and setup provisions account resources.
+- Resolution is live and fail-closed: unknown or ambiguous
+  Individual Workers groups abort with what the API returned.
+
+R2 bandwidth pairing in `cli usage` needs Account Analytics Read on
+the billing token (GraphQL); without it the dollars still serve and
+the R2 line stays empty. Add it in the dashboard to an existing
+billing token — the profile keeps minting with Billing Read alone.
 
 ## 403s
 
