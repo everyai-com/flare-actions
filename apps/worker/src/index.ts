@@ -1601,7 +1601,7 @@ export function validateDispatch(
   };
 }
 
-export const MAX_MIGRATE_BYTES = 64 * 1024;
+const MAX_MIGRATE_BYTES = 64 * 1024;
 
 export function validateMigrateInput(
   body: Record<string, unknown>,

@@ -421,7 +421,14 @@ export const ALTER_STATEMENTS = [
 let schemaPromise: Promise<void> | null = null;
 
 async function applySchema(db: Db): Promise<void> {
+  // Tables first, then additive columns, then indexes: an index may
+  // cover a backfilled column (idx_runs_agent on ALTER-added
+  // runs.agent), and creating it before the ALTER throws "no such
+  // column" on databases that predate the column — failing every
+  // request with no path to self-heal, since the ALTERs never run.
+  // Tables and indexes stay loud (a DDL typo must throw at boot).
   for (const sql of SCHEMA_STATEMENTS) {
+    if (/^CREATE (UNIQUE )?INDEX/.test(sql)) continue;
     await db.prepare(sql).bind().run();
   }
   for (const sql of ALTER_STATEMENTS) {
@@ -430,6 +437,10 @@ async function applySchema(db: Db): Promise<void> {
     } catch {
       // Column already exists on migrated databases.
     }
+  }
+  for (const sql of SCHEMA_STATEMENTS) {
+    if (!/^CREATE (UNIQUE )?INDEX/.test(sql)) continue;
+    await db.prepare(sql).bind().run();
   }
 }
 
