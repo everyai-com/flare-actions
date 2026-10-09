@@ -49,7 +49,9 @@ tab + PR-comment section). OpenAPI is at 88 paths (was 68).
   needs context on claims + `FLARE_NEEDS_*` env, root-`if` fan-out
   skip with `skipped` dry-run plans, GitHub skipped/cancelled truth
   table in promote), org-level token allowlists (`org/*` everywhere
-  exact entries work, one shared SQL builder, case-insensitive).
+  exact entries work, one shared SQL builder, case-insensitive), MCP
+  artifacts + schedules tools (repo-scoped previews, admin-gated
+  schedule CRUD).
 - **Phase 2**: snapshot-backed caches (image-lineage keyed, fail-fast
   degraded handling), retain-on-failure (`retain-on-failure` YAML key,
   30-min TTL alarm, SSH), per-job egress report (measured R2 transfers

@@ -203,7 +203,9 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   (dual-auth, `flare:read`/`flare:run` scopes) on a D1-backed store
   (`oauth_kv`, no KV namespace); WriteGuard tiers per tool
   (`MCP_TOOL_RISK`), attributed audit rows for write-tier calls, optional
-  write-confirm gate (D1 `mcp_write_confirm`).
+  write-confirm gate (D1 `mcp_write_confirm`). Principals thread
+  `repos` + `isAdmin` into tools (artifact tools repo-scope like REST;
+  schedule tools need an admin API token — OAuth never carries admin).
 - Step env always includes `CI=true` (GitHub parity: tool retries,
   non-interactive modes); runner process env or job `env` may override.
 - Run notifications (`notify.ts`): on the transition into terminal rollup,

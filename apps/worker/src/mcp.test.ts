@@ -489,6 +489,206 @@ describe("mcp", () => {
   });
 });
 
+describe("mcp artifacts + schedules", () => {
+  const SCHED = {
+    id: "sched-1",
+    repo: "o/r",
+    ref: "main",
+    cron: "0 * * * *",
+    profile: null,
+    enabled: 1,
+    last_run_at: null,
+    created_at: "2026-01-01T00:00:00.000Z",
+  };
+  const RUNS: { sql: string; values: unknown[] }[] = [];
+
+  function mcpDb(opts: {
+    run?: unknown;
+    job?: unknown;
+    jobs?: unknown[];
+    schedules?: unknown[];
+    setting?: string | null;
+    changes?: number;
+  } = {}): Db {
+    return {
+      prepare(sql: string) {
+        const norm = sql.replace(/\s+/g, " ").trim();
+        return {
+          bind(...values: unknown[]) {
+            return {
+              all: async <T,>() => {
+                if (norm.startsWith("SELECT * FROM jobs WHERE run_id")) return { results: (opts.jobs ?? []) as T[] };
+                if (norm.startsWith("SELECT * FROM schedules")) return { results: (opts.schedules ?? []) as T[] };
+                return { results: [] as T[] };
+              },
+              first: async <T,>() => {
+                if (norm.startsWith("SELECT * FROM runs WHERE id")) return (opts.run ?? null) as T | null;
+                if (norm.startsWith("SELECT * FROM jobs WHERE id")) return (opts.job ?? null) as T | null;
+                if (norm.startsWith("SELECT value FROM app_settings")) {
+                  return (opts.setting ? { value: opts.setting } : null) as T | null;
+                }
+                return null as T | null;
+              },
+              run: async () => {
+                RUNS.push({ sql: norm, values });
+                if (norm.startsWith("UPDATE schedules") || norm.startsWith("DELETE FROM schedules")) {
+                  return { meta: { changes: opts.changes ?? 1 } };
+                }
+                return {};
+              },
+            };
+          },
+        };
+      },
+    };
+  }
+
+  function fakeArtifactsBucket(files: Record<string, string | Uint8Array>) {
+    const store = new Map<string, Uint8Array>(
+      Object.entries(files).map(([k, v]) => [k, typeof v === "string" ? new TextEncoder().encode(v) : v]),
+    );
+    return {
+      list: async ({ prefix }: { prefix: string }) => ({
+        objects: [...store]
+          .filter(([k]) => k.startsWith(prefix))
+          .map(([key, data]) => ({ key, size: data.length, uploaded: new Date("2026-01-01T00:00:00.000Z") })),
+      }),
+      get: async (key: string, opts?: { range?: { offset: number; length?: number } }) => {
+        const data = store.get(key);
+        if (!data) return null;
+        const start = opts?.range?.offset ?? 0;
+        const end = opts?.range?.length !== undefined ? start + opts.range.length : data.length;
+        const slice = data.slice(start, Math.min(end, data.length));
+        return {
+          size: data.length,
+          arrayBuffer: async () => slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength) as ArrayBuffer,
+        };
+      },
+    };
+  }
+
+  const call = (d: McpDeps, name: string, args: Record<string, unknown>) =>
+    rpc(d, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
+
+  it("lists run artifacts, scoped to the token's repos", async () => {
+    const bucket = fakeArtifactsBucket({ "artifacts/job1/report.txt": "hello", "artifacts/job1/log.txt": "x" });
+    const d = deps({ db: mcpDb({ run: RUN, jobs: [JOB] }), artifacts: bucket as unknown as R2Bucket });
+    const listed = await call(d, "list_artifacts", { runId: "run1" });
+    const body = JSON.parse(text(listed.body));
+    expect(body.artifacts).toHaveLength(2);
+    expect(body.artifacts[0]).toMatchObject({ jobId: "job1", jobName: "test", name: "report.txt", size: 5 });
+    // Out-of-scope and missing runs conflate; unconfigured storage errors.
+    const scoped = await call(deps({ db: mcpDb({ run: RUN, jobs: [JOB] }), repos: ["other/r"] }), "list_artifacts", {
+      runId: "run1",
+    });
+    expect(toolErr(scoped.body).text).toContain("run not found");
+    const bare = await call(deps({ db: mcpDb({ run: RUN, jobs: [JOB] }) }), "list_artifacts", { runId: "run1" });
+    expect(toolErr(bare.body).text).toContain("not configured");
+    const missing = await call(d, "list_artifacts", {});
+    expect(toolErr(missing.body).text).toContain("runId is required");
+  });
+
+  it("reads bounded text previews and refuses binaries", async () => {
+    const bucket = fakeArtifactsBucket({
+      "artifacts/job1/report.txt": "0123456789",
+      "artifacts/job1/blob.bin": new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe]),
+    });
+    const d = deps({ db: mcpDb({ run: RUN, job: JOB }), artifacts: bucket as unknown as R2Bucket });
+    const full = await call(d, "get_artifact", { jobId: "job1", name: "report.txt" });
+    expect(JSON.parse(text(full.body))).toEqual({ name: "report.txt", bytes: 10, truncated: false, text: "0123456789" });
+    const head = await call(d, "get_artifact", { jobId: "job1", name: "report.txt", maxBytes: 4 });
+    expect(JSON.parse(text(head.body))).toEqual({ name: "report.txt", bytes: 4, truncated: true, text: "0123" });
+    const bin = await call(d, "get_artifact", { jobId: "job1", name: "blob.bin" });
+    expect(toolErr(bin.body).text).toContain("artifact is binary");
+    expect(toolErr(bin.body).text).toContain("/v1/jobs/job1/artifacts/blob.bin");
+    const bad = await call(d, "get_artifact", { jobId: "job1", name: "a/b" });
+    expect(toolErr(bad.body).text).toContain("invalid artifact name");
+    const gone = await call(d, "get_artifact", { jobId: "job1", name: "missing.txt" });
+    expect(toolErr(gone.body).text).toContain("artifact not found");
+    const scoped = await call(
+      deps({ db: mcpDb({ run: RUN, job: JOB }), artifacts: bucket as unknown as R2Bucket, repos: ["other/r"] }),
+      "get_artifact",
+      { jobId: "job1", name: "report.txt" },
+    );
+    expect(toolErr(scoped.body).text).toContain("job not found");
+  });
+
+  it("gates schedule tools on admin tokens", async () => {
+    const admin = deps({ db: mcpDb({ schedules: [SCHED] }), isAdmin: true });
+    const listed = await call(admin, "list_schedules", {});
+    expect(JSON.parse(text(listed.body)).schedules).toEqual([
+      { id: "sched-1", repo: "o/r", ref: "main", cron: "0 * * * *", profile: null, enabled: true, lastRunAt: null, createdAt: SCHED.created_at },
+    ]);
+    const gatedTools: [string, Record<string, unknown>][] = [
+      ["list_schedules", {}],
+      ["create_schedule", { repo: "o/r", ref: "main", cron: "0 * * * *" }],
+      ["set_schedule_enabled", { scheduleId: "sched-1", enabled: false }],
+      ["delete_schedule", { scheduleId: "sched-1" }],
+    ];
+    for (const [name, args] of gatedTools) {
+      const denied = await call(deps({ db: mcpDb({ schedules: [SCHED] }) }), name, args);
+      expect(toolErr(denied.body).text).toContain("needs an admin token");
+    }
+  });
+
+  it("creates schedules with REST-identical validation, scope, and limit", async () => {
+    RUNS.length = 0;
+    const admin = deps({ db: mcpDb({ schedules: [] }), isAdmin: true });
+    const badRepo = await call(admin, "create_schedule", { repo: "nope", ref: "main", cron: "0 * * * *" });
+    expect(toolErr(badRepo.body).text).toContain("repo must be owner/name");
+    const badRef = await call(admin, "create_schedule", { repo: "o/r", ref: "../x", cron: "0 * * * *" });
+    expect(toolErr(badRef.body).text).toContain("ref must be a branch or tag");
+    const badCron = await call(admin, "create_schedule", { repo: "o/r", ref: "main", cron: "blah" });
+    expect(toolErr(badCron.body).text).toContain("exactly 5 fields");
+    const scoped = await call(deps({ db: mcpDb({ schedules: [] }), isAdmin: true, repos: ["other/r"] }), "create_schedule", {
+      repo: "o/r",
+      ref: "main",
+      cron: "0 * * * *",
+    });
+    expect(toolErr(scoped.body).text).toContain("not scoped to that repo");
+    const capped = await call(
+      deps({ db: mcpDb({ schedules: Array.from({ length: 51 }, () => SCHED) }), isAdmin: true }),
+      "create_schedule",
+      { repo: "o/r", ref: "main", cron: "0 * * * *" },
+    );
+    expect(toolErr(capped.body).text).toContain("schedule limit reached");
+    const created = await call(admin, "create_schedule", { repo: "o/r", ref: "main", cron: " 0 * * * * " });
+    const id = JSON.parse(text(created.body)).id as string;
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    const insert = RUNS.find((r) => r.sql.startsWith("INSERT INTO schedules"));
+    expect(insert?.values.slice(1, 5)).toEqual(["o/r", "main", "0 * * * *", null]);
+    // WriteGuard audits every attempt; exactly one succeeded.
+    const audits = RUNS.filter((r) => r.sql.startsWith("INSERT INTO audit_log"));
+    expect(audits).toHaveLength(6);
+    const ok = audits.filter((a) => String(a.values[3]).startsWith("ok "));
+    expect(ok).toHaveLength(1);
+    expect(ok[0].values[2]).toBe("mcp.create_schedule");
+    expect(String(ok[0].values[3])).toContain("o/r");
+  });
+
+  it("confirm-gates schedule writes and toggles/deletes by id", async () => {
+    const gated = deps({ db: mcpDb({ schedules: [], setting: "1" }), isAdmin: true });
+    const blocked = await call(gated, "create_schedule", { repo: "o/r", ref: "main", cron: "0 * * * *" });
+    expect(toolErr(blocked.body).text).toContain("needs confirm: true");
+    const confirmed = await call(gated, "create_schedule", { repo: "o/r", ref: "main", cron: "0 * * * *", confirm: true });
+    expect(JSON.parse(text(confirmed.body)).id).toBeTruthy();
+    const admin = deps({ db: mcpDb({}), isAdmin: true });
+    expect(JSON.parse(text((await call(admin, "set_schedule_enabled", { scheduleId: "s1", enabled: false })).body))).toEqual({
+      ok: true,
+    });
+    expect(JSON.parse(text((await call(admin, "delete_schedule", { scheduleId: "s1" })).body))).toEqual({ ok: true });
+    // Missing (not mistyped — the shape-only schema lets undefined
+    // through to the body, which rejects it).
+    const noflag = await call(admin, "set_schedule_enabled", { scheduleId: "s1" });
+    expect(toolErr(noflag.body).text).toContain("enabled must be a boolean");
+    const missing = deps({ db: mcpDb({ changes: 0 }), isAdmin: true });
+    expect(toolErr((await call(missing, "set_schedule_enabled", { scheduleId: "s1", enabled: true })).body).text).toContain(
+      "schedule not found",
+    );
+    expect(toolErr((await call(missing, "delete_schedule", { scheduleId: "s1" })).body).text).toContain("schedule not found");
+  });
+});
+
 describe("mcpAgentTag", () => {
   it("passes clean slugs through and drops free-form user agents", () => {
     expect(mcpAgentTag("atlas-1")).toBe("atlas-1");

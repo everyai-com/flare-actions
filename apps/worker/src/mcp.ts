@@ -1,7 +1,23 @@
 import { McpServer, ProtocolError, SUPPORTED_PROTOCOL_VERSIONS, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { audit, flakyStats, getJobsForRun, getRun, getSetting, listRuns, type Db } from "./db";
+import {
+  audit,
+  createSchedule,
+  deleteSchedule,
+  flakyStats,
+  getJob,
+  getJobsForRun,
+  getRun,
+  getSetting,
+  listRuns,
+  listSchedules,
+  setScheduleEnabled,
+  type Db,
+} from "./db";
+import { ARTIFACT_NAME_RE, artifactObjectKey, listRunArtifacts } from "./artifacts";
+import { validateCron } from "./cron";
 import { MCP_OAUTH_SCOPE_OFFLINE, MCP_OAUTH_SCOPE_READ, MCP_OAUTH_SCOPE_RUN } from "./mcp-oauth";
+import { reposAllow } from "./tokens";
 import { jobDurationMs } from "./cost";
 import { parseProfileName } from "./pipeline";
 import type { RunDigest } from "./digest";
@@ -39,9 +55,15 @@ export const MCP_TOOL_RISK: Record<string, McpToolRisk> = {
   get_run_digest: "read",
   get_flaky: "read",
   generate_pipeline: "read",
+  list_artifacts: "read",
+  get_artifact: "read",
+  list_schedules: "read",
   dispatch_run: "contained-write",
   run_and_wait: "contained-write",
   rerun_job: "contained-write",
+  create_schedule: "contained-write",
+  set_schedule_enabled: "contained-write",
+  delete_schedule: "contained-write",
   tournament_why: "read",
 };
 
@@ -93,6 +115,29 @@ const TOOL_SCHEMAS = {
   tournament_why: z.object({
     tournamentId: z.string().describe("Tournament id (required)").optional(),
   }),
+  list_artifacts: z.object({ runId: runIdField }),
+  get_artifact: z.object({
+    jobId: z.string().describe("Job id (required)").optional(),
+    name: z.string().describe("Artifact name (required, 1-128 word chars/dots/dashes)").optional(),
+    maxBytes: z.number().describe("Preview cap, 1-65536 (default 16384)").optional(),
+  }),
+  list_schedules: z.object({}),
+  create_schedule: z.object({
+    repo: repoField,
+    ref: z.string().describe("Branch or tag to run (required, max 128 chars)").optional(),
+    cron: z.string().describe("5-field UTC cron (required)").optional(),
+    profile: z.string().describe("optional CI profile from flare.yml").optional(),
+    confirm: z.boolean().describe("required true when the server's write-confirm gate is on").optional(),
+  }),
+  set_schedule_enabled: z.object({
+    scheduleId: z.string().describe("Schedule id (required)").optional(),
+    enabled: z.boolean().describe("true to enable, false to pause (required)").optional(),
+    confirm: z.boolean().describe("required true when the server's write-confirm gate is on").optional(),
+  }),
+  delete_schedule: z.object({
+    scheduleId: z.string().describe("Schedule id (required)").optional(),
+    confirm: z.boolean().describe("required true when the server's write-confirm gate is on").optional(),
+  }),
 };
 
 export const MCP_TOOLS: McpToolDef[] = [
@@ -120,6 +165,18 @@ export const MCP_TOOLS: McpToolDef[] = [
     name: "generate_pipeline",
     description: "Generate a flare.yml pipeline from a natural-language description. Needs run scope.",
   },
+  { name: "list_artifacts", description: "List a run's uploaded artifacts (job, name, size). Token repo-scoped." },
+  {
+    name: "get_artifact",
+    description: "Read a text artifact's head (bounded preview; binary artifacts must use the HTTP API). Token repo-scoped.",
+  },
+  { name: "list_schedules", description: "List cron schedules (repo, ref, cron, enabled). Needs an admin token." },
+  {
+    name: "create_schedule",
+    description: "Create a cron schedule that dispatches a repo ref on a 5-field UTC cron. Needs an admin token.",
+  },
+  { name: "set_schedule_enabled", description: "Enable or pause a cron schedule. Needs an admin token." },
+  { name: "delete_schedule", description: "Delete a cron schedule. Needs an admin token." },
 ];
 
 export interface McpDispatchInput {
@@ -145,6 +202,13 @@ export interface McpDeps {
   db: Db;
   ai?: AiBinding;
   canWrite: boolean;
+  // Token repo allowlist ([] = every repo) and admin flag, threaded
+  // from the validated principal; unset in older callers means all
+  // repos and no admin tools.
+  repos?: string[];
+  isAdmin?: boolean;
+  // R2 bucket for the artifact tools (env.CACHE); unset = unconfigured.
+  artifacts?: R2Bucket;
   // Env-provided AI Gateway id for generate_pipeline (D1 fills the gap
   // inside the tool). Unset = direct inference.
   gatewayId?: string;
@@ -212,7 +276,7 @@ function summarizeSteps(result: string): { command: string; exitCode: number; du
 // when the admin enables mcp_write_confirm, and every write-tier call is
 // audit-logged with agent attribution. Audit detail is identifiers only
 // (never free text like pipeline YAML), so secrets cannot leak into it.
-const AUDIT_ARG_KEYS = ["repo", "sha", "ref", "runId", "jobId", "priority", "profile", "timeoutSeconds", "limit", "days"];
+const AUDIT_ARG_KEYS = ["repo", "sha", "ref", "runId", "jobId", "priority", "profile", "timeoutSeconds", "limit", "days", "scheduleId", "enabled", "cron"];
 
 function auditTarget(name: string, args: Record<string, unknown>, agent: string | undefined): string {
   const picked: Record<string, unknown> = {};
@@ -400,6 +464,108 @@ async function execTool(name: string, args: Record<string, unknown>, deps: McpDe
       if (outcome.status === "busy") return toolResult(id, { error: "model busy, retry later", retryable: true }, true);
       if (outcome.status !== "ok") return toolResult(id, { error: "generation failed" }, true);
       return toolResult(id, { yaml: outcome.yaml });
+    }
+    case "list_artifacts": {
+      const runId = str(args.runId);
+      if (!runId) return fail(id, -32602, "runId is required");
+      const run = await getRun(deps.db, runId);
+      // Missing and out-of-scope conflate (no scope oracle), like the
+      // REST route's 404.
+      if (!run || !reposAllow(deps.repos ?? [], run.repo)) return toolResult(id, { error: "run not found" }, true);
+      if (!deps.artifacts) return toolResult(id, { error: "artifact storage not configured" }, true);
+      const artifacts = await listRunArtifacts(deps.artifacts, deps.db, run.id);
+      if (!artifacts) return toolResult(id, { error: "artifact storage not configured" }, true);
+      return toolResult(id, { artifacts });
+    }
+    case "get_artifact": {
+      const jobId = str(args.jobId);
+      const name = str(args.name);
+      if (!jobId || !name) return fail(id, -32602, "jobId and name are required");
+      if (!ARTIFACT_NAME_RE.test(name)) return fail(id, -32602, "invalid artifact name");
+      const maxBytes = args.maxBytes === undefined ? 16384 : num(args.maxBytes);
+      if (maxBytes === null || !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > 65536) {
+        return fail(id, -32602, "maxBytes must be an integer 1-65536");
+      }
+      const job = await getJob(deps.db, jobId);
+      if (!job) return toolResult(id, { error: "job not found" }, true);
+      const run = await getRun(deps.db, job.run_id);
+      if (!run || !reposAllow(deps.repos ?? [], run.repo)) return toolResult(id, { error: "job not found" }, true);
+      if (!deps.artifacts) return toolResult(id, { error: "artifact storage not configured" }, true);
+      // One byte past the cap makes truncation exact without trusting
+      // the ranged object's reported size.
+      const cap = Math.floor(maxBytes);
+      const obj = await deps.artifacts.get(artifactObjectKey(jobId, name), { range: { offset: 0, length: cap + 1 } });
+      if (!obj) return toolResult(id, { error: "artifact not found" }, true);
+      const buf = new Uint8Array(await obj.arrayBuffer());
+      const truncated = buf.length > cap;
+      const head = truncated ? buf.slice(0, cap) : buf;
+      // Binary sniff on the char-aligned head start; the preview decode
+      // itself stays lenient because truncation may split a codepoint.
+      try {
+        new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(head.slice(0, Math.min(1024, head.length)));
+      } catch {
+        return toolResult(id, { error: `artifact is binary; download it via GET /v1/jobs/${jobId}/artifacts/${name}` }, true);
+      }
+      return toolResult(id, { name, bytes: head.byteLength, truncated, text: new TextDecoder().decode(head) });
+    }
+    case "list_schedules": {
+      if (!deps.isAdmin) return fail(id, -32602, "list_schedules needs an admin token");
+      const schedules = await listSchedules(deps.db);
+      return toolResult(id, {
+        schedules: schedules.map((s) => ({
+          id: s.id,
+          repo: s.repo,
+          ref: s.ref,
+          cron: s.cron,
+          profile: s.profile,
+          enabled: s.enabled === 1,
+          lastRunAt: s.last_run_at,
+          createdAt: s.created_at,
+        })),
+      });
+    }
+    case "create_schedule": {
+      if (!deps.isAdmin) return fail(id, -32602, "create_schedule needs an admin token");
+      const repo = str(args.repo);
+      if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return fail(id, -32602, "repo must be owner/name");
+      const ref = str(args.ref);
+      if (!ref || !/^[\w./-]+$/.test(ref) || ref.length > 128 || ref.includes("..")) {
+        return fail(id, -32602, "ref must be a branch or tag (max 128 chars)");
+      }
+      const cron = str(args.cron);
+      if (!cron) return fail(id, -32602, "cron is required");
+      const cronErr = validateCron(cron);
+      if (cronErr) return fail(id, -32602, cronErr);
+      let profile: string | undefined;
+      if (args.profile !== undefined) {
+        const named = parseProfileName(args.profile);
+        if ("error" in named) return fail(id, -32602, named.error);
+        profile = named.profile;
+      }
+      if (!reposAllow(deps.repos ?? [], repo)) return toolResult(id, { error: "token is not scoped to that repo" }, true);
+      if ((await listSchedules(deps.db)).length >= 50) {
+        return toolResult(id, { error: "schedule limit reached (50)" }, true);
+      }
+      const scheduleId = crypto.randomUUID();
+      await createSchedule(deps.db, { id: scheduleId, repo, ref, cron: cron.trim(), profile });
+      return toolResult(id, { id: scheduleId });
+    }
+    case "set_schedule_enabled": {
+      if (!deps.isAdmin) return fail(id, -32602, "set_schedule_enabled needs an admin token");
+      const scheduleId = str(args.scheduleId);
+      if (!scheduleId) return fail(id, -32602, "scheduleId is required");
+      if (typeof args.enabled !== "boolean") return fail(id, -32602, "enabled must be a boolean");
+      const ok = await setScheduleEnabled(deps.db, scheduleId, args.enabled);
+      if (!ok) return toolResult(id, { error: "schedule not found" }, true);
+      return toolResult(id, { ok: true });
+    }
+    case "delete_schedule": {
+      if (!deps.isAdmin) return fail(id, -32602, "delete_schedule needs an admin token");
+      const scheduleId = str(args.scheduleId);
+      if (!scheduleId) return fail(id, -32602, "scheduleId is required");
+      const ok = await deleteSchedule(deps.db, scheduleId);
+      if (!ok) return toolResult(id, { error: "schedule not found" }, true);
+      return toolResult(id, { ok: true });
     }
     default:
       return fail(id, -32602, `unknown tool: ${name}`);

@@ -47,10 +47,16 @@ OAuth endpoints for discovery.
 
 OAuth scopes (granted on the consent page):
 
-- `flare:read` — `list_runs`, `get_run`, `get_run_digest`, `get_flaky`
+- `flare:read` — `list_runs`, `get_run`, `get_run_digest`, `get_flaky`,
+  `list_artifacts`, `get_artifact`
 - `flare:run` — everything, including `run_and_wait`, `dispatch_run`,
   `rerun_job`, `generate_pipeline`
 - `offline_access` — refresh tokens (granted to everyone)
+
+Schedule tools (`list_schedules`, `create_schedule`,
+`set_schedule_enabled`, `delete_schedule`) need an **admin API token**
+(or a dashboard admin session) — OAuth grants never carry admin, even
+for admin users.
 
 Legacy API tokens keep working unchanged and map onto the same scopes:
 `readonly` → `flare:read`, `runner`/admin → `flare:read` + `flare:run`
@@ -70,6 +76,12 @@ WebMCP pack and native page tools authenticate as the visitor.
 | `rerun_job` | `runId`, `jobId` | Reset a finished job to queued |
 | `get_flaky` | `repo`, `days?` | Per-job failure rates, worst first |
 | `generate_pipeline` | `prompt` | Natural language → `flare.yml` |
+| `list_artifacts` | `runId` | Run's artifacts: job, name, size (repo-scoped) |
+| `get_artifact` | `jobId`, `name`, `maxBytes?` | Bounded text head of one artifact (repo-scoped; binaries stay on HTTP) |
+| `list_schedules` | — | Cron schedules (admin token) |
+| `create_schedule` | `repo`, `ref`, `cron`, `profile?` | New cron schedule, same rules as the REST route (admin token) |
+| `set_schedule_enabled` | `scheduleId`, `enabled` | Pause/resume a schedule (admin token) |
+| `delete_schedule` | `scheduleId` | Delete a schedule (admin token) |
 
 Responses are `tools/call` text payloads containing JSON. Tool failures
 (scope, validation, confirm gate, unknown run) return `{ error }` with

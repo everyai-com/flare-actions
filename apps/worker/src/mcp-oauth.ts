@@ -40,15 +40,18 @@ export function describeScope(scope: string[]): string[] {
 }
 
 // The identity a validated token carries into the MCP tools, identical
-// for OAuth grants and legacy API tokens: an audit actor plus a repo
-// allowlist ([] = every repo).
+// for OAuth grants and legacy API tokens: an audit actor, a repo
+// allowlist ([] = every repo), and whether the principal may use the
+// admin-gated tools (schedules). OAuth grants never carry admin —
+// grantedScope caps them at run — even for admin users.
 export interface McpPrincipalProps {
   actor: string;
   repos: string[];
+  isAdmin: boolean;
 }
 
 export function oauthProps(login: string): McpPrincipalProps {
-  return { actor: `oauth:${login}`, repos: [] };
+  return { actor: `oauth:${login}`, repos: [], isAdmin: false };
 }
 
 // Grant storage keys are colon-separated, so user ids must not contain
@@ -121,7 +124,7 @@ export async function principalFromApiToken(
     ident.scope === "admin" || ident.scope === "runner"
       ? [MCP_OAUTH_SCOPE_READ, MCP_OAUTH_SCOPE_RUN]
       : [MCP_OAUTH_SCOPE_READ];
-  return { props: { actor: ident.actor, repos: ident.repos }, audience: resource, scope };
+  return { props: { actor: ident.actor, repos: ident.repos, isAdmin: ident.scope === "admin" }, audience: resource, scope };
 }
 
 export function canWriteFromScope(scope: string[]): boolean {
@@ -143,7 +146,7 @@ export function principalFromSession(session: OAuthSession): {
   canWrite: boolean;
 } {
   return {
-    props: { actor: session.actor, repos: [] },
+    props: { actor: session.actor, repos: [], isAdmin: session.isAdmin },
     canWrite: session.isAdmin,
   };
 }

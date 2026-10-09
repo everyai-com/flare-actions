@@ -144,7 +144,7 @@ describe("mcp-oauth", () => {
   });
 
   it("maps principals and write scope", () => {
-    expect(oauthProps("alice")).toEqual({ actor: "oauth:alice", repos: [] });
+    expect(oauthProps("alice")).toEqual({ actor: "oauth:alice", repos: [], isAdmin: false });
     expect(oauthUserId("email", "a@b.c")).toBe("email/a@b.c");
     expect(canWriteFromScope([MCP_OAUTH_SCOPE_READ])).toBe(false);
     expect(canWriteFromScope([MCP_OAUTH_SCOPE_READ, MCP_OAUTH_SCOPE_RUN])).toBe(true);
@@ -153,11 +153,11 @@ describe("mcp-oauth", () => {
       canWrite: false,
     });
     expect(principalFromSession({ userId: "github/alice", login: "alice", actor: "github:alice", isAdmin: true })).toEqual({
-      props: { actor: "github:alice", repos: [] },
+      props: { actor: "github:alice", repos: [], isAdmin: true },
       canWrite: true,
     });
     expect(principalFromSession({ userId: "github/bob", login: "bob", actor: "github:bob", isAdmin: false })).toEqual({
-      props: { actor: "github:bob", repos: [] },
+      props: { actor: "github:bob", repos: [], isAdmin: false },
       canWrite: false,
     });
   });
@@ -180,7 +180,9 @@ describe("mcp-oauth", () => {
     };
     const readonly = await principalFromApiToken("secret", { db: tokenDb(row) }, resource);
     expect(readonly?.scope).toEqual([MCP_OAUTH_SCOPE_READ]);
-    expect(readonly?.props).toEqual({ actor: "token:tok-1", repos: ["o/r"] });
+    expect(readonly?.props).toEqual({ actor: "token:tok-1", repos: ["o/r"], isAdmin: false });
+    expect(admin?.props.isAdmin).toBe(true);
+    expect(runner?.props.isAdmin).toBe(false);
     expect(readonly?.audience).toBe(resource);
     expect(await principalFromApiToken("nope", { db: tokenDb(null) }, resource)).toBeNull();
   });
@@ -272,7 +274,7 @@ describe("mcp-oauth", () => {
     expect(completed).toHaveLength(1);
     expect(completed[0].userId).toBe("github/alice");
     expect(completed[0].scope).toEqual([MCP_OAUTH_SCOPE_READ, MCP_OAUTH_SCOPE_RUN]);
-    expect(completed[0].props).toEqual({ actor: "oauth:alice", repos: [] });
+    expect(completed[0].props).toEqual({ actor: "oauth:alice", repos: [], isAdmin: false });
     expect(audits[0][0]).toBe("oauth.grant");
     // Non-admin asking run-only: nothing grantable.
     const narrow: CompleteAuthorizationOptions[] = [];

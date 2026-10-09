@@ -8,6 +8,11 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- MCP tools for artifacts + schedules: `list_artifacts`/`get_artifact`
+  (repo-scoped; bounded text previews with exact truncation, binaries
+  stay on the HTTP download route) and `list/create/toggle/delete`
+  schedule tools (admin-token gated — OAuth grants never carry admin;
+  creation mirrors the REST validation, scope, and 50-schedule cap).
 - Org-level API token allowlists: token `repos` entries accept
   `org/*` wildcards (one level only) alongside exact `owner/name`
   repos, matched case-insensitively everywhere — the API/MCP gate,

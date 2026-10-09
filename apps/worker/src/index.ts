@@ -446,6 +446,9 @@ async function serveMcpRequest(
       db: env.DB,
       ai: env.AI,
       canWrite,
+      repos: props.repos,
+      isAdmin: props.isAdmin,
+      artifacts: env.CACHE,
       gatewayId: env.AI_GATEWAY_ID,
       agent: request.headers.get("X-Flare-Agent") ?? request.headers.get("User-Agent") ?? undefined,
       dispatchRun: async (input) => {
