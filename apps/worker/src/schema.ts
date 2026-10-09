@@ -343,6 +343,13 @@ export const SCHEMA_STATEMENTS = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_merge_queue_repo_status ON merge_queue(repo, status)`,
   `CREATE INDEX IF NOT EXISTS idx_merge_queue_repo_pr ON merge_queue(repo, pr_number)`,
+  `CREATE TABLE IF NOT EXISTS notify_prefs (
+    email TEXT PRIMARY KEY,
+    quiet_start TEXT NOT NULL DEFAULT '',
+    quiet_end TEXT NOT NULL DEFAULT '',
+    new_failures_only INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+  )`,
 ];
 
 // Additive columns for databases created before the matching migration.

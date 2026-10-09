@@ -1562,6 +1562,94 @@ paths:
                     type: boolean
                   status:
                     type: string
+  /v1/notify/prefs:
+    get:
+      tags: [notifications]
+      operationId: getNotifyPrefs
+      summary: Read notification attention prefs (own email; admins may pass ?email=)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: email
+          in: query
+          schema:
+            type: string
+          description: Target email (admin only; default is the caller's own email session)
+      responses:
+        '200':
+          description: Attention prefs (missing row returns defaults)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [email, quietStart, quietEnd, newFailuresOnly]
+                properties:
+                  email:
+                    type: string
+                  quietStart:
+                    type: string
+                    description: Quiet-hours start, UTC HH:MM (empty = off)
+                  quietEnd:
+                    type: string
+                    description: Quiet-hours end, UTC HH:MM (empty = off)
+                  newFailuresOnly:
+                    type: boolean
+                    description: Skip repeat reds on the same repo+branch; recovery always notifies
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [notifications]
+      operationId: updateNotifyPrefs
+      summary: Save notification attention prefs (partial; absent fields keep their value)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  description: Target email (admin only; default is the caller's own email session)
+                quietStart:
+                  type: string
+                  description: Quiet-hours start, UTC HH:MM (empty clears; needs quietEnd too)
+                quietEnd:
+                  type: string
+                  description: Quiet-hours end, UTC HH:MM (empty clears; needs quietStart too)
+                newFailuresOnly:
+                  type: boolean
+      responses:
+        '200':
+          description: Saved prefs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [email, quietStart, quietEnd, newFailuresOnly]
+                properties:
+                  email:
+                    type: string
+                  quietStart:
+                    type: string
+                  quietEnd:
+                    type: string
+                  newFailuresOnly:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /v1/bottlenecks:
     get:
       tags: [analytics]

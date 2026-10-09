@@ -1,15 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildRunEmail,
+  DEFAULT_NOTIFY_PREFS,
   escapeHtml,
+  isQuietNow,
+  isRepeatFailure,
   notifyRunCompleted,
   parseNotifyMode,
+  parseNotifyPrefsInput,
+  parseQuietTime,
   postNotifyWebhook,
   resolveNotifySender,
   shouldNotifyForStatus,
+  validateNotifyPrefEmail,
   webhookPayload,
+  type EmailSender,
 } from "./notify";
-import type { Db, JobRow, RunRow, UserRow } from "./db";
+import type { Db, JobRow, NotifyPrefRow, RunRow, UserRow } from "./db";
 import { encryptSettingValue, resolveSecretsKey } from "./secrets";
 
 afterEach(() => {
@@ -61,6 +68,8 @@ class MemDb implements Db {
   settings = new Map<string, string>();
   users: UserRow[] = [];
   jobs: JobRow[] = [];
+  prefs: NotifyPrefRow[] = [];
+  runStatuses: { id: string; repo: string; branch: string; status: string; created_at: string }[] = [];
   audits: { actor: string; action: string; target: string }[] = [];
 
   prepare(sql: string) {
@@ -69,15 +78,25 @@ class MemDb implements Db {
       bind: (...values: unknown[]) => ({
         all: async <T,>() => {
           if (norm.startsWith("SELECT * FROM users")) return { results: this.users as T[] };
+          if (norm.startsWith("SELECT * FROM notify_prefs")) return { results: this.prefs as T[] };
           if (norm.startsWith("SELECT * FROM jobs WHERE run_id")) {
             return { results: this.jobs.filter((j) => j.run_id === values[0]) as T[] };
           }
           throw new Error(`unrouted all: ${norm}`);
         },
         first: async <T,>() => {
-          if (!norm.startsWith("SELECT value FROM app_settings")) throw new Error(`unrouted first: ${norm}`);
-          const v = this.settings.get(values[0] as string);
-          return (v === undefined ? null : { value: v }) as T | null;
+          if (norm.startsWith("SELECT value FROM app_settings")) {
+            const v = this.settings.get(values[0] as string);
+            return (v === undefined ? null : { value: v }) as T | null;
+          }
+          if (norm.startsWith("SELECT status FROM runs WHERE repo")) {
+            const [repo, branch, exclude] = values as string[];
+            const rows = this.runStatuses
+              .filter((r) => r.repo === repo && r.branch === branch && r.id !== exclude)
+              .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+            return ((rows[0] ? { status: rows[0].status } : null) as T | null);
+          }
+          throw new Error(`unrouted first: ${norm}`);
         },
         run: async () => {
           if (norm.startsWith("INSERT INTO audit_log")) {
@@ -294,5 +313,174 @@ describe("webhook payloads", () => {
     expect(await postNotifyWebhook("https://hooks.slack.com/services/x", "hi")).toBe(false);
     vi.stubGlobal("fetch", async () => new Response("", { status: 410 }));
     expect(await postNotifyWebhook("https://hooks.slack.com/services/x", "hi")).toBe(false);
+  });
+});
+
+describe("validateNotifyPrefEmail", () => {
+  it("accepts valid emails and rejects the rest", () => {
+    expect(validateNotifyPrefEmail("a@example.com")).toBeNull();
+    expect(validateNotifyPrefEmail("not-an-email")).not.toBeNull();
+    expect(validateNotifyPrefEmail("")).not.toBeNull();
+    expect(validateNotifyPrefEmail(42)).not.toBeNull();
+  });
+});
+
+describe("parseQuietTime", () => {
+  it("parses UTC HH:MM bounds", () => {
+    expect(parseQuietTime("22:00")).toEqual({ minutes: 1320 });
+    expect(parseQuietTime("07:30")).toEqual({ minutes: 450 });
+    expect(parseQuietTime("00:00")).toEqual({ minutes: 0 });
+  });
+
+  it("rejects malformed times", () => {
+    for (const bad of ["24:00", "7pm", "7:30", "22:60", "", "  ", 5, null]) {
+      expect("error" in parseQuietTime(bad)).toBe(true);
+    }
+  });
+});
+
+describe("isQuietNow", () => {
+  const at = (iso: string): Date => new Date(iso);
+
+  it("matches daytime windows with inclusive start, exclusive end", () => {
+    expect(isQuietNow("09:00", "17:00", at("2026-10-09T12:00:00Z"))).toBe(true);
+    expect(isQuietNow("09:00", "17:00", at("2026-10-09T09:00:00Z"))).toBe(true);
+    expect(isQuietNow("09:00", "17:00", at("2026-10-09T17:00:00Z"))).toBe(false);
+    expect(isQuietNow("09:00", "17:00", at("2026-10-09T08:59:00Z"))).toBe(false);
+  });
+
+  it("wraps overnight windows past midnight", () => {
+    expect(isQuietNow("22:00", "07:00", at("2026-10-09T23:30:00Z"))).toBe(true);
+    expect(isQuietNow("22:00", "07:00", at("2026-10-09T06:59:00Z"))).toBe(true);
+    expect(isQuietNow("22:00", "07:00", at("2026-10-09T07:00:00Z"))).toBe(false);
+    expect(isQuietNow("22:00", "07:00", at("2026-10-09T12:00:00Z"))).toBe(false);
+  });
+
+  it("fails open on empty or malformed windows", () => {
+    expect(isQuietNow("", "", at("2026-10-09T12:00:00Z"))).toBe(false);
+    expect(isQuietNow("22:00", "", at("2026-10-09T23:00:00Z"))).toBe(false);
+    expect(isQuietNow("bogus", "07:00", at("2026-10-09T23:00:00Z"))).toBe(false);
+  });
+});
+
+describe("isRepeatFailure", () => {
+  it("flags consecutive reds only", () => {
+    expect(isRepeatFailure("failure", "failure")).toBe(true);
+    expect(isRepeatFailure("error", "failure")).toBe(true);
+    expect(isRepeatFailure("failure", "error")).toBe(true);
+    expect(isRepeatFailure("failure", "success")).toBe(false);
+    expect(isRepeatFailure("failure", null)).toBe(false);
+    expect(isRepeatFailure("failure", "cancelled")).toBe(false);
+    expect(isRepeatFailure("success", "failure")).toBe(false);
+  });
+});
+
+describe("parseNotifyPrefsInput", () => {
+  it("merges partial updates over stored prefs", () => {
+    const base = { quietStart: "22:00", quietEnd: "07:00", newFailuresOnly: false };
+    expect(parseNotifyPrefsInput({ newFailuresOnly: true }, base)).toEqual({
+      prefs: { quietStart: "22:00", quietEnd: "07:00", newFailuresOnly: true },
+    });
+    expect(parseNotifyPrefsInput({}, base)).toEqual({ prefs: base });
+    expect(parseNotifyPrefsInput({ quietStart: "", quietEnd: "" }, base)).toEqual({
+      prefs: { ...DEFAULT_NOTIFY_PREFS },
+    });
+  });
+
+  it("requires both quiet bounds and valid values", () => {
+    expect("error" in parseNotifyPrefsInput({ quietStart: "22:00" }, DEFAULT_NOTIFY_PREFS)).toBe(true);
+    expect("error" in parseNotifyPrefsInput({ quietStart: "late" }, DEFAULT_NOTIFY_PREFS)).toBe(true);
+    expect("error" in parseNotifyPrefsInput({ newFailuresOnly: "maybe" }, DEFAULT_NOTIFY_PREFS)).toBe(true);
+    expect(parseNotifyPrefsInput({ newFailuresOnly: 1 }, DEFAULT_NOTIFY_PREFS)).toEqual({
+      prefs: { ...DEFAULT_NOTIFY_PREFS, newFailuresOnly: true },
+    });
+  });
+});
+
+describe("notifyRunCompleted attention prefs", () => {
+  function user(email: string): UserRow {
+    return { email, password_hash: "x", is_admin: 0, created_at: "2026-10-01T00:00:00.000Z" };
+  }
+
+  function pref(email: string, quietStart = "", quietEnd = "", newFailuresOnly = 0): NotifyPrefRow {
+    return { email, quiet_start: quietStart, quiet_end: quietEnd, new_failures_only: newFailuresOnly, updated_at: "" };
+  }
+
+  function wired(): { sent: string[]; mail: { EMAIL: EmailSender } } {
+    const sent: string[] = [];
+    return {
+      sent,
+      mail: { EMAIL: { send: async (m) => void sent.push(String(m.to)) } },
+    };
+  }
+
+  it("drops quiet-hours recipients and keeps the rest", async () => {
+    const db = new MemDb();
+    db.settings.set("notify_mode", "all");
+    db.settings.set("notify_from_email", "ci@example.com");
+    db.users = [user("night@example.com"), user("day@example.com")];
+    db.jobs = [job];
+    db.prefs = [pref("night@example.com", "22:00", "07:00")];
+    const { sent, mail } = wired();
+    const out = await notifyRunCompleted(db, mail, {
+      run,
+      origin: "",
+      now: new Date("2026-10-09T23:30:00Z"),
+    });
+    expect(out).toEqual({ sent: 1, webhook: false, skipped: null });
+    expect(sent).toEqual(["day@example.com"]);
+  });
+
+  it("reports when every recipient is deferred by prefs", async () => {
+    const db = new MemDb();
+    db.settings.set("notify_from_email", "ci@example.com");
+    db.users = [user("night@example.com")];
+    db.jobs = [job];
+    db.prefs = [pref("night@example.com", "00:00", "23:59")];
+    const { sent, mail } = wired();
+    const out = await notifyRunCompleted(db, mail, { run, origin: "", now: new Date("2026-10-09T12:00:00Z") });
+    expect(out).toEqual({ sent: 0, webhook: false, skipped: "all recipients deferred by notification prefs" });
+    expect(sent).toEqual([]);
+    expect(db.audits).toEqual([]);
+  });
+
+  it("dedups repeat reds but always notifies recovery", async () => {
+    const db = new MemDb();
+    db.settings.set("notify_mode", "all");
+    db.settings.set("notify_from_email", "ci@example.com");
+    db.users = [user("dedup@example.com"), user("plain@example.com")];
+    db.prefs = [pref("dedup@example.com", "", "", 1)];
+    db.runStatuses = [
+      { id: "run-0", repo: "owner/repo", branch: "main", status: "failure", created_at: "2026-10-01T08:00:00Z" },
+    ];
+    // Repeat red: the dedup user stays quiet, the plain user is emailed.
+    db.jobs = [{ ...job, status: "failure" }];
+    const first = wired();
+    const out = await notifyRunCompleted(db, first.mail, { run: { ...run, status: "failure" }, origin: "" });
+    expect(out.sent).toBe(1);
+    expect(first.sent).toEqual(["plain@example.com"]);
+
+    // Green after red reaches both recipients.
+    db.jobs = [job];
+    const second = wired();
+    const green = await notifyRunCompleted(db, second.mail, { run: { ...run, id: "run-2" }, origin: "" });
+    expect(green.sent).toBe(2);
+    expect(second.sent.sort()).toEqual(["dedup@example.com", "plain@example.com"]);
+  });
+
+  it("notifies the first failure in a streak", async () => {
+    const db = new MemDb();
+    db.settings.set("notify_mode", "failures");
+    db.settings.set("notify_from_email", "ci@example.com");
+    db.users = [user("dedup@example.com")];
+    db.jobs = [{ ...job, status: "failure" }];
+    db.prefs = [pref("dedup@example.com", "", "", 1)];
+    db.runStatuses = [
+      { id: "run-0", repo: "owner/repo", branch: "main", status: "success", created_at: "2026-10-01T08:00:00Z" },
+    ];
+    const { sent, mail } = wired();
+    const out = await notifyRunCompleted(db, mail, { run: { ...run, status: "failure" }, origin: "" });
+    expect(out.sent).toBe(1);
+    expect(sent).toEqual(["dedup@example.com"]);
   });
 });

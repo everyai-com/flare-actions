@@ -3,7 +3,9 @@ import {
   getJobsForRun,
   getSetting,
   isTerminal,
+  listNotifyPrefs,
   listUsers,
+  previousRunStatus,
   type Db,
   type JobRow,
   type RunRow,
@@ -46,6 +48,89 @@ export function shouldNotifyForStatus(mode: NotifyMode, status: string): boolean
   if (mode === "off") return false;
   if (mode === "failures") return status === "failure" || status === "error";
   return isTerminal(status);
+}
+
+// Per-user attention prefs, layered on top of the global notify mode.
+// Quiet hours drop (never queue) emails inside the window; new-failure
+// dedup drops a failure/error email when the previous run on the same
+// repo+branch was also red, so a long red streak pages once. Recovery
+// (green after red) always notifies. Missing row = defaults below, so
+// current behavior is preserved exactly until a user opts in.
+export interface NotifyPrefs {
+  // "HH:MM" UTC bounds; "" disables quiet hours. Overnight windows
+  // (start > end, e.g. 22:00-07:00) wrap past midnight.
+  quietStart: string;
+  quietEnd: string;
+  newFailuresOnly: boolean;
+}
+
+export const DEFAULT_NOTIFY_PREFS: NotifyPrefs = { quietStart: "", quietEnd: "", newFailuresOnly: false };
+
+// Kept inline (not shared with email.ts) to avoid a notify<->email
+// import cycle; exact deliverability is enforced by the send itself.
+export function validateNotifyPrefEmail(email: unknown): string | null {
+  if (typeof email !== "string" || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return "email must be a valid email address";
+  }
+  return null;
+}
+
+function quietMinutes(value: string): number | null {
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+export function parseQuietTime(value: unknown): { minutes: number } | { error: string } {
+  const minutes = typeof value === "string" ? quietMinutes(value) : null;
+  if (minutes === null) {
+    return { error: "quiet time must be HH:MM in 24h UTC (00:00-23:59)" };
+  }
+  return { minutes };
+}
+
+// Fail-open: a malformed stored window never silences anyone.
+export function isQuietNow(quietStart: string, quietEnd: string, now: Date): boolean {
+  const start = quietStart ? quietMinutes(quietStart) : null;
+  const end = quietEnd ? quietMinutes(quietEnd) : null;
+  if (start === null || end === null) return false;
+  const at = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return start <= end ? at >= start && at < end : at >= start || at < end;
+}
+
+export function isRepeatFailure(status: string, prevStatus: string | null): boolean {
+  const red = (s: string | null): boolean => s === "failure" || s === "error";
+  return red(status) && red(prevStatus);
+}
+
+// PATCH-like merge over the stored prefs: absent fields keep their
+// value, "" clears a quiet bound. A half-set window is an error.
+export function parseNotifyPrefsInput(
+  body: { quietStart?: unknown; quietEnd?: unknown; newFailuresOnly?: unknown },
+  base: NotifyPrefs,
+): { prefs: NotifyPrefs } | { error: string } {
+  let { quietStart, quietEnd, newFailuresOnly } = base;
+  if (body.quietStart !== undefined) {
+    if (body.quietStart === "" || body.quietStart === null) quietStart = "";
+    else if (typeof body.quietStart === "string" && quietMinutes(body.quietStart) !== null) quietStart = body.quietStart;
+    else return { error: "quietStart must be HH:MM in 24h UTC (empty clears)" };
+  }
+  if (body.quietEnd !== undefined) {
+    if (body.quietEnd === "" || body.quietEnd === null) quietEnd = "";
+    else if (typeof body.quietEnd === "string" && quietMinutes(body.quietEnd) !== null) quietEnd = body.quietEnd;
+    else return { error: "quietEnd must be HH:MM in 24h UTC (empty clears)" };
+  }
+  if ((quietStart === "") !== (quietEnd === "")) {
+    return { error: "quiet hours need both quietStart and quietEnd (empty clears)" };
+  }
+  if (body.newFailuresOnly !== undefined) {
+    const v = body.newFailuresOnly;
+    if (typeof v === "boolean") newFailuresOnly = v;
+    else if (v === 1 || v === "1" || v === "true") newFailuresOnly = true;
+    else if (v === 0 || v === "0" || v === "false") newFailuresOnly = false;
+    else return { error: "newFailuresOnly must be a boolean" };
+  }
+  return { prefs: { quietStart, quietEnd, newFailuresOnly } };
 }
 
 // Env secrets take precedence; the dashboard-managed D1 setting fills the
@@ -171,7 +256,16 @@ export async function postNotifyWebhook(url: string, text: string): Promise<bool
 export async function notifyMessage(
   db: Db,
   mail: NotifyMailEnv,
-  input: { subject: string; text: string; html: string; auditTag: string; auditTarget?: string },
+  input: {
+    subject: string;
+    text: string;
+    html: string;
+    auditTag: string;
+    auditTarget?: string;
+    // Per-recipient attention filter (run emails only — fleet alerts
+    // always reach every recipient). Fail-open on filter errors.
+    recipientFilter?: (email: string) => boolean | Promise<boolean>;
+  },
 ): Promise<{ sent: number; webhook: boolean; skipped: string | null }> {
   const target = input.auditTarget ?? input.auditTag;
   try {
@@ -196,11 +290,27 @@ export async function notifyMessage(
     if (!sender) return { sent: 0, webhook, skipped: "no notify sender configured" };
     const recipients = (await listUsers(db)).map((u) => u.email).filter((e) => e.includes("@"));
     if (recipients.length === 0) return { sent: 0, webhook, skipped: "no recipients" };
+    let eligible = recipients;
+    if (input.recipientFilter) {
+      const flags = await Promise.all(
+        recipients.map(async (email) => {
+          try {
+            return await input.recipientFilter?.(email);
+          } catch {
+            return true;
+          }
+        }),
+      );
+      eligible = recipients.filter((_, i) => flags[i] !== false);
+      if (eligible.length === 0) {
+        return { sent: 0, webhook, skipped: "all recipients deferred by notification prefs" };
+      }
+    }
     const email = mail.EMAIL;
     if (!email) return { sent: 0, webhook, skipped: "no EMAIL binding" };
     const from = { name: "Flare Actions", email: sender };
     const results = await Promise.all(
-      recipients.map(async (to) => {
+      eligible.map(async (to) => {
         try {
           await email.send({ from, to, subject: input.subject, text: input.text, html: input.html });
           return true;
@@ -212,9 +322,15 @@ export async function notifyMessage(
     );
     const sent = results.filter(Boolean).length;
     console.log(
-      JSON.stringify({ level: "info", msg: "message notified", tag: input.auditTag, sent, recipients: recipients.length }),
+      JSON.stringify({
+        level: "info",
+        msg: "message notified",
+        tag: input.auditTag,
+        sent,
+        recipients: eligible.length,
+      }),
     );
-    await audit(db, "notify", `${input.auditTag}.notify`, `${target} ${sent}/${recipients.length}`);
+    await audit(db, "notify", `${input.auditTag}.notify`, `${target} ${sent}/${eligible.length}`);
     return { sent, webhook, skipped: null };
   } catch (err) {
     console.log(JSON.stringify({ level: "warn", msg: "notify failed", error: String(err) }));
@@ -225,7 +341,7 @@ export async function notifyMessage(
 export async function notifyRunCompleted(
   db: Db,
   mail: NotifyMailEnv,
-  input: { run: RunRow; origin: string },
+  input: { run: RunRow; origin: string; now?: Date },
 ): Promise<{ sent: number; webhook: boolean; skipped: string | null }> {
   try {
     const mode = parseNotifyMode(await getSetting(db, SETTING_KEYS.notifyMode));
@@ -234,7 +350,32 @@ export async function notifyRunCompleted(
     }
     const jobs = await getJobsForRun(db, input.run.id);
     const { subject, text, html } = buildRunEmail({ run: input.run, jobs, origin: input.origin });
-    return await notifyMessage(db, mail, { subject, text, html, auditTag: "run", auditTarget: input.run.id });
+    // Per-user attention prefs: one prefs read for the run, one
+    // previous-status read only when a recipient dedups reds.
+    const prefs = await listNotifyPrefs(db);
+    const byEmail = new Map(prefs.map((p) => [p.email.toLowerCase(), p]));
+    const now = input.now ?? new Date();
+    let prevStatus: string | null | undefined;
+    const recipientFilter = async (email: string): Promise<boolean> => {
+      const pref = byEmail.get(email.toLowerCase());
+      if (!pref) return true;
+      if (isQuietNow(pref.quiet_start, pref.quiet_end, now)) return false;
+      if (pref.new_failures_only === 1 && (input.run.status === "failure" || input.run.status === "error")) {
+        if (prevStatus === undefined) {
+          prevStatus = await previousRunStatus(db, input.run.repo, input.run.branch, input.run.id);
+        }
+        if (isRepeatFailure(input.run.status, prevStatus)) return false;
+      }
+      return true;
+    };
+    return await notifyMessage(db, mail, {
+      subject,
+      text,
+      html,
+      auditTag: "run",
+      auditTarget: input.run.id,
+      recipientFilter,
+    });
   } catch (err) {
     console.log(JSON.stringify({ level: "warn", msg: "notify failed", error: String(err) }));
     return { sent: 0, webhook: false, skipped: "error" };

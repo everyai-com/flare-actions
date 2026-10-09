@@ -8,6 +8,15 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Mobile-friendly dashboard + attention-respecting notifications: a full
+  ≤640px responsive pass (wrapping tabs, stacked card tables with
+  full-width actions, stacked forms with 16px inputs, wrapped logs, no
+  page-level horizontal scroll) and per-user notification prefs —
+  UTC quiet hours plus notify-only-on-new-failure dedup across
+  consecutive same-branch runs — via `GET|POST /v1/notify/prefs`
+  (self-service for email logins, admins may target any email) and a
+  "My notifications" card on the Apps tab. Missing pref rows preserve
+  current behavior exactly; recovery always notifies.
 - Template gallery, migration wizard, and feed dashboard: six bundled
   starter pipelines (node, python, go, rust, java, generic) served via
   `GET /v1/templates` + `GET /v1/templates/:id`, scaffolded with

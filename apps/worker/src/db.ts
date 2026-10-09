@@ -1436,6 +1436,50 @@ export async function flakyStats(db: Db, repo: string, days: number): Promise<Fl
     .sort((a, b) => b.rate - a.rate || b.runs - a.runs);
 }
 
+export interface NotifyPrefRow {
+  email: string;
+  quiet_start: string;
+  quiet_end: string;
+  new_failures_only: number;
+  updated_at: string;
+}
+
+// Previous terminal-or-not run on the same repo+branch, excluding the
+// just-finished run: the new-failure dedup compares against this.
+export async function previousRunStatus(
+  db: Db,
+  repo: string,
+  branch: string,
+  excludeRunId: string,
+): Promise<string | null> {
+  const row = await db
+    .prepare("SELECT status FROM runs WHERE repo = ? AND branch = ? AND id != ? ORDER BY created_at DESC LIMIT 1")
+    .bind(repo, branch, excludeRunId)
+    .first<{ status: string }>();
+  return row?.status ?? null;
+}
+
+export async function getNotifyPref(db: Db, email: string): Promise<NotifyPrefRow | null> {
+  return db.prepare("SELECT * FROM notify_prefs WHERE email = ?").bind(email).first<NotifyPrefRow>();
+}
+
+export async function listNotifyPrefs(db: Db): Promise<NotifyPrefRow[]> {
+  const res = await db.prepare("SELECT * FROM notify_prefs").bind().all<NotifyPrefRow>();
+  return res.results;
+}
+
+export async function setNotifyPref(
+  db: Db,
+  pref: { email: string; quietStart: string; quietEnd: string; newFailuresOnly: boolean },
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO notify_prefs (email, quiet_start, quiet_end, new_failures_only, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET quiet_start = excluded.quiet_start, quiet_end = excluded.quiet_end, new_failures_only = excluded.new_failures_only, updated_at = excluded.updated_at",
+    )
+    .bind(pref.email, pref.quietStart, pref.quietEnd, pref.newFailuresOnly ? 1 : 0, nowIso())
+    .run();
+}
+
 export async function latestRunStatus(db: Db, repo: string, branch?: string): Promise<string | null> {
   const row = branch
     ? await db

@@ -140,6 +140,25 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("Rerun failed (");
     expect(DASHBOARD_HTML).toContain("Open PR #");
     expect(DASHBOARD_HTML).toContain("Open fix PR");
+    expect(DASHBOARD_HTML).toContain("isAdmin && failed.length");
+  });
+
+  it("wires per-user notification attention prefs", () => {
+    expect(DASHBOARD_HTML).toContain("notifyPrefsForm");
+    expect(DASHBOARD_HTML).toContain("quietStartInput");
+    expect(DASHBOARD_HTML).toContain("quietEndInput");
+    expect(DASHBOARD_HTML).toContain("newFailuresCheck");
+    expect(DASHBOARD_HTML).toContain("loadNotifyPrefs");
+    expect(DASHBOARD_HTML).toContain("/v1/notify/prefs");
+  });
+
+  it("stacks tabs, tables, and actions under 640px with no page scroll", () => {
+    expect(DASHBOARD_HTML).toContain("overflow-x: hidden");
+    expect(DASHBOARD_HTML).toContain("nav.tabs { flex-wrap: wrap; }");
+    expect(DASHBOARD_HTML).toContain("thead { display: none; }");
+    expect(DASHBOARD_HTML).toContain("table tr { display: block;");
+    expect(DASHBOARD_HTML).toContain("table td button { width: 100%; }");
+    expect(DASHBOARD_HTML).toContain("form.inline { flex-direction: column;");
   });
 
   it("renders the template gallery and migration wizard", () => {

@@ -21,7 +21,14 @@ h3 { margin: 16px 0 6px; font-size: 14px; font-weight: 600; line-height: 1.2; }
 .muted { color: var(--muted); }
 .err { color: var(--danger); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
-input, select { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--input-bg); color: var(--ink); }
+input, select, textarea { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--input-bg); color: var(--ink); }
+textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+.feed-item { border-bottom: 1px solid var(--line); padding: 2px 0 10px; margin-bottom: 6px; }
+.feed-item:last-child { border-bottom: none; }
+.feed-actions { display: flex; gap: 8px; align-items: center; margin: 6px 0 0 10px; flex-wrap: wrap; }
+.template-card { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 8px 0; }
+.template-card h3 { margin: 0 0 4px; }
+.template-card p { margin: 4px 0; }
 input::placeholder { color: var(--faint); }
 button { font: inherit; font-size: 14px; font-weight: 500; line-height: 1; padding: 9px 16px; border-radius: 999px; border: none; background: var(--accent); color: #fff; cursor: pointer; box-shadow: 0 0 0 1px #0e0e0e, inset 0 4px 6px 0 rgba(255,255,255,0.2), inset 0 0 0 1px rgba(255,255,255,0.15), inset 0 -8px 14px 0 rgba(0,0,0,0.15); transition: background-color 150ms ease; }
 button:hover:not(:disabled) { background: var(--accent-hover); }
@@ -30,7 +37,7 @@ button.ghost:hover:not(:disabled) { background: #2a2a2a; }
 button.danger { background: #3e1d1e; color: #febfc6; box-shadow: inset 0 0 0 1px #4c2324; }
 button.danger:hover:not(:disabled) { background: #4c2324; }
 button:disabled { opacity: 0.5; cursor: default; }
-button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { button { transition: none; } }
 #runsFilterForm { margin-bottom: 6px; }
 #dispatchBox { margin-bottom: 12px; }
@@ -110,12 +117,36 @@ ol.steps .step-body { flex: 1; min-width: 0; }
 ol.steps .step-body p { margin: 0 0 6px; color: var(--muted); }
 ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 @media (max-width: 640px) {
+  html, body { overflow-x: hidden; }
   main { padding: 12px 12px 32px; }
   section.card { padding: 14px; }
   .auth-card { padding: 20px 16px; }
+  header { padding: 10px 12px; gap: 8px; flex-wrap: wrap; }
+  header h1 { font-size: 14px; }
+  h2, h3 { overflow-wrap: anywhere; }
+  nav.tabs { flex-wrap: wrap; }
+  nav.tabs button { padding: 8px 12px; font-size: 13px; min-height: 44px; }
   .run-row { flex-wrap: wrap; }
   .run-time { width: 100%; }
-  form.inline input { min-width: 140px; }
+  form.inline { flex-direction: column; align-items: stretch; }
+  form.inline input, form.inline select { min-width: 0; width: 100%; font-size: 16px; }
+  form.inline button, button { min-height: 44px; }
+  .secret-row { flex-wrap: wrap; }
+  .table-scroll { overflow-x: visible; }
+  table, tbody { display: block; width: 100%; }
+  thead { display: none; }
+  table tr { display: block; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; padding: 6px 10px; }
+  table td { display: block; border-bottom: none; padding: 5px 2px; text-align: left; overflow-wrap: anywhere; }
+  table td:empty { display: none; }
+  table td:first-child { font-weight: 600; }
+  table td button { width: 100%; }
+  .feed-actions { margin-left: 0; }
+  .feed-actions button { flex: 1 1 100%; }
+  .template-card { overflow-wrap: anywhere; }
+  #tournamentsList button { white-space: normal; text-align: left; width: 100%; }
+  #scheduleList > div, #monitorList > div, #ghRunnerList > div { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; overflow-wrap: anywhere; }
+  details.step summary { overflow-wrap: anywhere; }
+  pre.log { white-space: pre-wrap; overflow-wrap: anywhere; }
 }
 </style>
 </head>
@@ -549,6 +580,16 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <h2>My apps</h2>
 <p class="muted">OAuth apps you authorized on the MCP endpoint (Claude, ChatGPT, Cursor, …). Revoking disconnects the app immediately.</p>
 <div class="table-scroll"><table><thead><tr><th>App</th><th>Scopes</th><th>Granted</th><th></th></tr></thead><tbody id="myAppsBody"></tbody></table></div>
+<h2>My notifications</h2>
+<p class="muted">Attention prefs for your run emails, on top of the global notify mode. Quiet hours (UTC) drop emails inside the window — nothing queues. New-failure dedup skips repeat reds on the same repo and branch, so a long red streak pages once; recovery always notifies.</p>
+<form id="notifyPrefsForm" class="inline">
+<input id="quietStartInput" placeholder="quiet from, UTC HH:MM (blank = off)" maxlength="5" size="12" aria-label="Quiet hours start (UTC HH:MM)">
+<input id="quietEndInput" placeholder="quiet until, UTC HH:MM" maxlength="5" size="12" aria-label="Quiet hours end (UTC HH:MM)">
+<label><input type="checkbox" id="newFailuresCheck"> only new failures (skip repeat reds)</label>
+<button type="submit">Save</button>
+</form>
+<p id="notifyPrefsErr" class="err"></p>
+<p id="notifyPrefsOk"></p>
 </section>
 </section>
 </main>
@@ -809,6 +850,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       showApp(st.user.actor, st.user.admin, st.githubConnected);
       loadRuns();
       loadMyApps();
+      loadNotifyPrefs();
       registerWebMcpTools(st.user.admin);
       if (st.user.admin) { loadTokens(); loadUsers(); loadAudit(); loadOAuthGrants(); }
     } else {
@@ -1187,7 +1229,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       }
     }, function (e) { err.textContent = e.message; });
   }
-  tabApps.addEventListener("click", function () { selectTab("apps"); loadMyApps(); });
+  tabApps.addEventListener("click", function () { selectTab("apps"); loadMyApps(); loadNotifyPrefs(); });
   document.getElementById("searchForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
     runLogSearch();
@@ -1221,7 +1263,8 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
         body.appendChild(tr);
       });
       table.appendChild(body);
-      list.appendChild(table);
+      var wrap = el("div"); wrap.className = "table-scroll"; wrap.appendChild(table);
+      list.appendChild(wrap);
     }, function (e) {
       err.textContent = (e && e.message) || "Search failed";
     });
@@ -2025,6 +2068,40 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       if (!body.children.length) stateRow(body, 4, "No connected apps.", "muted");
     }).catch(function () { stateRow(body, 4, "Could not load your apps.", "err"); });
   }
+
+  function loadNotifyPrefs() {
+    var err = document.getElementById("notifyPrefsErr");
+    err.textContent = "";
+    document.getElementById("notifyPrefsOk").textContent = "";
+    api("/v1/notify/prefs").then(function (p) {
+      document.getElementById("quietStartInput").value = p.quietStart || "";
+      document.getElementById("quietEndInput").value = p.quietEnd || "";
+      document.getElementById("newFailuresCheck").checked = !!p.newFailuresOnly;
+      document.getElementById("notifyPrefsForm").style.display = "";
+    }, function (e) {
+      // GitHub logins have no email recipient; the API says so.
+      document.getElementById("notifyPrefsForm").style.display = "none";
+      err.textContent = (e && e.message) || "Could not load notification prefs.";
+    });
+  }
+
+  document.getElementById("notifyPrefsForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("notifyPrefsErr");
+    var ok = document.getElementById("notifyPrefsOk");
+    err.textContent = ""; ok.textContent = "";
+    var payload = {
+      quietStart: document.getElementById("quietStartInput").value.trim(),
+      quietEnd: document.getElementById("quietEndInput").value.trim(),
+      newFailuresOnly: document.getElementById("newFailuresCheck").checked,
+    };
+    api("/v1/notify/prefs", { method: "POST", body: JSON.stringify(payload) })
+      .then(function () {
+        ok.textContent = "Saved.";
+        loadNotifyPrefs();
+      })
+      .catch(function () { err.textContent = "Could not save (quiet hours are UTC HH:MM, both or neither)."; });
+  });
 
   function loadOAuthGrants() {
     var body = document.getElementById("grantsBody");

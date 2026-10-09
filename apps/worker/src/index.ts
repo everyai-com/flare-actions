@@ -26,6 +26,7 @@ import {
   getJob,
   getJobsForRun,
   getMonitor,
+  getNotifyPref,
   getRun,
   getRunEgress,
   getRunSelections,
@@ -71,6 +72,7 @@ import {
   saveTestSelection,
   setMonitorEnabled,
   setMonitorMutedUntil,
+  setNotifyPref,
   setRepoSecret,
   setRunPrComment,
   setScheduleEnabled,
@@ -148,7 +150,14 @@ import {
 } from "./pipeline";
 import { buildCompatJobs, fetchWorkflowFiles, type WorkflowEventContext } from "./actionsCompat";
 import { promoteBlockedJobs, maybeRetryJob, reportGitHubStatus, requeueStaleJobs, triageAndStore } from "./finish";
-import { notifyMessage, notifyRunCompleted, resolveNotifySender } from "./notify";
+import {
+  DEFAULT_NOTIFY_PREFS,
+  notifyMessage,
+  notifyRunCompleted,
+  parseNotifyPrefsInput,
+  resolveNotifySender,
+  validateNotifyPrefEmail,
+} from "./notify";
 import {
   authThrottleBlocked,
   authThrottleKeys,
@@ -531,6 +540,41 @@ async function requireScope(
   if (!ident) return null;
   if (ident.scope === "admin" || ident.scope === "runner") return ident;
   return need === "read" ? ident : null;
+}
+
+// Which email's notification prefs the caller may read/write: their own
+// email session by default, any email for admins (explicit param), and
+// admin Bearer [REDACTED] with an explicit email. GitHub sessions carry no
+// email recipient, so they must name one (admins) or log in by email.
+async function resolveNotifyPrefTarget(
+  request: Request,
+  env: WorkerEnv,
+  emailParam: string | null,
+): Promise<{ email: string; actor: string } | Response> {
+  const param = (emailParam ?? "").trim().toLowerCase();
+  const session = await oauthSession(request, env);
+  if (session) {
+    const own = session.actor.startsWith("email:") ? session.login.toLowerCase() : null;
+    if (param) {
+      if (param !== own && !session.isAdmin) {
+        return json({ error: "admin required to manage another user's prefs" }, 403);
+      }
+      const err = validateNotifyPrefEmail(param);
+      if (err) return json({ error: err }, 400);
+      return { email: param, actor: session.actor };
+    }
+    if (!own) {
+      return json({ error: "email query required: GitHub logins have no email recipient" }, 400);
+    }
+    return { email: own, actor: session.actor };
+  }
+  const ident = await authIdentity(request, env);
+  if (!ident) return json({ error: "unauthorized" }, 401);
+  if (ident.scope !== "admin") return json({ error: "admin token required" }, 403);
+  if (!param) return json({ error: "email is required" }, 400);
+  const err = validateNotifyPrefEmail(param);
+  if (err) return json({ error: err }, 400);
+  return { email: param, actor: ident.actor };
 }
 
 export interface GitHubWebhookPayload {
@@ -3072,6 +3116,54 @@ export default {
           if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
           if (!repoAllowed(ident, repo)) return json({ error: "token is not scoped to that repo" }, 403);
           return json({ repo, tests: await listQuarantinedTests(env.DB, repo) });
+        }
+        return json({ error: "method not allowed" }, 405);
+      }
+      // Per-user notification attention prefs (quiet hours + new-failure
+      // dedup), layered on the global notify mode. Dashboard sessions
+      // manage their own email; admins (session or token) may target any
+      // email via ?email= (GET) or body email (POST). Like the OAuth
+      // grants lane, this is self-service by design: readers editing
+      // their own prefs is the feature, not a privilege escalation.
+      if (url.pathname === "/v1/notify/prefs") {
+        if (request.method === "GET") {
+          const target = await resolveNotifyPrefTarget(request, env, url.searchParams.get("email"));
+          if (target instanceof Response) return target;
+          const row = await getNotifyPref(env.DB, target.email);
+          return json({
+            email: target.email,
+            quietStart: row?.quiet_start ?? DEFAULT_NOTIFY_PREFS.quietStart,
+            quietEnd: row?.quiet_end ?? DEFAULT_NOTIFY_PREFS.quietEnd,
+            newFailuresOnly: (row?.new_failures_only ?? 0) === 1,
+          });
+        }
+        if (request.method === "POST") {
+          const body = (await request.json().catch(() => ({}))) as {
+            email?: unknown;
+            quietStart?: unknown;
+            quietEnd?: unknown;
+            newFailuresOnly?: unknown;
+          };
+          const target = await resolveNotifyPrefTarget(
+            request,
+            env,
+            typeof body.email === "string" ? body.email : null,
+          );
+          if (target instanceof Response) return target;
+          const row = await getNotifyPref(env.DB, target.email);
+          const base = row
+            ? {
+                quietStart: row.quiet_start,
+                quietEnd: row.quiet_end,
+                newFailuresOnly: row.new_failures_only === 1,
+              }
+            : DEFAULT_NOTIFY_PREFS;
+          const parsed = parseNotifyPrefsInput(body, base);
+          if ("error" in parsed) return json({ error: parsed.error }, 400);
+          await setNotifyPref(env.DB, { email: target.email, ...parsed.prefs });
+          await audit(env.DB, target.actor, "notify.prefs", target.email);
+          log("info", "notify prefs saved", { email: target.email });
+          return json({ email: target.email, ...parsed.prefs });
         }
         return json({ error: "method not allowed" }, 405);
       }

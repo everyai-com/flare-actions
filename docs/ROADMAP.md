@@ -222,9 +222,14 @@ The recurring pains, in practitioners' own terms:
       /v1/feed` with admin-gated rerun plus open-PR/fix links)
 - [x] Savings counter on the dashboard (shipped Oct 8: 30d runs /
       compute-min / list-price-avoided strip, 60s cache)
-- [ ] Mobile-friendly layout (responsive pass shipped Oct 8 — checklist
-      + cards adapt under 640px; full pass still open);
-      attention-respecting notifications
+- [x] Mobile-friendly layout (responsive pass shipped Oct 8 — checklist
+      + cards adapt under 640px; full pass shipped Oct 9 — wrapping
+      tabs, stacked card tables with full-width actions, stacked
+      forms, wrapped logs, no page-level horizontal scroll);
+      attention-respecting notifications (shipped Oct 9: per-user UTC
+      quiet hours + new-failure-only dedup across consecutive
+      same-branch runs via `GET|POST /v1/notify/prefs` and the Apps-tab
+      "My notifications" card; defaults preserve current behavior)
 - [x] Tailscale-style runner pairing (one command, zero config —
       shipped Oct 8: dashboard mints a single-use 10-min code,
       `runner -- --pair CODE` exchanges it for a runner token and
