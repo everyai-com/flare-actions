@@ -39,6 +39,7 @@ function usage(): never {
       "  cli local [job] [--file flare.yml]         run the pipeline in this directory (no server, warm cache)",
       "  cli run <repo> <sha|branch|tag> [ref]      dispatch, wait, print the compact digest (exit 1 on failure)",
       "  run/dispatch accept --agent <tag>          tag the run for per-agent caps + attribution",
+      "  run/dispatch accept --profile <name>      run one CI profile from flare.yml (else the event default, else all jobs)",
       "  cli run <repo> --source [ref]              upload the working tree and run it (no commit needed)",
       "  append --dry-run to run/dispatch           plan the fan-out (queued/blocked/budget) without creating a run",
       "  cli watch <runId>                          wait for a run and print the compact digest",
@@ -123,6 +124,19 @@ function takeAgent(args: string[]): { args: string[]; agent?: string } {
   }
   out.splice(i, 2);
   return { args: out, agent: value };
+}
+
+function takeProfile(args: string[]): { args: string[]; profile?: string } {
+  const out = args.slice();
+  const i = out.indexOf("--profile");
+  if (i === -1) return { args: out };
+  const value = out[i + 1] ?? "";
+  if (!/^[\w.-]{1,64}$/.test(value)) {
+    console.error("--profile must be 1-64 chars: letters, digits, dot, dash, underscore");
+    process.exit(2);
+  }
+  out.splice(i, 2);
+  return { args: out, profile: value };
 }
 
 function printDigest(d: FlareRunDigest): void {
@@ -211,7 +225,8 @@ try {
       process.exitCode = result.ok ? 0 : 1;
   } else if (cmd === "run" && rest[0]) {
     const { args: noPriority, priority } = takePriority(rest);
-    const { args, agent } = takeAgent(noPriority);
+    const { args: noAgent, agent } = takeAgent(noPriority);
+    const { args, profile } = takeProfile(noAgent);
     const sourceMode = args.includes("--source");
     const dryRun = args.includes("--dry-run");
     const positional = args.filter((a) => a !== "--source" && a !== "--dry-run");
@@ -225,9 +240,11 @@ try {
             ref: positional[1],
             pipeline: readLocalPipeline(process.cwd()),
             source: "dry-run",
+            ...(profile !== undefined ? { profile } : {}),
           })
         : await client().dryRunDispatch(repo, positional[1] as string, {
             ...(positional[2] ? { ref: positional[2] } : {}),
+            ...(profile !== undefined ? { profile } : {}),
           });
       if (JSON_MODE) printJson("run", plan);
       else console.log(formatPlan(plan));
@@ -238,6 +255,7 @@ try {
         cwd: process.cwd(),
         ...(priority !== undefined ? { priority } : {}),
         ...(agent !== undefined ? { agent } : {}),
+        ...(profile !== undefined ? { profile } : {}),
       });
       if (!JSON_MODE) console.error(`source run ${out.runId} dispatched (upload ${out.sourceId.slice(0, 8)}…) — waiting for the digest…`);
       const digest = await waitAndDigest(client(), out.runId);
@@ -248,6 +266,7 @@ try {
         ...(positional[2] ? { ref: positional[2] } : {}),
         ...(priority !== undefined ? { priority } : {}),
         ...(agent !== undefined ? { agent } : {}),
+        ...(profile !== undefined ? { profile } : {}),
       });
       if (!JSON_MODE) console.error(`run ${out.runId} dispatched — waiting for the digest…`);
       const digest = await waitAndDigest(client(), out.runId);
@@ -264,12 +283,14 @@ try {
     else console.log(JSON.stringify({ ok: true, cancelled }));
   } else if (cmd === "dispatch" && rest[0] && rest[1]) {
     const { args: noPriority, priority } = takePriority(rest);
-    const { args, agent } = takeAgent(noPriority);
+    const { args: noAgent, agent } = takeAgent(noPriority);
+    const { args, profile } = takeProfile(noAgent);
     const positional = args.filter((a) => a !== "--dry-run");
     if (!positional[0] || !positional[1]) usage();
     if (args.includes("--dry-run")) {
       const plan = await client().dryRunDispatch(positional[0], positional[1], {
         ...(positional[2] ? { ref: positional[2] } : {}),
+        ...(profile !== undefined ? { profile } : {}),
       });
       if (JSON_MODE) printJson("dispatch", plan);
       else console.log(formatPlan(plan));
@@ -278,6 +299,7 @@ try {
         ...(positional[2] ? { ref: positional[2] } : {}),
         ...(priority !== undefined ? { priority } : {}),
         ...(agent !== undefined ? { agent } : {}),
+        ...(profile !== undefined ? { profile } : {}),
       });
       if (JSON_MODE) printJson("dispatch", out);
       else console.log(JSON.stringify(out));

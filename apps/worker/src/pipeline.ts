@@ -17,8 +17,16 @@ export interface PipelineStep {
 const STEP_CONDITION_FUNCTIONS = ["always()", "success()", "failure()", "cancelled()"];
 const SHELL_RE = /^[\w./-]{1,32}$/;
 
+// CI profiles: profile names, job tags, and include/exclude entries share
 // one slug alphabet (same as agent tags) so CLI/MCP/API validation matches.
 export const PROFILE_NAME_RE = /^[\w.-]{1,64}$/;
+
+export function parseProfileName(value: unknown): { profile: string } | { error: string } {
+  if (typeof value !== "string" || !PROFILE_NAME_RE.test(value)) {
+    return { error: "profile must be 1-64 chars: letters, digits, dot, dash, underscore" };
+  }
+  return { profile: value };
+}
 
 export function normalizeStepCondition(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
@@ -73,6 +81,9 @@ export interface PipelineJob {
   steps: PipelineStep[];
   // Pre-matrix job name; only set on expanded matrix cells.
   base?: string;
+  // Free-form selector labels for CI profiles (YAML `tags`); matched
+  // by profile include/exclude entries alongside base job names.
+  tags?: string[];
   labels?: string[];
   matrix?: Record<string, string>;
   env?: Record<string, string>;
@@ -100,6 +111,9 @@ export interface PipelineJob {
 }
 
 export const MAX_JOBS = 32;
+export const MAX_PROFILES = 16;
+export const MAX_PROFILE_ENTRIES = 32;
+export const MAX_TAGS = 8;
 export const MAX_SHARDS = 8;
 export const MAX_BROWSER_CHECKS = 10;
 export const MAX_EGRESS_ALLOW = 32;
@@ -193,6 +207,7 @@ export function interpolateRun(run: string, matrix: Record<string, string>, env:
 interface RawJob {
   name: string;
   steps: PipelineStep[];
+  tags?: string[];
   labels?: string[];
   matrix?: Record<string, string>;
   env: Record<string, string>;
@@ -247,6 +262,11 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     steps.push(step);
   }
   const job: RawJob & { axes?: Record<string, string[]> } = { name, steps, env: {}, needs: [], cancelInProgress: false };
+  if (def.tags !== undefined) {
+    const tags = asStringArray(def.tags, MAX_TAGS, 64);
+    if (!tags || tags.some((t) => !PROFILE_NAME_RE.test(t))) return null;
+    job.tags = [...new Set(tags)];
+  }
   if (def["runs-on"] !== undefined) {
     const labels = asStringArray(def["runs-on"], MAX_LABELS, 64);
     if (!labels) return null;
@@ -445,9 +465,84 @@ function hasCycle(names: string[], needsOf: Map<string, string[]>): boolean {
   return names.some(visit);
 }
 
+// CI profiles ($0-bill pattern): an optional `profiles` block maps a
+// profile name to a job selection. Each include/exclude entry matches a
+// job's base (pre-matrix) name or one of its `tags`. Absent include =
+// every job; excludes apply after includes. A `defaults` mapping picks
+// the profile per dispatch event; without any match every job runs, so
+// pipelines without profiles behave exactly as before.
+export interface PipelineProfile {
+  include?: string[];
+  exclude?: string[];
+}
+
+export const PROFILE_EVENTS = ["push", "pull_request", "schedule", "dispatch", "source"] as const;
+export type ProfileEvent = (typeof PROFILE_EVENTS)[number];
+
+export interface PipelineProfiles {
+  profiles: Record<string, PipelineProfile>;
+  defaults: Partial<Record<ProfileEvent, string>>;
+}
+
+export function emptyProfiles(): PipelineProfiles {
+  return { profiles: {}, defaults: {} };
+}
+
+// Reserved inside `profiles`: the per-event default map, not a profile.
+const DEFAULTS_KEY = "defaults";
+
+function parseProfilesBlock(v: unknown): PipelineProfiles | null {
+  if (v === undefined) return emptyProfiles();
+  if (!isRecord(v)) return null;
+  const entries = Object.entries(v);
+  if (entries.length > MAX_PROFILES + 1) return null;
+  const profiles: Record<string, PipelineProfile> = {};
+  let defaults: Partial<Record<ProfileEvent, string>> = {};
+  for (const [name, def] of entries) {
+    if (name === DEFAULTS_KEY) {
+      if (!isRecord(def)) return null;
+      const parsed: Partial<Record<ProfileEvent, string>> = {};
+      for (const [event, target] of Object.entries(def)) {
+        if (!(PROFILE_EVENTS as readonly string[]).includes(event)) return null;
+        if (typeof target !== "string" || !PROFILE_NAME_RE.test(target)) return null;
+        parsed[event as ProfileEvent] = target;
+      }
+      defaults = parsed;
+      continue;
+    }
+    if (!PROFILE_NAME_RE.test(name)) return null;
+    // A bare `name:` (null) selects everything, like an empty body.
+    if (def === null) {
+      profiles[name] = {};
+      continue;
+    }
+    if (!isRecord(def)) return null;
+    const profile: PipelineProfile = {};
+    for (const key of ["include", "exclude"] as const) {
+      const raw = def[key];
+      if (raw === undefined) continue;
+      const list = asStringArray(raw, MAX_PROFILE_ENTRIES, 64);
+      if (!list) return null;
+      profile[key] = [...new Set(list)];
+    }
+    profiles[name] = profile;
+  }
+  if (Object.keys(profiles).length > MAX_PROFILES) return null;
+  // Event defaults must name a profile defined in the same block.
+  for (const target of Object.values(defaults)) {
+    if (!profiles[target]) return null;
+  }
+  return { profiles, defaults };
+}
+
+export interface ParsedPipeline {
+  jobs: PipelineJob[];
+  profiles: PipelineProfiles;
+}
+
 // Pure: parse + validate a flare.yml document. Returns null on any
 // problem — the caller falls back to the default pipeline.
-export function parsePipeline(text: string): PipelineJob[] | null {
+export function parsePipelineWithProfiles(text: string): ParsedPipeline | null {
   if (text.length > MAX_DEFINITION_BYTES) return null;
   let doc: unknown;
   try {
@@ -458,6 +553,8 @@ export function parsePipeline(text: string): PipelineJob[] | null {
   if (!isRecord(doc)) return null;
   const jobs = doc.jobs;
   if (!isRecord(jobs)) return null;
+  const parsedProfiles = parseProfilesBlock(doc.profiles);
+  if (!parsedProfiles) return null;
   const entries = Object.entries(jobs);
   if (entries.length === 0 || entries.length > MAX_JOBS) return null;
   const raws: (RawJob & { axes?: Record<string, string[]> })[] = [];
@@ -493,6 +590,7 @@ export function parsePipeline(text: string): PipelineJob[] | null {
         const steps = r.steps.map((s) => ({ ...s, run: interpolateRun(s.run, matrix ?? {}, r.env) }));
         const job: PipelineJob = { name, steps };
         if (combo || shardCount > 1) job.base = r.name;
+        if (r.tags) job.tags = r.tags;
         if (r.labels) job.labels = r.labels;
         if (matrix) job.matrix = matrix;
         const env = { ...r.env };
@@ -520,7 +618,72 @@ export function parsePipeline(text: string): PipelineJob[] | null {
     }
   }
   if (out.length > MAX_JOBS) return null;
-  return out;
+  return { jobs: out, profiles: parsedProfiles };
+}
+
+export function parsePipeline(text: string): PipelineJob[] | null {
+  return parsePipelineWithProfiles(text)?.jobs ?? null;
+}
+
+export interface ProfileSelection {
+  // Explicit override (API/MCP/CLI `--profile`); wins over everything.
+  override?: string;
+  // Firing schedule's pinned profile; wins over event defaults.
+  scheduleProfile?: string;
+  // Dispatch event; picks the `defaults` mapping.
+  event?: string;
+}
+
+function profileMatches(job: PipelineJob, entry: string): boolean {
+  if ((job.base ?? job.name) === entry) return true;
+  return (job.tags ?? []).includes(entry);
+}
+
+// Pure: narrow expanded jobs to one profile. No match (no override, no
+// schedule profile, no event default) returns the input untouched, so
+// pipelines without profiles behave exactly as before. `needs` edges
+// into excluded jobs are dropped — excluded jobs never run, so a
+// surviving job must not wait on them.
+export function selectProfileJobs(
+  jobs: PipelineJob[],
+  doc: PipelineProfiles,
+  selection: ProfileSelection,
+): { jobs: PipelineJob[]; profile: string | null } | { error: string } {
+  const available = Object.keys(doc.profiles);
+  const unknown = (name: string): string =>
+    available.length === 0
+      ? `unknown profile "${name}" (pipeline defines no profiles)`
+      : `unknown profile "${name}" (available: ${available.join(", ")})`;
+  let name: string | null = null;
+  if (selection.override) {
+    if (!doc.profiles[selection.override]) return { error: unknown(selection.override) };
+    name = selection.override;
+  } else if (selection.scheduleProfile) {
+    if (!doc.profiles[selection.scheduleProfile]) return { error: unknown(selection.scheduleProfile) };
+    name = selection.scheduleProfile;
+  } else if (selection.event && doc.defaults[selection.event as ProfileEvent]) {
+    const target = doc.defaults[selection.event as ProfileEvent];
+    if (target === undefined || !doc.profiles[target]) return { error: unknown(target ?? selection.event) };
+    name = target;
+  }
+  if (!name) return { jobs, profile: null };
+  const profile = doc.profiles[name];
+  let selected = jobs;
+  const include = profile.include;
+  if (include && include.length > 0) {
+    selected = selected.filter((job) => include.some((entry) => profileMatches(job, entry)));
+  }
+  const exclude = profile.exclude;
+  if (exclude && exclude.length > 0) {
+    selected = selected.filter((job) => !exclude.some((entry) => profileMatches(job, entry)));
+  }
+  if (selected.length === 0) return { error: `profile "${name}" selected no jobs` };
+  const bases = new Set(selected.map((job) => job.base ?? job.name));
+  const out = selected.map((job) => {
+    if (!job.needs) return job;
+    return { ...job, needs: job.needs.filter((dep) => bases.has(dep)) };
+  });
+  return { jobs: out, profile: name };
 }
 
 // The JSON stored in jobs.definition: everything the runner and the
@@ -529,6 +692,7 @@ export function serializeDefinition(job: PipelineJob, baseName: string): string 
   return JSON.stringify({
     steps: job.steps,
     base: baseName,
+    tags: job.tags,
     labels: job.labels,
     matrix: job.matrix,
     env: job.env,

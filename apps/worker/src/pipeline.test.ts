@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   defaultPipeline,
+  emptyProfiles,
   expandMatrixAxes,
   interpolateRun,
   MAX_DEFINITION_BYTES,
   parsePipeline,
+  parsePipelineWithProfiles,
+  parseProfileName,
   readJobSpec,
   readRetryPolicy,
   seatEligible,
+  selectProfileJobs,
   serializeDefinition,
 } from "./pipeline";
 
@@ -316,5 +320,153 @@ describe("seatEligible", () => {
     expect(seatEligible(def({ labels: ["macos"] }))).toBe(false);
     expect(seatEligible(def({ labels: ["linux", "gpu"] }))).toBe(false);
     expect(seatEligible(def({ labels: "linux" }))).toBe(false);
+  });
+});
+
+describe("parseProfileName", () => {
+  it("accepts slugs and rejects everything else", () => {
+    expect(parseProfileName("smoke")).toEqual({ profile: "smoke" });
+    expect(parseProfileName("full.2-nightly_x")).toEqual({ profile: "full.2-nightly_x" });
+    expect(parseProfileName("")).toHaveProperty("error");
+    expect(parseProfileName("has space")).toHaveProperty("error");
+    expect(parseProfileName("x".repeat(65))).toHaveProperty("error");
+    expect(parseProfileName(42)).toHaveProperty("error");
+  });
+});
+
+describe("pipeline profiles", () => {
+  const doc = (profiles: string) =>
+    "jobs:\n" +
+    "  lint:\n    tags: [fast]\n    steps:\n      - run: npm run lint\n" +
+    "  unit:\n    tags: [fast]\n    steps:\n      - run: npm test\n" +
+    "  e2e:\n    needs: [unit]\n    steps:\n      - run: ./e2e.sh\n" +
+    profiles;
+
+  it("parses job tags and serializes them into the definition", () => {
+    const jobs = parsePipeline(doc(""));
+    expect(jobs?.[0].tags).toEqual(["fast"]);
+    expect(jobs?.[2].tags).toBeUndefined();
+    const def = serializeDefinition({ name: "a", steps: [{ run: "echo" }], tags: ["smoke"] }, "a");
+    expect(JSON.parse(def).tags).toEqual(["smoke"]);
+    expect(JSON.parse(serializeDefinition({ name: "a", steps: [{ run: "echo" }] }, "a")).tags).toBeUndefined();
+  });
+
+  it("rejects malformed tags", () => {
+    expect(parsePipeline(doc("").replace("tags: [fast]", "tags: fast!"))).toBeNull();
+    expect(parsePipeline(doc("").replace("tags: [fast]", "tags: []"))).toBeNull();
+    expect(parsePipeline(doc("").replace("tags: [fast]", "tags: [has space]"))).toBeNull();
+  });
+
+  it("parses the profiles block with per-event defaults", () => {
+    const parsed = parsePipelineWithProfiles(
+      doc("profiles:\n  smoke:\n    include: [fast]\n    exclude: [e2e]\n  full: {}\n  defaults:\n    push: smoke\n    schedule: full\n"),
+    );
+    expect(parsed?.profiles).toEqual({
+      profiles: { smoke: { include: ["fast"], exclude: ["e2e"] }, full: {} },
+      defaults: { push: "smoke", schedule: "full" },
+    });
+    // parsePipeline still returns jobs only.
+    expect(parsePipeline(doc("profiles:\n  smoke:\n    include: [fast]\n"))?.map((j) => j.name)).toEqual([
+      "lint",
+      "unit",
+      "e2e",
+    ]);
+  });
+
+  it("treats a bare profile key as select-all", () => {
+    const parsed = parsePipelineWithProfiles(doc("profiles:\n  full:\n"));
+    expect(parsed?.profiles.profiles).toEqual({ full: {} });
+  });
+
+  it("rejects malformed profiles blocks", () => {
+    expect(parsePipelineWithProfiles(doc("profiles: [smoke]"))).toBeNull();
+    expect(parsePipelineWithProfiles(doc("profiles:\n  bad name:\n    include: [lint]\n"))).toBeNull();
+    expect(parsePipelineWithProfiles(doc("profiles:\n  smoke: fast\n"))).toBeNull();
+    expect(parsePipelineWithProfiles(doc("profiles:\n  smoke:\n    include: []\n"))).toBeNull();
+    expect(parsePipelineWithProfiles(doc("profiles:\n  smoke:\n    include: 42\n"))).toBeNull();
+    // A bare string is one entry, like `needs:` and `runs-on:`.
+    expect(
+      parsePipelineWithProfiles(doc("profiles:\n  smoke:\n    include: fast\n"))?.profiles.profiles,
+    ).toEqual({ smoke: { include: ["fast"] } });
+    expect(parsePipelineWithProfiles(doc("profiles:\n  smoke:\n    include: [lint]\n  defaults: smoke\n"))).toBeNull();
+    expect(parsePipelineWithProfiles(doc("profiles:\n  smoke:\n    include: [lint]\n  defaults:\n    deploy: smoke\n"))).toBeNull();
+    expect(parsePipelineWithProfiles(doc("profiles:\n  smoke:\n    include: [lint]\n  defaults:\n    push: missing\n"))).toBeNull();
+    // The whole file fails closed, through both entry points.
+    expect(parsePipeline(doc("profiles:\n  smoke:\n    include: []\n"))).toBeNull();
+  });
+
+  it("returns empty profiles when the block is absent", () => {
+    expect(parsePipelineWithProfiles(doc(""))?.profiles).toEqual(emptyProfiles());
+  });
+});
+
+describe("selectProfileJobs", () => {
+  const doc = (profiles: string) =>
+    "jobs:\n" +
+    "  lint:\n    tags: [fast]\n    steps:\n      - run: npm run lint\n" +
+    "  unit:\n    tags: [fast]\n    steps:\n      - run: npm test\n" +
+    "  e2e:\n    tags: [slow]\n    needs: [unit]\n    steps:\n      - run: ./e2e.sh\n" +
+    profiles;
+  const parsed = parsePipelineWithProfiles(
+    doc("profiles:\n  smoke:\n    include: [fast]\n  nofast:\n    exclude: [fast]\n  full: {}\n  defaults:\n    push: smoke\n    pull_request: smoke\n    schedule: full\n"),
+  );
+  const jobs = parsed?.jobs ?? [];
+  const profiles = parsed?.profiles ?? emptyProfiles();
+
+  it("returns every job untouched when nothing selects a profile", () => {
+    const out = selectProfileJobs(jobs, profiles, { event: "dispatch" });
+    expect(out).toEqual({ jobs, profile: null });
+    const bare = parsePipelineWithProfiles(doc(""));
+    const bareOut = selectProfileJobs(bare?.jobs ?? [], bare?.profiles ?? emptyProfiles(), { event: "push" });
+    if ("error" in bareOut) throw new Error("unexpected selection error");
+    expect(bareOut.profile).toBeNull();
+    expect(bareOut.jobs.map((j) => j.name)).toEqual(["lint", "unit", "e2e"]);
+  });
+
+  it("selects by job name or tag, excludes after includes", () => {
+    const byName = selectProfileJobs(jobs, profiles, { override: "smoke" });
+    if ("error" in byName) throw new Error("unexpected selection error");
+    expect(byName.profile).toBe("smoke");
+    expect(byName.jobs.map((j) => j.name)).toEqual(["lint", "unit"]);
+    const excluded = selectProfileJobs(jobs, profiles, { override: "nofast" });
+    if ("error" in excluded) throw new Error("unexpected selection error");
+    expect(excluded.jobs.map((j) => j.name)).toEqual(["e2e"]);
+  });
+
+  it("drops needs edges into excluded jobs", () => {
+    const out = selectProfileJobs(jobs, profiles, { override: "nofast" });
+    if ("error" in out) throw new Error("unexpected selection error");
+    expect(out.jobs[0].needs).toEqual([]);
+  });
+
+  it("matches matrix cells by base name", () => {
+    const matrixed = parsePipelineWithProfiles(
+      "jobs:\n  test:\n    tags: [fast]\n    strategy:\n      matrix:\n        node: [18, 20]\n    steps:\n      - run: npm test\n  e2e:\n    steps:\n      - run: ./e2e.sh\nprofiles:\n  smoke:\n    include: [fast]\n",
+    );
+    const out = selectProfileJobs(matrixed?.jobs ?? [], matrixed?.profiles ?? emptyProfiles(), { override: "smoke" });
+    if ("error" in out) throw new Error("unexpected selection error");
+    expect(out.jobs.map((j) => j.name)).toEqual(["test (node=18)", "test (node=20)"]);
+  });
+
+  it("resolves override > schedule > event default", () => {
+    expect(selectProfileJobs(jobs, profiles, { event: "push" })).toMatchObject({ profile: "smoke" });
+    expect(selectProfileJobs(jobs, profiles, { event: "push", scheduleProfile: "full" })).toMatchObject({ profile: "full" });
+    expect(selectProfileJobs(jobs, profiles, { event: "push", scheduleProfile: "full", override: "nofast" })).toMatchObject({
+      profile: "nofast",
+    });
+  });
+
+  it("fails closed on unknown or empty selections", () => {
+    expect(selectProfileJobs(jobs, profiles, { override: "missing" })).toMatchObject({
+      error: expect.stringContaining('unknown profile "missing"'),
+    });
+    expect(selectProfileJobs(jobs, profiles, { scheduleProfile: "missing" })).toHaveProperty("error");
+    expect(selectProfileJobs(jobs, emptyProfiles(), { override: "smoke" })).toMatchObject({
+      error: expect.stringContaining("defines no profiles"),
+    });
+    const narrow = parsePipelineWithProfiles(doc("profiles:\n  none:\n    include: [no-such-tag]\n"));
+    expect(
+      selectProfileJobs(narrow?.jobs ?? [], narrow?.profiles ?? emptyProfiles(), { override: "none" }),
+    ).toMatchObject({ error: expect.stringContaining("selected no jobs") });
   });
 });

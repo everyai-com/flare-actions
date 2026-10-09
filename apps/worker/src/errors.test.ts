@@ -29,6 +29,8 @@ describe("dispatchErrorCode", () => {
   it("maps load-phase failures to stable codes", () => {
     expect(dispatchErrorCode("pipeline parse failed")).toBe("invalid_pipeline");
     expect(dispatchErrorCode('could not resolve ref "main" — paste a full commit SHA')).toBe("unresolvable_ref");
+    expect(dispatchErrorCode('unknown profile "smoke" (pipeline defines no profiles)')).toBe("unknown_profile");
+    expect(dispatchErrorCode('profile "smoke" selected no jobs')).toBe("invalid_pipeline");
     expect(dispatchErrorCode("something else")).toBe("invalid_request");
   });
 });

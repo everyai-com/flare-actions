@@ -116,6 +116,9 @@ paths:
                 agent:
                   type: string
                   description: Agent identity tag for per-agent caps + attribution (1-64 slug chars)
+                profile:
+                  type: string
+                  description: CI profile from flare.yml (job selection override; 1-64 slug chars)
       responses:
         '202':
           description: Run accepted
@@ -161,6 +164,9 @@ paths:
                 source:
                   type: string
                   description: '"dry-run" placeholder or an uploaded working-tree id (requires inline pipeline; the tree is never fetched)'
+                profile:
+                  type: string
+                  description: CI profile from flare.yml (job selection override; 1-64 slug chars)
       responses:
         '200':
           description: Dispatch plan (no run created)
@@ -178,6 +184,10 @@ paths:
                     type: string
                   pipelineSource:
                     type: string
+                  profile:
+                    type: string
+                    nullable: true
+                    description: Selected CI profile (null = every job ran unfiltered)
                   jobs:
                     type: array
                     items:
@@ -2305,6 +2315,9 @@ paths:
                 cron:
                   type: string
                   description: 5-field UTC cron
+                profile:
+                  type: string
+                  description: Pinned CI profile for the firing run (1-64 slug chars; unset = the pipeline schedule default, else all jobs)
       responses:
         '201':
           description: Created
@@ -3698,6 +3711,10 @@ components:
           type: string
         cron:
           type: string
+        profile:
+          type: string
+          nullable: true
+          description: Pinned CI profile for the firing run (null = pipeline schedule default, else all jobs)
         enabled:
           type: boolean
         lastRunAt:

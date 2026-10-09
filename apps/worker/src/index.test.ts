@@ -83,6 +83,14 @@ describe("validateDispatch", () => {
     expect(validateDispatch({ repo: "o/r", sha: "main", agent: 42 })).toHaveProperty("error");
   });
 
+  it("parses the CI profile override", () => {
+    expect(validateDispatch({ repo: "o/r", sha: "main", profile: "smoke" })).toMatchObject({ profile: "smoke" });
+    expect(validateDispatch({ repo: "o/r", sha: "main" })).toMatchObject({ profile: undefined });
+    expect(validateDispatch({ repo: "o/r", sha: "main", profile: "has space" })).toHaveProperty("error");
+    expect(validateDispatch({ repo: "o/r", sha: "main", profile: "x".repeat(65) })).toHaveProperty("error");
+    expect(validateDispatch({ repo: "o/r", sha: "main", profile: 42 })).toHaveProperty("error");
+  });
+
   it("parses the agent priority lane", () => {
     expect(validateDispatch({ repo: "o/r", sha: "main", priority: 9 })).toMatchObject({ priority: 9 });
     expect(validateDispatch({ repo: "o/r", sha: "main", priority: 0 })).toMatchObject({ priority: 0 });
@@ -142,6 +150,17 @@ describe("validateScheduleInput", () => {
     expect(validateScheduleInput({ repo: "o/r", ref: "../x", cron: "0 3 * * *" })).toHaveProperty("error");
     expect(validateScheduleInput({ repo: "o/r", ref: "main", cron: "0 3 * *" })).toHaveProperty("error");
     expect(validateScheduleInput({ repo: "o/r", ref: "main", cron: 42 })).toHaveProperty("error");
+  });
+
+  it("accepts an optional pinned CI profile", () => {
+    expect(validateScheduleInput({ repo: "o/r", ref: "main", cron: "0 3 * * *", profile: "full" })).toEqual({
+      repo: "o/r",
+      ref: "main",
+      cron: "0 3 * * *",
+      profile: "full",
+    });
+    expect(validateScheduleInput({ repo: "o/r", ref: "main", cron: "0 3 * * *", profile: "has space" })).toHaveProperty("error");
+    expect(validateScheduleInput({ repo: "o/r", ref: "main", cron: "0 3 * * *", profile: 42 })).toHaveProperty("error");
   });
 });
 

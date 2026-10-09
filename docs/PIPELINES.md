@@ -10,6 +10,7 @@ jobs:
     if: always()                   # job-level condition; always() runs even after failed needs
     runs-on: linux                 # labels (string or list); omit = any runner
     needs: build                   # job name(s); waits for success, skips on failure
+    tags: [fast]                   # selector labels for CI profiles (see below)
     strategy:
       matrix:
         node: [18, 20]             # cartesian fan-out; ${{ matrix.node }} in steps
@@ -128,6 +129,37 @@ jobs:
   bypass the shim (as with attribution), and connectionless UDP is
   unenforced. BYO runners and `cli local` fail closed on the key.
   Absent the key, seats observe without enforcing.
+## CI profiles (smoke per push / full suite nightly)
+
+An optional `profiles` block maps a profile name to a job selection.
+Each `include`/`exclude` entry matches a job's base (pre-matrix) name or
+one of its `tags`; absent `include` means every job, excludes apply after
+includes, and `needs` edges into excluded jobs are dropped (excluded jobs
+never run). A `defaults` mapping picks the profile per dispatch event
+(`push`, `pull_request`, `schedule`, `dispatch`, `source`); without any
+match every job runs, so pipelines without profiles behave exactly as
+before.
+
+```yaml
+jobs:
+  lint: {tags: [fast], steps: [{run: npm run lint}]}
+  unit: {tags: [fast], steps: [{run: npm test}]}
+  e2e: {steps: [{run: ./e2e.sh}]}
+profiles:
+  smoke: {include: [fast]}       # lint + unit
+  full: {}                       # every job (empty selection = all)
+  defaults: {push: smoke, pull_request: smoke, schedule: full}
+```
+
+Selection precedence is explicit override → schedule pin → event default:
+`profile` on `POST /v1/runs/dispatch` (and dry-run), `cli run` /
+`cli dispatch --profile`, the MCP `dispatch_run` / `run_and_wait`
+`profile` param, and an optional `profile` on each cron schedule
+(dashboard → Settings → Schedules is API-only for now: `POST
+/v1/admin/schedules`). Unknown names fail the dispatch (`unknown_profile`,
+never silent widening); webhooks with a broken selection run everything
+so pushes never fail to dispatch. Dry-run plans report the selected
+
 Two splits remain by design:
 - **Images**: `container:` jobs pull the same ref through docker on
   both sides (seats hand such jobs to BYO). Without `container:`,
@@ -141,6 +173,7 @@ Two splits remain by design:
 32 jobs post-expansion, 100 steps/job, 8 matrix keys × 16 values, 8 labels,
 32 env vars, 8 services, 16 cache paths, 32 artifact paths,
 10 browser-checks/job (30 s each), 32 egress allow domains, 64 KB file.
+16 profiles, 32 include/exclude entries/profile, 8 tags/job.
 
 ## Generating pipelines
 

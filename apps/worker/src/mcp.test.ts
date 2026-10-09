@@ -172,6 +172,28 @@ describe("mcp", () => {
     expect(detail.jobs[0].steps[0].exitCode).toBe(0);
   });
 
+  it("passes the CI profile override through dispatch_run", async () => {
+    let seen: unknown;
+    const d = deps({ dispatchRun: async (input) => { seen = input; return { runId: "run9", jobIds: ["job9"] }; } });
+    const ok = await rpc(d, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "dispatch_run", arguments: { repo: "o/r", sha: "abc", profile: "smoke" } },
+    });
+    expect(JSON.parse(text(ok.body)).runId).toBe("run9");
+    expect(seen).toMatchObject({ profile: "smoke" });
+    const bad = await rpc(d, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "dispatch_run", arguments: { repo: "o/r", sha: "abc", profile: "has space" } },
+    });
+    const badErr = toolErr(bad.body);
+    expect(badErr.isError).toBe(true);
+    expect(badErr.text).toContain("profile must be 1-64 chars");
+  });
+
   it("gates write tools on scope", async () => {
     const d = deps({ canWrite: false });
     const res = await rpc(d, {

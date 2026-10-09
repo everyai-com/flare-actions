@@ -88,6 +88,17 @@ describe("parseJobSpec", () => {
     ).toBeNull();
   });
 
+  it("keeps CI profile tags and rejects malformed shapes", () => {
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], tags: ["fast", "smoke"] }))?.tags).toEqual(["fast", "smoke"]);
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }] }))?.tags).toBeUndefined();
+    const bad = (tags: unknown) => parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], tags }));
+    expect(bad([])).toBeNull();
+    expect(bad("fast")).toBeNull();
+    expect(bad(["ok", 42])).toBeNull();
+    expect(bad([""])).toBeNull();
+    expect(bad(Array.from({ length: 9 }, (_, i) => `t${i}`))).toBeNull();
+  });
+
   it("keeps egress allowlists and rejects malformed shapes", () => {
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], egress: { allow: ["Example.COM"] } }))?.egress).toEqual({
       allow: ["example.com"],

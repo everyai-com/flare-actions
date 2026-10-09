@@ -153,6 +153,7 @@ export interface DryRunPlan {
   sha: string;
   branch: string;
   pipelineSource: string;
+  profile: string | null;
   jobs: DryRunPlannedJob[];
   queued: number;
   blocked: number;
@@ -538,7 +539,7 @@ export class FlareClient {
   async dispatch(
     repo: string,
     sha: string,
-    opts?: { ref?: string; pipeline?: string; priority?: number; source?: string; agent?: string },
+    opts?: { ref?: string; pipeline?: string; priority?: number; source?: string; agent?: string; profile?: string },
   ): Promise<{ runId: string; jobIds: string[] }> {
     const res = await this.call("/v1/runs/dispatch", {
       method: "POST",
@@ -566,7 +567,7 @@ export class FlareClient {
   async dryRunDispatch(
     repo: string,
     sha: string,
-    opts?: { ref?: string; pipeline?: string; priority?: number; source?: string },
+    opts?: { ref?: string; pipeline?: string; priority?: number; source?: string; profile?: string },
   ): Promise<DryRunPlan> {
     const res = await this.call("/v1/runs/dispatch/dry-run", {
       method: "POST",

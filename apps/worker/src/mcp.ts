@@ -3,6 +3,7 @@ import { z } from "zod";
 import { audit, flakyStats, getJobsForRun, getRun, getSetting, listRuns, type Db } from "./db";
 import { MCP_OAUTH_SCOPE_OFFLINE, MCP_OAUTH_SCOPE_READ, MCP_OAUTH_SCOPE_RUN } from "./mcp-oauth";
 import { jobDurationMs } from "./cost";
+import { parseProfileName } from "./pipeline";
 import type { RunDigest } from "./digest";
 import { runGenerateWithStatus } from "./generate";
 import { getTournamentBoard } from "./tournaments";
@@ -65,6 +66,7 @@ const TOOL_SCHEMAS = {
     ref: z.string().describe("optional branch label").optional(),
     pipeline: z.string().describe("optional inline flare.yml (else fetched at sha)").optional(),
     priority: z.number().describe("0-10; higher jumps queued batch work (agent fast lane)").optional(),
+    profile: z.string().describe("optional CI profile from flare.yml (job selection override)").optional(),
     confirm: z.boolean().describe("required true when the server's write-confirm gate is on").optional(),
   }),
   run_and_wait: z.object({
@@ -73,6 +75,7 @@ const TOOL_SCHEMAS = {
     ref: z.string().describe("optional branch label").optional(),
     pipeline: z.string().describe("optional inline flare.yml (else fetched at sha)").optional(),
     priority: z.number().describe("0-10; higher jumps queued batch work (agent fast lane)").optional(),
+    profile: z.string().describe("optional CI profile from flare.yml (job selection override)").optional(),
     timeoutSeconds: z.number().describe("How long to block, 1-90 (default 45)").optional(),
     confirm: z.boolean().describe("required true when the server's write-confirm gate is on").optional(),
   }),
@@ -126,6 +129,7 @@ export interface McpDispatchInput {
   pipeline?: string;
   priority?: number;
   agent?: string;
+  profile?: string;
 }
 
 // The X-Flare-Agent header doubles as the run's identity tag — but only
@@ -208,7 +212,7 @@ function summarizeSteps(result: string): { command: string; exitCode: number; du
 // when the admin enables mcp_write_confirm, and every write-tier call is
 // audit-logged with agent attribution. Audit detail is identifiers only
 // (never free text like pipeline YAML), so secrets cannot leak into it.
-const AUDIT_ARG_KEYS = ["repo", "sha", "ref", "runId", "jobId", "priority", "timeoutSeconds", "limit", "days"];
+const AUDIT_ARG_KEYS = ["repo", "sha", "ref", "runId", "jobId", "priority", "profile", "timeoutSeconds", "limit", "days"];
 
 function auditTarget(name: string, args: Record<string, unknown>, agent: string | undefined): string {
   const picked: Record<string, unknown> = {};
@@ -294,7 +298,13 @@ async function execTool(name: string, args: Record<string, unknown>, deps: McpDe
       if (priority === null || (priority !== undefined && (!Number.isInteger(priority) || priority < 0 || priority > 10))) {
         return fail(id, -32602, "priority must be an integer 0-10");
       }
-      const dispatched = await deps.dispatchRun({ repo, sha, ref, pipeline, priority, agent: mcpAgentTag(deps.agent) });
+      let profile: string | undefined;
+      if (args.profile !== undefined) {
+        const named = parseProfileName(args.profile);
+        if ("error" in named) return fail(id, -32602, named.error);
+        profile = named.profile;
+      }
+      const dispatched = await deps.dispatchRun({ repo, sha, ref, pipeline, priority, agent: mcpAgentTag(deps.agent), profile });
       return toolResult(id, dispatched);
     }
     case "run_and_wait": {
@@ -320,7 +330,13 @@ async function execTool(name: string, args: Record<string, unknown>, deps: McpDe
       if (timeoutSeconds === null || timeoutSeconds < 1 || timeoutSeconds > 90) {
         return fail(id, -32602, "timeoutSeconds must be 1-90");
       }
-      const dispatched = await deps.dispatchRun({ repo, sha, ref, pipeline, priority, agent: mcpAgentTag(deps.agent) });
+      let runProfile: string | undefined;
+      if (args.profile !== undefined) {
+        const named = parseProfileName(args.profile);
+        if ("error" in named) return fail(id, -32602, named.error);
+        runProfile = named.profile;
+      }
+      const dispatched = await deps.dispatchRun({ repo, sha, ref, pipeline, priority, agent: mcpAgentTag(deps.agent), profile: runProfile });
       const waited = await deps.waitForRun(dispatched.runId, Math.floor(timeoutSeconds) * 1000);
       const digest = await deps.digestRun(dispatched.runId);
       return toolResult(id, {

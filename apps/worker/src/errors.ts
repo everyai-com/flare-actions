@@ -10,6 +10,7 @@ export const ERROR_CODES = [
   "invalid_request",
   "invalid_pipeline",
   "unresolvable_ref",
+  "unknown_profile",
   "budget_exceeded",
   "repo_paused",
   "rate_limited",
@@ -37,6 +38,7 @@ export const ERROR_HINTS: Record<ErrorCode, string> = {
   invalid_request: "fix the named field and retry",
   invalid_pipeline: "validate locally with `cli local`, or read docs/PIPELINES.md for the schema",
   unresolvable_ref: "paste a full commit SHA, or push the branch/tag so it resolves",
+  unknown_profile: "drop --profile (or the profile field) to run every job, or add the profile to the flare.yml profiles block",
   budget_exceeded: "raise budgetMinutes in dashboard Settings, or wait for the monthly reset",
   repo_paused: "the repo was auto-paused for runaway spend — resume it in dashboard Settings → Budgets (or `cli resume owner/name`)",
   rate_limited: "too many attempts — wait a minute and retry",
@@ -74,5 +76,7 @@ export function apiError(code: ErrorCode, message: string, hint?: string): ApiEr
 export function dispatchErrorCode(message: string): ErrorCode {
   if (message === "pipeline parse failed") return "invalid_pipeline";
   if (message.startsWith("could not resolve ref")) return "unresolvable_ref";
+  if (message.startsWith("unknown profile")) return "unknown_profile";
+  if (message.includes("selected no jobs")) return "invalid_pipeline";
   return "invalid_request";
 }

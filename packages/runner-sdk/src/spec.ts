@@ -25,6 +25,8 @@ export interface JobTestReportsSpec {
 export interface JobSpec {
   steps: { run: string; continueOnError?: boolean; if?: string; timeoutMinutes?: number; shell?: string }[];
   base?: string;
+  // Selector labels for CI profiles (mirrors worker pipeline.ts `tags`).
+  tags?: string[];
   matrix?: Record<string, string>;
   env?: Record<string, string>;
   container?: string;
@@ -167,6 +169,17 @@ export function parseJobSpec(definition: string): JobSpec | null {
   }
   const spec: JobSpec = { steps };
   if (typeof parsed.base === "string" && parsed.base) spec.base = parsed.base;
+  if (parsed.tags !== undefined) {
+    if (
+      !Array.isArray(parsed.tags) ||
+      parsed.tags.length === 0 ||
+      parsed.tags.length > 8 ||
+      !parsed.tags.every((t): t is string => typeof t === "string" && !!t && t.length <= 64)
+    ) {
+      return null;
+    }
+    spec.tags = [...parsed.tags];
+  }
   const matrix = parsed.matrix === undefined ? null : strMap(parsed.matrix);
   if (parsed.matrix !== undefined && !matrix) return null;
   if (matrix) spec.matrix = matrix;

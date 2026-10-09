@@ -8,6 +8,13 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- CI profiles: an optional `profiles` block in `flare.yml` maps a profile
+  name to a job selection (include/exclude by job name or `tags`), with a
+  per-event `defaults` map for the smoke-per-push / full-suite-nightly
+  pattern. Selection is explicit override (`profile` on dispatch +
+  dry-run, `cli run` / `cli dispatch --profile`, MCP `dispatch_run` /
+  `run_and_wait`) > schedule pin (optional `profile` on cron schedules) >
+  event default > all jobs; unknown names fail with `unknown_profile`.
 - Dashboard savings counter: a 30-day runs / compute-min / spend-avoided
   strip atop the Runs pane (60s cache so the runs poll never hammers
   the rollup query).

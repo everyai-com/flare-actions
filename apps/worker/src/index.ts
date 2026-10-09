@@ -131,12 +131,16 @@ import {
 } from "./email";
 import {
   defaultPipeline,
+  emptyProfiles,
   fetchPipeline,
-  parsePipeline,
+  parsePipelineWithProfiles,
+  parseProfileName,
   readRetryPolicy,
   seatEligible,
+  selectProfileJobs,
   serializeDefinition,
   type PipelineJob,
+  type PipelineProfiles,
 } from "./pipeline";
 import { buildCompatJobs, fetchWorkflowFiles, type WorkflowEventContext } from "./actionsCompat";
 import { promoteBlockedJobs, maybeRetryJob, reportGitHubStatus, requeueStaleJobs, triageAndStore } from "./finish";
@@ -403,7 +407,7 @@ async function serveMcpRequest(
           await audit(env.DB, props.actor, "budget.blocked", `${input.repo} ${verdict.usedMinutes}/${verdict.cap}`);
           throw new Error(`monthly budget exceeded for ${input.repo} (${verdict.usedMinutes}/${verdict.cap} compute-minutes)`);
         }
-        const out = await dispatchRun(env, { repo: input.repo, sha: input.sha, ref: input.ref ?? "", pipeline: input.pipeline, agent: input.agent }, basin);
+        const out = await dispatchRun(env, { repo: input.repo, sha: input.sha, ref: input.ref ?? "", pipeline: input.pipeline, agent: input.agent, profile: input.profile }, basin);
         await audit(env.DB, props.actor, "run.dispatch", out.runId);
         for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
         return { runId: out.runId, jobIds: out.jobIds };
@@ -644,14 +648,15 @@ async function loadPipelineJobs(
   sha: string,
   installationId: number | null,
   ctx?: WorkflowEventContext,
-): Promise<{ jobs: PipelineJob[]; source: "flare" | "actions" | "default" }> {
+): Promise<{ jobs: PipelineJob[]; source: "flare" | "actions" | "default"; profiles: PipelineProfiles }> {
+  const fallback = { jobs: defaultPipeline(), source: "default" as const, profiles: emptyProfiles() };
   try {
     // Public fast path first (no token minted); fall back to the
     // authenticated API for private repos when App creds exist.
     const direct = await fetchPipeline(repo, sha, null);
     if (direct) {
-      const parsed = parsePipeline(direct);
-      return { jobs: parsed ?? defaultPipeline(), source: parsed ? "flare" : "default" };
+      const parsed = parsePipelineWithProfiles(direct);
+      return parsed ? { jobs: parsed.jobs, source: "flare", profiles: parsed.profiles } : fallback;
     }
     const creds = await getAppCreds(env);
     let token: string | null = null;
@@ -666,8 +671,8 @@ async function loadPipelineJobs(
     if (token) {
       const text = await fetchPipeline(repo, sha, token);
       if (text) {
-        const parsed = parsePipeline(text);
-        return { jobs: parsed ?? defaultPipeline(), source: parsed ? "flare" : "default" };
+        const parsed = parsePipelineWithProfiles(text);
+        return parsed ? { jobs: parsed.jobs, source: "flare", profiles: parsed.profiles } : fallback;
       }
     }
     // No flare.yml at this commit: native .github/workflows compatibility.
@@ -686,7 +691,7 @@ async function loadPipelineJobs(
             jobs: compat.jobs.length,
             warnings: warnings.slice(0, 10),
           });
-          return { jobs: compat.jobs, source: "actions" };
+          return { jobs: compat.jobs, source: "actions", profiles: emptyProfiles() };
         }
         log("info", "actions-compat produced no jobs", {
           repo,
@@ -697,10 +702,10 @@ async function loadPipelineJobs(
         });
       }
     }
-    return { jobs: defaultPipeline(), source: "default" };
+    return fallback;
   } catch (err) {
     log("warn", "pipeline load failed, using default", { error: String(err) });
-    return { jobs: defaultPipeline(), source: "default" };
+    return fallback;
   }
 }
 
@@ -721,6 +726,7 @@ async function createRunAndFanOut(
     changedFiles?: string;
     prNumber?: number | null;
     agent?: string;
+    profile?: string | null;
   },
   basin?: BasinSink,
 ): Promise<{ runId: string; jobIds: string[]; queuedIds: string[]; blocked: number }> {
@@ -731,6 +737,7 @@ async function createRunAndFanOut(
     sha: input.sha,
     event: input.event,
     installationId: input.installationId,
+    profile: input.profile ?? null,
     branch: input.branch,
     source: input.source ?? null,
     pipelineSource: input.pipelineSource,
@@ -899,16 +906,25 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
       tag,
       changedFiles,
     });
+    // Webhooks take the event's default profile (push/PR). A broken
+    // selection runs everything — pushes never fail to dispatch.
+    const webhookSelection = selectProfileJobs(loaded.jobs, loaded.profiles, { event });
+    if ("error" in webhookSelection) {
+      log("warn", "profile selection failed, running all jobs", { repo, event, error: webhookSelection.error });
+    }
+    const webhookJobs = "error" in webhookSelection ? loaded.jobs : webhookSelection.jobs;
+    const webhookProfile = "error" in webhookSelection ? null : webhookSelection.profile;
     const { runId, jobIds, queuedIds, blocked } = await createRunAndFanOut(env, {
       repo,
       sha,
       branch,
       event,
       installationId,
-      jobs: loaded.jobs,
+      jobs: webhookJobs,
       pipelineSource: loaded.source,
       changedFiles: serializeChangedFiles(changedFiles),
       prNumber,
+      profile: webhookProfile,
     }, basinSink(env, ctx));
 
     // Auto-supersede (opt-in): one run per branch head — cancel the
@@ -1227,8 +1243,8 @@ export function validateRegisterInput(
 
 export function validateDispatch(
   body: Record<string, unknown>,
-): { repo: string; sha: string; ref: string; pipeline?: string; priority: number; source?: string; agent: string } | { error: string } {
-  const { repo, sha, ref, pipeline, priority, source, agent } = body;
+): { repo: string; sha: string; ref: string; pipeline?: string; priority: number; source?: string; agent: string; profile?: string } | { error: string } {
+  const { repo, sha, ref, pipeline, priority, source, agent, profile } = body;
   if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return { error: "repo must be owner/name" };
   if (ref !== undefined && (typeof ref !== "string" || ref.length > 128)) return { error: "invalid ref" };
   if (pipeline !== undefined && (typeof pipeline !== "string" || !pipeline.trim() || pipeline.length > 65536)) {
@@ -1247,13 +1263,20 @@ export function validateDispatch(
   }
   const parsedPriority = typeof priority === "number" ? priority : 0;
   const parsedRef = typeof ref === "string" ? ref : "";
+  // Explicit CI profile override (must exist in the resolved pipeline).
+  let parsedProfile: string | undefined;
+  if (profile !== undefined) {
+    const named = parseProfileName(profile);
+    if ("error" in named) return { error: named.error };
+    parsedProfile = named.profile;
+  }
   // Source runs execute an uploaded working tree: no commit, no ref —
   // the inline pipeline is the contract (empty pipeline would silently
   // echo, so require it explicitly).
   if (source !== undefined) {
     if (typeof source !== "string" || !SOURCE_ID_RE.test(source)) return { error: "invalid source id" };
     if (typeof pipeline !== "string") return { error: "source runs need an inline pipeline" };
-    return { repo, sha: "", ref: parsedRef, pipeline, priority: parsedPriority, source, agent: parsedAgent };
+    return { repo, sha: "", ref: parsedRef, pipeline, priority: parsedPriority, source, agent: parsedAgent, profile: parsedProfile };
   }
   if (typeof sha !== "string" || !/^[\w./-]+$/.test(sha) || sha.length > 128 || sha.includes("..")) {
     return { error: "sha must be a commit SHA, branch, or tag" };
@@ -1265,20 +1288,29 @@ export function validateDispatch(
     pipeline: typeof pipeline === "string" ? pipeline : undefined,
     priority: parsedPriority,
     agent: parsedAgent,
+    profile: parsedProfile,
   };
 }
 
+
 export function validateScheduleInput(
   body: Record<string, unknown>,
-): { repo: string; ref: string; cron: string } | { error: string } {
-  const { repo, ref, cron } = body;
+): { repo: string; ref: string; cron: string; profile?: string } | { error: string } {
+  const { repo, ref, cron, profile } = body;
   if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return { error: "repo must be owner/name" };
   if (typeof ref !== "string" || !/^[\w./-]+$/.test(ref) || ref.length > 128 || ref.includes("..")) {
     return { error: "ref must be a branch or tag (max 128 chars)" };
   }
   const cronErr = validateCron(cron);
   if (cronErr) return { error: cronErr };
-  return { repo, ref, cron: (cron as string).trim() };
+  // Pinned CI profile for the firing run (checked against flare.yml at
+  // fire time; unset = the pipeline's schedule default, else all jobs).
+  if (profile !== undefined) {
+    const named = parseProfileName(profile);
+    if ("error" in named) return { error: named.error };
+    return { repo, ref, cron: (cron as string).trim(), profile: named.profile };
+  }
+  return { repo, ref, cron: (cron as string).trim(), profile: undefined };
 }
 
 export interface DispatchInput {
@@ -1293,6 +1325,10 @@ export interface DispatchInput {
   // Actions-compatible workflow files.
   cron?: string;
   agent?: string;
+  // Explicit CI profile override (API/MCP/CLI); wins over everything.
+  profile?: string;
+  // Firing schedule's pinned profile; wins over event defaults.
+  scheduleProfile?: string;
 }
 
 // Read-only half of a dispatch: resolve the ref and load the pipeline.
@@ -1301,7 +1337,7 @@ export interface DispatchInput {
 async function loadDispatchJobs(
   env: WorkerEnv,
   input: DispatchInput,
-): Promise<{ sha: string; branch: string; installationId: number | null; jobs: PipelineJob[]; pipelineSource: PipelineSource }> {
+): Promise<{ sha: string; branch: string; installationId: number | null; jobs: PipelineJob[]; pipelineSource: PipelineSource; profile: string | null }> {
   // Dispatch accepts a SHA, branch, or tag: non-SHA refs resolve to the
   // head commit (installation token when the repo has App history, else
   // the public API), so the stored run always pins a real commit. The
@@ -1312,14 +1348,17 @@ async function loadDispatchJobs(
   let sha = input.sha;
   let installationId: number | null = null;
   let jobs: PipelineJob[] | null;
+  let profiles: PipelineProfiles;
   let pipelineSource: PipelineSource;
   const branch = input.source
     ? input.ref || "local"
     : branchFromRef(input.ref) || input.ref || (!isHexSha(input.sha) ? input.sha : "");
   if (input.source) {
     sha = `src-${input.source.slice(0, 8)}`;
-    jobs = input.pipeline ? parsePipeline(input.pipeline) : null;
-    if (!jobs) throw new Error("pipeline parse failed");
+    const parsed = input.pipeline ? parsePipelineWithProfiles(input.pipeline) : null;
+    if (!parsed) throw new Error("pipeline parse failed");
+    jobs = parsed.jobs;
+    profiles = parsed.profiles;
     pipelineSource = "source";
   } else {
     installationId = await latestInstallationId(env.DB, input.repo);
@@ -1339,8 +1378,10 @@ async function loadDispatchJobs(
       sha = resolved;
     }
     if (input.pipeline) {
-      jobs = parsePipeline(input.pipeline);
-      if (!jobs) throw new Error("pipeline parse failed");
+      const parsed = parsePipelineWithProfiles(input.pipeline);
+      if (!parsed) throw new Error("pipeline parse failed");
+      jobs = parsed.jobs;
+      profiles = parsed.profiles;
       pipelineSource = "inline";
     } else {
       const loaded = await loadPipelineJobs(env, input.repo, sha, installationId, {
@@ -1349,10 +1390,19 @@ async function loadDispatchJobs(
         cron: input.cron,
       });
       jobs = loaded.jobs;
+      profiles = loaded.profiles;
       pipelineSource = loaded.source;
     }
   }
-  return { sha, branch, installationId, jobs, pipelineSource };
+  // CI profiles: explicit override > schedule pin > event default > all.
+  // Failures here are caller-visible (400), never silent widening.
+  const selection = selectProfileJobs(jobs, profiles, {
+    ...(input.profile ? { override: input.profile } : {}),
+    ...(input.scheduleProfile ? { scheduleProfile: input.scheduleProfile } : {}),
+    event: input.event ?? "dispatch",
+  });
+  if ("error" in selection) throw new Error(selection.error);
+  return { sha, branch, installationId, jobs: selection.jobs, pipelineSource, profile: selection.profile };
 }
 
 export interface PlannedJob {
@@ -1394,7 +1444,7 @@ async function dispatchRun(
   input: DispatchInput,
   basin?: BasinSink,
 ): Promise<{ runId: string; jobIds: string[]; queuedIds: string[] }> {
-  const { sha, branch, installationId, jobs, pipelineSource } = await loadDispatchJobs(env, input);
+  const { sha, branch, installationId, jobs, pipelineSource, profile } = await loadDispatchJobs(env, input);
   const { runId, jobIds, queuedIds } = await createRunAndFanOut(env, {
     repo: input.repo,
     sha,
@@ -1406,6 +1456,7 @@ async function dispatchRun(
     source: input.source ?? null,
     pipelineSource,
     agent: input.agent ?? "",
+    profile,
   }, basin);
   log("info", "run dispatched", { runId, repo: input.repo, sha, event: input.event ?? "dispatch", source: input.source ?? null });
   emitRunDispatched(env.ANALYTICS, { repo: input.repo, runId, event: input.event ?? "dispatch", jobCount: jobIds.length });
@@ -2046,6 +2097,7 @@ export default {
             sha: loaded.sha,
             branch: loaded.branch,
             pipelineSource: loaded.pipelineSource,
+            profile: loaded.profile,
             jobs,
             queued,
             blocked: jobs.length - queued,
@@ -3239,6 +3291,7 @@ export default {
             repo: s.repo,
             ref: s.ref,
             cron: s.cron,
+            profile: s.profile,
             enabled: s.enabled === 1,
             lastRunAt: s.last_run_at,
             createdAt: s.created_at,
@@ -3256,9 +3309,9 @@ export default {
           return json({ error: "schedule limit reached (50)" }, 400);
         }
         const id = crypto.randomUUID();
-        await createSchedule(env.DB, { id, repo: valid.repo, ref: valid.ref, cron: valid.cron });
-        await audit(env.DB, ident.actor, "schedule.create", `${id} ${valid.repo}@${valid.ref} ${valid.cron}`);
-        log("info", "schedule created", { id, repo: valid.repo, ref: valid.ref, cron: valid.cron });
+        await createSchedule(env.DB, { id, repo: valid.repo, ref: valid.ref, cron: valid.cron, profile: valid.profile });
+        await audit(env.DB, ident.actor, "schedule.create", `${id} ${valid.repo}@${valid.ref} ${valid.cron}${valid.profile ? ` ${valid.profile}` : ""}`);
+        log("info", "schedule created", { id, repo: valid.repo, ref: valid.ref, cron: valid.cron, profile: valid.profile ?? null });
         return json({ id }, 201);
       }
       const scheduleMatch = /^\/v1\/admin\/schedules\/([^/]+)$/.exec(url.pathname);
@@ -3501,7 +3554,7 @@ export default {
         try {
           const out = await dispatchRun(
             env,
-            { repo: s.repo, sha: s.ref, ref: s.ref, event: "schedule", cron: s.cron },
+            { repo: s.repo, sha: s.ref, ref: s.ref, event: "schedule", cron: s.cron, scheduleProfile: s.profile ?? undefined },
             basinSink(env, ctx),
           );
           await touchScheduleRun(env.DB, s.id);

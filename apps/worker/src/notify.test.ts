@@ -26,6 +26,7 @@ const run: RunRow = {
   source: null,
   pipeline_source: "",
   changed_files: "",
+  profile: null,
   pr_number: null,
   pr_comment_id: null,
   heal_branch: null,

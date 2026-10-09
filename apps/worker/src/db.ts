@@ -12,6 +12,7 @@ export interface RunRow {
   sha: string;
   event: string;
   installation_id: number | null;
+  profile: string | null;
   branch: string;
   source: string | null;
   pipeline_source: string;
@@ -185,6 +186,7 @@ export async function createRun(
     sha: string;
     event: string;
     installationId: number | null;
+    profile?: string | null;
     branch?: string;
     source?: string | null;
     pipelineSource?: string;
@@ -196,7 +198,7 @@ export async function createRun(
   const now = nowIso();
   await db
     .prepare(
-      "INSERT INTO runs (id, repo, sha, event, installation_id, branch, source, pipeline_source, changed_files, pr_number, pr_comment_id, agent, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 'queued', ?, ?)",
+      "INSERT INTO runs (id, repo, sha, event, installation_id, profile, branch, source, pipeline_source, changed_files, pr_number, pr_comment_id, agent, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 'queued', ?, ?)",
     )
     .bind(
       run.id,
@@ -204,6 +206,7 @@ export async function createRun(
       run.sha,
       run.event,
       run.installationId,
+      run.profile ?? null,
       run.branch ?? "",
       run.source ?? null,
       run.pipelineSource ?? "",
@@ -1441,15 +1444,16 @@ export interface ScheduleRow {
   repo: string;
   ref: string;
   cron: string;
+  profile: string | null;
   enabled: number;
   last_run_at: string | null;
   created_at: string;
 }
 
-export async function createSchedule(db: Db, s: { id: string; repo: string; ref: string; cron: string }): Promise<void> {
+export async function createSchedule(db: Db, s: { id: string; repo: string; ref: string; cron: string; profile?: string }): Promise<void> {
   await db
-    .prepare("INSERT INTO schedules (id, repo, ref, cron, enabled, last_run_at, created_at) VALUES (?, ?, ?, ?, 1, NULL, ?)")
-    .bind(s.id, s.repo, s.ref, s.cron, nowIso())
+    .prepare("INSERT INTO schedules (id, repo, ref, cron, profile, enabled, last_run_at, created_at) VALUES (?, ?, ?, ?, ?, 1, NULL, ?)")
+    .bind(s.id, s.repo, s.ref, s.cron, s.profile ?? null, nowIso())
     .run();
 }
 

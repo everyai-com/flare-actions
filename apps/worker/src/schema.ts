@@ -11,6 +11,7 @@ export const SCHEMA_STATEMENTS = [
     sha TEXT NOT NULL,
     event TEXT NOT NULL,
     installation_id INTEGER,
+    profile TEXT,
     branch TEXT NOT NULL DEFAULT '',
     source TEXT,
     pipeline_source TEXT NOT NULL DEFAULT '',
@@ -107,6 +108,7 @@ export const SCHEMA_STATEMENTS = [
     repo TEXT NOT NULL,
     ref TEXT NOT NULL,
     cron TEXT NOT NULL,
+    profile TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
     last_run_at TEXT,
     created_at TEXT NOT NULL
@@ -321,6 +323,8 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE runs ADD COLUMN pipeline_source TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE runs ADD COLUMN changed_files TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE runs ADD COLUMN agent TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE schedules ADD COLUMN profile TEXT`,
+  `ALTER TABLE runs ADD COLUMN profile TEXT`,
 ];
 
 let schemaPromise: Promise<void> | null = null;

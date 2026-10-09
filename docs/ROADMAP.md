@@ -127,8 +127,11 @@ The recurring pains, in practitioners' own terms:
       `GET|DELETE /v1/admin/paused` with top-dispatcher attribution,
       `cli paused` / `cli resume`, dashboard resume button, dry-run
       `paused` flag)
-- [ ] CI profiles — first-class "smoke per push / full suite nightly + on
+- [x] CI profiles — first-class "smoke per push / full suite nightly + on
       the landing candidate" config block (the $0-bill pattern)
+      (shipped Oct 8: `profiles` block with include/exclude by job name
+      or tag, per-event `defaults`, schedule pins, `--profile` override
+      on API/CLI/MCP + dry-run)
 - [x] Shared-warm-cache stats — hit-rate over a week, published as the
       "one cache, ten agents" proof (the #1 challenged claim; prove it)
       (shipped Oct 8: daily-aggregate `cache_stats` counters fed by both

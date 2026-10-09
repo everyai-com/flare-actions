@@ -21,6 +21,7 @@ function runRow(over: Partial<RunRow> = {}): RunRow {
     ...over,
     pipeline_source: over.pipeline_source ?? "",
     changed_files: over.changed_files ?? "",
+    profile: over.profile ?? null,
   };
 }
 

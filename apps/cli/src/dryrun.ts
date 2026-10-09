@@ -4,7 +4,7 @@ import type { DryRunPlan } from "flare-actions-runner-sdk";
 // queue, what would park, and why — no run is created.
 export function formatPlan(plan: DryRunPlan): string {
   const lines = [
-    `dry run: ${plan.repo}@${plan.sha.slice(0, 12)} (${plan.branch || "-"}, pipeline: ${plan.pipelineSource})`,
+    `dry run: ${plan.repo}@${plan.sha.slice(0, 12)} (${plan.branch || "-"}, pipeline: ${plan.pipelineSource}${plan.profile ? `, profile: ${plan.profile}` : ""})`,
     `would queue ${plan.queued}, block ${plan.blocked}${plan.totalPriorMs > 0 ? `, est prior ${Math.round(plan.totalPriorMs / 1000)}s` : ""}`,
   ];
   if (plan.paused) lines[1] += `, PAUSED since ${plan.pausedAt ?? "?"}`;

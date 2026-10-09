@@ -54,6 +54,7 @@ export interface DispatchSourceOptions {
   cwd: string;
   priority?: number;
   agent?: string;
+  profile?: string;
 }
 
 export function readLocalPipeline(cwd: string): string {
@@ -77,6 +78,7 @@ export async function dispatchSource(
     source: sourceId,
     ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
     ...(opts.agent !== undefined ? { agent: opts.agent } : {}),
+    ...(opts.profile !== undefined ? { profile: opts.profile } : {}),
   });
   return { ...out, sourceId };
 }

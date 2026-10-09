@@ -8,6 +8,7 @@ function plan(over: Partial<DryRunPlan> = {}): DryRunPlan {
     sha: "abcdef1234567890",
     branch: "main",
     pipelineSource: "inline",
+    profile: null,
     jobs: [],
     queued: 0,
     blocked: 0,
@@ -56,6 +57,11 @@ describe("formatPlan", () => {
   it("flags paused repos", () => {
     const out = formatPlan(plan({ queued: 1, paused: true, pausedAt: "2026-10-08T00:00:00.000Z" }));
     expect(out).toContain("PAUSED since 2026-10-08T00:00:00.000Z");
+  });
+
+  it("shows the selected CI profile", () => {
+    expect(formatPlan(plan({ profile: "smoke" }))).toContain("profile: smoke");
+    expect(formatPlan(plan({ profile: null }))).not.toContain("profile:");
   });
 
   it("flags cancel-in-progress and blocking budgets", () => {
