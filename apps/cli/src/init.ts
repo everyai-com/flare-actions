@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { convertActionsWorkflow, isImportSuccess } from "flare-actions-runner-sdk";
+import { convertActionsWorkflow, getTemplate, isImportSuccess, templateIds } from "flare-actions-runner-sdk";
 import { detectStacks, generateStarter, isStackId, KNOWN_STACKS, primaryStack, type DetectedStack, type StackId } from "./detect.ts";
 
 // `cli init`: agent-led adoption in one command — a flare.yml (converted
@@ -33,8 +33,10 @@ ${AGENTS_MARKER_END}
 export interface InitResult {
   cwd: string;
   pipelinePath: string | null;
-  pipelineSource: "converted" | "starter" | null;
+  pipelineSource: "converted" | "starter" | "template" | null;
   convertedFrom: string | null;
+  /** Gallery template id when pipelineSource is "template". */
+  templateId: string | null;
   /** Every stack evidenced by manifest files (priority order; [] = none). */
   stacks: DetectedStack[];
   /** Starter stack when pipelineSource is "starter" (forced or detected). */
@@ -50,6 +52,8 @@ export interface InitOptions {
   force?: boolean;
   /** Force this stack's starter, skipping workflow conversion. */
   stack?: string;
+  /** Use this gallery template verbatim, skipping conversion and starters. */
+  template?: string;
 }
 
 function insertSnippet(existing: string): string {
@@ -71,6 +75,7 @@ export function runInit(opts: InitOptions): InitResult {
     pipelinePath: null,
     pipelineSource: null,
     convertedFrom: null,
+    templateId: null,
     stacks,
     starterStack: null,
     warnings: [],
@@ -81,13 +86,28 @@ export function runInit(opts: InitOptions): InitResult {
     result.error = `unknown stack "${opts.stack}" — want one of: ${KNOWN_STACKS.join(", ")}`;
     return result;
   }
+  if (opts.template !== undefined && !getTemplate(opts.template)) {
+    result.error = `unknown template "${opts.template}" — want one of: ${templateIds().join(", ")}`;
+    return result;
+  }
   if (existsSync(pipelinePath) && !opts.force) {
     result.error = "flare.yml already exists — re-run with --force to replace it";
     return result;
   }
 
+  // A gallery template wins over everything (explicit beats heuristic);
+  // otherwise convert the first workflow that translates cleanly, unless
+  // --stack forces a starter.
   let pipeline: string | null = null;
-  if (!pipeline && opts.stack === undefined) {
+  if (opts.template !== undefined) {
+    const template = getTemplate(opts.template);
+    if (template) {
+      pipeline = template.yaml;
+      result.pipelineSource = "template";
+      result.templateId = template.id;
+    }
+  }
+  if (!pipeline && opts.stack === undefined && opts.template === undefined) {
     const workflowsDir = join(opts.cwd, ".github", "workflows");
     if (existsSync(workflowsDir)) {
       const names = readdirSync(workflowsDir)

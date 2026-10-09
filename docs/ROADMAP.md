@@ -214,13 +214,17 @@ The recurring pains, in practitioners' own terms:
       PHP/.NET/Elixir in `cli/init+connect`, stack-matched starters or
       SDK workflow conversion, `connect --init` scaffolds in the same
       probe → wire → verify flow; non-interactive, `--json`, idempotent)
-- [ ] Template gallery + migration wizard; feed-style dashboard with
+- [x] Template gallery + migration wizard; feed-style dashboard with
       one-click actions (rerun, open PR, fix)
-- [ ] Savings counter on the dashboard (shipped Oct 8: 30d runs /
-      compute-min / list-price-avoided strip, 60s cache); mobile-friendly
-      layout (responsive pass shipped Oct 8 — checklist + cards adapt
-      under 640px; full pass still open); attention-respecting
-      notifications
+      (shipped Oct 9: six bundled starters in `runner-sdk/templates.ts`
+      via `GET /v1/templates[/:id]` + `cli init --template` + dashboard
+      gallery, `POST /v1/migrate` wizard on the SDK importer, `GET
+      /v1/feed` with admin-gated rerun plus open-PR/fix links)
+- [x] Savings counter on the dashboard (shipped Oct 8: 30d runs /
+      compute-min / list-price-avoided strip, 60s cache)
+- [ ] Mobile-friendly layout (responsive pass shipped Oct 8 — checklist
+      + cards adapt under 640px; full pass still open);
+      attention-respecting notifications
 - [x] Tailscale-style runner pairing (one command, zero config —
       shipped Oct 8: dashboard mints a single-use 10-min code,
       `runner -- --pair CODE` exchanges it for a runner token and

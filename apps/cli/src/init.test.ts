@@ -93,4 +93,25 @@ describe("runInit", () => {
     expect(result.error).toContain("--force");
     expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
   });
+
+  it("--template writes that gallery template verbatim", () => {
+    const dir = workspace({
+      "package.json": "{}",
+      ".github/workflows/ci.yml":
+        "on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n",
+    });
+    const result = runInit({ cwd: dir, template: "go" });
+    expect(result.pipelineSource).toBe("template");
+    expect(result.templateId).toBe("go");
+    expect(readFileSync(join(dir, "flare.yml"), "utf8")).toContain("go test ./...");
+    expect(existsSync(join(dir, "AGENTS.md"))).toBe(true);
+  });
+
+  it("rejects an unknown --template without writing anything", () => {
+    const dir = workspace({ "package.json": "{}" });
+    const result = runInit({ cwd: dir, template: "cobol" });
+    expect(result.error).toContain("unknown template");
+    expect(existsSync(join(dir, "flare.yml"))).toBe(false);
+    expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
+  });
 });

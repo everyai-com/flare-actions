@@ -212,10 +212,12 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <section id="appPane" hidden>
 <nav class="tabs">
 <button id="tabRuns" class="active">Runs</button>
+<button id="tabFeed">Feed</button>
 <button id="tabTournaments">Tournaments</button>
 <button id="tabSearch">Search</button>
 <button id="tabFlaky">Flaky</button>
 <button id="tabMerge">Merge queue</button>
+<button id="tabTemplates">Templates</button>
 <button id="tabApps">Apps</button>
 <button id="tabAccess">Access</button>
 <button id="tabSettings">Settings</button>
@@ -253,6 +255,13 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <div id="bottlenecksBody" class="muted"></div>
 </details>
 <div id="runDetail" hidden></div>
+</section>
+<section id="feedPane" class="card" hidden>
+<h2>Feed</h2>
+<p class="muted">Latest runs across every repo, newest first — rerun failures, open the pull request, or follow the fix without leaving this page.</p>
+<p><button id="feedRefresh" class="ghost">Refresh</button></p>
+<p id="feedErr" class="err"></p>
+<div id="feedList"></div>
 </section>
 <section id="accessPane" class="card" hidden>
 <h2>Access tokens</h2>
@@ -515,6 +524,27 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <input id="mergeSha" placeholder="head SHA" maxlength="64" size="16" aria-label="Head SHA">
 <button type="submit">Enqueue</button>
 </form>
+</section>
+<section id="templatesPane" class="card" hidden>
+<h2>Template gallery</h2>
+<p class="muted">One starter flare.yml per stack. Copy the YAML into your repo, or scaffold it with the init command on each card.</p>
+<div id="templatesList"></div>
+<h2>Migration wizard</h2>
+<p class="muted">Three steps from GitHub Actions to flare.yml: paste a workflow, convert it with the same importer cli import uses, then review the warnings and save the YAML.</p>
+<form id="migrateForm" class="auth-form">
+<textarea id="migrateInput" rows="10" placeholder="Paste .github/workflows/ci.yml here" aria-label="GitHub Actions workflow YAML"></textarea>
+<input id="migrateFilename" placeholder="workflow filename (optional)" maxlength="128" aria-label="Workflow filename">
+<button type="submit">Convert to flare.yml</button>
+</form>
+<p id="migrateErr" class="err"></p>
+<div id="migrateOut" hidden>
+<h3>Converted flare.yml</h3>
+<pre id="migrateYaml" class="log"></pre>
+<p><button id="migrateCopy" class="ghost" type="button">Copy</button></p>
+<h3>Warnings</h3>
+<div id="migrateWarnings" class="muted"></div>
+</div>
+</section>
 <section id="appsPane" class="card" hidden>
 <h2>My apps</h2>
 <p class="muted">OAuth apps you authorized on the MCP endpoint (Claude, ChatGPT, Cursor, …). Revoking disconnects the app immediately.</p>
@@ -989,35 +1019,43 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
   });
 
   var tabRuns = document.getElementById("tabRuns");
+  var tabFeed = document.getElementById("tabFeed");
   var tabTournaments = document.getElementById("tabTournaments");
   var tabSearch = document.getElementById("tabSearch");
   var tabFlaky = document.getElementById("tabFlaky");
   var tabMerge = document.getElementById("tabMerge");
+  var tabTemplates = document.getElementById("tabTemplates");
   var tabApps = document.getElementById("tabApps");
   var tabAccess = document.getElementById("tabAccess");
   var tabSettings = document.getElementById("tabSettings");
   var runsPane = document.getElementById("runsPane");
+  var feedPane = document.getElementById("feedPane");
   var tournamentsPane = document.getElementById("tournamentsPane");
   var searchPane = document.getElementById("searchPane");
   var flakyPane = document.getElementById("flakyPane");
   var mergePane = document.getElementById("mergePane");
+  var templatesPane = document.getElementById("templatesPane");
   var appsPane = document.getElementById("appsPane");
   var accessPane = document.getElementById("accessPane");
   var settingsPane = document.getElementById("settingsPane");
   function selectTab(name) {
     tabRuns.className = name === "runs" ? "active" : "";
+    tabFeed.className = name === "feed" ? "active" : "";
     tabTournaments.className = name === "tournaments" ? "active" : "";
     tabSearch.className = name === "search" ? "active" : "";
     tabFlaky.className = name === "flaky" ? "active" : "";
     tabMerge.className = name === "merge" ? "active" : "";
+    tabTemplates.className = name === "templates" ? "active" : "";
     tabApps.className = name === "apps" ? "active" : "";
     tabAccess.className = name === "access" ? "active" : "";
     tabSettings.className = name === "settings" ? "active" : "";
     runsPane.hidden = name !== "runs";
+    feedPane.hidden = name !== "feed";
     tournamentsPane.hidden = name !== "tournaments";
     searchPane.hidden = name !== "search";
     flakyPane.hidden = name !== "flaky";
     mergePane.hidden = name !== "merge";
+    templatesPane.hidden = name !== "templates";
     appsPane.hidden = name !== "apps";
     accessPane.hidden = name !== "access";
     settingsPane.hidden = name !== "settings";
@@ -1053,6 +1091,8 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     if (!box.hidden && back) back.click();
   });
   tabRuns.addEventListener("click", function () { selectTab("runs"); loadRuns(); });
+  tabFeed.addEventListener("click", function () { selectTab("feed"); loadFeed(); });
+  document.getElementById("feedRefresh").addEventListener("click", function () { loadFeed(); });
   tabTournaments.addEventListener("click", function () { selectTab("tournaments"); loadTournaments(); });
   tabSearch.addEventListener("click", function () { selectTab("search"); });
   tabFlaky.addEventListener("click", function () { selectTab("flaky"); });
@@ -1263,6 +1303,30 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     });
   }
   tabMerge.addEventListener("click", function () { selectTab("merge"); });
+  tabTemplates.addEventListener("click", function () { selectTab("templates"); loadTemplates(); });
+  document.getElementById("migrateForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("migrateErr");
+    var out = document.getElementById("migrateOut");
+    err.textContent = "";
+    out.hidden = true;
+    var workflow = document.getElementById("migrateInput").value;
+    var filename = document.getElementById("migrateFilename").value.trim();
+    if (!workflow.trim()) { err.textContent = "paste a workflow first"; return; }
+    var payload = { workflow: workflow };
+    if (filename) payload.filename = filename;
+    api("/v1/migrate", { method: "POST", body: JSON.stringify(payload) }).then(function (b) {
+      out.hidden = false;
+      document.getElementById("migrateYaml").textContent = b.yaml || "";
+      var warns = document.getElementById("migrateWarnings");
+      warns.textContent = "";
+      (b.warnings || []).forEach(function (w) { warns.appendChild(el("p", String(w))); });
+      if (!(b.warnings || []).length) warns.textContent = "No warnings — clean conversion.";
+    }, function (e) { err.textContent = e.message; });
+  });
+  document.getElementById("migrateCopy").addEventListener("click", function () {
+    copyText(document.getElementById("migrateYaml").textContent, this);
+  });
   document.getElementById("mergeForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
     loadMergeQueue();
@@ -1512,6 +1576,133 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     var t = el("span", fmtAgo(r.updated_at)); t.className = "run-time"; t.title = fmtTime(r.updated_at); row.appendChild(t);
     row.addEventListener("click", function () { selectedRunId = r.id; loadRun(r.id, true); });
     list.appendChild(row);
+  }
+  function openRunDetail(id) {
+    selectedRunId = id;
+    selectTab("runs");
+    loadRun(id, true);
+  }
+  function loadFeed() {
+    var list = document.getElementById("feedList");
+    var err = document.getElementById("feedErr");
+    err.textContent = "";
+    list.textContent = "";
+    var loading = el("p", "Loading feed…"); loading.className = "muted"; list.appendChild(loading);
+    api("/v1/feed").then(function (data) {
+      list.textContent = "";
+      var items = data.items || [];
+      if (!items.length) { list.appendChild(el("p", "No runs yet — push to a connected repo to start the feed.")); return; }
+      items.forEach(function (item) { appendFeedItem(list, item); });
+    }).catch(function (e) {
+      list.textContent = "";
+      err.textContent = e.message;
+    });
+  }
+  function appendFeedItem(list, item) {
+    var r = item.run;
+    var failed = item.failedJobs || [];
+    var wrap = el("div"); wrap.className = "feed-item";
+    var top = el("div"); top.className = "run-row";
+    top.appendChild(pill(r.status));
+    var main = el("div"); main.className = "run-main";
+    var repo = el("div", r.repo); repo.className = "run-repo"; main.appendChild(repo);
+    var meta = el("div"); meta.className = "run-meta";
+    meta.appendChild(el("span", (r.branch || "—") + " · "));
+    var code = el("code", String(r.sha).slice(0, 7)); code.className = "mono"; meta.appendChild(code);
+    var dur = runDuration(r);
+    meta.appendChild(el("span", " · " + r.event + (dur ? " · " + dur : "") + (failed.length ? " · " + failed.length + " failed" : "")));
+    main.appendChild(meta);
+    top.appendChild(main);
+    var t = el("span", fmtAgo(r.updated_at)); t.className = "run-time"; t.title = fmtTime(r.updated_at); top.appendChild(t);
+    (function (id) { top.addEventListener("click", function () { openRunDetail(id); }); })(r.id);
+    wrap.appendChild(top);
+    var actions = el("div"); actions.className = "feed-actions";
+    if (isAdmin && failed.length) {
+      var rerun = el("button", "Rerun failed (" + failed.length + ")");
+      rerun.className = "ghost";
+      (function (runId, jobs, btn) {
+        btn.addEventListener("click", function () {
+          btn.disabled = true;
+          var chain = Promise.resolve();
+          jobs.forEach(function (f) {
+            chain = chain.then(function () {
+              return api("/v1/runs/" + encodeURIComponent(runId) + "/jobs/" + encodeURIComponent(f.id) + "/rerun", { method: "POST" });
+            });
+          });
+          chain.then(function () { loadFeed(); }, function (e) {
+            document.getElementById("feedErr").textContent = e.message;
+            btn.disabled = false;
+          });
+        });
+      })(r.id, failed, rerun);
+      actions.appendChild(rerun);
+    }
+    if (r.pr_number) {
+      var pr = el("a", "Open PR #" + r.pr_number);
+      pr.href = "https://github.com/" + r.repo + "/pull/" + r.pr_number;
+      pr.target = "_blank";
+      pr.rel = "noopener";
+      actions.appendChild(pr);
+    }
+    if (r.heal_pr_url) {
+      var fix = el("a", "Open fix PR");
+      fix.href = r.heal_pr_url;
+      fix.target = "_blank";
+      fix.rel = "noopener";
+      actions.appendChild(fix);
+    } else if (failed.length) {
+      var open = el("button", "Open run");
+      open.className = "ghost";
+      (function (id) { open.addEventListener("click", function () { openRunDetail(id); }); })(r.id);
+      actions.appendChild(open);
+    }
+    if (actions.children.length) wrap.appendChild(actions);
+    list.appendChild(wrap);
+  }
+  function loadTemplates() {
+    var list = document.getElementById("templatesList");
+    list.textContent = "";
+    var loading = el("p", "Loading templates…"); loading.className = "muted"; list.appendChild(loading);
+    api("/v1/templates").then(function (data) {
+      list.textContent = "";
+      (data.templates || []).forEach(function (t) { appendTemplateCard(list, t); });
+      if (!list.children.length) list.appendChild(el("p", "No templates published."));
+    }).catch(function (e) {
+      list.textContent = "";
+      var err = el("p", "Could not load templates: " + e.message); err.className = "err"; list.appendChild(err);
+    });
+  }
+  function appendTemplateCard(list, t) {
+    var card = el("div"); card.className = "template-card";
+    card.appendChild(el("h3", t.name));
+    card.appendChild(el("p", t.description));
+    var meta = el("p"); meta.className = "muted";
+    var tag = el("span", t.stack); tag.className = "run-src"; meta.appendChild(tag);
+    meta.appendChild(el("span", "  "));
+    var hint = el("code", "npx flare init --template " + t.id); hint.className = "mono"; meta.appendChild(hint);
+    card.appendChild(meta);
+    var view = el("button", "View YAML"); view.className = "ghost";
+    var body = el("div");
+    (function (id, btn, box) {
+      btn.addEventListener("click", function () {
+        if (box.children.length) { box.textContent = ""; btn.textContent = "View YAML"; return; }
+        btn.disabled = true;
+        api("/v1/templates/" + encodeURIComponent(id)).then(function (full) {
+          btn.disabled = false;
+          btn.textContent = "Hide YAML";
+          var pre = el("pre", full.yaml || ""); pre.className = "log"; box.appendChild(pre);
+          var copy = el("button", "Copy"); copy.className = "ghost";
+          copy.addEventListener("click", function () { copyText(full.yaml || "", copy); });
+          box.appendChild(copy);
+        }, function (e) {
+          btn.disabled = false;
+          var err = el("p", e.message); err.className = "err"; box.appendChild(err);
+        });
+      });
+    })(t.id, view, body);
+    card.appendChild(view);
+    card.appendChild(body);
+    list.appendChild(card);
   }
 
   var runDetailOpenId = null;

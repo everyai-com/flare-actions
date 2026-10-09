@@ -131,4 +131,28 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("spend avoided vs Actions list price");
   });
 
+  it("renders the feed with one-click rerun, open-PR, and fix actions", () => {
+    expect(DASHBOARD_HTML).toContain("tabFeed");
+    expect(DASHBOARD_HTML).toContain("feedPane");
+    expect(DASHBOARD_HTML).toContain("loadFeed");
+    expect(DASHBOARD_HTML).toContain("appendFeedItem");
+    expect(DASHBOARD_HTML).toContain("/v1/feed");
+    expect(DASHBOARD_HTML).toContain("Rerun failed (");
+    expect(DASHBOARD_HTML).toContain("Open PR #");
+    expect(DASHBOARD_HTML).toContain("Open fix PR");
+  });
+
+  it("renders the template gallery and migration wizard", () => {
+    expect(DASHBOARD_HTML).toContain("tabTemplates");
+    expect(DASHBOARD_HTML).toContain("templatesPane");
+    expect(DASHBOARD_HTML).toContain("loadTemplates");
+    expect(DASHBOARD_HTML).toContain("appendTemplateCard");
+    expect(DASHBOARD_HTML).toContain("/v1/templates");
+    expect(DASHBOARD_HTML).toContain("npx flare init --template ");
+    expect(DASHBOARD_HTML).toContain("migrateForm");
+    expect(DASHBOARD_HTML).toContain("migrateInput");
+    expect(DASHBOARD_HTML).toContain("/v1/migrate");
+    expect(DASHBOARD_HTML).toContain("migrateWarnings");
+  });
+
 });

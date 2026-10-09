@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isHexSha, planFanOut, validateDispatch, validateRegisterInput, validateScheduleInput, webhookSkipReason } from "./index";
+import { isHexSha, planFanOut, validateDispatch, validateMigrateInput, validateRegisterInput, validateScheduleInput, webhookSkipReason } from "./index";
 import type { PipelineJob } from "./pipeline";
 
 const SHA = "4203928f77b90dec92b4cd47b9e0795378752ef7";
@@ -225,5 +225,28 @@ describe("planFanOut", () => {
   it("lets cancel-in-progress skip the group block and flags the supersede", () => {
     const planned = planFanOut([job({ name: "deploy", group: "prod", cancelInProgress: true })], () => true);
     expect(planned[0]).toMatchObject({ status: "queued", wouldCancelInProgress: true });
+  });
+});
+
+describe("validateMigrateInput", () => {
+  it("accepts a workflow with a default filename", () => {
+    expect(validateMigrateInput({ workflow: "on: [push]\njobs:\n  a:\n    steps:\n      - run: echo\n" })).toEqual({
+      workflow: "on: [push]\njobs:\n  a:\n    steps:\n      - run: echo\n",
+      filename: "workflow.yml",
+    });
+  });
+
+  it("keeps an explicit filename", () => {
+    expect(validateMigrateInput({ workflow: "jobs:\n  a:\n    steps:\n      - run: echo\n", filename: "ci.yml" })).toEqual({
+      workflow: "jobs:\n  a:\n    steps:\n      - run: echo\n",
+      filename: "ci.yml",
+    });
+  });
+
+  it("rejects empty, oversized, and misnamed inputs", () => {
+    expect(validateMigrateInput({})).toHaveProperty("error");
+    expect(validateMigrateInput({ workflow: "   " })).toHaveProperty("error");
+    expect(validateMigrateInput({ workflow: "x".repeat(65537) })).toHaveProperty("error");
+    expect(validateMigrateInput({ workflow: "jobs: {}", filename: "x".repeat(129) })).toHaveProperty("error");
   });
 });

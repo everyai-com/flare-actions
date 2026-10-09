@@ -8,6 +8,16 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Template gallery, migration wizard, and feed dashboard: six bundled
+  starter pipelines (node, python, go, rust, java, generic) served via
+  `GET /v1/templates` + `GET /v1/templates/:id`, scaffolded with
+  `cli init --template <id>`, and browsed in the dashboard Templates
+  tab (view/copy YAML per card). The migration wizard converts a
+  pasted Actions workflow via `POST /v1/migrate` (pure SDK-importer
+  conversion, zero writes) and shows warnings before saving. The Feed
+  tab lists the latest runs across repos (`GET /v1/feed`) with
+  one-click rerun-failed (admin only), open-PR, and open-fix-PR/open-run
+  actions per item.
 - One-click GitHub App to auto-detected pipeline: `cli init` and `cli
   connect` scan repo manifests (Node, Python, Go, Rust, Ruby, Java, PHP,
   .NET, Elixir) and generate a stack-matched `flare.yml` starter —

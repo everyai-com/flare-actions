@@ -164,6 +164,8 @@ import {
   normalizeScopes,
   type AuthScope,
 } from "./tokens";
+import { convertActionsWorkflow, isImportSuccess } from "../../../packages/runner-sdk/src/importActions.ts";
+import { getTemplate, listTemplateMeta } from "../../../packages/runner-sdk/src/templates.ts";
 import { badgeSvg } from "./badge";
 import { createPairingCode, exchangePairingCode } from "./pairing";
 import { emitGhaJobCompleted, emitJobTerminal, emitRunDispatched } from "./analytics";
@@ -1411,6 +1413,19 @@ export function validateDispatch(
   };
 }
 
+export const MAX_MIGRATE_BYTES = 64 * 1024;
+
+export function validateMigrateInput(
+  body: Record<string, unknown>,
+): { workflow: string; filename: string } | { error: string } {
+  const { workflow, filename } = body;
+  if (typeof workflow !== "string" || !workflow.trim()) return { error: "workflow must be a non-empty YAML string" };
+  if (workflow.length > MAX_MIGRATE_BYTES) return { error: "workflow must be 64 KiB or less" };
+  if (filename !== undefined && (typeof filename !== "string" || filename.length > 128)) {
+    return { error: "filename must be a string of 128 chars or less" };
+  }
+  return { workflow, filename: typeof filename === "string" && filename ? filename : "workflow.yml" };
+}
 
 export function validateScheduleInput(
   body: Record<string, unknown>,
@@ -2298,6 +2313,60 @@ export default {
           return json({ error: "agent must be 1-64 chars: letters, digits, dot, dash, underscore" }, 400);
         }
         return json({ runs: await listRuns(env.DB, limit, offset, ident.repos, agentFilter || undefined) });
+      }
+      // Template gallery: bundled starter pipelines per stack (single
+      // source in the SDK, shared with `cli init --template`).
+      if (request.method === "GET" && url.pathname === "/v1/templates") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        return json({ templates: listTemplateMeta() });
+      }
+      const templateMatch = /^\/v1\/templates\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "GET" && templateMatch) {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const template = getTemplate(templateMatch[1]);
+        if (!template) return json({ error: "template not found" }, 404);
+        return json(template);
+      }
+      // Migration wizard: Actions workflow in, flare.yml out. Pure
+      // conversion via the SDK importer — zero writes, read scope.
+      if (request.method === "POST" && url.pathname === "/v1/migrate") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const valid = validateMigrateInput(body);
+        if ("error" in valid) return json({ error: valid.error }, 400);
+        const converted = convertActionsWorkflow(valid.workflow);
+        if (!isImportSuccess(converted)) return json({ error: converted.error }, 400);
+        return json({ filename: valid.filename, yaml: converted.yaml, warnings: converted.warnings });
+      }
+      // Feed: latest runs across repos with their failed jobs, so the
+      // dashboard offers one-click rerun / open-PR / fix per item.
+      if (request.method === "GET" && url.pathname === "/v1/feed") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const limit = Number(url.searchParams.get("limit") ?? "20");
+        if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+          return json({ error: "limit must be an integer 1-50" }, 400);
+        }
+        const agentFilter = url.searchParams.get("agent") ?? "";
+        if (agentFilter && "error" in parseAgentTag(agentFilter)) {
+          return json({ error: "agent must be 1-64 chars: letters, digits, dot, dash, underscore" }, 400);
+        }
+        const runs = await listRuns(env.DB, limit, 0, ident.repos, agentFilter || undefined);
+        const items = await Promise.all(
+          runs.map(async (run) => {
+            const jobs = await getJobsForRun(env.DB, run.id);
+            return {
+              run,
+              failedJobs: jobs
+                .filter((j) => j.status === "failure" || j.status === "error")
+                .map((j) => ({ id: j.id, name: j.name })),
+            };
+          }),
+        );
+        return json({ items });
       }
       if (request.method === "POST" && url.pathname === "/v1/tournaments") {
         const ident = await requireScope(request, env, "run");

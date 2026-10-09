@@ -58,6 +58,8 @@ export type {
 export { hasSecretPlaceholders, interpolateSecrets, maskSecrets } from "./secrets.ts";
 export { convertActionsWorkflow, isImportSuccess, mapRunsOn, sanitizeCacheKey } from "./importActions.ts";
 export type { ImportFailure, ImportResult, ImportSuccess } from "./importActions.ts";
+export { getTemplate, listTemplateMeta, TEMPLATES, templateIds } from "./templates.ts";
+export type { PipelineTemplate, TemplateMeta } from "./templates.ts";
 
 // Loads repo-root `.env` (written by `npm run setup`) into process.env.
 // Explicit environment variables always win. No dependencies, no-op if absent.

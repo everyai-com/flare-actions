@@ -385,10 +385,17 @@ try {
       console.error("--stack needs a stack id (node, python, go, rust, ruby, java, php, dotnet, elixir, generic)");
       process.exit(2);
     }
+    const templateAt = rest.indexOf("--template");
+    const template = templateAt === -1 ? undefined : rest[templateAt + 1];
+    if (templateAt !== -1 && !template) {
+      console.error("--template needs a template id (see the dashboard gallery or GET /v1/templates)");
+      process.exit(2);
+    }
     const result = runInit({
       cwd: process.cwd(),
       force: rest.includes("--force"),
       ...(stack ? { stack } : {}),
+      ...(template ? { template } : {}),
     });
     if (result.error) {
       console.error(result.error);
@@ -403,6 +410,8 @@ try {
       console.log(`detected stack: ${detected}`);
       const origin = result.pipelineSource === "converted"
         ? `from .github/workflows/${result.convertedFrom}`
+        : result.pipelineSource === "template"
+          ? `from the ${result.templateId} gallery template`
           : `${result.starterStack} starter`;
       console.log(`wrote ${result.pipelinePath} (${origin})`);
       for (const warning of result.warnings.slice(0, 20)) console.log(`  warning: ${warning}`);

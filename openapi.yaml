@@ -42,6 +42,8 @@ tags:
     description: MCP streamable-HTTP endpoint
   - name: webhooks
     description: GitHub event ingestion
+  - name: templates
+    description: Starter pipeline gallery and Actions migration
 security:
   - bearerAuth: []
 paths:
@@ -73,6 +75,131 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Run'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/templates:
+    get:
+      tags: [templates]
+      operationId: listTemplates
+      summary: List bundled pipeline templates (gallery metadata, no YAML)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: One starter per stack
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [templates]
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TemplateMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/templates/{templateId}:
+    get:
+      tags: [templates]
+      operationId: getTemplate
+      summary: Fetch one template with its starter flare.yml
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: templateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Template with starter YAML
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Template'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/migrate:
+    post:
+      tags: [templates]
+      operationId: migrateWorkflow
+      summary: Convert a GitHub Actions workflow to flare.yml (pure, zero writes)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workflow]
+              properties:
+                workflow:
+                  type: string
+                  description: Actions workflow YAML, 64 KiB max
+                filename:
+                  type: string
+                  description: Original filename for context (128 chars max)
+      responses:
+        '200':
+          description: Converted pipeline plus importer warnings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [filename, yaml, warnings]
+                properties:
+                  filename:
+                    type: string
+                  yaml:
+                    type: string
+                  warnings:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/feed:
+    get:
+      tags: [runs]
+      operationId: getFeed
+      summary: Latest runs across repos with their failed jobs (dashboard feed)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+        - name: agent
+          in: query
+          schema:
+            type: string
+          description: Only runs tagged with this agent identity
+      responses:
+        '200':
+          description: Feed items, newest first (repo-scoped tokens see only their repos)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FeedItem'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -3399,6 +3526,44 @@ components:
         hint:
           type: string
           description: Next step for the caller (present wherever code is)
+    TemplateMeta:
+      type: object
+      required: [id, name, stack, description]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        stack:
+          type: string
+        description:
+          type: string
+    Template:
+      allOf:
+        - $ref: '#/components/schemas/TemplateMeta'
+        - type: object
+          required: [yaml]
+          properties:
+            yaml:
+              type: string
+              description: Starter flare.yml for the template's stack
+    FeedItem:
+      type: object
+      required: [run, failedJobs]
+      properties:
+        run:
+          $ref: '#/components/schemas/Run'
+        failedJobs:
+          type: array
+          description: Jobs in failure/error status (one-click rerun targets)
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id:
+                type: string
+              name:
+                type: string
     Tournament:
       type: object
       required: [id, intent, source_repo, state]
