@@ -148,10 +148,11 @@ the seat image (`apps/seats/egress.c` → `/opt/flare/egress.so`).
   parsing for c-ares runtimes like Node), appending `DNS`/`OUT`/`IN`
   lines to `$FLARE_EGRESS_LOG`. Traffic flows exactly as without it.
 - Attribution is a lower bound: statically linked binaries bypass
-  the shim, resolver traffic is deliberately uncounted, and the
-  seat-side parser caps hostile input (charset checks, 200-domain
-  cap with an `(other-domains)` bucket, int64-safe counts). The NIC
-  row stays the cross-check total.
+  the shim, connectionless UDP is unattributed (and unenforced —
+  see `egress.allow`), resolver traffic is deliberately uncounted,
+  and the seat-side parser caps hostile input (charset checks,
+  200-domain cap with an `(other-domains)` bucket, int64-safe
+  counts). The NIC row stays the cross-check total.
 - Staging-validated end to end (canary `egress-canary-job-01`):
   curl/Node/Python downloads attribute to the right domains with
   byte-exact counts against the step outputs.

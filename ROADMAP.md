@@ -35,18 +35,27 @@ tab + PR-comment section). OpenAPI is at 75 paths (was 68).
   Turnstile, tracing, Issues flag, D1 free-tier audit
   (`docs/d1-free-tier-audit.md` — found and fixed seat report caps +
   egress chunking), D1 FTS5 log search (`search.ts`, Lucene-like query
-  UX). Still open: K2 spike, least-privilege setup tokens, Billable
-  Usage API in `cli usage`.
+  UX), least-privilege setup tokens (`scripts/mint-token.mjs`, 4
+  profiles, `docs/TOKENS.md`), Billable Usage API in `cli usage`
+  (`/v1/usage/billable` + SDK + CLI + dashboard strip). K2 spiked,
+  no adoption (`docs/SPIKES.md`). Still open: per-Worker token
+  scoping, R2-bandwidth pairing for usage dollars, billable totals
+  past the 2000-row fetch cap.
 - **Phase 2**: snapshot-backed caches (image-lineage keyed, fail-fast
   degraded handling), retain-on-failure (`retain-on-failure` YAML key,
   30-min TTL alarm, SSH), per-job egress report (measured R2 transfers
   + interface delta + LD_PRELOAD per-domain rows; `/v1/runs/:id/egress`,
   digest, dashboard, `cli egress`), fair-share caps + deterministic
   simulator
-  (`fairness.ts`, `/v1/admin/queue`, `cli queue`), peak-RSS sampling,
-  new admin settings UI. Still open: named warm dev boxes + file sync,
-  per-domain outbound interception, runtime priors,
-  Workers VPC, browser-test jobs.
+  (`fairness.ts`, `/v1/admin/queue`, `cli queue`), seats peak-RSS
+  sampling (`peakRssBytes`), hourly runtime priors (`priors.ts`, LPT
+  claim order), job-level egress enforcement (`egress.allow`),
+  browser-checks, local named dev boxes (`cli devbox` + sync +
+  snapshots), new admin settings UI. Still open: remote
+  (seat-persisted) named warm boxes + Files-based sync, per-repo
+  domain allowlists, dashboard RSS graphs + label-size hints, BYO
+  peak RSS/CPU self-report, Workers VPC (blocked on platform),
+  browser preview self-verification + richer actions.
 - **Phase 3**: AI Gateway fronting for triage + generate (env `AI_GATEWAY_ID`
   or D1, off by default), Web Search grounding for triage (opt-in
   `triage_web_search`, needs a gateway), MCP `2026-07-28` negotiation +
@@ -142,11 +151,13 @@ Ship while Phase 0 bakes. Pure Worker + D1 + R2 + cron:
   artifacts; worker parses per-test results into D1; failing tests join the
   PR comment and get a Tests tab in the dashboard. Upgrades run-level flaky
   to test-level.
-- **`cli cache` + `cli usage`**: list/purge cache entries; pull usage + cost
-  data for billing workflows. `cli usage` should call the Billable Usage
-  API (FOCUS-shaped, self-serve, daily rows) so cost attribution shows
-  real Cloudflare dollars next to the GitHub-list-price comparison.
-  Pairs with R2 bandwidth metrics (Sept 24) and R2 Data Access Logs (Sept 4).
+- **`cli cache` + `cli usage`** (shipped: list/purge, usage + cost
+  data, Billable Usage API dollars via `/v1/usage/billable` + SDK +
+  CLI + dashboard strip): cost attribution shows real Cloudflare
+  dollars (FOCUS-shaped, self-serve, daily rows) next to the
+  GitHub-list-price comparison. Still open: pairing with R2
+  bandwidth metrics (Sept 24) and R2 Data Access Logs (Sept 4), and
+  totals past the 2000-row fetch cap.
 - **Global log search**: D1 FTS5 confirmed available — build the Lucene-like
   query UX Blacksmith validated
   (`branch:main level:error (failure OR panic) -"econn refused"` compiled
@@ -171,10 +182,14 @@ Ship while Phase 0 bakes. Pure Worker + D1 + R2 + cron:
 - **D1 free-tier query limits** (enforced Sept 1: 5M reads / 100k writes
   per day): audit one-click-deploy query volume so fresh forks can't trip
   limits; document the Paid step-up.
-- **Least-privilege setup tokens**: mint API tokens with the new granular
-  RBAC (Editor scoped to the one Worker; Metadata Read-Only for debug
-  agents). Enriched 403s now link the missing permission — surface those
-  in setup errors.
+- **Least-privilege setup tokens** (shipped: `scripts/mint-token.mjs`,
+  ci/debug/billing/setup profiles in `scripts/api-tokens.mjs`,
+  dashboard checklist in `docs/TOKENS.md`, enriched-403 hints in
+  setup): tokens mint at account scope with granular groups (one
+  account only, never All), and debug composes explicit read groups
+  rather than a single metadata role. Still open: per-Worker
+  resource scoping in the mint body (today: tighten in the dashboard
+  after minting).
 - **cf CLI tracking** (open beta Sept 28): JSON-first, 3,000+ ops,
   `cloudflare.config.ts`, Vite-based. Wrangler gets a final major + 18
   months maintenance after beta ends. No migration yet; track for setup
@@ -222,8 +237,11 @@ Needs Phase 0 done:
   queue → workflow, plus created/forked/deleted/cloned/fetched →
   push-event triggers), Workers Builds integration (push → deploy,
   branch → Preview), per-namespace US/EU data jurisdiction, and
-  dashboard/API metrics. Still open: per-job tokens via the binding,
-  push-event triggers, provisioning automation. Entered the
+  dashboard/API metrics. Shipped since: per-job checkout tokens via
+  the binding (1h read tokens for in-namespace mirrors) and
+  push-event triggers (`artifacts-push.ts` + artifacts queue consumer
+  + setup opt-in). Still open: hands-free per-repo provisioning +
+  token-rotation automation. Entered the
   "next Git platform" competition — deadline Oct 14, 5–10 min demo
   video + MIT/Apache/BSD source + run instructions, multi-agent
   concurrency required; top 3 fly to Connect SF, first prize $25k
@@ -231,11 +249,12 @@ Needs Phase 0 done:
   request for the agent era (race → verify → radar → verdict →
   promote → ledger on Artifacts repos; entry status in Build status
   above, execution spec in `.agents/plans/2026-10-06-git-competition.md`).
-- **Per-job CPU/mem + right-sizing**: BYO runners self-report peak RSS/CPU
-  with status callbacks now; seats sample via exec (cgroupfs) until the
-  container API exposes metrics — then dashboard graphs and label-size
-  hints. Add Blacksmith's scheduler lesson: hourly per-job-name runtime
-  priors to predict drain order and cut wide-job tail latency.
+- **Per-job CPU/mem + right-sizing** (shipped: seats peak-RSS sampling
+  via exec/cgroupfs into result-JSON `peakRssBytes`, hourly
+  per-job-name runtime priors with LPT claim order in `priors.ts`):
+  still open are BYO peak RSS/CPU self-report in status callbacks,
+  dashboard RSS graphs, and label-size hints. Container-native
+  metrics stay the fallback when the API exposes them.
 - **Scheduling fairness**: oldest-first within priority already matches;
   add per-org/repo concurrency shares so one tenant's burst can't starve
   others, and a deterministic simulator to validate policy changes
