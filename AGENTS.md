@@ -247,7 +247,9 @@ exhaustion) → runner polls `GET /v1/jobs/next?labels=` → executes →
 - `apps/seats` — managed executor. `ContainerSeat` DO (one container per
   job) orchestrates via `exec` (`seat.ts`, testable with fakes;
   `seat-do.ts` holds the `cloudflare:workers` import so vitest never
-  touches it). Shares worker modules (`db`, `finish`, `pipeline`,
+  touches it — SDK runtime imports (`@cloudflare/sandbox` classes,
+  gateway loopbacks) live there too; `seat.ts` sees only the
+  runtime-free `sandbox-fs.ts` interfaces). Shares worker modules (`db`, `finish`, `pipeline`,
   `github`, `triage`) by relative import — bundled by wrangler. V2
   (`ContainerSeatV2` + `SEATS_V2` binding, `durable_object` scheduling
   policy) serves new jobs; V1 finishes in-flight ones. V2-only: snapshot

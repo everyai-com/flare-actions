@@ -186,3 +186,95 @@ describe("LocalContainer", () => {
     expect(runner.argv.some((a) => a[1] === "rm" && a[2] === "-f" && a[3] === name)).toBe(true);
   });
 });
+
+describe("LocalContainer.files", () => {
+  async function started(execs: { exitCode: number; stdout: string; stderr?: string }[]) {
+    const runner = fakeRunner({ execs });
+    const c = new LocalContainer("img:1", runner);
+    await c.start();
+    return { c, runner };
+  }
+
+  it("reads and writes files through exec", async () => {
+    const { c } = await started([
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: "bytes" },
+      { exitCode: 0, stdout: "bytes" },
+    ]);
+    const fs = c.files();
+    expect(new TextDecoder().decode(await fs.readFile("/work/f"))).toBe("bytes");
+    await expect(fs.writeFile("/work/f", "bytes")).resolves.toBeUndefined();
+  });
+
+  it("caps reads and reports missing files", async () => {
+    const { c } = await started([
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: "toolong" },
+      { exitCode: 1, stdout: "" },
+    ]);
+    const fs = c.files();
+    await expect(fs.readFile("/work/f", 2)).rejects.toMatchObject({ code: "TOO_LARGE" });
+    await expect(fs.readFile("/work/missing")).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("stats without following links for lstat", async () => {
+    const { c } = await started([
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: "regular file|12|644\n" },
+      { exitCode: 1, stdout: "" },
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: "directory|0|755\n" },
+    ]);
+    const fs = c.files();
+    expect(await fs.stat("/work/f")).toEqual({ type: "file", size: 12, mode: 0o644 });
+    expect(await fs.lstat("/work/d")).toEqual({ type: "directory", size: 0, mode: 0o755 });
+  });
+
+  it("detects symlinks via test -L", async () => {
+    const { c } = await started([{ exitCode: 0, stdout: "" }]);
+    expect(await c.files().lstat("/work/l")).toEqual({ type: "symlink", size: 0, mode: 0 });
+  });
+
+  it("lists directories via find -printf", async () => {
+    const { c } = await started([
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: "a.xml|f\nsub|d\nlink|l\n" },
+      { exitCode: 1, stdout: "" },
+      { exitCode: 1, stdout: "" },
+      { exitCode: 1, stdout: "" },
+      { exitCode: 0, stdout: "" },
+    ]);
+    const fs = c.files();
+    expect(await fs.readDirectory("/work")).toEqual([
+      { name: "a.xml", type: "file" },
+      { name: "sub", type: "directory" },
+      { name: "link", type: "symlink" },
+    ]);
+    await expect(fs.readDirectory("/work/missing")).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(fs.readDirectory("/work/file")).rejects.toMatchObject({ code: "NOT_DIR" });
+  });
+
+  it("makes directories, recursive on request", async () => {
+    const { c, runner } = await started([
+      { exitCode: 0, stdout: "" },
+      { exitCode: 1, stdout: "", stderr: "exists" },
+    ]);
+    const fs = c.files();
+    await fs.mkdir("/work/d", true);
+    await expect(fs.mkdir("/work/d")).rejects.toMatchObject({ code: "IO" });
+    expect(runner.argv.some((a) => a.includes("mkdir") && a.includes("-p"))).toBe(true);
+  });
+
+  it("rejects relative paths without exec", async () => {
+    const { c, runner } = await started([]);
+    const before = runner.argv.length;
+    await expect(c.files().readFile("relative")).rejects.toMatchObject({ code: "INVALID" });
+    expect(runner.argv.length).toBe(before);
+  });
+
+  it("reports mounts and backups unsupported", async () => {
+    const { c } = await started([]);
+    await expect(c.mounts().mount({ mountPath: "/m", access: "read-only" })).rejects.toMatchObject({ code: "MOUNT" });
+    await expect(c.backups().backup("/work")).rejects.toMatchObject({ code: "BACKUP" });
+  });
+});

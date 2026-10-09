@@ -16,6 +16,7 @@ import {
   saveSeatSnapshot,
   saveTestReport,
   saveTestSelection,
+  SEAT_SNAPSHOT_MAX_AGE_MS,
   touchSeatSnapshot,
   updateRunningJob,
   type Db,
@@ -34,6 +35,7 @@ import { bytesEqual, getInstallationToken, mintAppJwt } from "../../worker/src/g
 import { reportJobCheck } from "../../worker/src/checks";
 import { notifyRunCompleted, type NotifyMailEnv } from "../../worker/src/notify";
 import { EGRESS_LOG_PATH, EGRESS_SHIM_PATH, countBlockedConnects, parseEgressLog } from "./egress";
+import { isSandboxFsError, type SeatDirBackup, type SeatFiles, type SeatMount } from "./sandbox-fs";
 import { evaluateResultMonitors } from "../../worker/src/monitors";
 import { indexJobLog } from "../../worker/src/search";
 import { recordRuntimePrior } from "../../worker/src/priors";
@@ -188,6 +190,15 @@ export interface SeatDeps {
   // no CI_EVENTS stream binding; emission skips silently.
   basin?: BasinSink | undefined;
   container: ContainerCtl;
+  // Sandbox SDK 1.0 file utilities (seat-do adapters). Absent on
+  // pre-shim images and in unit contexts — flows fall back to exec.
+  fs?: SeatFiles;
+  // DirectoryBackup (V2 only): dir -> R2 -> restore. No job-flow
+  // consumer yet; warm boxes save/restore workspaces through it.
+  dirBackup?: SeatDirBackup;
+  // S3Mount (R2 S3 creds configured): R2 prefix mounts. Latent until
+  // a flow mounts; the cache-bucket mount rides warm boxes.
+  mount?: SeatMount;
   timing?: SeatTiming;
   sleep?: (ms: number) => Promise<void>;
   spawn?: (jobId: string) => Promise<void>;
@@ -227,9 +238,9 @@ export const WORKDIR = "/work";
 // explicit test-reports paths (mirrors runner-sdk DEFAULT_TEST_REPORT_PATHS).
 const SEAT_TEST_DEFAULTS = ["junit.xml", "test-results.xml", "test-results/junit.xml", "reports/junit.xml"];
 const SEAT_TEST_MAX_FILES = 10;
-// Snapshots idle longer than this are never restored: the platform TTL is
-// 30 days, and the 5-day margin keeps boots from chasing ghosts.
-const SNAPSHOT_MAX_AGE_MS = 25 * 86400000;
+// Restore horizon shared with the worker (db.ts): idle past this, the
+// platform TTL has reclaimed the snapshot server-side.
+const SNAPSHOT_MAX_AGE_MS = SEAT_SNAPSHOT_MAX_AGE_MS;
 // Retain-on-failure debug window: the seat DO alarm destroys the kept
 // container at this deadline (grace while a session is active is a
 // documented Phase 2 follow-up, not this change).
@@ -629,6 +640,71 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }
+
+  // Small-file reads prefer Sandbox SDK Files (structured errors, no
+  // shell quoting) with an exec-cat fallback for pre-shim images and
+  // unit contexts without fs. Null when unreadable by either path.
+  async function readContainerFile(path: string, maxBytes: number): Promise<Uint8Array | null> {
+    if (deps.fs) {
+      try {
+        return await deps.fs.readFile(path, maxBytes);
+      } catch {
+        // Fall through to exec (PROTOCOL on old images, etc).
+      }
+    }
+    const blob = await execBounded(["cat", path], {}, 30000);
+    if (blob.timedOut || blob.exitCode !== 0) return null;
+    return blob.stdout;
+  }
+
+  // JUnit discovery over Files: same guards as the exec scan (no
+  // symlinks, *.xml only, (0, MAX_JUNIT_BYTES] bytes, WORKDIR-rooted,
+  // SEAT_TEST_MAX_FILES cap) without a shell round-trip per path.
+  // Missing paths skip; a PROTOCOL failure (pre-shim image) aborts so
+  // the caller falls back to the exec scan wholesale.
+  async function findJUnitViaFs(fs: SeatFiles, safe: string[]): Promise<string[]> {
+    const rethrowProtocol = (err: unknown): void => {
+      if (isSandboxFsError(err) && err.code === "PROTOCOL") throw err;
+    };
+    const found: string[] = [];
+    for (const rel of [...new Set(safe)]) {
+      if (found.length >= SEAT_TEST_MAX_FILES) break;
+      const abs = `${WORKDIR}/${rel}`;
+      let st;
+      try {
+        st = await fs.lstat(abs);
+      } catch (err) {
+        rethrowProtocol(err);
+        continue;
+      }
+      if (st.type === "symlink") continue;
+      if (st.type === "directory") {
+        let entries;
+        try {
+          entries = await fs.readDirectory(abs);
+        } catch (err) {
+          rethrowProtocol(err);
+          continue;
+        }
+        for (const e of entries) {
+          if (found.length >= SEAT_TEST_MAX_FILES) break;
+          if (e.type === "symlink" || !e.name.endsWith(".xml") || e.name.includes("/")) continue;
+          const fp = `${abs}/${e.name}`;
+          try {
+            const fst = await fs.lstat(fp);
+            if (fst.type !== "file" || fst.size <= 0 || fst.size > MAX_JUNIT_BYTES) continue;
+          } catch (err) {
+            rethrowProtocol(err);
+            continue;
+          }
+          found.push(fp);
+        }
+      } else if (st.type === "file" && abs.endsWith(".xml") && st.size > 0 && st.size <= MAX_JUNIT_BYTES) {
+        found.push(abs);
+      }
+    }
+    return found;
   }
 
   // Bounded snapshot: a hung snapshotContainer must not hold the seat
@@ -1130,9 +1206,9 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     let domainEgress: EgressTally[] = [];
     if (shimEgress) {
       try {
-        const log = await execBounded(["cat", EGRESS_LOG_PATH], {}, 30000);
-        if (!log.timedOut && log.exitCode === 0) {
-          const raw = decode(log.stdout);
+        const bytes = await readContainerFile(EGRESS_LOG_PATH, SEAT_LOG_CAP);
+        if (bytes) {
+          const raw = decode(bytes);
           domainEgress = parseEgressLog(raw);
           if (domainEgress.length > 0) {
             const top = domainEgress
@@ -1301,27 +1377,40 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     try {
       const safe = safeRelPaths([...(spec.testReports?.paths ?? []), ...SEAT_TEST_DEFAULTS]);
       if (safe) {
-        const quoted = [...new Set(safe)].map((p) => JSON.stringify(`${WORKDIR}/${p}`)).join(" ");
-        const scan = await execBounded(
-          [
-            "sh",
-            "-c",
-            `for p in ${quoted}; do if [ -d "$p" ] && [ ! -L "$p" ]; then find "$p" -maxdepth 1 -not -lname '*' -name '*.xml' -size -1024k; elif [ -f "$p" ] && [ ! -L "$p" ]; then case "$p" in *.xml) sz=$(stat -c%s "$p" 2>/dev/null || echo 0); if [ "$sz" -gt 0 ] && [ "$sz" -le ${MAX_JUNIT_BYTES} ]; then echo "$p"; fi;; esac; fi; done`,
-          ],
-          {},
-          30000,
-        );
-        if (!scan.timedOut && scan.exitCode === 0) {
-          const found = decode(scan.stdout)
-            .split("\n")
-            .map((l) => l.trim())
-            .filter((l) => l.startsWith(`${WORKDIR}/`))
-            .slice(0, SEAT_TEST_MAX_FILES);
+        let found: string[] | null = null;
+        if (deps.fs) {
+          try {
+            found = await findJUnitViaFs(deps.fs, safe);
+          } catch {
+            found = null;
+          }
+        }
+        if (found === null) {
+          const quoted = [...new Set(safe)].map((p) => JSON.stringify(`${WORKDIR}/${p}`)).join(" ");
+          const scan = await execBounded(
+            [
+              "sh",
+              "-c",
+              `for p in ${quoted}; do if [ -d "$p" ] && [ ! -L "$p" ]; then find "$p" -maxdepth 1 -not -lname '*' -name '*.xml' -size -1024k; elif [ -f "$p" ] && [ ! -L "$p" ]; then case "$p" in *.xml) sz=$(stat -c%s "$p" 2>/dev/null || echo 0); if [ "$sz" -gt 0 ] && [ "$sz" -le ${MAX_JUNIT_BYTES} ]; then echo "$p"; fi;; esac; fi; done`,
+            ],
+            {},
+            30000,
+          );
+          found =
+            !scan.timedOut && scan.exitCode === 0
+              ? decode(scan.stdout)
+                  .split("\n")
+                  .map((l) => l.trim())
+                  .filter((l) => l.startsWith(`${WORKDIR}/`))
+                  .slice(0, SEAT_TEST_MAX_FILES)
+              : [];
+        }
+        if (found.length > 0) {
           const parts: string[] = [];
           for (const file of found) {
-            const blob = await execBounded(["cat", file], {}, 30000);
-            if (blob.timedOut || blob.exitCode !== 0) continue;
-            const text = decode(blob.stdout);
+            const bytes = await readContainerFile(file, MAX_JUNIT_BYTES);
+            if (!bytes) continue;
+            const text = decode(bytes);
             if (!text.slice(0, 1024).includes("<testsuite")) continue;
             parts.push(text);
           }

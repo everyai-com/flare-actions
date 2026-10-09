@@ -7,6 +7,7 @@ import {
   claimWebhookDelivery,
   flakyCandidates,
   isAdminMarkerClaimed,
+  pruneSeatSnapshots,
   pruneWebhookDeliveries,
   releaseAdminMarker,
   shouldDowngradeFailure,
@@ -454,6 +455,54 @@ describe("claimWebhookDelivery", () => {
     expect(await pruneWebhookDeliveries(db, 24)).toBe(1);
     expect(db.store.has("old")).toBe(false);
     expect(db.store.has("new")).toBe(true);
+  });
+});
+
+class SnapshotDb implements Db {
+  constructor(public rows: { last_used_at: string }[]) {}
+
+  prepare(sql: string) {
+    const norm = sql.replace(/\s+/g, " ").trim();
+    return {
+      bind: (...values: unknown[]) => ({
+        all: async <T,>(): Promise<{ results: T[] }> => {
+          throw new Error(`unrouted all: ${norm}`);
+        },
+        first: async <T,>(): Promise<T | null> => {
+          throw new Error(`unrouted first: ${norm}`);
+        },
+        run: async () => {
+          if (!norm.startsWith("DELETE FROM seat_snapshots WHERE last_used_at < ?")) {
+            throw new Error(`unrouted run: ${norm}`);
+          }
+          const before = values[0] as string;
+          const limit = values[1] as number;
+          let changes = 0;
+          this.rows = this.rows.filter((r) => {
+            if (changes < limit && r.last_used_at < before) {
+              changes += 1;
+              return false;
+            }
+            return true;
+          });
+          return { meta: { changes } };
+        },
+      }),
+    };
+  }
+}
+
+describe("pruneSeatSnapshots", () => {
+  it("deletes rows idle past the cutoff, bounded per pass", async () => {
+    const db = new SnapshotDb([
+      { last_used_at: "2000-01-01T00:00:00.000Z" },
+      { last_used_at: "2000-01-02T00:00:00.000Z" },
+      { last_used_at: new Date().toISOString() },
+    ]);
+    expect(await pruneSeatSnapshots(db, "2001-01-01T00:00:00.000Z", 1)).toBe(1);
+    expect(db.rows).toHaveLength(2);
+    expect(await pruneSeatSnapshots(db, "2001-01-01T00:00:00.000Z")).toBe(1);
+    expect(db.rows).toHaveLength(1);
   });
 });
 

@@ -2,6 +2,10 @@ import { ContainerSeat, ContainerSeatV2, type SeatsEnv } from "./seat-do";
 import { seatTokenAuthorized } from "./seat";
 
 export { ContainerSeat, ContainerSeatV2 };
+// Sandbox SDK gateways: the container reaches these through the
+// outbound intercept (creds stay Worker-side); the DO passes
+// ctx.exports.* into the SDK classes in seat-do.ts.
+export { DirectoryBackupGateway, S3Gateway } from "@cloudflare/sandbox";
 
 export default {
   async fetch(request: Request, env: SeatsEnv): Promise<Response> {

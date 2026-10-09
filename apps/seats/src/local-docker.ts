@@ -7,7 +7,17 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ContainerCtl, ContainerSnapshot, ContainerStartOptions, ExecHandle, ExecOptions } from "./seat";
+import type { ContainerCtl, ContainerSnapshot, ContainerStartOptions, ExecHandle, ExecOptions, ExecOutput } from "./seat";
+import {
+  SandboxFsError,
+  assertContainerPath,
+  type SeatDirBackup,
+  type SeatDirEntry,
+  type SeatFiles,
+  type SeatFileStat,
+  type SeatFileType,
+  type SeatMount,
+} from "./sandbox-fs";
 
 export interface LocalRunResult {
   exitCode: number;
@@ -238,6 +248,36 @@ export class LocalContainer implements ContainerCtl {
     throw new Error("snapshots are unsupported in local-docker dev mode");
   }
 
+  // Sandbox SDK Files over `docker exec` (dev parity with the shim
+  // path; no FUSE/R2 pieces exist locally).
+  files(): SeatFiles {
+    return new LocalFiles(this);
+  }
+
+  // S3Mount and DirectoryBackup need the Worker-side gateways + R2
+  // bindings; local-docker dev mode has neither, like snapshots.
+  mounts(): SeatMount {
+    const unsupported = (): never => {
+      throw new SandboxFsError("MOUNT", "S3 mounts are unsupported in local-docker dev mode");
+    };
+    return {
+      mount: async () => unsupported(),
+      inspect: async () => unsupported(),
+      unmount: async () => unsupported(),
+    };
+  }
+
+  backups(): SeatDirBackup {
+    const unsupported = (): never => {
+      throw new SandboxFsError("BACKUP", "directory backups are unsupported in local-docker dev mode");
+    };
+    return {
+      backup: async () => unsupported(),
+      restore: async () => unsupported(),
+      deleteRecord: async () => unsupported(),
+    };
+  }
+
   async monitor(): Promise<void> {
     const name = this.containerName;
     // Never started (or already destroyed) reads as already stopped.
@@ -253,5 +293,98 @@ export class LocalContainer implements ContainerCtl {
         () => this.markStopped(),
       );
     await Promise.race([stopped, waited]);
+  }
+}
+
+function execOut(container: ContainerCtl, cmd: string[], stdin?: string | Uint8Array): Promise<ExecOutput> {
+  return container.exec(cmd, stdin !== undefined ? { stdin } : undefined).then((h) => h.output());
+}
+
+function statType(kind: string): SeatFileType {
+  if (kind === "regular file" || kind === "regular empty file") return "file";
+  if (kind === "directory") return "directory";
+  if (kind === "symbolic link") return "symlink";
+  return "other";
+}
+
+// SeatFiles over container exec (dev parity): cat/tee for bytes,
+// stat/test for metadata, find -printf for listings. Same guards as
+// the shim path (absolute paths, symlink-safe); names containing
+// newlines mangle listings (dev-only edge, documented).
+export class LocalFiles implements SeatFiles {
+  constructor(private readonly container: ContainerCtl) {}
+
+  private async run(cmd: string[], stdin?: string | Uint8Array): Promise<ExecOutput> {
+    try {
+      return await execOut(this.container, cmd, stdin);
+    } catch (err) {
+      throw new SandboxFsError("IO", `local exec failed: ${err instanceof Error ? err.message.slice(0, 160) : String(err).slice(0, 160)}`);
+    }
+  }
+
+  private async exists(path: string): Promise<boolean> {
+    return (await this.run(["test", "-e", path])).exitCode === 0;
+  }
+
+  async readFile(path: string, maxBytes = 4 * 1024 * 1024): Promise<Uint8Array> {
+    assertContainerPath(path, "readFile");
+    if (!(await this.exists(path))) throw new SandboxFsError("NOT_FOUND", `readFile missing: ${path.slice(0, 128)}`);
+    const out = await this.run(["cat", path]);
+    if (out.exitCode !== 0) throw new SandboxFsError("IO", `readFile failed: ${path.slice(0, 128)}`);
+    if (out.stdout.byteLength > maxBytes) throw new SandboxFsError("TOO_LARGE", `readFile exceeds ${maxBytes} bytes`);
+    return out.stdout;
+  }
+
+  async writeFile(path: string, content: Uint8Array | string): Promise<void> {
+    assertContainerPath(path, "writeFile");
+    const out = await this.run(["tee", path], content);
+    if (out.exitCode !== 0) throw new SandboxFsError("IO", `writeFile failed: ${path.slice(0, 128)}`);
+  }
+
+  private parseStat(text: string, path: string, what: string): SeatFileStat {
+    const m = /^(.+)\|(\d+)\|([0-7]+)$/.exec(text.trim());
+    if (!m) throw new SandboxFsError("IO", `${what} unparseable for ${path.slice(0, 128)}`);
+    return { type: statType(m[1]), size: Number(m[2]), mode: parseInt(m[3], 8) };
+  }
+
+  async stat(path: string): Promise<SeatFileStat> {
+    assertContainerPath(path, "stat");
+    if (!(await this.exists(path))) throw new SandboxFsError("NOT_FOUND", `stat missing: ${path.slice(0, 128)}`);
+    const out = await this.run(["stat", "-c", "%F|%s|%a", path]);
+    if (out.exitCode !== 0) throw new SandboxFsError("IO", `stat failed: ${path.slice(0, 128)}`);
+    return this.parseStat(new TextDecoder().decode(out.stdout), path, "stat");
+  }
+
+  async lstat(path: string): Promise<SeatFileStat> {
+    assertContainerPath(path, "lstat");
+    if ((await this.run(["test", "-L", path])).exitCode === 0) return { type: "symlink", size: 0, mode: 0 };
+    return this.stat(path);
+  }
+
+  async readDirectory(path: string): Promise<SeatDirEntry[]> {
+    assertContainerPath(path, "readDirectory");
+    if ((await this.run(["test", "-d", path])).exitCode !== 0) {
+      if (!(await this.exists(path))) throw new SandboxFsError("NOT_FOUND", `readDirectory missing: ${path.slice(0, 128)}`);
+      throw new SandboxFsError("NOT_DIR", `readDirectory not a directory: ${path.slice(0, 128)}`);
+    }
+    const out = await this.run(["find", path, "-mindepth", "1", "-maxdepth", "1", "-printf", "%f|%y\\n"]);
+    if (out.exitCode !== 0) throw new SandboxFsError("IO", `readDirectory failed: ${path.slice(0, 128)}`);
+    const entries: SeatDirEntry[] = [];
+    for (const line of new TextDecoder().decode(out.stdout).split("\n")) {
+      if (!line) continue;
+      const bar = line.lastIndexOf("|");
+      if (bar <= 0) continue;
+      const name = line.slice(0, bar);
+      const kind = line.slice(bar + 1);
+      const type: SeatFileType = kind === "f" ? "file" : kind === "d" ? "directory" : kind === "l" ? "symlink" : "other";
+      entries.push({ name, type });
+    }
+    return entries;
+  }
+
+  async mkdir(path: string, recursive = false): Promise<void> {
+    assertContainerPath(path, "mkdir");
+    const out = await this.run(recursive ? ["mkdir", "-p", path] : ["mkdir", path]);
+    if (out.exitCode !== 0) throw new SandboxFsError("IO", `mkdir failed: ${path.slice(0, 128)}`);
   }
 }

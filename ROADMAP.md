@@ -29,8 +29,9 @@ tab + PR-comment section). OpenAPI is at 75 paths (was 68).
   pending-I/O keep-alive (lazy `docker wait` race, exit 125 fail-fast),
   Streamline local-Docker dev mode (`apps/seats/src/local-docker.ts`),
   warm dev boxes (`cli devbox` + `cli mcp-serve`, snapshot lineage via
-  `docker commit`). Still open: Sandbox SDK 1.0 utils
-  (Files/S3Mount/DirectoryBackup).
+  `docker commit`), Sandbox SDK 1.0 utils (`sandbox-fs.ts`: Files
+  integrated with exec fallbacks, S3Mount/DirectoryBackup plumbed
+  with gateways; seat snapshot prune wired).
 - **Phase 1**: monitors, JUnit analytics, `cli cache`/`cli usage`,
   Turnstile, tracing, Issues flag, D1 free-tier audit
   (`docs/d1-free-tier-audit.md` — found and fixed seat report caps +
@@ -120,9 +121,16 @@ Dec 31, 2026, and new capabilities are native-only.
   (public beta; migration is one-way — rehearse on a preview branch first).
   Carbon-copy their rollout pattern: image choice as code (canary by DO-id
   hash, pin active projects, rollback by changing future starts).
-- Sandbox SDK 1.0 utilities: `Files` (stream files in/out), `S3Mount`
-  (mount the R2 cache bucket; Worker signs requests so creds stay out of
-  the sandbox), `DirectoryBackup` (dir → R2 → restore into any sandbox).
+- Sandbox SDK 1.0 utilities (shipped: `@cloudflare/sandbox@1.0.0`,
+  `sandbox-fs.ts` adapters + `S3Gateway`/`DirectoryBackupGateway`
+  exports, in-image `sandbox-shim`, fuse3/s3fs in the Dockerfile):
+  `Files` (stream files in/out) is integrated — JUnit discovery and
+  the egress-log read prefer it with exec fallbacks for pre-shim
+  images; `S3Mount` (mount the R2 cache bucket; Worker signs requests
+  so creds stay out of the sandbox) and `DirectoryBackup` (dir → R2
+  → restore into any sandbox) are plumbed, credential-gated, and
+  unit-tested, with warm boxes as the first consumer. The dead
+  `pruneSeatSnapshots` is wired into the webhook sweep.
 - Filesystem snapshots (public beta): point-in-time save/restore across
   sleep, restart, and DO handoff. The primitive behind warm boxes, caches,
   and retain-on-failure. 648ms median cold start on the new path; 100k

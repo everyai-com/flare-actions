@@ -19,6 +19,7 @@ import {
 } from "./seat";
 import type { Db } from "../../worker/src/db";
 import { EGRESS_LOG_PATH, EGRESS_SHIM_PATH } from "./egress";
+import { SandboxFsError, type SeatDirEntry, type SeatFiles, type SeatFileStat } from "./sandbox-fs";
 
 // In-memory Db routing the exact queries runSeatJob issues. Anything
 // unrouted throws loudly so SQL drift fails tests, not prod.
@@ -359,6 +360,50 @@ class FakeContainer implements ContainerCtl {
   }
 }
 
+class FakeFs implements SeatFiles {
+  files = new Map<string, Uint8Array>();
+  stats = new Map<string, SeatFileStat>();
+  dirs = new Map<string, SeatDirEntry[]>();
+  reads: string[] = [];
+  failReads = false;
+  failAll = false;
+
+  async readFile(path: string): Promise<Uint8Array> {
+    this.reads.push(path);
+    if (this.failReads || this.failAll) throw new SandboxFsError("PROTOCOL", "no shim");
+    const hit = this.files.get(path);
+    if (!hit) throw new SandboxFsError("NOT_FOUND", "missing");
+    return hit;
+  }
+
+  async writeFile(path: string, content: Uint8Array | string): Promise<void> {
+    if (this.failAll) throw new SandboxFsError("PROTOCOL", "no shim");
+    this.files.set(path, typeof content === "string" ? new TextEncoder().encode(content) : content);
+  }
+
+  async stat(path: string): Promise<SeatFileStat> {
+    return this.lstat(path);
+  }
+
+  async lstat(path: string): Promise<SeatFileStat> {
+    if (this.failAll) throw new SandboxFsError("PROTOCOL", "no shim");
+    const hit = this.stats.get(path);
+    if (!hit) throw new SandboxFsError("NOT_FOUND", "missing");
+    return hit;
+  }
+
+  async readDirectory(path: string): Promise<SeatDirEntry[]> {
+    if (this.failAll) throw new SandboxFsError("PROTOCOL", "no shim");
+    const hit = this.dirs.get(path);
+    if (!hit) throw new SandboxFsError("NOT_FOUND", "missing");
+    return hit;
+  }
+
+  async mkdir(): Promise<void> {
+    if (this.failAll) throw new SandboxFsError("PROTOCOL", "no shim");
+  }
+}
+
 function deps(db: MemDb, container: FakeContainer, over: Partial<SeatDeps> = {}): SeatDeps {
   const store = new Map<string, Uint8Array>();
   return {
@@ -553,6 +598,47 @@ describe("runSeatJob", () => {
     const scan = container.calls.find((c) => c.cmd[2]?.startsWith("for p in "));
     expect(scan?.cmd[2]).toContain("/work/custom");
     expect(scan?.cmd[2]).toContain("/work/junit.xml");
+  });
+
+  it("discovers JUnit reports through SeatFiles when present", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ testReports: { paths: ["custom"] } }));
+    const container = new FakeContainer();
+    const fs = new FakeFs();
+    fs.stats.set("/work/custom", { type: "directory", size: 0, mode: 0o755 });
+    fs.dirs.set("/work/custom", [
+      { name: "out.xml", type: "file" },
+      { name: "evil.xml", type: "symlink" },
+      { name: "notes.txt", type: "file" },
+    ]);
+    fs.stats.set("/work/custom/out.xml", { type: "file", size: 100, mode: 0o644 });
+    fs.files.set(
+      "/work/custom/out.xml",
+      new TextEncoder().encode(`<testsuite name="s"><testcase name="t1" time="0.1"/></testsuite>`),
+    );
+    const out = await runSeatJob(deps(db, container, { fs }), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.testReports.get("j1")).toMatchObject({ total: 1, passed: 1 });
+    expect(container.calls.some((c) => c.cmd[2]?.startsWith("for p in "))).toBe(false);
+    expect(container.calls.some((c) => c.cmd[0] === "cat" && c.cmd[1] === "/work/custom/out.xml")).toBe(false);
+    expect(fs.reads).toContain("/work/custom/out.xml");
+  });
+
+  it("falls back to the exec scan when SeatFiles fails", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ testReports: { paths: ["custom"] } }));
+    const container = new FakeContainer();
+    container.testScan = "/work/custom/out.xml\n";
+    container.testXml.set(
+      "/work/custom/out.xml",
+      `<testsuite name="s"><testcase name="t1" time="0.1"/></testsuite>`,
+    );
+    const fs = new FakeFs();
+    fs.failAll = true;
+    const out = await runSeatJob(deps(db, container, { fs }), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.testReports.get("j1")).toMatchObject({ total: 1, passed: 1 });
+    expect(container.calls.some((c) => c.cmd[2]?.startsWith("for p in "))).toBe(true);
   });
 
   it("fails fast and triages", async () => {
@@ -927,6 +1013,31 @@ describe("runSeatJob", () => {
     container.testXml.set(EGRESS_LOG_PATH, "garbage\nOUT nope\n");
     expect((await runSeatJob(deps(db, container), "j1")).status).toBe("completed");
     expect(db.egress.some((e) => !String(e.host).startsWith("r2:") && e.host !== "(interface)")).toBe(false);
+  });
+
+  it("reads the egress log through SeatFiles when present", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    container.shimPresent = true;
+    const fs = new FakeFs();
+    fs.files.set(EGRESS_LOG_PATH, new TextEncoder().encode("DNS 93.184.216.34 example.com\nOUT 93.184.216.34 10\nIN 93.184.216.34 20\n"));
+    expect((await runSeatJob(deps(db, container, { fs }), "j1")).status).toBe("completed");
+    expect(db.egress).toContainEqual({ job_id: "j1", run_id: "r1", host: "example.com", req_bytes: 10, resp_bytes: 20 });
+    expect(container.calls.some((c) => c.cmd[0] === "cat" && c.cmd[1] === EGRESS_LOG_PATH)).toBe(false);
+  });
+
+  it("falls back to exec cat when the SeatFiles read fails", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    container.shimPresent = true;
+    container.testXml.set(EGRESS_LOG_PATH, "DNS 93.184.216.34 example.com\nOUT 93.184.216.34 10\nIN 93.184.216.34 20\n");
+    const fs = new FakeFs();
+    fs.failReads = true;
+    expect((await runSeatJob(deps(db, container, { fs }), "j1")).status).toBe("completed");
+    expect(db.egress).toContainEqual({ job_id: "j1", run_id: "r1", host: "example.com", req_bytes: 10, resp_bytes: 20 });
+    expect(container.calls.some((c) => c.cmd[0] === "cat" && c.cmd[1] === EGRESS_LOG_PATH)).toBe(true);
   });
 
   it("releases on checkout failure and on boot failure", async () => {

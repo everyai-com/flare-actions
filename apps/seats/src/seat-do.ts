@@ -1,10 +1,18 @@
 import { DurableObject } from "cloudflare:workers";
 import type { BrowserWorker } from "@cloudflare/puppeteer";
+import { DirectoryBackup, Files, S3Mount } from "@cloudflare/sandbox";
+import type { DirectoryBackupGatewayBinding, S3GatewayBinding } from "@cloudflare/sandbox";
 import { runSeatJob, type ContainerCtl, type ContainerStartOptions, type SeatDeps } from "./seat";
 import { runBrowserCheck } from "./browsercheck";
 import { resolveAppCreds } from "../../worker/src/connect";
 import { markJobRetained } from "../../worker/src/db";
 import { basinSink } from "../../worker/src/basin";
+import {
+  adaptDirBackup,
+  adaptFiles,
+  adaptMount,
+  type S3MountStaticConfig,
+} from "./sandbox-fs";
 
 export interface SeatsEnv {
   DB: D1Database;
@@ -30,6 +38,13 @@ export interface SeatsEnv {
   ARTIFACTS_MIRROR_TOKEN?: string;
   ARTIFACTS_NAMESPACE?: string;
   ARTIFACTS?: Artifacts;
+  // R2 S3-API surface for Sandbox SDK cache-bucket mounts (S3Mount
+  // signs through the Worker; the sandbox never sees the secret).
+  // Unset = no mount dep; seat flows never mount by themselves.
+  S3_ENDPOINT?: string;
+  S3_BUCKET?: string;
+  S3_ACCESS_KEY_ID?: string;
+  S3_SECRET_ACCESS_KEY?: string;
 }
 
 type BoundContainer = NonNullable<DurableObjectState["container"]>;
@@ -130,6 +145,17 @@ function adaptV2(container: BoundContainer): ContainerCtl {
   };
 }
 
+// Sandbox SDK gateway loopback (ctx.exports.S3Gateway /
+// .DirectoryBackupGateway, exported from index.ts). Shape-agnostic:
+// the generated MainModule type covers the main worker, not seats,
+// so read structurally and fail closed when the export is missing.
+function gatewayBinding<T>(doCtx: DurableObjectState, key: string, name: string): T {
+  const rec: unknown = doCtx.exports;
+  const value = typeof rec === "object" && rec !== null ? (rec as Record<string, unknown>)[key] : undefined;
+  if (typeof value !== "function") throw new Error(`${name} gateway is not exported from the seats worker`);
+  return value as T;
+}
+
 async function seatDeps(
   env: SeatsEnv,
   container: BoundContainer,
@@ -145,9 +171,38 @@ async function seatDeps(
     env.SECRETS_KEY,
   );
   const browserBinding = env.BROWSER;
+  const s3cfg: S3MountStaticConfig | null =
+    env.S3_ENDPOINT && env.S3_BUCKET && env.S3_ACCESS_KEY_ID && env.S3_SECRET_ACCESS_KEY
+      ? {
+          endpoint: env.S3_ENDPOINT,
+          region: "auto",
+          bucket: env.S3_BUCKET,
+          accessKeyId: env.S3_ACCESS_KEY_ID,
+          secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+        }
+      : null;
   return {
     db: env.DB,
     cache: env.CACHE,
+    // Sandbox SDK 1.0 file utilities. Files rides exec + the in-image
+    // shim (pre-shim images fail with PROTOCOL and seat flows fall
+    // back to exec); backups need the V2 intercept path; mounts need
+    // R2 S3 credentials and stay latent until a flow mounts.
+    fs: adaptFiles(new Files(container)),
+    ...(v2
+      ? {
+          dirBackup: adaptDirBackup(
+            new DirectoryBackup(
+              container,
+              gatewayBinding<DirectoryBackupGatewayBinding>(doCtx, "DirectoryBackupGateway", "DirectoryBackup"),
+              { binding: "CACHE", prefix: "seat-workspaces/" },
+            ),
+          ),
+        }
+      : {}),
+    ...(s3cfg
+      ? { mount: adaptMount(new S3Mount(container, gatewayBinding<S3GatewayBinding>(doCtx, "S3Gateway", "S3")), s3cfg) }
+      : {}),
     queue: env.RUN_QUEUE,
     seatQueue: env.SEAT_QUEUE,
     ai: env.AI,

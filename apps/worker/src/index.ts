@@ -53,7 +53,9 @@ import {
   monthlyComputeMinutes,
   pauseRepo,
   pruneOldRuns,
+  pruneSeatSnapshots,
   pruneWebhookDeliveries,
+  SEAT_SNAPSHOT_MAX_AGE_MS,
   getPausedRepos,
   isRepoPaused,
   resumeRepo,
@@ -1107,6 +1109,11 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
           if (staleSources > 0) log("info", "pruned stale sources", { pruned: staleSources });
           const staleStats = await pruneCacheStats(env.DB);
           if (staleStats > 0) log("info", "pruned cache stats", { pruned: staleStats });
+          const staleSnaps = await pruneSeatSnapshots(
+            env.DB,
+            new Date(Date.now() - SEAT_SNAPSHOT_MAX_AGE_MS).toISOString(),
+          );
+          if (staleSnaps > 0) log("info", "pruned seat snapshots", { pruned: staleSnaps });
           await pruneWebhookDeliveries(env.DB);
         } catch (err: unknown) {
           log("warn", "run prune failed", { error: String(err) });

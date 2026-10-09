@@ -106,6 +106,32 @@ Notes:
   main↔seats traffic travels the private queue, never HTTPS (worker to
   `*.workers.dev` subrequests are edge-rejected, error 1042).
 
+## Sandbox SDK 1.0 file utilities
+
+Seats vendor `@cloudflare/sandbox@1.0.0` for structured container
+file operations. The image carries `sandbox-shim` (Files/Backup
+container RPCs) plus fuse3/s3fs (S3 mounts); the worker exports the
+`S3Gateway` and `DirectoryBackupGateway` entrypoints, and the seat
+DO passes `ctx.exports.*` into the SDK classes, so R2 credentials
+never enter the sandbox. Runtime imports stay in `seat-do.ts` —
+`seat.ts` sees only the narrow `SeatFiles`/`SeatMount`/
+`SeatDirBackup` interfaces (`sandbox-fs.ts`, runtime-free, faked in
+tests), and local-docker matches Files over `docker exec`.
+
+- `Files` is integrated: JUnit discovery (`lstat` + `readDirectory`,
+  same no-symlink/size guards as the shell scan) and the egress-log
+  read prefer it, with exec fallbacks for pre-shim images.
+- `S3Mount`/`DirectoryBackup` are plumbed and unit-tested but latent:
+  mounts need R2 S3 credentials the setup does not mint —
+  create an R2 API token in the dashboard and set
+  `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` via
+  `wrangler secret put --config apps/seats/wrangler.jsonc`
+  (`S3_ENDPOINT`/`S3_BUCKET` ride the generated config) — and the
+  first consumer (warm-box workspace save/restore, cache-bucket
+  mount) lands with warm boxes. Stage the mount path before relying
+  on it: FUSE behavior inside containers is staging-validated, not
+  unit-tested.
+
 ## Observability
 
 - Result JSON carries `executor: "seat"`; log lines are `[seat]`-prefixed.

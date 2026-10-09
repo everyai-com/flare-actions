@@ -8,6 +8,14 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Sandbox SDK 1.0 file utilities for seats: `Files` (JUnit discovery
+  and the egress-log read prefer it, with exec fallbacks for pre-shim
+  images), `S3Mount` + `DirectoryBackup` plumbed behind gateway
+  exports (`S3Gateway`, `DirectoryBackupGateway`) with R2 S3
+  credentials staying Worker-side (unset = latent; warm boxes are the
+  first consumer). The seat image carries `sandbox-shim` + fuse3/s3fs,
+  local-docker matches Files over `docker exec`, and the webhook
+  sweep now prunes idle seat-snapshot rows.
 - Oxlint is the lint gate: `npm run lint` now runs `oxlint .` (~50ms vs
   ~4s for eslint) with a parity `.oxlintrc.json` mirroring the old
   eslint rule set (the config never used type-aware rules, so the flip

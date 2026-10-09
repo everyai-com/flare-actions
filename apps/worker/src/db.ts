@@ -103,7 +103,12 @@ export async function deleteSeatSnapshot(db: Db, image: string, repo: string): P
   await db.prepare("DELETE FROM seat_snapshots WHERE image = ? AND repo = ?").bind(image, repo).run();
 }
 
-// Snapshots idle past the platform 30-day TTL are already gone server-side;
+// Snapshots idle longer than this are never restored: the platform TTL is
+// 30 days, and the 5-day margin keeps boots from chasing ghosts. Shared
+// with the seats worker (restore gate) and the webhook sweep (prune).
+export const SEAT_SNAPSHOT_MAX_AGE_MS = 25 * 86400000;
+
+// Snapshots idle past the restore horizon are already gone server-side;
 // prune their rows so boots never chase ghosts. Bounded per pass.
 export async function pruneSeatSnapshots(db: Db, beforeIso: string, limit = 200): Promise<number> {
   const res = (await db
