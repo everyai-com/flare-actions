@@ -436,6 +436,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <label class="muted"><input id="supersedeCheck" type="checkbox"> one run per branch head (cancel superseded pushes)</label>
 <input id="gatewayInput" placeholder="AI gateway id (blank = direct)" maxlength="64">
 <input id="triageModelInput" placeholder="triage model (blank = default)" maxlength="128" size="30">
+<input id="runnerVersionInput" placeholder="fleet runner version (blank = off)" maxlength="32" size="24" aria-label="Fleet runner version">
 <label><input type="checkbox" id="writeConfirmCheck"> MCP write-confirm</label>
 <label><input type="checkbox" id="webSearchCheck"> triage web search</label>
 <label><input type="checkbox" id="healCheck"> heal on failure (draft PR + verify run)</label>
@@ -2530,6 +2531,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       document.getElementById("triageModelInput").value = s.triageModelSource === "default" ? "" : (s.triageModel || "");
       document.getElementById("triageModelInput").disabled = s.triageModelSource === "env";
       document.getElementById("triageModelInput").title = "effective: " + (s.triageModel || "default");
+      document.getElementById("runnerVersionInput").value = s.runnerVersion || "";
       document.getElementById("writeConfirmCheck").checked = !!s.mcpWriteConfirm;
       document.getElementById("webSearchCheck").checked = !!s.triageWebSearch;
       document.getElementById("healCheck").checked = !!s.healOnFailure;
@@ -2712,6 +2714,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     if (!document.getElementById("triageModelInput").disabled) {
       payload.triageModel = document.getElementById("triageModelInput").value.trim();
     }
+    payload.runnerVersion = document.getElementById("runnerVersionInput").value.trim();
     api("/v1/admin/settings", { method: "POST", body: JSON.stringify(payload) })
       .then(function () {
         ok.textContent = "Saved.";

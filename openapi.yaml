@@ -1046,6 +1046,27 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/runner/version:
+    get:
+      tags: [jobs]
+      operationId: runnerVersion
+      summary: Fleet runner version for BYO auto-update (null = unenforced)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Fleet version
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version]
+                properties:
+                  version:
+                    type: string
+                    nullable: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/jobs/next:
     get:
       tags: [jobs]
@@ -2214,6 +2235,9 @@ paths:
                   type: string
                 triageModel:
                   type: string
+                runnerVersion:
+                  type: string
+                  description: Fleet runner version for BYO auto-update (blank = off)
       responses:
         '200':
           description: Settings saved

@@ -153,6 +153,8 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   `[os, arch, ...FLARE_LABELS]`, checkouts (`checkout.ts`, shallow per-job
   temp dir, token scrubbed from errors) then `runJob`: services → cache →
   steps → cache save → artifacts → teardown, inside a job timeout.
+  Idle runners check the fleet `runner_version` every 10 min (warn
+  hourly when behind; `--auto-update` pulls + reinstalls + exits 42).
   `apps/cli/src/local.ts` (`cli local`) deliberately imports the worker
   pipeline parser — single source of truth for flare.yml validation —
   keep the `.ts` extension on that import; it runs jobs via `runJob` in

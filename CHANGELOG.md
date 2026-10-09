@@ -8,6 +8,11 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Runner auto-update for BYO fleets: a dashboard fleet version
+  (`runner_version`, blank = off) served on `GET /v1/runner/version`;
+  idle runners check every 10 minutes (both lanes), warn hourly when
+  behind, and with `--auto-update` pull + reinstall + exit 42 for the
+  service manager to restart — never mid-job, never on dirty trees.
 - Lane log digests for runner-mode jobs: non-success completions fetch
   the job's GitHub logs in the background (bounded 256 KiB download)
   and store error lines + tail (≤4 KiB `log_digest` column, new in

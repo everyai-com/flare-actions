@@ -22,6 +22,7 @@ import {
   validateNotifyFromEmail,
   validateNotifyMode,
   validateNotifyWebhookUrl,
+  validateRunnerVersion,
   validateTriageModel,
   validateTurnstileSecretKey,
   validateTurnstileSiteKey,
@@ -189,6 +190,13 @@ describe("billing settings", () => {
     expect(validateTriageModel("@cf/deepseek-ai/deepseek-v4-flash-0731")).toBeNull();
     expect(validateTriageModel("llama")).not.toBeNull();
     expect(validateTriageModel("")).not.toBeNull();
+  });
+  it("validates fleet runner versions", () => {
+    expect(validateRunnerVersion("0.2.0")).toBeNull();
+    expect(validateRunnerVersion("1.0.0-rc.1")).toBeNull();
+    expect(validateRunnerVersion("v1")).not.toBeNull();
+    expect(validateRunnerVersion("1.2")).not.toBeNull();
+    expect(validateRunnerVersion("")).not.toBeNull();
   });
 });
 

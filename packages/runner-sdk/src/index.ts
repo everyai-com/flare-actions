@@ -799,6 +799,14 @@ export class FlareClient {
     return (await res.json()) as FlareMergedPrCost;
   }
 
+  // Fleet runner version for auto-update (null = unenforced).
+  async getRunnerVersion(): Promise<string | null> {
+    const res = await this.call("/v1/runner/version");
+    if (!res.ok) await this.throwApiError("getRunnerVersion", res);
+    const data = (await res.json()) as { version?: unknown };
+    return typeof data.version === "string" && data.version.trim() ? data.version.trim() : null;
+  }
+
   async listArtifacts(runId: string): Promise<FlareArtifact[]> {
     const res = await this.call(`/v1/runs/${runId}/artifacts`);
     if (!res.ok) await this.throwApiError("listArtifacts", res);

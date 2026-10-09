@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { arch, homedir, platform } from "node:os";
 import { join } from "node:path";
 import { FlareClient } from "flare-actions-runner-sdk";
+import { maybeUpdateRunner } from "./update.ts";
 
 // Runner mode (the flare lane), BYO side: poll the JIT claim lane and
 // execute each claimed job with GitHub's official actions/runner binary
@@ -83,6 +84,15 @@ export interface GithubModeOptions {
   untar?: (file: string, dest: string) => void;
   log?: (obj: Record<string, unknown>) => void;
   now?: () => number;
+  // Fleet auto-update (same semantics as the Flare lane): version
+  // check while idle, pull + reinstall + exit 42 with autoUpdate.
+  update?: {
+    current: string;
+    autoUpdate: boolean;
+    cwd: string;
+    getFleetVersion: () => Promise<string | null>;
+    exit?: (code: number) => never;
+  };
 }
 
 function defaultSpawn(runSh: string, jitConfig: string, cwd: string): Promise<number> {
@@ -164,9 +174,22 @@ export async function runGithubLoop(
   });
   log({ msg: "github runner mode", version, versionSource: source, labels: opts.labels });
   const runSh = await ensureRunner(version, opts);
+  const updateState = { lastCheck: 0, lastWarn: 0 };
   for (;;) {
     try {
       const worked = await pollGithubOnce(client, runSh, opts);
+      if (!worked && opts.update) {
+        const exitCode = await maybeUpdateRunner({
+          state: updateState,
+          now: (opts.now ?? Date.now)(),
+          current: opts.update.current,
+          autoUpdate: opts.update.autoUpdate,
+          cwd: opts.update.cwd,
+          getFleetVersion: opts.update.getFleetVersion,
+          log,
+        });
+        if (exitCode !== null) (opts.update.exit ?? process.exit)(exitCode);
+      }
       await new Promise((r) => setTimeout(r, worked ? 500 : 2000));
     } catch (err) {
       log({ msg: "github poll error", error: String(err) });

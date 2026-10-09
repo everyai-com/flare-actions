@@ -279,6 +279,15 @@ describe("FlareClient", () => {
     expect(calls[0].url).toBe("https://x/v1/usage/merged-pr-cost?repo=o%2Fr&weeks=4");
   });
 
+  it("fetches the fleet runner version, null when unenforced", async () => {
+    stubFetch(() => jsonResponse({ version: "0.2.0" }));
+    expect(await new FlareClient("https://x", "t").getRunnerVersion()).toBe("0.2.0");
+    stubFetch(() => jsonResponse({ version: null }));
+    expect(await new FlareClient("https://x", "t").getRunnerVersion()).toBeNull();
+    stubFetch(() => jsonResponse({ version: "  " }));
+    expect(await new FlareClient("https://x", "t").getRunnerVersion()).toBeNull();
+  });
+
   it("fetches billable usage and degrades on 401/502", async () => {
     const calls = stubFetch(() => jsonResponse({ configured: true, totalCost: 4.5, families: [] }));
     const b = await new FlareClient("https://x", "t").getBillableUsage(7);

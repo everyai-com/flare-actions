@@ -23,6 +23,7 @@ export const SETTING_KEYS = {
   billingApiToken: "billing_api_token",
   cloudflareAccountId: "cloudflare_account_id",
   triageModel: "triage_model",
+  runnerVersion: "runner_version",
   healOnFailure: "heal_on_failure",
   openRegistration: "open_registration",
   budgetMinutes: "budget_minutes",
@@ -332,6 +333,16 @@ export function validateCloudflareAccountId(id: unknown): string | null {
 export function validateTriageModel(model: unknown): string | null {
   if (typeof model !== "string" || !/^@[A-Za-z0-9/_.-]{1,127}$/.test(model.trim())) {
     return "triage model must be a Workers AI model id like @cf/vendor/name";
+  }
+  return null;
+}
+
+// Fleet runner version: BYO runners with --auto-update pull +
+// reinstall when the fleet version differs from their own package
+// version. Semver with an optional prerelease; empty clears (off).
+export function validateRunnerVersion(version: unknown): string | null {
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+(-[\w.-]{1,32})?$/.test(version.trim())) {
+    return "runner version must be semver like 0.2.0";
   }
   return null;
 }

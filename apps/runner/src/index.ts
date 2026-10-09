@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { arch, platform, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   assertSafeTar,
   buildFlareEnv,
@@ -16,6 +16,7 @@ import {
 import { collectWorkspaceFiles } from "../../../packages/runner-sdk/src/testselect-fs.ts";
 import { runGithubLoop } from "./github.ts";
 import { pairRunner } from "./pair.ts";
+import { maybeUpdateRunner } from "./update.ts";
 
 loadEnv();
 const baseUrl = process.env["FLARE_ACTIONS_URL"];
@@ -63,6 +64,27 @@ if (!process.argv.includes("--github")) {
 }
 
 const client = new FlareClient(baseUrl, token);
+
+// This checkout's version (fleet pin comparison): climb from the entry
+// script to the runner package (argv-based, so no cwd assumption).
+function readRunnerVersion(): string {
+  let dir = process.argv[1] ? dirname(process.argv[1]) : process.cwd();
+  for (let i = 0; i < 4; i++) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(dir, "package.json"), { encoding: "utf8" })) as { name?: unknown; version?: unknown };
+      if (pkg.name === "@flare-actions/runner" && typeof pkg.version === "string") return pkg.version;
+    } catch {
+      // Keep climbing.
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return "0.0.0";
+}
+const RUNNER_VERSION = readRunnerVersion();
+const AUTO_UPDATE = process.argv.includes("--auto-update");
+const updateState = { lastCheck: 0, lastWarn: 0 };
 
 async function pollOnce(): Promise<boolean> {
   const { job, secrets, secretsError, selection, needs, needsTruncated, needsWarnings } = await client.nextClaim(LABELS);
@@ -203,6 +225,16 @@ async function main(): Promise<void> {
   for (;;) {
     try {
       const worked = await pollOnce();
+      if (!worked) {
+        const exitCode = await maybeUpdateRunner({
+          state: updateState,
+          current: RUNNER_VERSION,
+          autoUpdate: AUTO_UPDATE,
+          cwd: process.cwd(),
+          getFleetVersion: () => client.getRunnerVersion(),
+        });
+        if (exitCode !== null) process.exit(exitCode);
+      }
       // Agent-speed pickup: 2s idle, 500ms right after a job so a
       // queued backlog drains without a human-perceptible gap.
       await new Promise((r) => setTimeout(r, worked ? 500 : 2000));
@@ -219,7 +251,15 @@ async function main(): Promise<void> {
 if (process.argv.includes("--github")) {
   const at = process.argv.indexOf("--labels");
   const extra = at === -1 ? [] : (process.argv[at + 1] ?? "").split(",").map((l) => l.trim()).filter(Boolean);
-  await runGithubLoop(client, { labels: extra });
+  await runGithubLoop(client, {
+    labels: extra,
+    update: {
+      current: RUNNER_VERSION,
+      autoUpdate: AUTO_UPDATE,
+      cwd: process.cwd(),
+      getFleetVersion: () => client.getRunnerVersion(),
+    },
+  });
 } else {
   await main();
 }

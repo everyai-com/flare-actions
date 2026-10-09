@@ -116,7 +116,7 @@ import {
   validateSecretName,
   validateSecretValue,
 } from "./secrets";
-import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseBudgetMinutes, parseBudgetMode, parseBudgetKillMultiplier, parseFairSharePerRepo, parseFairSharePerAgent, parseAgentTag, parseGithubRunnerLabels, parseGithubRunnerMode, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseStoredBudgets, parseSupersedeBranchRuns, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
+import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseBudgetMinutes, parseBudgetMode, parseBudgetKillMultiplier, parseFairSharePerRepo, parseFairSharePerAgent, parseAgentTag, parseGithubRunnerLabels, parseGithubRunnerMode, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseStoredBudgets, parseSupersedeBranchRuns, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateRunnerVersion, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
 import {
   addAllowedUser,
   beginOAuth,
@@ -1927,6 +1927,7 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       billingApiToken?: unknown;
       cloudflareAccountId?: unknown;
       triageModel?: unknown;
+      runnerVersion?: unknown;
     };
     try {
       body = (await request.json()) as typeof body;
@@ -1956,10 +1957,11 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
     const hasBillingToken = body.billingApiToken !== undefined;
     const hasAccountId = body.cloudflareAccountId !== undefined;
     const hasTriageModel = body.triageModel !== undefined;
+    const hasRunnerVersion = body.runnerVersion !== undefined;
     if (
       !hasWebhook && !hasNotifyFrom && !hasNotifyMode && !hasNotifyWebhook && !hasBadgeHidden &&
       !hasTurnstileSite && !hasTurnstileSecret && !hasFairShare && !hasAgentShare && !hasGateway && !hasWriteConfirm && !hasWebSearch &&
-      !hasHeal && !hasOpenReg && !hasBudget && !hasBudgetMode && !hasKillMultiplier && !hasSupersede && !hasGhMode && !hasGhLabels && !hasBillingToken && !hasAccountId && !hasTriageModel
+      !hasHeal && !hasOpenReg && !hasBudget && !hasBudgetMode && !hasKillMultiplier && !hasSupersede && !hasGhMode && !hasGhLabels && !hasBillingToken && !hasAccountId && !hasTriageModel && !hasRunnerVersion
     ) {
       return json({ error: "no settings provided" }, 400);
     }
@@ -2179,6 +2181,18 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
         if (err) return json({ error: err }, 400);
         await setSetting(env.DB, SETTING_KEYS.triageModel, (value as string).trim());
         await audit(env.DB, ident.actor, "settings.triage_model", (value as string).trim());
+      }
+    }
+    if (hasRunnerVersion) {
+      const value = body.runnerVersion;
+      if (value === null || value === "") {
+        await setSetting(env.DB, SETTING_KEYS.runnerVersion, "");
+        await audit(env.DB, ident.actor, "settings.runner_version", "cleared");
+      } else {
+        const err = validateRunnerVersion(value);
+        if (err) return json({ error: err }, 400);
+        await setSetting(env.DB, SETTING_KEYS.runnerVersion, (value as string).trim());
+        await audit(env.DB, ident.actor, "settings.runner_version", (value as string).trim());
       }
     }
     return json({ ok: true });
@@ -2775,6 +2789,14 @@ export default {
           return json({ error: "limit must be an integer 1-200" }, 400);
         }
         return json({ hits: await searchLogs(env.DB, compiled.query, ident.repos, limit) });
+      }
+      // Fleet runner version for BYO auto-update: null = unenforced.
+      // Polled on a slow cadence by idle runners, never mid-job.
+      if (request.method === "GET" && url.pathname === "/v1/runner/version") {
+        const ident = await requireScope(request, env, "run");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const version = await getSetting(env.DB, SETTING_KEYS.runnerVersion);
+        return json({ version: version && version.trim() ? version.trim() : null });
       }
       if (request.method === "GET" && url.pathname === "/v1/jobs/next") {
         const ident = await requireScope(request, env, "run");
@@ -3951,6 +3973,7 @@ export default {
           cloudflareAccountId: env.CLOUDFLARE_ACCOUNT_ID ?? (await getSetting(env.DB, SETTING_KEYS.cloudflareAccountId)) ?? "",
           triageModel: env.TRIAGE_MODEL ?? (await getSetting(env.DB, SETTING_KEYS.triageModel)) ?? TRIAGE_MODEL,
           triageModelSource: env.TRIAGE_MODEL ? "env" : ((await getSetting(env.DB, SETTING_KEYS.triageModel)) ? "d1" : "default"),
+          runnerVersion: (await getSetting(env.DB, SETTING_KEYS.runnerVersion)) ?? "",
         });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/github/connect") {

@@ -47,6 +47,11 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("j.logDigest");
   });
 
+  it("wires the fleet runner version setting", () => {
+    expect(DASHBOARD_HTML).toContain("runnerVersionInput");
+    expect(DASHBOARD_HTML).toContain("payload.runnerVersion");
+  });
+
   it("surfaces the Actions drop-in card and per-run pipeline source tags", () => {
     expect(DASHBOARD_HTML).toContain("Coming from GitHub Actions?");
     expect(DASHBOARD_HTML).toContain("pipelineSourceLabel");

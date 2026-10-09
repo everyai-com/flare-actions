@@ -169,6 +169,18 @@ Jobs using `container:` or `services:` fail fast with a clear message on
 runners without a docker daemon. Tag docker-capable runners
 (`FLARE_LABELS=docker`) and select them with `runs-on: [linux, docker]`.
 
+## Auto-update
+
+Set a fleet version in the dashboard Settings tab ("fleet runner
+version", blank = off). Runners compare it with their own package
+version while idle (every 10 minutes, never mid-job) and log an hourly
+warning when behind. With `--auto-update` (`npm run runner --
+--auto-update`, or add it to your service unit's `ExecStart`), a behind
+runner instead pulls (`git pull --ff-only`, refused on dirty trees or
+divergence), reinstalls (`npm install`), and exits 42 for the service
+manager to restart on the new tree. Non-git installs skip with a log
+line. Both lanes (Flare jobs and `--github`) share the same check.
+
 ## Cache and artifacts
 
 Cache blobs live in your deployment's R2 bucket (zero egress inside
