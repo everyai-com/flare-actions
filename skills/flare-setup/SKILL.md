@@ -28,7 +28,9 @@ what needs a human click.
    situation (App install URL, or the no-App webhook recipe). With
    `GITHUB_TOKEN` and `FLARE_ADMIN_TOKEN` present you may pass `--wire`
    to create the repo webhook — ask the human before any GitHub-side
-   change.
+   change. If the repo has no pipeline, `connect` names the detected
+   stack and what `init` would scaffold; pass `--init` to scaffold it
+   (stack-matched starter or converted workflows) in the same flow.
 4. **Executor**: if `connect` reports nothing picked the run up, start
    one — `npm run runner` from the Flare checkout (BYO machine), or
    managed seats (`npm run setup` on a docker machine). Runner mode

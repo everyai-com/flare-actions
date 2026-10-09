@@ -208,8 +208,12 @@ The recurring pains, in practitioners' own terms:
 
 ### Normal-person UX
 
-- [ ] One-click GitHub App → auto-detected pipeline (detect the stack
+- [x] One-click GitHub App → auto-detected pipeline (detect the stack
       and suggest/convert a workflow)
+      (shipped Oct 8: manifest scan for Node/Python/Go/Rust/Ruby/Java/
+      PHP/.NET/Elixir in `cli/init+connect`, stack-matched starters or
+      SDK workflow conversion, `connect --init` scaffolds in the same
+      probe → wire → verify flow; non-interactive, `--json`, idempotent)
 - [ ] Template gallery + migration wizard; feed-style dashboard with
       one-click actions (rerun, open PR, fix)
 - [ ] Savings counter on the dashboard (shipped Oct 8: 30d runs /

@@ -1,25 +1,18 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { convertActionsWorkflow, isImportSuccess } from "flare-actions-runner-sdk";
+import { detectStacks, generateStarter, isStackId, KNOWN_STACKS, primaryStack, type DetectedStack, type StackId } from "./detect.ts";
 
 // `cli init`: agent-led adoption in one command — a flare.yml (converted
-// from the repo's first convertible GitHub workflow, or a starter), an
-// idempotent AGENTS.md snippet that teaches agents the verify loop, and
-// next-step pointers (MCP config, docs). Nothing here talks to the
-// network; it is pure filesystem scaffolding.
+// from the repo's first convertible GitHub workflow, or a starter matched
+// to the auto-detected stack), an idempotent AGENTS.md snippet that
+// teaches agents the verify loop, and next-step pointers (MCP config,
+// docs). Nothing here talks to the network; it is pure filesystem
+// scaffolding. Safe to re-run: flare.yml is never overwritten without
+// --force and the AGENTS block is replaced in place.
 
 export const AGENTS_MARKER_START = "<!-- flare-actions:start -->";
 export const AGENTS_MARKER_END = "<!-- flare-actions:end -->";
-
-const STARTER_PIPELINE = `# flare.yml — native pipeline format. Docs: docs/PIPELINES.md
-# Repos without this file run their .github/workflows unchanged; keep
-# whichever you prefer — flare.yml wins when present.
-jobs:
-  verify:
-    steps:
-      - run: npm ci
-      - run: npm test
-`;
 
 const AGENTS_SNIPPET = `${AGENTS_MARKER_START}
 ## CI (Flare Actions)
@@ -42,6 +35,10 @@ export interface InitResult {
   pipelinePath: string | null;
   pipelineSource: "converted" | "starter" | null;
   convertedFrom: string | null;
+  /** Every stack evidenced by manifest files (priority order; [] = none). */
+  stacks: DetectedStack[];
+  /** Starter stack when pipelineSource is "starter" (forced or detected). */
+  starterStack: StackId | null;
   warnings: string[];
   agentsPath: string | null;
   agentsUpdated: boolean;
@@ -51,6 +48,8 @@ export interface InitResult {
 export interface InitOptions {
   cwd: string;
   force?: boolean;
+  /** Force this stack's starter, skipping workflow conversion. */
+  stack?: string;
 }
 
 function insertSnippet(existing: string): string {
@@ -66,43 +65,55 @@ function insertSnippet(existing: string): string {
 export function runInit(opts: InitOptions): InitResult {
   const pipelinePath = join(opts.cwd, "flare.yml");
   const agentsPath = join(opts.cwd, "AGENTS.md");
+  const stacks = detectStacks(opts.cwd);
   const result: InitResult = {
     cwd: opts.cwd,
     pipelinePath: null,
     pipelineSource: null,
     convertedFrom: null,
+    stacks,
+    starterStack: null,
     warnings: [],
     agentsPath: null,
     agentsUpdated: false,
   };
+  if (opts.stack !== undefined && !isStackId(opts.stack)) {
+    result.error = `unknown stack "${opts.stack}" — want one of: ${KNOWN_STACKS.join(", ")}`;
+    return result;
+  }
   if (existsSync(pipelinePath) && !opts.force) {
     result.error = "flare.yml already exists — re-run with --force to replace it";
     return result;
   }
 
-  // Convert the first workflow that translates cleanly.
   let pipeline: string | null = null;
-  const workflowsDir = join(opts.cwd, ".github", "workflows");
-  if (existsSync(workflowsDir)) {
-    const names = readdirSync(workflowsDir)
-      .filter((name) => /\.ya?ml$/i.test(name))
-      .sort();
-    for (const name of names) {
-      const converted = convertActionsWorkflow(readFileSync(join(workflowsDir, name), "utf8"));
-      if (!isImportSuccess(converted)) {
-        result.warnings.push(`${name}: not convertible (${converted.error})`);
-        continue;
+  if (!pipeline && opts.stack === undefined) {
+    const workflowsDir = join(opts.cwd, ".github", "workflows");
+    if (existsSync(workflowsDir)) {
+      const names = readdirSync(workflowsDir)
+        .filter((name) => /\.ya?ml$/i.test(name))
+        .sort();
+      for (const name of names) {
+        const converted = convertActionsWorkflow(readFileSync(join(workflowsDir, name), "utf8"));
+        if (!isImportSuccess(converted)) {
+          result.warnings.push(`${name}: not convertible (${converted.error})`);
+          continue;
+        }
+        pipeline = converted.yaml;
+        result.pipelineSource = "converted";
+        result.convertedFrom = name;
+        result.warnings.push(...converted.warnings.map((w) => `${name}: ${w}`));
+        break;
       }
-      pipeline = converted.yaml;
-      result.pipelineSource = "converted";
-      result.convertedFrom = name;
-      result.warnings.push(...converted.warnings.map((w) => `${name}: ${w}`));
-      break;
     }
   }
   if (!pipeline) {
-    pipeline = STARTER_PIPELINE;
+    const forced = opts.stack !== undefined && isStackId(opts.stack) ? opts.stack : null;
+    const starter = generateStarter(opts.cwd, forced ?? primaryStack(stacks)?.stack ?? "generic");
+    pipeline = starter.yaml;
     result.pipelineSource = "starter";
+    result.starterStack = starter.stack;
+    result.warnings.push(...starter.notes.map((n) => `starter (${starter.stack}): ${n}`));
   }
   mkdirSync(opts.cwd, { recursive: true });
   writeFileSync(pipelinePath, pipeline);

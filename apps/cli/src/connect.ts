@@ -3,25 +3,36 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { FlareClient } from "flare-actions-runner-sdk";
+import { detectStacks, formatStacks, primaryStack, type DetectedStack } from "./detect.ts";
+import { runInit, type InitResult } from "./init.ts";
 
-// `cli connect`: Jog-style one-command adoption — probe the deployment,
-// explain the wiring, optionally wire the webhook (--wire), then dispatch
-// HEAD and report a compact verdict. Exit codes: 0 connected/verified,
-// 1 the verification run failed, 2 usage/environment errors.
+// `cli connect`: Jog-style one-command adoption — detect the stack,
+// scaffold the pipeline (--init), probe the deployment, explain the
+// wiring (one-click App install URL, optionally wire the webhook with
+// --wire), then dispatch HEAD and report a compact verdict. Exit codes:
+// 0 connected/verified, 1 the verification run failed, 2
+// usage/environment errors. Non-interactive and idempotent: re-runs
+// never duplicate webhooks or overwrite flare.yml.
 
 export type ConnectClient = Pick<FlareClient, "dispatch" | "waitRun" | "getRunDigest">;
+
+export type ConnectPipeline = "flare.yml" | "workflows" | "none";
 
 export interface ConnectOptions {
   cwd: string;
   baseUrl: string;
   repo?: string;
   wire?: boolean;
+  /** Scaffold flare.yml via init when no pipeline file exists. */
+  init?: boolean;
   dryRun?: boolean;
   client?: ConnectClient | null;
   env?: Record<string, string | undefined>;
   git?: (args: string[]) => string;
   fetchFn?: typeof fetch;
   newSecret?: () => string;
+  /** Filesystem scaffold (injectable for tests); defaults to runInit. */
+  scaffold?: (cwd: string) => InitResult;
   log?: (line: string) => void;
   err?: (line: string) => void;
 }
@@ -29,6 +40,9 @@ export interface ConnectOptions {
 export interface ConnectResult {
   exitCode: 0 | 1 | 2;
   repo: string | null;
+  stacks: DetectedStack[];
+  pipeline: ConnectPipeline;
+  scaffolded: boolean;
 }
 
 interface AdminStatus {
@@ -68,6 +82,19 @@ export async function runConnect(opts: ConnectOptions): Promise<ConnectResult> {
   const fetchFn = opts.fetchFn ?? fetch;
   const baseUrl = opts.baseUrl.replace(/\/$/, "");
 
+  // Filesystem-only detection up front: dry-run reports it without
+  // touching the network, and every exit path carries it for --json.
+  const stacks = detectStacks(opts.cwd);
+  const primary = primaryStack(stacks)?.stack ?? "generic";
+  const hasFlareYml = existsSync(join(opts.cwd, "flare.yml"));
+  const workflowsDir = join(opts.cwd, ".github", "workflows");
+  const workflows = existsSync(workflowsDir)
+    ? readdirSync(workflowsDir).filter((n) => /\.ya?ml$/i.test(n)).sort()
+    : [];
+  const pipeline: ConnectPipeline = hasFlareYml ? "flare.yml" : workflows.length > 0 ? "workflows" : "none";
+  const done = (exitCode: 0 | 1 | 2, repoOut: string | null, scaffolded = false): ConnectResult =>
+    ({ exitCode, repo: repoOut, stacks, pipeline: scaffolded ? "flare.yml" : pipeline, scaffolded });
+
   let repo = opts.repo?.trim() || null;
   if (!repo) {
     try {
@@ -77,21 +104,23 @@ export async function runConnect(opts: ConnectOptions): Promise<ConnectResult> {
     }
   } else if (!isRepoSlug(repo)) {
     err(`invalid repo "${repo}" — want owner/name`);
-    return { exitCode: 2, repo: null };
+    return done(2, null);
   }
   if (!repo) {
     err("could not resolve owner/name — pass it explicitly or set a github origin remote");
-    return { exitCode: 2, repo: null };
+    return done(2, null);
   }
 
   if (opts.dryRun) {
     log(`plan for ${repo} against ${baseUrl}:`);
-    log("  1. probe GET /v1/admin/status (deployment + GitHub App state)");
-    log("  2. detect flare.yml / .github/workflows in this directory");
-    if (opts.wire) log("  3. --wire: set the webhook secret, then create/reuse the repo webhook");
-    else log("  3. print the wiring recipe (dashboard Connect or repo webhook)");
-    log("  4. dispatch HEAD and report the compact verdict (one bounded wait)");
-    return { exitCode: 0, repo };
+    log(`  1. stack: ${formatStacks(stacks)} — pipeline ${pipeline === "none" ? "missing" : pipeline}`);
+    if (pipeline !== "flare.yml" && opts.init) log(`  2. --init: scaffold flare.yml (${pipeline === "workflows" ? "converted from .github/workflows" : `${primary} starter`})`);
+    else log("  2. detect flare.yml / .github/workflows in this directory (scaffold with --init)");
+    log("  3. probe GET /v1/admin/status (deployment + GitHub App state)");
+    if (opts.wire) log("  4. --wire: set the webhook secret, then create/reuse the repo webhook");
+    else log("  4. print the wiring recipe (one-click App install URL or repo webhook)");
+    log("  5. dispatch HEAD and report the compact verdict (one bounded wait)");
+    return done(0, repo);
   }
 
   let status: AdminStatus;
@@ -101,24 +130,33 @@ export async function runConnect(opts: ConnectOptions): Promise<ConnectResult> {
     status = (await res.json()) as AdminStatus;
   } catch (e) {
     err(`deployment not reachable at ${baseUrl} (${e instanceof Error ? e.message : String(e)})`);
-    return { exitCode: 2, repo };
+    return done(2, repo);
   }
   const claimed = status.claimed === true;
   const appConnected = status.githubConnected === true;
   const installUrl = typeof status.installUrl === "string" ? status.installUrl : null;
   log(`deployment: ${baseUrl} (${claimed ? "claimed" : "unclaimed — open /dashboard to claim admin"})`);
   log(`github app: ${appConnected ? "connected" : "not connected"}`);
+  log(`stack: ${formatStacks(stacks)}`);
 
-  const hasFlareYml = existsSync(join(opts.cwd, "flare.yml"));
-  const workflowsDir = join(opts.cwd, ".github", "workflows");
-  const workflows = existsSync(workflowsDir)
-    ? readdirSync(workflowsDir).filter((n) => /\.ya?ml$/i.test(n)).sort()
-    : [];
+  let scaffolded = false;
   if (hasFlareYml) log("pipeline: flare.yml runs as-is (native format wins when present)");
   else if (workflows.length > 0) {
     log(`pipeline: ${workflows.length} workflow${workflows.length === 1 ? "" : "s"} run unchanged — zero-line change (${workflows.slice(0, 3).join(", ")}${workflows.length > 3 ? "…" : ""})`);
+    log("suggestion: `cli init` converts them to a native flare.yml (optional — workflows run unchanged)");
   } else {
-    log("pipeline: none found — `cli init` scaffolds a starter, or add .github/workflows (they run unchanged)");
+    log(`pipeline: none found — \`cli init\` scaffolds a ${primary} starter${opts.init ? "" : " (or pass --init to scaffold now)"}, or add .github/workflows (they run unchanged)`);
+  }
+  if (opts.init && !hasFlareYml) {
+    const scaffold = opts.scaffold ?? ((cwd: string) => runInit({ cwd }));
+    const res = scaffold(opts.cwd);
+    if (res.error) {
+      log(`scaffold: skipped (${res.error})`);
+    } else {
+      scaffolded = true;
+      const what = res.pipelineSource === "converted" ? `converted from .github/workflows/${res.convertedFrom}` : `${res.starterStack} starter`;
+      log(`scaffold: wrote ${res.pipelinePath} (${what}) + AGENTS.md snippet`);
+    }
   }
 
   const webhookUrl = `${baseUrl}/webhooks/github`;
@@ -134,7 +172,7 @@ export async function runConnect(opts: ConnectOptions): Promise<ConnectResult> {
     const adminToken = env["FLARE_ADMIN_TOKEN"];
     if (!githubToken || !adminToken) {
       err("--wire needs GITHUB_TOKEN (or GH_TOKEN) plus FLARE_ADMIN_TOKEN (admin API token from the dashboard)");
-      return { exitCode: 2, repo };
+      return done(2, repo, scaffolded);
     }
     const secret = (opts.newSecret ?? randomHex)();
     const setRes = await fetchFn(`${baseUrl}/v1/admin/settings`, {
@@ -145,13 +183,13 @@ export async function runConnect(opts: ConnectOptions): Promise<ConnectResult> {
     if (!setRes.ok) {
       const detail = await setRes.text().catch(() => "");
       err(`could not set the webhook secret: HTTP ${setRes.status}${detail ? ` — ${detail.slice(0, 200)}` : ""}`);
-      return { exitCode: 2, repo };
+      return done(2, repo, scaffolded);
     }
     const ghHeaders = { Authorization: `Bearer ${githubToken}`, Accept: "application/vnd.github+json" };
     const hooksRes = await fetchFn(`https://api.github.com/repos/${repo}/hooks`, { headers: ghHeaders });
     if (!hooksRes.ok) {
       err(`could not list repo webhooks: HTTP ${hooksRes.status} (check the repo slug and token scopes)`);
-      return { exitCode: 2, repo };
+      return done(2, repo, scaffolded);
     }
     const hooks = (await hooksRes.json()) as { id?: unknown; config?: { url?: unknown } }[];
     const existing = Array.isArray(hooks) ? hooks.find((h) => h.config?.url === webhookUrl) : undefined;
@@ -170,7 +208,7 @@ export async function runConnect(opts: ConnectOptions): Promise<ConnectResult> {
       });
       if (!createRes.ok) {
         err(`could not create the repo webhook: HTTP ${createRes.status} (check token scopes: admin:repo_hook)`);
-        return { exitCode: 2, repo };
+        return done(2, repo, scaffolded);
       }
       log(`wiring: webhook created → ${webhookUrl} (push + pull_request)`);
     }
@@ -178,14 +216,14 @@ export async function runConnect(opts: ConnectOptions): Promise<ConnectResult> {
 
   if (!opts.client) {
     log("verify: set RUNNER_TOKEN to dispatch a verification run — skipping (wiring above is complete)");
-    return { exitCode: 0, repo };
+    return done(0, repo, scaffolded);
   }
   let head: string;
   try {
     head = git(["rev-parse", "HEAD"]);
   } catch {
     err("could not resolve HEAD — commit first, or verify a pushed sha with `cli run <repo> <sha>`");
-    return { exitCode: 2, repo };
+    return done(2, repo, scaffolded);
   }
   let dirty = false;
   try {
@@ -201,11 +239,11 @@ export async function runConnect(opts: ConnectOptions): Promise<ConnectResult> {
   if (waited.timedOut) {
     log("still queued/running after 60s — no executor may be listening: start one with `npm run runner` (from your Flare checkout) or enable managed seats.");
     log(`check back with \`cli watch ${dispatched.runId}\``);
-    return { exitCode: 0, repo };
+    return done(0, repo, scaffolded);
   }
   const digest = await opts.client.getRunDigest(dispatched.runId);
   const failed = digest.jobs.filter((j) => j.status !== "success" && j.status !== "skipped");
   log(`${digest.status}  ${digest.repo}@${digest.sha.slice(0, 7)} (${digest.branch || "-"}, ${digest.failedJobs}/${digest.totalJobs} failed)`);
   for (const j of failed.slice(0, 10)) log(`  FAIL ${j.name} (${j.status})`);
-  return { exitCode: digest.status === "success" ? 0 : 1, repo };
+  return done(digest.status === "success" ? 0 : 1, repo, scaffolded);
 }

@@ -8,6 +8,16 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- One-click GitHub App to auto-detected pipeline: `cli init` and `cli
+  connect` scan repo manifests (Node, Python, Go, Rust, Ruby, Java, PHP,
+  .NET, Elixir) and generate a stack-matched `flare.yml` starter —
+  package-manager-aware installs, script-aware test/build steps — or
+  convert the first convertible `.github/workflows` file via the SDK
+  importer (`--stack <id>` forces a starter). `cli connect --init`
+  scaffolds the missing pipeline in the same probe → wire → verify flow
+  (with `--wire` for the webhook and the one-click App install URL in
+  one command); without `--init` it suggests what `init` would do.
+  Non-interactive with clear output plus `--json`, safe to re-run.
 - Same-machine verify parity: one shared `runner-sdk/parity.ts` code
   path for step images, cache keys, and the curated step env
   (`buildFlareEnv`, one cache-key validator + R2 object mapping, one

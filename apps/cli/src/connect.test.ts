@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -88,11 +88,75 @@ describe("runConnect", () => {
   it("--dry-run prints the plan and touches nothing", async () => {
     const h = harness({ repo: "o/r", dryRun: true, wire: true });
     const out = await runConnect(h.opts);
-    expect(out).toEqual({ exitCode: 0, repo: "o/r" });
+    expect(out).toEqual({ exitCode: 0, repo: "o/r", stacks: [], pipeline: "none", scaffolded: false });
     expect(h.calls.fetch).toEqual([]);
     expect(h.calls.git).toEqual([]);
     expect(h.lines.join("\n")).toContain("plan for o/r");
     expect(h.lines.join("\n")).toContain("--wire");
+  });
+
+  it("--dry-run reports the detected stack and the --init scaffold step", async () => {
+    const h = harness({ repo: "o/r", dryRun: true, init: true, cwd: workspace(["package.json"]) });
+    const out = await runConnect(h.opts);
+    expect(out.stacks).toEqual([{ stack: "node", evidence: ["package.json"] }]);
+    expect(out.pipeline).toBe("none");
+    expect(out.scaffolded).toBe(false);
+    expect(h.lines.join("\n")).toContain("stack: node (package.json)");
+    expect(h.lines.join("\n")).toContain("--init: scaffold flare.yml (node starter)");
+  });
+
+  it("suggests a stack-matched starter when no pipeline exists", async () => {
+    const h = harness({
+      repo: "o/r",
+      cwd: workspace(["requirements.txt"]),
+      fetchFn: statusFetch({ claimed: true, githubConnected: true, installUrl: null }),
+    });
+    const out = await runConnect(h.opts);
+    expect(out.exitCode).toBe(0);
+    expect(out.pipeline).toBe("none");
+    expect(h.lines.join("\n")).toContain("stack: python (requirements.txt)");
+    expect(h.lines.join("\n")).toContain("scaffolds a python starter");
+  });
+
+  it("suggests conversion when workflows exist but flare.yml does not", async () => {
+    const h = harness({
+      repo: "o/r",
+      cwd: workspace([".github/workflows/ci.yml"]),
+      fetchFn: statusFetch({ claimed: true, githubConnected: true, installUrl: null }),
+    });
+    const out = await runConnect(h.opts);
+    expect(out.pipeline).toBe("workflows");
+    expect(h.lines.join("\n")).toContain("suggestion: `cli init` converts them");
+  });
+
+  it("--init scaffolds the detected starter and reports it", async () => {
+    const h = harness({
+      repo: "o/r",
+      init: true,
+      cwd: workspace(["Cargo.toml"]),
+      fetchFn: statusFetch({ claimed: true, githubConnected: true, installUrl: null }),
+    });
+    const out = await runConnect(h.opts);
+    expect(out.exitCode).toBe(0);
+    expect(out.scaffolded).toBe(true);
+    expect(out.pipeline).toBe("flare.yml");
+    expect(h.lines.join("\n")).toContain("scaffold: wrote");
+    expect(h.lines.join("\n")).toContain("rust starter");
+    expect(existsSync(join(h.opts.cwd, "flare.yml"))).toBe(true);
+    expect(readFileSync(join(h.opts.cwd, "flare.yml"), "utf8")).toContain("cargo test");
+  });
+
+  it("--init is idempotent when flare.yml already exists", async () => {
+    const h = harness({
+      repo: "o/r",
+      init: true,
+      cwd: workspace(["flare.yml"]),
+      fetchFn: statusFetch({ claimed: true, githubConnected: true, installUrl: null }),
+    });
+    const out = await runConnect(h.opts);
+    expect(out.scaffolded).toBe(false);
+    expect(out.pipeline).toBe("flare.yml");
+    expect(h.lines.join("\n")).not.toContain("scaffold: wrote");
   });
 
   it("resolves the repo from the origin remote", async () => {

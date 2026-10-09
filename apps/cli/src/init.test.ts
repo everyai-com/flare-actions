@@ -37,11 +37,44 @@ describe("runInit", () => {
     expect(agents).toContain("npm run check");
   });
 
-  it("falls back to the starter template without workflows", () => {
+  it("falls back to a stack-matched starter without workflows", () => {
+    const dir = workspace({ "go.mod": "module example.com/x\n" });
+    const result = runInit({ cwd: dir });
+    expect(result.pipelineSource).toBe("starter");
+    expect(result.starterStack).toBe("go");
+    expect(result.stacks).toEqual([{ stack: "go", evidence: ["go.mod"] }]);
+    const pipeline = readFileSync(join(dir, "flare.yml"), "utf8");
+    expect(pipeline).toContain("go test ./...");
+  });
+
+  it("falls back to the generic placeholder with no manifests", () => {
     const dir = workspace({});
     const result = runInit({ cwd: dir });
     expect(result.pipelineSource).toBe("starter");
-    expect(readFileSync(join(dir, "flare.yml"), "utf8")).toContain("jobs:");
+    expect(result.starterStack).toBe("generic");
+    expect(result.stacks).toEqual([]);
+    expect(readFileSync(join(dir, "flare.yml"), "utf8")).toContain("TODO");
+  });
+
+  it("--stack forces that starter even when workflows exist", () => {
+    const dir = workspace({
+      "package.json": "{}",
+      ".github/workflows/ci.yml":
+        "on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n",
+    });
+    const result = runInit({ cwd: dir, stack: "rust" });
+    expect(result.pipelineSource).toBe("starter");
+    expect(result.starterStack).toBe("rust");
+    expect(result.stacks).toEqual([{ stack: "node", evidence: ["package.json"] }]);
+    expect(readFileSync(join(dir, "flare.yml"), "utf8")).toContain("cargo test");
+  });
+
+  it("rejects an unknown --stack without writing anything", () => {
+    const dir = workspace({ "package.json": "{}" });
+    const result = runInit({ cwd: dir, stack: "cobol" });
+    expect(result.error).toContain("unknown stack");
+    expect(existsSync(join(dir, "flare.yml"))).toBe(false);
+    expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
   });
 
   it("keeps exactly one managed AGENTS block across re-runs", () => {

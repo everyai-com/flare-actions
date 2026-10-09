@@ -52,8 +52,8 @@ function usage(): never {
       "  cli quarantine list <repo>                  quarantined (flaky) tests for a repo",
       "  cli quarantine add <repo> <test>            move a test out of the blocking gate",
       "  cli quarantine remove <repo> <test>         reinstate a quarantined test",
-      "  cli init [--force]                          scaffold flare.yml + AGENTS.md snippet + next steps",
-      "  cli connect [repo] [--wire] [--dry-run]     probe, wire, and verify this repo in one command",
+      "  cli init [--force] [--stack <id>] [--template <id>]  scaffold flare.yml (auto-detected stack) + AGENTS.md snippet",
+      "  cli connect [repo] [--init] [--wire] [--dry-run]  detect stack, scaffold, wire, verify in one command",
       "  cli tests <runId>                           per-test results and failing tests",
       "  cli selection <runId>                       smart test selection: what was skipped and why",
       "  cli attestation <receiptId>                 verify a reused-verdict receipt",
@@ -379,7 +379,17 @@ try {
       process.exit(2);
     }
   } else if (cmd === "init") {
-    const result = runInit({ cwd: process.cwd(), force: rest.includes("--force") });
+    const stackAt = rest.indexOf("--stack");
+    const stack = stackAt === -1 ? undefined : rest[stackAt + 1];
+    if (stackAt !== -1 && !stack) {
+      console.error("--stack needs a stack id (node, python, go, rust, ruby, java, php, dotnet, elixir, generic)");
+      process.exit(2);
+    }
+    const result = runInit({
+      cwd: process.cwd(),
+      force: rest.includes("--force"),
+      ...(stack ? { stack } : {}),
+    });
     if (result.error) {
       console.error(result.error);
       process.exit(2);
@@ -387,7 +397,14 @@ try {
     if (JSON_MODE) {
       printJson("init", result);
     } else {
-      console.log(`wrote ${result.pipelinePath} (${result.pipelineSource === "converted" ? `from .github/workflows/${result.convertedFrom}` : "starter template"})`);
+      const detected = result.stacks.length > 0
+        ? result.stacks.map((s) => `${s.stack} (${s.evidence.join(", ")})`).join(" + ")
+        : "none";
+      console.log(`detected stack: ${detected}`);
+      const origin = result.pipelineSource === "converted"
+        ? `from .github/workflows/${result.convertedFrom}`
+          : `${result.starterStack} starter`;
+      console.log(`wrote ${result.pipelinePath} (${origin})`);
       for (const warning of result.warnings.slice(0, 20)) console.log(`  warning: ${warning}`);
       if (result.warnings.length > 20) console.log(`  … ${result.warnings.length - 20} more warnings`);
       console.log(`updated ${result.agentsPath} (idempotent snippet; agents learn the verify loop)`);
@@ -414,11 +431,21 @@ try {
       baseUrl,
       ...(positional[0] ? { repo: positional[0] } : {}),
       wire: rest.includes("--wire"),
+      init: rest.includes("--init"),
       dryRun,
       client: token ? new FlareClient(baseUrl, token) : null,
       ...(JSON_MODE ? { log: (l: string) => lines.push(l), err: () => undefined } : {}),
     });
-    if (JSON_MODE) printJson("connect", { repo: out.repo, exitCode: out.exitCode, ...(dryRun ? { plan: lines } : {}) });
+    if (JSON_MODE) {
+      printJson("connect", {
+        repo: out.repo,
+        exitCode: out.exitCode,
+        stacks: out.stacks,
+        pipeline: out.pipeline,
+        scaffolded: out.scaffolded,
+        ...(dryRun ? { plan: lines } : { lines }),
+      });
+    }
     process.exitCode = out.exitCode;
   } else if (cmd === "tests" && rest[0]) {
     const t = await client().getRunTests(rest[0]);

@@ -126,15 +126,20 @@ From any repo, with `FLARE_ACTIONS_URL` pointed at your deployment:
 npx flare connect              # probe, explain the wiring, dispatch HEAD, report the verdict
 npx flare connect --dry-run    # print the plan, change nothing
 npx flare connect owner/repo --wire   # also create the repo webhook (needs GITHUB_TOKEN + FLARE_ADMIN_TOKEN)
+npx flare connect owner/repo --init --wire   # also scaffold flare.yml from the auto-detected stack
 ```
 
-`connect` probes the deployment (claimed? App connected? install URL),
-detects your pipeline (`flare.yml` or existing workflows — both run
-unchanged), prints the exact wiring recipe for your situation, then
-dispatches HEAD with one bounded wait and a compact verdict. Exit 0
-means connected and verified, 1 means the verification run failed, 2
-means usage or environment error. If nothing picks the run up, it tells
-you how to start an executor instead of stalling.
+`connect` detects your stack from repo manifests (Node, Python, Go,
+Rust, and more) and your pipeline (`flare.yml` or existing workflows —
+both run unchanged), probes the deployment (claimed? App connected?
+install URL), prints the exact wiring recipe for your situation, then
+dispatches HEAD with one bounded wait and a compact verdict. With
+`--init` it scaffolds a missing `flare.yml` first (a stack-matched
+starter, or converted from your workflows — same as `npx flare init`,
+safe to re-run). Exit 0 means connected and verified, 1 means the
+verification run failed, 2 means usage or environment error. If nothing
+picks the run up, it tells you how to start an executor instead of
+stalling.
 
 Or with your agent — paste this into Claude Code, Codex, Cursor, or
 OpenCode (the [flare-setup skill](skills/flare-setup/SKILL.md) teaches
@@ -599,6 +604,7 @@ See [Workers](https://developers.cloudflare.com/workers/platform/pricing/),
 
 Clone the repo and point any coding agent at it — [AGENTS.md](AGENTS.md)
 teaches it the stack, commands, architecture, and conventions. Scaffold a
+repo in one command with `npx flare init` (writes a stack-matched
 `flare.yml` + an AGENTS.md snippet teaching the verify loop), or install the
 [flare-verify skill](skills/flare-verify/SKILL.md) in Claude Code / Codex
 / Cursor — plus the [flare-setup skill](skills/flare-setup/SKILL.md) for
