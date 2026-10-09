@@ -32,7 +32,7 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `npm test` — vitest, colocated `*.test.ts`, must pass
 - `npm run deploy` / `npm run deploy:dry` — deploy / validate only
 - `npm run runner` — external pull-runner (reads `.env` automatically)
-- `npm run cli -- <runs|logs|explain|local|run|watch|cancel|dispatch|rerun|flaky|bottlenecks|quarantine|init|connect|tests|egress|queue|cache|usage|github-jobs|search|artifacts|badge|import|mcp-config|devbox|mcp-serve|credits|signup>`
+- `npm run cli -- <runs|logs|explain|local|run|watch|cancel|dispatch|rerun|flaky|bottlenecks|quarantine|init|connect|tests|egress|queue|cache|usage|github-jobs|search|artifacts|badge|import|mcp-config|devbox|mcp-serve|credits|signup|login|races|repos|claim|verdict>`
   — CLI (reads `.env` automatically)
 
 ## Architecture

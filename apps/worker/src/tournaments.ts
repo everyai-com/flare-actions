@@ -313,9 +313,13 @@ export async function pollTournamentAttempts(deps: TournamentPollDeps): Promise<
   return out;
 }
 
+export interface TournamentBoardAttempt extends AttemptRow {
+  run_status: string | null;
+}
+
 export interface TournamentBoard {
   tournament: TournamentRow;
-  attempts: AttemptRow[];
+  attempts: TournamentBoardAttempt[];
   verdict: VerdictRow | null;
   ledger: LedgerRow[];
 }
@@ -370,5 +374,32 @@ export async function getTournamentBoard(db: Db, id: string): Promise<Tournament
     .prepare("SELECT * FROM ledger WHERE tournament_id = ? ORDER BY created_at ASC LIMIT 100")
     .bind(id)
     .all<LedgerRow>();
-  return { tournament, attempts: attempts.results, verdict, ledger: ledger.results };
+  const runIds = [...new Set(attempts.results.map((a) => a.run_id).filter((r): r is string => !!r))];
+  const runStatus = new Map<string, string>();
+  if (runIds.length > 0) {
+    const placeholders = runIds.map(() => "?").join(",");
+    const runs = await db
+      .prepare(`SELECT id, status FROM runs WHERE id IN (${placeholders})`)
+      .bind(...runIds)
+      .all<{ id: string; status: string }>();
+    for (const row of runs.results) runStatus.set(row.id, row.status);
+  }
+  const boardAttempts: TournamentBoardAttempt[] = attempts.results.map((a) => ({
+    ...a,
+    run_status: a.run_id ? (runStatus.get(a.run_id) ?? null) : null,
+  }));
+  return { tournament, attempts: boardAttempts, verdict, ledger: ledger.results };
+}
+
+// Reverse lookup: the race an attempt-verification run belongs to, so run
+// detail can link back into the forge. Null for ordinary CI runs.
+export async function getAttemptRace(
+  db: Db,
+  runId: string,
+): Promise<{ tournament_id: string; agent: string; verdict_rank: number | null } | null> {
+  const row = await db
+    .prepare("SELECT tournament_id, agent, verdict_rank FROM attempts WHERE run_id = ? LIMIT 1")
+    .bind(runId)
+    .first<{ tournament_id: string; agent: string; verdict_rank: number | null }>();
+  return row ?? null;
 }

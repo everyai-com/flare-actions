@@ -62,6 +62,11 @@ paths:
           schema:
             type: string
           description: Only runs tagged with this agent identity
+        - name: repo
+          in: query
+          schema:
+            type: string
+          description: Only runs for this exact repo
       responses:
         '200':
           description: Paginated runs (repo-scoped tokens see only their repos)
@@ -425,6 +430,18 @@ paths:
                       $ref: '#/components/schemas/Job'
                   summary:
                     $ref: '#/components/schemas/CostSummary'
+                  race:
+                    type: object
+                    nullable: true
+                    description: Race this run verifies, when it backs an agent attempt
+                    properties:
+                      tournament_id:
+                        type: string
+                      agent:
+                        type: string
+                      verdict_rank:
+                        type: integer
+                        nullable: true
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -489,6 +506,162 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RunDigest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/repos:
+    get:
+      tags: [repos]
+      operationId: listRepos
+      summary: List Artifacts repositories in the bound namespace
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Repositories filtered to the token scope
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [repos, total]
+                properties:
+                  repos:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RepoSummary'
+                  total:
+                    type: integer
+                  cursor:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/repos/{repoName}:
+    get:
+      tags: [repos]
+      operationId: getRepoInfo
+      summary: Repository metadata plus head commit
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RepoName'
+      responses:
+        '200':
+          description: Repo detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepoDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/repos/{repoName}/tree:
+    get:
+      tags: [repos]
+      operationId: getRepoTree
+      summary: List a directory at a ref
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RepoName'
+        - name: ref
+          in: query
+          schema:
+            type: string
+            default: main
+        - name: path
+          in: query
+          schema:
+            type: string
+            default: ''
+      responses:
+        '200':
+          description: Directory entries, directories first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepoTree'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/repos/{repoName}/blob:
+    get:
+      tags: [repos]
+      operationId: getRepoBlob
+      summary: Read a file at a ref (bounded, binary-flagged)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RepoName'
+        - name: ref
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File content or truncation/binary flags
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepoBlob'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/repos/{repoName}/commits:
+    get:
+      tags: [repos]
+      operationId: getRepoCommits
+      summary: Commit history at a ref, newest first
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RepoName'
+        - name: ref
+          in: query
+          schema:
+            type: string
+            default: main
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Commits newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [commits]
+                properties:
+                  commits:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RepoCommit'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -2688,6 +2861,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Ok'
+  /v1/admin/magic/request:
+    post:
+      tags: [auth]
+      operationId: requestMagicLink
+      summary: Request a magic-link login email (generic 200, no enumeration)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                turnstileToken:
+                  type: string
+      responses:
+        '200':
+          description: Accepted (always, when well-formed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/admin/magic/consume:
+    get:
+      tags: [auth]
+      operationId: consumeMagicLink
+      summary: Redeem a magic link (sets session cookie, redirects to dashboard)
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to /dashboard (or /dashboard?magic=expired)
   /v1/admin/reset:
     post:
       tags: [auth]
@@ -4152,6 +4369,12 @@ components:
       required: true
       schema:
         type: string
+    RepoName:
+      name: repoName
+      in: path
+      required: true
+      schema:
+        type: string
     ReceiptId:
       name: receiptId
       in: path
@@ -4274,6 +4497,101 @@ components:
                 type: string
               name:
                 type: string
+    RepoSummary:
+      type: object
+      required: [name, defaultBranch]
+      properties:
+        name:
+          type: string
+        defaultBranch:
+          type: string
+        description:
+          type: string
+          nullable: true
+        source:
+          type: string
+          nullable: true
+        readOnly:
+          type: boolean
+        lastPushAt:
+          type: string
+          nullable: true
+        updatedAt:
+          type: string
+    RepoDetail:
+      allOf:
+        - $ref: '#/components/schemas/RepoSummary'
+        - type: object
+          properties:
+            head:
+              type: object
+              nullable: true
+              properties:
+                hash:
+                  type: string
+                message:
+                  type: string
+                committedAt:
+                  type: integer
+    RepoTree:
+      type: object
+      required: [ref, path, head, entries]
+      properties:
+        ref:
+          type: string
+        path:
+          type: string
+        head:
+          type: string
+        entries:
+          type: array
+          items:
+            type: object
+            required: [name, type, hash]
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+              hash:
+                type: string
+        truncated:
+          type: boolean
+    RepoBlob:
+      type: object
+      required: [ref, path, size, truncated, binary]
+      properties:
+        ref:
+          type: string
+        path:
+          type: string
+        size:
+          type: integer
+        truncated:
+          type: boolean
+        binary:
+          type: boolean
+        text:
+          type: string
+          nullable: true
+    RepoCommit:
+      type: object
+      required: [hash, message, committedAt]
+      properties:
+        hash:
+          type: string
+        message:
+          type: string
+        authorName:
+          type: string
+        authorEmail:
+          type: string
+        committedAt:
+          type: integer
+        parents:
+          type: array
+          items:
+            type: string
     Tournament:
       type: object
       required: [id, intent, source_repo, state]
@@ -4313,6 +4631,9 @@ components:
         last_seen_sha:
           type: string
         run_id:
+          type: string
+          nullable: true
+        run_status:
           type: string
           nullable: true
         verdict_rank:

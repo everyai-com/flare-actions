@@ -3,17 +3,31 @@ export const DASHBOARD_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Flare Actions dashboard: CI runs, job logs, access tokens, and GitHub App settings.">
-<meta name="theme-color" content="#161616">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234124fb'/%3E%3Ctext x='16' y='23' font-family='system-ui,sans-serif' font-size='19' font-weight='800' fill='white' text-anchor='middle'%3EF%3C/text%3E%3C/svg%3E">
+<meta name="description" content="Flare Actions dashboard: agent tournaments, CI runs, merge queue, and settings.">
+<meta name="theme-color" content="#0a0a0a">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23fafafa'/%3E%3Ctext x='16' y='23' font-family='system-ui,sans-serif' font-size='19' font-weight='800' fill='black' text-anchor='middle'%3EF%3C/text%3E%3C/svg%3E">
 <title>Flare Actions</title>
 <style>
-:root { color-scheme: dark; --bg: #161616; --card: #1b1d20; --sidebar: #171717; --line: #232323; --line-strong: #393939; --ink: #f9fbff; --soft: #a4a4a4; --muted: #7f7f7f; --faint: #454545; --accent: #4124fb; --accent-hover: #4b30ff; --accent-ink: #b7aee9; --danger: #f97373; --ok: #22c55e; --warn: #fbbf24; --hover: #222222; --input-bg: #161616; --ring: #676767; }
+:root { color-scheme: dark; --bg: #0a0a0a; --card: #111113; --sidebar: #0a0a0a; --line: #1f1f23; --line-strong: #2e2e33; --ink: #fafafa; --soft: #a1a1aa; --muted: #71717a; --faint: #3f3f46; --accent: #fafafa; --accent-hover: #e4e4e7; --accent-ink: #7aa8f0; --danger: #f87171; --ok: #4ade80; --warn: #fbbf24; --info: #7db4f7; --hover: #17171a; --input-bg: #0a0a0a; --ring: #52525b; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: var(--sidebar); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 10; }
+header { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 14px 12px; background: var(--sidebar); border-right: 1px solid var(--line); position: fixed; left: 0; top: 0; bottom: 0; width: 228px; z-index: 20; }
 header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
-main { max-width: 960px; margin: 0 auto; padding: 20px 20px 40px; }
+header h1.brand-head { padding: 2px 8px 12px; }
+main { margin: 0; }
+body.app main { margin-left: 228px; }
+.wrap { max-width: 960px; margin: 0 auto; padding: 20px 20px 40px; }
+nav.side-nav { display: none; flex-direction: column; gap: 2px; }
+body.app nav.side-nav { display: flex; }
+.side-link { display: flex; align-items: center; gap: 10px; width: 100%; background: transparent; color: var(--muted); border: 1px solid transparent; border-radius: 6px; padding: 7px 10px; font-size: 13px; font-weight: 500; text-align: left; }
+.side-link[hidden] { display: none; }
+.side-link svg { flex: none; opacity: 0.85; }
+.side-link:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+.side-link.active { background: var(--hover); color: var(--ink); border-color: var(--line); }
+.side-group { font-size: 11px; font-weight: 600; color: var(--faint); padding: 10px 10px 2px; }
+.side-nav .side-group:first-child { padding-top: 2px; }
+.side-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 12px 8px 0; border-top: 1px solid var(--line); overflow: hidden; }
+.side-foot #userLabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 section.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
 h2 { margin: 0 0 10px; font-size: 16px; font-weight: 600; line-height: 1.2; letter-spacing: -0.005em; }
 h2:not(:first-child) { margin-top: 24px; }
@@ -30,15 +44,15 @@ textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consol
 .template-card h3 { margin: 0 0 4px; }
 .template-card p { margin: 4px 0; }
 input::placeholder { color: var(--faint); }
-button { font: inherit; font-size: 14px; font-weight: 500; line-height: 1; padding: 9px 16px; border-radius: 999px; border: none; background: var(--accent); color: #fff; cursor: pointer; box-shadow: 0 0 0 1px #0e0e0e, inset 0 4px 6px 0 rgba(255,255,255,0.2), inset 0 0 0 1px rgba(255,255,255,0.15), inset 0 -8px 14px 0 rgba(0,0,0,0.15); transition: background-color 150ms ease; }
+button { font: inherit; font-size: 13px; font-weight: 500; line-height: 1; padding: 8px 14px; border-radius: 6px; border: 1px solid transparent; background: var(--accent); color: #000; cursor: pointer; transition: background-color 150ms ease; }
 button:hover:not(:disabled) { background: var(--accent-hover); }
-button.ghost { background: #232323; color: var(--ink); box-shadow: 0 0 0 1px #333333; }
-button.ghost:hover:not(:disabled) { background: #2a2a2a; }
-button.danger { background: #3e1d1e; color: #febfc6; box-shadow: inset 0 0 0 1px #4c2324; }
-button.danger:hover:not(:disabled) { background: #4c2324; }
+button.ghost { background: transparent; color: var(--ink); border-color: var(--line-strong); }
+button.ghost:hover:not(:disabled) { background: var(--hover); }
+button.danger { background: transparent; color: var(--danger); border-color: #7f1d1d; }
+button.danger:hover:not(:disabled) { background: #1c1214; }
 button:disabled { opacity: 0.5; cursor: default; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-@media (prefers-reduced-motion: reduce) { button { transition: none; } }
+@media (prefers-reduced-motion: reduce) { button { transition: none; } .pane-enter, .t-enter > *, .pill.running::before, .skel, .toast, #palette { animation: none; } }
 #runsFilterForm { margin-bottom: 6px; }
 #dispatchBox { margin-bottom: 12px; }
 #dispatchBox summary { cursor: pointer; color: var(--accent-ink); font-weight: 600; margin-bottom: 8px; }
@@ -51,10 +65,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #secretNames { margin: 4px 0 8px; }
 #runsCount { margin: 0 0 8px; font-size: 12.5px; }
 a { color: var(--accent-ink); }
-nav.tabs { display: flex; gap: 4px; margin-bottom: 16px; }
-nav.tabs button { background: transparent; color: var(--muted); box-shadow: none; border-radius: 8px; font-weight: 500; }
-nav.tabs button:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: var(--ink); }
-nav.tabs button.active { background: #2a2a2a; color: var(--ink); box-shadow: 0 0 0 1px rgba(0,0,0,0.4), inset 0 1px 0 0 rgba(255,255,255,0.1), inset 0 0 0 1px rgba(255,255,255,0.06); }
+@media (max-width: 900px) {
+  header { position: sticky; top: 0; width: auto; flex-direction: row; align-items: center; gap: 8px; padding: 10px 12px; border-right: none; border-bottom: 1px solid var(--line); }
+  header h1.brand-head { padding: 0; }
+  header h1.brand-head span:last-child { display: none; }
+  body.app nav.side-nav { flex-direction: row; overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: none; }
+  body.app nav.side-nav::-webkit-scrollbar { display: none; }
+  .side-link { width: auto; flex: none; }
+  .side-group { display: none; }
+  .side-foot { margin-top: 0; margin-left: auto; padding: 0; border-top: none; }
+  .side-foot #paletteBtn { display: none; }
+  body.app main { margin-left: 0; }
+}
 .table-scroll { overflow-x: auto; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.2) transparent; }
 table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
@@ -62,16 +84,15 @@ th { font-size: 12px; font-weight: 500; color: var(--muted); letter-spacing: 0.0
 tbody tr:last-child td { border-bottom: none; }
 tbody tr.clickable { cursor: pointer; }
 tbody tr.clickable:hover { background: rgba(255,255,255,0.04); }
-.pill { display: inline-flex; align-items: center; height: 22px; padding: 0 10px; border-radius: 999px; border: 1px solid; font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; }
-.pill.queued { background: #2a2a2a; border-color: #363636; color: #cfcfcf; }
-.pill.running { background: #1d2b3e; border-color: #23354c; color: #bfdbfe; }
-.pill.success { background: #1f3a2d; border-color: #275137; color: #b1ebc5; }
-.pill.failure, .pill.error { background: #3e1d1e; border-color: #4c2324; color: #febfc6; }
-.pill.blocked { background: #31221b; border-color: #6c4830; color: #fed7aa; }
-.pill.cancelled, .pill.skipped { background: #2a2a2a; border-color: #363636; color: #cfcfcf; text-decoration: line-through; }
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--line-strong); background: transparent; font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; color: var(--soft); }
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: var(--muted); flex: none; }
+.pill.running::before { background: var(--info); }
+.pill.success::before { background: var(--ok); }
+.pill.failure::before, .pill.error::before { background: var(--danger); }
+.pill.blocked::before { background: var(--warn); }
 pre.log { background: #101214; border: 1px solid var(--line); color: #d0d4dd; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 12.5px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.2) transparent; }
-div.triage { border: 1px solid #23354c; background: #1d2b3e; padding: 10px 12px; border-radius: 8px; margin: 8px 0; white-space: pre-wrap; font-size: 13px; color: #d0d4dd; }
-div.triage-label { font-size: 12px; font-weight: 600; color: #bfdbfe; margin-bottom: 2px; }
+div.triage { border: 1px solid var(--line-strong); background: transparent; padding: 10px 12px; border-radius: 8px; margin: 8px 0; white-space: pre-wrap; font-size: 13px; color: var(--soft); }
+div.triage-label { font-size: 12px; font-weight: 600; color: var(--ink); margin-bottom: 2px; }
 div.empty { padding: 26px 8px; }
 div.empty h3 { margin: 0 0 4px; font-size: 14px; }
 div.empty p { margin: 0; color: var(--muted); font-size: 13px; max-width: 60ch; }
@@ -85,7 +106,6 @@ div.notice p { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
 .run-repo { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-meta { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-src { font-size: 11px; padding: 1px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
-.run-src.actions { border-color: #23354c; color: #bfdbfe; }
 .run-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
 details.step { border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; }
 details.step summary { cursor: pointer; padding: 8px 10px; }
@@ -100,36 +120,110 @@ form.inline input { flex: 1; min-width: 180px; }
 .auth-card { padding: 28px; }
 .auth-narrow { max-width: 420px; margin: 0 auto; }
 .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-.brand-mark { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 800; font-size: 17px; box-shadow: 0 0 0 1px #0e0e0e, inset 0 2px 4px 0 rgba(255,255,255,0.25); }
+.brand-mark { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 6px; background: var(--accent); color: #000; font-weight: 800; font-size: 16px; }
 .brand-name { font-weight: 600; font-size: 16px; }
 #connectBox, #githubBox { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 12px; }
 #emailBox h2, #connectBox h2 { margin: 0 0 4px; font-size: 16px; }
 .auth-form { display: flex; flex-direction: column; gap: 12px; margin: 12px 0 4px; }
 .field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; }
+.field[hidden], form.inline[hidden] { display: none; }
 .field input { width: 100%; }
 .btn-block { width: 100%; padding: 10px; }
-.btn-github { background: #232323; color: #fff; border: none; cursor: pointer; border-radius: 999px; font: inherit; padding: 10px; box-shadow: 0 0 0 1px #333333; }
-.btn-github:hover { background: #2a2a2a; }
+.btn-github { background: transparent; color: var(--ink); border: 1px solid var(--line-strong); cursor: pointer; border-radius: 6px; font: inherit; padding: 10px; }
+.btn-github:hover { background: var(--hover); }
 #githubBox .btn-block + .btn-block { margin-top: 8px; }
 .divider { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 12px; margin: 4px 0 2px; }
 .divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 ol.steps { margin: 10px 0 0; padding: 0; list-style: none; counter-reset: step; max-width: 64ch; }
 ol.steps li { counter-increment: step; display: flex; gap: 10px; align-items: flex-start; padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; }
-ol.steps li::before { content: counter(step); flex: none; width: 20px; height: 20px; border-radius: 999px; background: #2a2a2a; color: var(--ink); font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; margin-top: 1px; }
-ol.steps li.done::before { content: "✓"; background: #1f3a2d; color: #b1ebc5; }
+ol.steps li::before { content: counter(step); flex: none; width: 20px; height: 20px; border-radius: 999px; background: transparent; border: 1px solid var(--line-strong); color: var(--muted); font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; margin-top: 1px; }
+ol.steps li.done::before { content: "✓"; background: var(--accent); border-color: transparent; color: #000; }
 ol.steps .step-body { flex: 1; min-width: 0; }
 ol.steps .step-body p { margin: 0 0 6px; color: var(--muted); }
 ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
+.t-hero { padding: 2px 0 14px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+.t-intent { font-size: 20px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.3; margin: 0 0 10px; overflow-wrap: anywhere; }
+.t-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.chip { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 10px; border-radius: 6px; background: var(--hover); border: 1px solid var(--line); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: var(--soft); overflow-wrap: anywhere; }
+.t-zone { margin: 0 0 20px; }
+.t-zone-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--soft); }
+.t-zone-title .t-count { font-weight: 500; color: var(--muted); font-size: 12px; }
+.t-lane { padding: 12px 2px; border-top: 1px solid var(--line); }
+.t-lane:first-child { border-top: none; padding-top: 2px; }
+.t-lane-head { display: flex; align-items: center; gap: 10px; }
+.t-avatar { flex: none; width: 30px; height: 30px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; color: var(--soft); background: var(--hover); border: 1px solid var(--line-strong); }
+.t-agent { font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.t-lane-sub { color: var(--muted); font-size: 12px; margin: 6px 0 0 40px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-lane-foot { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 8px 0 0 40px; }
+.t-rank { display: inline-flex; align-items: center; height: 22px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: transparent; border: 1px solid var(--line-strong); color: var(--soft); white-space: nowrap; }
+.t-rank.first { background: var(--accent); border-color: transparent; color: #000; }
+.t-radar-card { background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin: 8px 0; }
+.t-radar-pair { font-weight: 700; font-size: 14px; margin-bottom: 6px; }
+.t-radar-pair .t-count { font-weight: 500; color: var(--muted); font-size: 12px; margin-left: 8px; }
+.t-paths { display: flex; gap: 6px; flex-wrap: wrap; }
+.t-crumb { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; color: var(--faint); font-size: 12px; margin: 0 0 6px; }
+.t-crumb button { padding: 4px 10px; font-size: 12px; }
+.t-clean { color: var(--muted); font-size: 13px; margin: 4px 0; }
+.t-verdict { background: transparent; border: 1px solid var(--line-strong); border-radius: 8px; padding: 14px 16px; }
+.t-winner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.t-winner-name { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+.t-rationale { white-space: pre-wrap; font-size: 13px; color: var(--soft); margin: 8px 0; overflow-wrap: anywhere; }
+.t-model { color: var(--muted); font-size: 12px; }
+.t-ranklist { margin: 10px 0 0; padding: 0; list-style: none; }
+.t-ranklist li { display: flex; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); font-size: 13px; flex-wrap: wrap; }
+.t-ranklist li:first-child { border-top: none; }
+.t-pos { flex: none; width: 26px; height: 26px; border-radius: 999px; background: transparent; border: 1px solid var(--line-strong); color: var(--muted); display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-size: 12px; }
+.t-pos.first { background: var(--accent); border-color: transparent; color: #000; }
+.t-timeline { margin: 0; padding: 0; list-style: none; }
+.t-timeline li { position: relative; padding: 0 0 14px 22px; }
+.t-timeline li::before { content: ""; position: absolute; left: 5px; top: 16px; bottom: -2px; width: 1px; background: var(--line-strong); }
+.t-timeline li:last-child { padding-bottom: 2px; }
+.t-timeline li:last-child::before { display: none; }
+.t-dot { position: absolute; left: 0; top: 4px; width: 11px; height: 11px; border-radius: 999px; background: var(--faint); }
+.t-dot.opened { background: var(--accent-hover); }
+.t-dot.claimed, .t-dot.pushed { background: var(--info); }
+.t-dot.collision { background: var(--warn); }
+.t-dot.verdict, .t-dot.resolved, .t-dot.promoted, .t-dot.terminal { background: var(--ok); }
+.t-dot.promote-failed { background: var(--danger); }
+.t-event-kind { font-weight: 600; font-size: 13px; }
+.t-event-body { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.t-event-time { color: var(--faint); font-size: 12px; margin-left: 8px; white-space: nowrap; }
+@keyframes tFadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes tRise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes tPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes tShimmer { from { background-position: -200px 0; } to { background-position: 200px 0; } }
+.pane-enter { animation: tFadeIn 160ms ease; }
+.t-enter > * { animation: tRise 180ms ease; }
+.pill.running::before { animation: tPulse 1.6s ease-in-out infinite; }
+.skel { border-radius: 6px; background: linear-gradient(90deg, var(--hover) 25%, #1e1e22 50%, var(--hover) 75%); background-size: 400px 100%; animation: tShimmer 1.2s ease infinite; }
+.skel-row { height: 52px; margin: 8px 0; }
+.skel-line { height: 14px; margin: 8px 0; }
+#paletteOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 50; display: flex; justify-content: center; padding: 12vh 16px 16px; }
+#paletteOverlay[hidden] { display: none; }
+#palette { width: 100%; max-width: 620px; height: fit-content; max-height: 62vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line-strong); border-radius: 10px; overflow: hidden; box-shadow: 0 24px 64px rgba(0,0,0,0.5); animation: tRise 140ms ease; }
+#paletteInput { border: none; background: transparent; padding: 14px 16px; font-size: 14px; outline: none; }
+#paletteInput:focus-visible { outline: none; }
+#paletteList { overflow-y: auto; padding: 6px; border-top: 1px solid var(--line); }
+.pal-group { font-size: 11px; font-weight: 600; color: var(--faint); padding: 8px 10px 4px; letter-spacing: 0.04em; }
+.pal-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.pal-row .pal-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-row .pal-kind { color: var(--faint); font-size: 11px; flex: none; }
+.pal-row.active { background: var(--hover); }
+#paletteFoot { display: flex; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--line); color: var(--faint); font-size: 11px; }
+kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; background: var(--hover); border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; color: var(--soft); }
+#toasts { position: fixed; left: 16px; bottom: 16px; z-index: 60; display: flex; flex-direction: column; gap: 8px; max-width: min(360px, calc(100vw - 32px)); }
+.toast { background: var(--card); border: 1px solid var(--line-strong); border-radius: 8px; padding: 10px 14px; font-size: 13px; box-shadow: 0 12px 32px rgba(0,0,0,0.45); animation: tRise 160ms ease; }
+.toast.err { border-color: #7f1d1d; }
 @media (max-width: 640px) {
   html, body { overflow-x: hidden; }
-  main { padding: 12px 12px 32px; }
+  .wrap { padding: 12px 12px 32px; }
   section.card { padding: 14px; }
   .auth-card { padding: 20px 16px; }
-  header { padding: 10px 12px; gap: 8px; flex-wrap: wrap; }
+  header { padding: 10px 12px; gap: 8px; }
   header h1 { font-size: 14px; }
   h2, h3 { overflow-wrap: anywhere; }
-  nav.tabs { flex-wrap: wrap; }
-  nav.tabs button { padding: 8px 12px; font-size: 13px; min-height: 44px; }
+  .side-link { min-height: 44px; }
+  #userLabel { display: none; }
   .run-row { flex-wrap: wrap; }
   .run-time { width: 100%; }
   form.inline { flex-direction: column; align-items: stretch; }
@@ -147,8 +241,8 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
   .feed-actions { margin-left: 0; }
   .feed-actions button { flex: 1 1 100%; }
   .template-card { overflow-wrap: anywhere; }
-  #tournamentsList button { white-space: normal; text-align: left; width: 100%; }
-  #scheduleList > div, #monitorList > div, #ghRunnerList > div { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; overflow-wrap: anywhere; }
+  .t-lane-sub, .t-lane-foot { margin-left: 0; }
+  .t-intent { font-size: 17px; }
   details.step summary { overflow-wrap: anywhere; }
   pre.log { white-space: pre-wrap; overflow-wrap: anywhere; }
 }
@@ -157,9 +251,18 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <body>
 <header>
 <h1 class="brand-head"><span class="brand-mark">F</span><span>Flare Actions</span></h1>
-<div><span id="userLabel" class="muted"></span> <button id="logoutBtn" class="ghost" hidden>Log out</button></div>
+<nav class="side-nav" id="sideNav" aria-label="Primary">
+<div class="side-group">Forge</div>
+<button id="tabTournaments" class="side-link active"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.8" r="3.2"/><path d="M6.2 8.4 5.2 13.8 8 12.2l2.8 1.6-1-5.4"/></svg><span>Races</span></button>
+<button id="tabRepos" class="side-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5 8 2l5 2.5v7L8 14l-5-2.5z"/><path d="M3 4.5 8 7l5-2.5M8 7v7"/></svg><span>Repositories</span></button>
+<button id="tabMerge" class="side-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="8" r="1.7"/><path d="M4 5.7v4.6M5.6 4.6c2.8.3 2.4 3.4 4.7 3.4"/></svg><span>Merge queue</span></button>
+<button id="tabRuns" class="side-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6.6 5.4 11 8l-4.4 2.6z" fill="currentColor" stroke="none"/></svg><span>Runs</span></button>
+<div class="side-group">Manage</div>
+<button id="tabSettings" class="side-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.5h12M2 10.5h12"/><circle cx="10" cy="5.5" r="1.8" style="fill:var(--sidebar)"/><circle cx="6" cy="10.5" r="1.8" style="fill:var(--sidebar)"/></svg><span>Settings</span></button>
+</nav>
+<div class="side-foot"><span id="userLabel" class="muted"></span> <button id="paletteBtn" class="ghost" type="button" aria-label="Open command palette">⌘K</button> <button id="logoutBtn" class="ghost" hidden>Log out</button></div>
 </header>
-<main>
+<main><div class="wrap">
 <section id="authPane" class="card auth-card" hidden>
 <div class="auth-narrow">
 <div class="brand"><span class="brand-mark">F</span><span class="brand-name">Flare Actions</span></div>
@@ -176,6 +279,12 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <p id="emailErr" class="err"></p>
 <p class="muted"><button id="forgotBtn" class="ghost" type="button">Forgot password?</button></p>
 <p class="muted"><button id="registerToggleBtn" class="ghost" type="button" hidden>No account? Create one</button></p>
+<form id="magicForm" class="auth-form">
+<label class="field">Email a login link instead<input id="magicEmail" type="email" autocomplete="email" maxlength="254"></label>
+<button type="submit" class="btn-block">Email me a link</button>
+</form>
+<p id="magicOk"></p>
+<p id="magicErr" class="err"></p>
 </div>
 <div id="connectBox">
 <h2>Connect GitHub</h2>
@@ -245,18 +354,6 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 </div>
 </section>
 <section id="appPane" hidden>
-<nav class="tabs">
-<button id="tabRuns" class="active">Runs</button>
-<button id="tabFeed">Feed</button>
-<button id="tabTournaments">Tournaments</button>
-<button id="tabSearch">Search</button>
-<button id="tabFlaky">Flaky</button>
-<button id="tabMerge">Merge queue</button>
-<button id="tabTemplates">Templates</button>
-<button id="tabApps">Apps</button>
-<button id="tabAccess">Access</button>
-<button id="tabSettings">Settings</button>
-</nav>
 <section id="runsPane" class="card">
 <div id="connectBanner" hidden>
 <h2>Finish setup</h2>
@@ -302,14 +399,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 </details>
 <div id="runDetail" hidden></div>
 </section>
-<section id="feedPane" class="card" hidden>
-<h2>Feed</h2>
-<p class="muted">Latest runs across every repo, newest first — rerun failures, open the pull request, or follow the fix without leaving this page.</p>
-<p><button id="feedRefresh" class="ghost">Refresh</button></p>
-<p id="feedErr" class="err"></p>
-<div id="feedList"></div>
-</section>
-<section id="accessPane" class="card" hidden>
+<section id="teamPane" class="card" hidden>
 <h2>Access tokens</h2>
 <p class="muted">Issue tokens for runners and teammates. Runner tokens can pull jobs and update status; readonly tokens can only view runs. Revoked tokens stop working immediately.</p>
 <form id="tokenForm" class="inline">
@@ -337,9 +427,6 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <code class="token" id="pairCmd"></code>
 <p><button id="copyPairBtn" class="ghost" type="button">Copy</button></p>
 </div>
-<h2>Connected apps</h2>
-<p class="muted">OAuth apps teammates authorized on the MCP endpoint (Claude, ChatGPT, Cursor, …). Revoking disconnects the app immediately.</p>
-<div class="table-scroll"><table><thead><tr><th>App</th><th>User</th><th>Scopes</th><th>Granted</th><th></th></tr></thead><tbody id="grantsBody"></tbody></table></div>
 <h2>GitHub users</h2>
 <p class="muted" id="usersInfo"></p>
 <form id="userForm" class="inline">
@@ -363,9 +450,6 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <div class="table-scroll"><table><thead><tr><th>Email</th><th>Role</th><th></th></tr></thead><tbody id="emailUsersBody"></tbody></table></div>
 <h2>Pending invites</h2>
 <div class="table-scroll"><table><thead><tr><th>Email</th><th>Expires</th></tr></thead><tbody id="invitesBody"></tbody></table></div>
-<h2>Audit log</h2>
-<p class="muted">Who did what, most recent first (last 100 entries).</p>
-<div class="table-scroll"><table><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th></tr></thead><tbody id="auditBody"></tbody></table></div>
 </section>
 <section id="settingsPane" class="card" hidden>
 <h2>Settings</h2>
@@ -397,118 +481,6 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <p class="muted" id="notifyWebhookInfo"></p>
 <p id="notifyWebhookErr" class="err"></p>
 <p id="notifyWebhookOk"></p>
-<h2>Cloudflare billing</h2>
-<p class="muted">A Billing-Read API token + account id lets <span class="mono">cli usage</span> show real Cloudflare dollars next to compute minutes. The token is write-only.</p>
-<form id="billingForm" class="inline">
-<input id="billingTokenInput" type="password" placeholder="Billing-Read API token (write-only)" maxlength="512" aria-label="Billing API token">
-<input id="billingAccountInput" placeholder="Account id (32 hex chars)" maxlength="32" aria-label="Cloudflare account id">
-<button type="submit">Save billing</button>
-</form>
-<p class="muted" id="billingInfo"></p>
-<p id="billingErr" class="err"></p>
-<p id="billingOk"></p>
-<h2>Status badges</h2>
-<p class="muted">Badge SVGs are public. Repos listed here (comma-separated owner/name) serve &quot;unknown&quot; instead, so private repositories never leak pass&#47;fail.</p>
-<form id="badgeHiddenForm" class="inline">
-<input id="badgeHiddenInput" placeholder="Private repos to hide, e.g. org/secret, org/private">
-<button type="submit">Save badge visibility</button>
-</form>
-<p id="badgeErr" class="err"></p>
-<p id="badgeOk"></p>
-<h2>Bot protection (Turnstile)</h2>
-<p class="muted" id="turnstileInfo"></p>
-<form id="turnstileForm" class="inline">
-<input id="turnstileSiteInput" placeholder="Site key (public)" maxlength="128">
-<input id="turnstileSecretInput" type="password" placeholder="Secret key (write-only, blank keeps current)" maxlength="512">
-<button type="submit">Save Turnstile</button>
-</form>
-<p id="turnstileErr" class="err"></p>
-<p id="turnstileOk"></p>
-<h2>Scheduling and AI</h2>
-<p class="muted" id="schedInfo"></p>
-<form id="schedForm" class="inline">
-<input id="fairShareInput" placeholder="fair share per repo (0 = off)" maxlength="3" size="8">
-<input id="agentShareInput" placeholder="fair share per agent (0 = off)" maxlength="3" size="8" aria-label="Fair share per agent">
-<input id="budgetInput" placeholder="monthly budget: owner/name=1200, other=600" maxlength="512" size="40" aria-label="Monthly compute budgets">
-<select id="budgetModeSelect" aria-label="Budget mode"><option value="warn">warn over budget</option><option value="block">block over budget</option></select>
-<input id="killMultiplierInput" placeholder="kill at Nx cap (0 = off)" maxlength="3" size="8" aria-label="Kill switch multiplier">
-<div id="pausedBox" class="muted"></div>
-<label class="muted"><input id="supersedeCheck" type="checkbox"> one run per branch head (cancel superseded pushes)</label>
-<input id="gatewayInput" placeholder="AI gateway id (blank = direct)" maxlength="64">
-<input id="triageModelInput" placeholder="triage model (blank = default)" maxlength="128" size="30">
-<input id="runnerVersionInput" placeholder="fleet runner version (blank = off)" maxlength="32" size="24" aria-label="Fleet runner version">
-<label><input type="checkbox" id="writeConfirmCheck"> MCP write-confirm</label>
-<label><input type="checkbox" id="webSearchCheck"> triage web search</label>
-<label><input type="checkbox" id="healCheck"> heal on failure (draft PR + verify run)</label>
-<label><input type="checkbox" id="openRegCheck"> open registration (anyone can join)</label>
-<button type="submit">Save</button>
-</form>
-<p id="schedErr" class="err"></p>
-<p id="schedOk"></p>
-<h2>GitHub runners (the flare lane)</h2>
-<p class="muted">GitHub keeps orchestrating; Flare registers one ephemeral JIT runner per job whose runs-on includes a managed label. Off by default. Needs the App's actions:read + administration:write — existing installs re-run Connect GitHub to accept the permission change.</p>
-<form id="ghRunnerForm" class="inline">
-<label><input type="checkbox" id="ghRunnerCheck"> runner mode on</label>
-<input id="ghRunnerLabelsInput" placeholder="labels, e.g. flare, gpu" maxlength="128" size="30">
-<input id="ghRunnerGroupInput" placeholder="org group (blank = default)" maxlength="100" size="24" aria-label="Org runner group">
-<button type="submit">Save</button>
-</form>
-<p id="ghRunnerErr" class="err"></p>
-<p id="ghRunnerOk"></p>
-<p class="muted">Workflow change, one line: <code>runs-on: flare</code> — checks and logs stay on GitHub. Executors run <code>npm run runner -- --github</code>.</p>
-<div id="ghRunnerList"></div>
-<h2>Schedules</h2>
-<p class="muted">Run a repo on a cron schedule (UTC). &quot;last&quot; shows the most recent dispatch attempt, so a schedule that silently stops is visible instead of invisible.</p>
-<form id="scheduleForm" class="inline">
-<input id="scheduleRepoInput" placeholder="owner/repo" maxlength="100">
-<input id="scheduleRefInput" placeholder="branch or tag (e.g. main)" maxlength="128">
-<input id="scheduleCronInput" placeholder="cron (UTC), e.g. 0 3 * * *" maxlength="128">
-<button type="submit">Add schedule</button>
-</form>
-<p id="scheduleErr" class="err"></p>
-<div id="scheduleList"></div>
-<h2>Monitors</h2>
-<p class="muted">Rule-based alerts to the chat webhook (or a per-monitor URL): consecutive failing results, log text, or jobs running past a duration. Empty branch/job matches everything; job accepts * and ? globs.</p>
-<form id="monitorForm" class="inline">
-<input id="monitorRepoInput" placeholder="owner/repo" maxlength="100">
-<input id="monitorBranchInput" placeholder="branch (optional)" maxlength="128">
-<input id="monitorJobInput" placeholder="job glob (optional)" maxlength="128">
-<select id="monitorTriggerSelect"><option value="result">result</option><option value="duration">duration</option></select>
-<select id="monitorResultSelect"><option value="failure">failure</option><option value="error">error</option><option value="cancelled">cancelled</option><option value="skipped">skipped</option><option value="success">success</option></select>
-<input id="monitorNInput" placeholder="consecutive (1-100)" maxlength="3" size="6">
-<input id="monitorDurInput" placeholder="seconds (60+, duration only)" maxlength="5" size="8">
-<input id="monitorPatternInput" placeholder="log text (optional)" maxlength="200">
-<button type="submit">Add monitor</button>
-</form>
-<p id="monitorErr" class="err"></p>
-<div id="monitorList"></div>
-<h2>Repository secrets</h2>
-<p class="muted">Write-only values for &#36;{{ secrets.NAME }} in steps and env. Only names are ever listed back; values decrypt inside job claims only.</p>
-<form id="secretLoadForm" class="inline">
-<input id="secretRepoInput" placeholder="owner/repo" maxlength="100" aria-label="Repository">
-<button type="submit">Load secrets</button>
-</form>
-<div id="secretNames"></div>
-<form id="secretForm" class="inline">
-<input id="secretNameInput" placeholder="NAME" maxlength="64" aria-label="Secret name">
-<input id="secretValueInput" type="password" placeholder="value (never shown again)" maxlength="65536" aria-label="Secret value">
-<button type="submit">Save secret</button>
-</form>
-<p id="secretErr" class="err"></p>
-<p id="secretOk"></p>
-<h2>Egress allowlists</h2>
-<p class="muted">Per-repo outbound floor policy for managed seats: every job inherits the repo list, jobs may narrow it, anything outside rejects the dispatch. BYO runners fail closed on confined jobs. Deleting a repo returns it to observe-only.</p>
-<form id="egressForm" class="inline">
-<input id="egressRepoInput" placeholder="owner/repo" maxlength="100" aria-label="Repository">
-<input id="egressDomainsInput" placeholder="github.com, registry.npmjs.org" maxlength="2000" size="40" aria-label="Allowed domains">
-<button type="submit">Save allowlist</button>
-</form>
-<p id="egressErr" class="err"></p>
-<p id="egressOk"></p>
-<div id="egressList"></div>
-<h2>Artifacts mirrors</h2>
-<p class="muted">Hands-free GitHub mirrors: the first push imports the repo into the Artifacts namespace, seats sync missing shas lazily. Failures retry on the next push; checkouts always fall back to GitHub.</p>
-<div id="mirrorList"></div>
 <h2>GitHub App</h2>
 <p class="muted" id="githubInfo"></p>
 <form id="githubForm" class="inline">
@@ -522,8 +494,8 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 </div>
 </section>
 <section id="tournamentsPane" class="card" hidden>
-<h2>Tournaments</h2>
-<p class="muted">One task races N agents in isolated forks. Open a tournament, agents claim slots, every push is verified, the verdict picks a winner.</p>
+<h2>Agent races</h2>
+<p class="muted">One task races N agents in isolated forks. Open a tournament, agents claim slots, every push is verified, the verdict picks a winner. Press ⌘K to jump anywhere.</p>
 <form id="tournamentForm" class="inline">
 <input id="tournamentIntent" placeholder="task intent, e.g. fix the login redirect" maxlength="200" size="40" aria-label="Task intent">
 <input id="tournamentSource" placeholder="source repo" maxlength="100" size="20" aria-label="Source repo">
@@ -532,43 +504,26 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <p id="tournamentsErr" class="err"></p>
 <div id="tournamentsList"></div>
 <div id="tournamentDetail" hidden>
-<h3 id="tournamentTitle"></h3>
 <p><button id="backToTournaments" class="ghost">Back to list</button> <button id="refreshTournament" class="ghost">Refresh</button></p>
-<div id="tournamentAttempts"></div>
-<div id="tournamentVerdict"></div>
-<h4>Ledger</h4>
-<div id="tournamentLedger"></div>
+<div id="tWhy"></div>
+<div id="tReview"></div>
+<div id="tLanes"></div>
+<div id="tRadar"></div>
+<div id="tActivity"></div>
 </div>
 </section>
-<section id="searchPane" class="card" hidden>
-<h2>Log search</h2>
-<p class="muted">Terms, "phrases", (parens OR brackets), -negation, and repo: branch: level: run: job: filters. Example: branch:main level:error (failure OR panic) -flaky</p>
-<form id="searchForm" class="inline">
-<input id="searchInput" placeholder="search all job logs" maxlength="500" size="48" aria-label="Log search query">
-<button type="submit">Search</button>
-</form>
-<p id="searchErr" class="err"></p>
-<div id="searchList"></div>
-</section>
-<section id="flakyPane" class="card" hidden>
-<h2>Flaky tests</h2>
-<p class="muted">Per-job failure rates plus the quarantine list. Quarantined tests stop blocking the merge, land the run as green, and are named on the PR comment. Adding or reinstating needs admin.</p>
-<form id="flakyForm" class="inline">
-<input id="flakyRepo" placeholder="owner/repo" maxlength="100" aria-label="Repository">
-<button type="submit">Load</button>
-</form>
-<p id="flakyErr" class="err"></p>
-<h3>Failure rates (30 days)</h3>
-<div class="table-scroll"><table><thead><tr><th>Job</th><th>Runs</th><th>Failures</th><th>Rate</th></tr></thead><tbody id="flakyBody"></tbody></table></div>
-<h3>Suggested for quarantine</h3>
-<p class="muted">Flaky in 2+ runs with at least one pass — oldest run left, newest right (&#9679; pass, &#9675; fail).</p>
-<div class="table-scroll"><table><thead><tr><th>Test</th><th>History</th><th>Reason</th><th></th></tr></thead><tbody id="candidateBody"></tbody></table></div>
-<h3>Quarantined</h3>
-<div class="table-scroll"><table><thead><tr><th>Test</th><th>Status</th><th>Reason</th><th>Green streak</th><th>Updated</th><th></th></tr></thead><tbody id="quarantineBody"></tbody></table></div>
-<form id="quarantineForm" class="inline" hidden>
-<input id="quarantineName" placeholder="test name to quarantine" maxlength="200" aria-label="Test name">
-<button type="submit">Quarantine</button>
-</form>
+<section id="reposPane" class="card" hidden>
+<h2>Repositories</h2>
+<p class="muted">Every codebase lives in one place. Open a repo to browse files and history — or race agents on it.</p>
+<p id="reposErr" class="err"></p>
+<div id="reposList"></div>
+<div id="repoDetail" hidden>
+<p><button id="backToRepos" class="ghost">Back to list</button></p>
+<div id="repoHead"></div>
+<div id="repoFiles"></div>
+<div id="repoRuns"></div>
+<div id="repoCommits"></div>
+</div>
 </section>
 <section id="mergePane" class="card" hidden>
 <h2>Merge queue</h2>
@@ -589,43 +544,16 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <button type="submit">Enqueue</button>
 </form>
 </section>
-<section id="templatesPane" class="card" hidden>
-<h2>Template gallery</h2>
-<p class="muted">One starter flare.yml per stack. Copy the YAML into your repo, or scaffold it with the init command on each card.</p>
-<div id="templatesList"></div>
-<h2>Migration wizard</h2>
-<p class="muted">Three steps from GitHub Actions to flare.yml: paste a workflow, convert it with the same importer cli import uses, then review the warnings and save the YAML.</p>
-<form id="migrateForm" class="auth-form">
-<textarea id="migrateInput" rows="10" placeholder="Paste .github/workflows/ci.yml here" aria-label="GitHub Actions workflow YAML"></textarea>
-<input id="migrateFilename" placeholder="workflow filename (optional)" maxlength="128" aria-label="Workflow filename">
-<button type="submit">Convert to flare.yml</button>
-</form>
-<p id="migrateErr" class="err"></p>
-<div id="migrateOut" hidden>
-<h3>Converted flare.yml</h3>
-<pre id="migrateYaml" class="log"></pre>
-<p><button id="migrateCopy" class="ghost" type="button">Copy</button></p>
-<h3>Warnings</h3>
-<div id="migrateWarnings" class="muted"></div>
+</section>
+</div></main>
+<div id="paletteOverlay" hidden>
+<div id="palette" role="dialog" aria-label="Command palette">
+<input id="paletteInput" placeholder="Type a command or search…" autocomplete="off" aria-label="Command palette">
+<div id="paletteList"></div>
+<div id="paletteFoot"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>↵</kbd> run</span><span><kbd>esc</kbd> close</span></div>
 </div>
-</section>
-<section id="appsPane" class="card" hidden>
-<h2>My apps</h2>
-<p class="muted">OAuth apps you authorized on the MCP endpoint (Claude, ChatGPT, Cursor, …). Revoking disconnects the app immediately.</p>
-<div class="table-scroll"><table><thead><tr><th>App</th><th>Scopes</th><th>Granted</th><th></th></tr></thead><tbody id="myAppsBody"></tbody></table></div>
-<h2>My notifications</h2>
-<p class="muted">Attention prefs for your run emails, on top of the global notify mode. Quiet hours (UTC) drop emails inside the window — nothing queues. New-failure dedup skips repeat reds on the same repo and branch, so a long red streak pages once; recovery always notifies.</p>
-<form id="notifyPrefsForm" class="inline">
-<input id="quietStartInput" placeholder="quiet from, UTC HH:MM (blank = off)" maxlength="5" size="12" aria-label="Quiet hours start (UTC HH:MM)">
-<input id="quietEndInput" placeholder="quiet until, UTC HH:MM" maxlength="5" size="12" aria-label="Quiet hours end (UTC HH:MM)">
-<label><input type="checkbox" id="newFailuresCheck"> only new failures (skip repeat reds)</label>
-<button type="submit">Save</button>
-</form>
-<p id="notifyPrefsErr" class="err"></p>
-<p id="notifyPrefsOk"></p>
-</section>
-</section>
-</main>
+</div>
+<div id="toasts" aria-live="polite"></div>
 <script>
 (function () {
   var KEY = "flare-admin-token";
@@ -745,13 +673,13 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
   var resetToken = null;
 
   function showInvite() {
-    invitePane.hidden = false; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
+    invitePane.hidden = false; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = ""; document.body.classList.remove("app");
     resetPane.hidden = true; resetConfirmPane.hidden = true;
     ensureTurnstile("tsInvite");
   }
 
   function showReset() {
-    resetPane.hidden = false; resetConfirmPane.hidden = true; invitePane.hidden = true; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
+    resetPane.hidden = false; resetConfirmPane.hidden = true; invitePane.hidden = true; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = ""; document.body.classList.remove("app");
     document.getElementById("resetRequestOk").textContent = "";
     document.getElementById("resetRequestErr").textContent = "";
     ensureTurnstile("tsReset");
@@ -759,7 +687,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 
   function showResetConfirm(token) {
     resetToken = token;
-    resetConfirmPane.hidden = false; resetPane.hidden = true; invitePane.hidden = true; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
+    resetConfirmPane.hidden = false; resetPane.hidden = true; invitePane.hidden = true; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = ""; document.body.classList.remove("app");
   }
 
   var emailMode = "login";
@@ -777,7 +705,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     lastStatus = st;
     invitePane.hidden = true;
     resetPane.hidden = true; resetConfirmPane.hidden = true;
-    authPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = "";
+    authPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = ""; document.body.classList.remove("app");
     document.getElementById("emailPw2Wrap").hidden = st.claimed;
     document.getElementById("emailBtn").textContent = st.claimed ? "Log in" : "Create admin account";
     document.getElementById("emailTitle").textContent = st.claimed ? "Log in with email" : "Create admin account";
@@ -804,10 +732,9 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     document.getElementById("dispatchBox").hidden = !admin;
     invitePane.hidden = true;
     resetPane.hidden = true; resetConfirmPane.hidden = true;
-    authPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false;
+    authPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false; document.body.classList.add("app");
     document.getElementById("connectBanner").hidden = !(admin && !githubConnected);
     userLabel.textContent = actor ? actor + " " : "";
-    tabAccess.hidden = !admin;
     tabSettings.hidden = !admin;
     if (!admin) selectTab("runs");
     var justInstalled = null;
@@ -819,6 +746,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       selectTab("runs");
     } else {
       notice.hidden = true;
+      if (!applyHashRoute()) palGoTab("tournaments");
     }
   }
   function api(path, opts) {
@@ -909,10 +837,8 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     if (st.user) {
       showApp(st.user.actor, st.user.admin, st.githubConnected);
       loadRuns();
-      loadMyApps();
-      loadNotifyPrefs();
       registerWebMcpTools(st.user.admin);
-      if (st.user.admin) { loadTokens(); loadUsers(); loadAudit(); loadOAuthGrants(); }
+      if (st.user.admin) { loadTokens(); loadUsers(); }
     } else {
       showAuth(st);
     }
@@ -925,9 +851,10 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       var g = q.get("github");
       var inv = q.get("invite");
       var rt = q.get("reset");
+      var m = q.get("magic");
       var installed = q.get("installation_id");
       var setupAction = q.get("setup_action");
-      if ((g || inv || rt || installed || setupAction) && window.history && window.history.replaceState) window.history.replaceState({}, "", "/dashboard");
+      if ((g || inv || rt || m || installed || setupAction) && window.history && window.history.replaceState) window.history.replaceState({}, "", "/dashboard");
       if (installed) {
         try { sessionStorage.setItem("flare-installed", setupAction || "install"); } catch (e) {}
       }
@@ -952,6 +879,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       route(st);
       handleGithubQuery(st, g, q.get("reason"));
       if (rt === "done") document.getElementById("loginMsg").textContent = "Password updated — log in.";
+      if (m === "expired") document.getElementById("magicErr").textContent = "That link expired or was already used — request a new one.";
     }).catch(function () { showAuth({ claimed: true, githubConnected: false, breakGlass: false, installUrl: null, openRegistration: false }); });
   }
 
@@ -997,6 +925,22 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
         boot();
       })
       .catch(function () { err.textContent = "Invalid email or password."; });
+  });
+
+  document.getElementById("magicForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var em = document.getElementById("magicEmail").value.trim();
+    var ok = document.getElementById("magicOk");
+    var err = document.getElementById("magicErr");
+    ok.textContent = "";
+    err.textContent = "";
+    fetch("/v1/admin/magic/request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: em, turnstileToken: turnstileToken("tsEmail") }) })
+      .then(function (res) {
+        if (!res.ok) throw new Error("bad");
+        document.getElementById("magicEmail").value = "";
+        ok.textContent = "If an account exists for that email, a login link is on its way (15 min).";
+      })
+      .catch(function () { err.textContent = "Could not send a link. Try again later."; });
   });
 
   document.getElementById("forgotBtn").addEventListener("click", function (ev) {
@@ -1121,46 +1065,37 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
   });
 
   var tabRuns = document.getElementById("tabRuns");
-  var tabFeed = document.getElementById("tabFeed");
   var tabTournaments = document.getElementById("tabTournaments");
-  var tabSearch = document.getElementById("tabSearch");
-  var tabFlaky = document.getElementById("tabFlaky");
+  var tabRepos = document.getElementById("tabRepos");
   var tabMerge = document.getElementById("tabMerge");
-  var tabTemplates = document.getElementById("tabTemplates");
-  var tabApps = document.getElementById("tabApps");
-  var tabAccess = document.getElementById("tabAccess");
   var tabSettings = document.getElementById("tabSettings");
   var runsPane = document.getElementById("runsPane");
-  var feedPane = document.getElementById("feedPane");
   var tournamentsPane = document.getElementById("tournamentsPane");
-  var searchPane = document.getElementById("searchPane");
-  var flakyPane = document.getElementById("flakyPane");
+  var teamPane = document.getElementById("teamPane");
+  var reposPane = document.getElementById("reposPane");
   var mergePane = document.getElementById("mergePane");
-  var templatesPane = document.getElementById("templatesPane");
-  var appsPane = document.getElementById("appsPane");
-  var accessPane = document.getElementById("accessPane");
   var settingsPane = document.getElementById("settingsPane");
   function selectTab(name) {
-    tabRuns.className = name === "runs" ? "active" : "";
-    tabFeed.className = name === "feed" ? "active" : "";
-    tabTournaments.className = name === "tournaments" ? "active" : "";
-    tabSearch.className = name === "search" ? "active" : "";
-    tabFlaky.className = name === "flaky" ? "active" : "";
-    tabMerge.className = name === "merge" ? "active" : "";
-    tabTemplates.className = name === "templates" ? "active" : "";
-    tabApps.className = name === "apps" ? "active" : "";
-    tabAccess.className = name === "access" ? "active" : "";
-    tabSettings.className = name === "settings" ? "active" : "";
+    tabRuns.className = "side-link" + (name === "runs" ? " active" : "");
+    tabTournaments.className = "side-link" + (name === "tournaments" ? " active" : "");
+    tabRepos.className = "side-link" + (name === "repos" ? " active" : "");
+    tabMerge.className = "side-link" + (name === "merge" ? " active" : "");
+    tabSettings.className = "side-link" + (name === "settings" ? " active" : "");
     runsPane.hidden = name !== "runs";
-    feedPane.hidden = name !== "feed";
     tournamentsPane.hidden = name !== "tournaments";
-    searchPane.hidden = name !== "search";
-    flakyPane.hidden = name !== "flaky";
+    reposPane.hidden = name !== "repos";
     mergePane.hidden = name !== "merge";
-    templatesPane.hidden = name !== "templates";
-    appsPane.hidden = name !== "apps";
-    accessPane.hidden = name !== "access";
     settingsPane.hidden = name !== "settings";
+    teamPane.hidden = name !== "settings";
+    currentTab = name;
+    document.title = (TAB_TITLES[name] || "Dashboard") + " · Flare Actions";
+    var panes = { runs: runsPane, tournaments: tournamentsPane, repos: reposPane, merge: mergePane, settings: settingsPane };
+    if (panes[name]) {
+      panes[name].classList.remove("pane-enter");
+      void panes[name].offsetWidth;
+      panes[name].classList.add("pane-enter");
+    }
+    syncHash();
   }
   document.getElementById("runsFilter").addEventListener("input", function () { renderRuns(); });
   document.getElementById("runsFilterForm").addEventListener("submit", function (ev) { ev.preventDefault(); });
@@ -1193,11 +1128,8 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     if (!box.hidden && back) back.click();
   });
   tabRuns.addEventListener("click", function () { selectTab("runs"); loadRuns(); });
-  tabFeed.addEventListener("click", function () { selectTab("feed"); loadFeed(); });
-  document.getElementById("feedRefresh").addEventListener("click", function () { loadFeed(); });
   tabTournaments.addEventListener("click", function () { selectTab("tournaments"); loadTournaments(); });
-  tabSearch.addEventListener("click", function () { selectTab("search"); });
-  tabFlaky.addEventListener("click", function () { selectTab("flaky"); });
+  tabRepos.addEventListener("click", function () { selectTab("repos"); loadRepos(); });
   var currentTournamentId = "";
   var tournamentTimer = null;
   function stopTournamentTimer() {
@@ -1212,9 +1144,43 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     if (!intent || !source) { err.textContent = "intent and source repo are required"; return; }
     api("/v1/tournaments", { method: "POST", body: JSON.stringify({ intent: intent, sourceRepo: source }) }).then(function (b) {
       document.getElementById("tournamentIntent").value = "";
+      toast("Tournament opened — agents can claim slots");
       showTournament(b.id);
-    }, function (e) { err.textContent = e.message; });
+    }, function (e) { err.textContent = e.message; toast(e.message, true); });
   });
+  var TOURNAMENT_STATE_CLASS = { open: "queued", verifying: "running", decided: "success" };
+  function tournamentStatePill(state) {
+    var s = el("span", state);
+    s.className = "pill " + (TOURNAMENT_STATE_CLASS[state] || "queued");
+    return s;
+  }
+  var ATTEMPT_STATE_CLASS = { claimed: "queued", pushing: "running", verifying: "running", terminal: "blocked" };
+  function attemptStatePill(state) {
+    var s = el("span", state);
+    s.className = "pill " + (ATTEMPT_STATE_CLASS[state] || "queued");
+    return s;
+  }
+  function chip(text) { var c = el("span", text); c.className = "chip"; return c; }
+  function zoneTitle(title, count) {
+    var h = el("h3"); h.className = "t-zone-title";
+    h.appendChild(el("span", title));
+    if (count !== undefined && count !== null) { var c = el("span", count); c.className = "t-count"; h.appendChild(c); }
+    return h;
+  }
+  function agentAvatar(name) {
+    var d = el("span", (name || "?").slice(0, 1).toUpperCase());
+    d.className = "t-avatar";
+    return d;
+  }
+  var LEDGER_LABEL = { opened: "Tournament opened", claimed: "Slot claimed", pushed: "Pushed for verification", terminal: "Verification finished", collision: "File overlap", verdict: "Verdict", resolved: "Winner resolved", promoted: "Promoted to main", "promote-failed": "Promotion held" };
+  function parseCollision(body) {
+    var cut = (body || "").indexOf(": ");
+    if (cut < 0) return null;
+    var pair = body.slice(0, cut).split(" x ");
+    if (pair.length !== 2 || !pair[0] || !pair[1]) return null;
+    var paths = body.slice(cut + 2).split(", ").filter(function (p) { return !!p; });
+    return { a: pair[0], b: pair[1], paths: paths };
+  }
   function loadTournaments() {
     stopTournamentTimer();
     var err = document.getElementById("tournamentsErr");
@@ -1222,65 +1188,247 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     err.textContent = "";
     list.textContent = "";
     document.getElementById("tournamentDetail").hidden = true;
+    document.title = "Tournaments · Flare Actions";
+    list.className = "t-enter";
+    skeleton(list, 3, "skel-row");
     api("/v1/tournaments").then(function (b) {
       var tournaments = b.tournaments || [];
-      if (tournaments.length === 0) { list.textContent = "No tournaments yet."; return; }
+      lastTournaments = tournaments;
+      list.textContent = "";
+      syncHash();
+      if (tournaments.length === 0) {
+        var empty = el("div"); empty.className = "empty";
+        empty.appendChild(el("h3", "No races yet — here's the whole model"));
+        var steps = el("ol"); steps.className = "steps";
+        steps.appendChild(setupStep("Open a task", "Write the intent above. That sentence is the why every agent shares.", false, null));
+        steps.appendChild(setupStep("Agents race in isolated forks", "Each agent gets its own repo. Watch them all on one board.", false, null));
+        steps.appendChild(setupStep("Overlaps surface on their own", "The radar shows who touched the same files — no merge surprises.", false, null));
+        steps.appendChild(setupStep("A verdict picks the winner", "Ranked by real verification runs, recorded forever.", false, null));
+        empty.appendChild(steps);
+        list.appendChild(empty);
+        return;
+      }
       tournaments.forEach(function (t) {
-        var row = document.createElement("p");
-        var btn = document.createElement("button");
-        btn.className = "ghost";
-        btn.textContent = t.intent + " (" + t.state + ")";
-        btn.addEventListener("click", function () { showTournament(t.id); });
-        row.appendChild(btn);
+        var row = el("div");
+        row.className = "run-row";
+        row.setAttribute("role", "button");
+        row.setAttribute("tabindex", "0");
+        var main = el("div"); main.className = "run-main";
+        var title = el("div", t.intent); title.className = "run-repo"; main.appendChild(title);
+        var meta = el("div"); meta.className = "run-meta";
+        meta.appendChild(document.createTextNode((t.source_repo || "") + " · opened "));
+        var metaTime = el("span", fmtAgo(t.created_at)); metaTime.setAttribute("data-ago", t.created_at); meta.appendChild(metaTime);
+        main.appendChild(meta);
+        row.appendChild(main);
+        row.appendChild(tournamentStatePill(t.state));
+        row.addEventListener("click", function () { showTournament(t.id); });
+        row.addEventListener("keydown", function (kev) { if (kev.key === "Enter") showTournament(t.id); });
         list.appendChild(row);
       });
     }, function (e) { err.textContent = e.message; });
   }
   document.getElementById("backToTournaments").addEventListener("click", function () {
     stopTournamentTimer();
+    currentTournamentId = "";
     document.getElementById("tournamentDetail").hidden = true;
     loadTournaments();
   });
   document.getElementById("refreshTournament").addEventListener("click", function () {
     if (currentTournamentId) showTournament(currentTournamentId);
   });
+  function renderTournamentWhy(b) {
+    var box = document.getElementById("tWhy");
+    box.textContent = "";
+    var hero = el("div"); hero.className = "t-hero";
+    hero.appendChild(zoneTitle("Why this race exists", null));
+    var intent = el("p", b.tournament.intent); intent.className = "t-intent"; hero.appendChild(intent);
+    var meta = el("div"); meta.className = "t-meta";
+    meta.appendChild(tournamentStatePill(b.tournament.state));
+    var repoChip = chip("repo " + b.tournament.source_repo);
+    repoChip.setAttribute("role", "button"); repoChip.setAttribute("tabindex", "0");
+    repoChip.setAttribute("title", "Open in Repositories"); repoChip.style.cursor = "pointer";
+    (function (rn) {
+      var go = function () { selectTab("repos"); openRepo(rn); };
+      repoChip.addEventListener("click", go);
+      repoChip.addEventListener("keydown", function (kev) { if (kev.key === "Enter") go(); });
+    })(b.tournament.source_repo);
+    meta.appendChild(repoChip);
+    meta.appendChild(chip("base " + (b.tournament.base_ref || "main") + "@" + String(b.tournament.base_sha || "").slice(0, 7)));
+    var ago = el("span", "opened " + fmtAgo(b.tournament.created_at)); ago.className = "muted"; ago.setAttribute("data-ago", b.tournament.created_at); ago.setAttribute("data-prefix", "opened "); meta.appendChild(ago);
+    if (b.tournament.resolved_sha) meta.appendChild(chip("resolved " + String(b.tournament.resolved_sha).slice(0, 12)));
+    hero.appendChild(meta);
+    box.appendChild(hero);
+  }
+  function renderTournamentLanes(b) {
+    var box = document.getElementById("tLanes");
+    box.textContent = "";
+    var zone = el("div"); zone.className = "t-zone";
+    var attempts = b.attempts || [];
+    zone.appendChild(zoneTitle("Agent activity", attempts.length === 1 ? "1 agent racing" : attempts.length + " agents racing"));
+    if (attempts.length === 0) {
+      var none = el("p", "No claims yet — agents claim slots and their forks appear here live."); none.className = "t-clean"; zone.appendChild(none);
+    }
+    attempts.forEach(function (a) {
+      var lane = el("div"); lane.className = "t-lane";
+      var head = el("div"); head.className = "t-lane-head";
+      head.appendChild(agentAvatar(a.agent));
+      var name = el("span", a.agent); name.className = "t-agent"; head.appendChild(name);
+      head.appendChild(attemptStatePill(a.state));
+      if (a.verdict_rank) {
+        var rank = el("span", a.verdict_rank === 1 ? "Winner" : "#" + a.verdict_rank);
+        rank.className = "t-rank" + (a.verdict_rank === 1 ? " first" : "");
+        head.appendChild(rank);
+      }
+      lane.appendChild(head);
+      var sub = el("p"); sub.className = "t-lane-sub mono";
+      sub.appendChild(document.createTextNode("fork " + a.fork_repo + " · updated "));
+      var subTime = el("span", fmtAgo(a.updated_at)); subTime.setAttribute("data-ago", a.updated_at); sub.appendChild(subTime);
+      lane.appendChild(sub);
+      var foot = el("div"); foot.className = "t-lane-foot";
+      if (a.last_seen_sha) foot.appendChild(chip("@" + String(a.last_seen_sha).slice(0, 7)));
+      if (a.run_status) foot.appendChild(pill(a.run_status));
+      else if (a.run_id) foot.appendChild(chip("run " + String(a.run_id).slice(0, 8)));
+      if (a.run_id) {
+        var open = el("button", "Open verification run");
+        open.className = "ghost";
+        open.type = "button";
+        (function (runId) {
+          open.addEventListener("click", function () { selectTab("runs"); loadRun(runId, true); });
+        })(a.run_id);
+        foot.appendChild(open);
+      }
+      lane.appendChild(foot);
+      zone.appendChild(lane);
+    });
+    box.appendChild(zone);
+  }
+  function renderTournamentRadar(b) {
+    var box = document.getElementById("tRadar");
+    box.textContent = "";
+    var zone = el("div"); zone.className = "t-zone";
+    var collisions = [];
+    (b.ledger || []).forEach(function (l) {
+      if (l.kind !== "collision") return;
+      var c = parseCollision(l.body || "");
+      collisions.push(c || { a: "", b: "", paths: [], raw: l.body });
+    });
+    zone.appendChild(zoneTitle("Collision radar", collisions.length === 0 ? "clean" : collisions.length + " overlapping"));
+    if (collisions.length === 0) {
+      var clean = el("p", "Clean race — no two agents touched the same files."); clean.className = "t-clean"; zone.appendChild(clean);
+    }
+    collisions.forEach(function (c) {
+      var card = el("div"); card.className = "t-radar-card";
+      if (!c.paths || c.paths.length === 0) {
+        card.appendChild(el("p", c.raw || ""));
+      } else {
+        var pair = el("p"); pair.className = "t-radar-pair";
+        pair.appendChild(el("span", c.a + " × " + c.b));
+        var n = el("span", c.paths.length === 1 ? "1 shared file" : c.paths.length + " shared files"); n.className = "t-count"; pair.appendChild(n);
+        card.appendChild(pair);
+        var paths = el("div"); paths.className = "t-paths";
+        c.paths.forEach(function (p) { paths.appendChild(chip(p)); });
+        card.appendChild(paths);
+      }
+      zone.appendChild(card);
+    });
+    box.appendChild(zone);
+  }
+  function verdictOrder(b) {
+    var attempts = b.attempts || [];
+    var byId = {};
+    attempts.forEach(function (a) { byId[a.id] = a; });
+    try {
+      var ordered = [];
+      JSON.parse((b.verdict && b.verdict.ranking) || "[]").forEach(function (id) { if (byId[id]) ordered.push(byId[id]); });
+      attempts.forEach(function (a) { if (ordered.indexOf(a) < 0) ordered.push(a); });
+      return ordered;
+    } catch (e) {
+      return attempts.slice().sort(function (x, y) { return (x.verdict_rank || 99) - (y.verdict_rank || 99); });
+    }
+  }
+  function renderTournamentReview(b) {
+    var box = document.getElementById("tReview");
+    box.textContent = "";
+    var zone = el("div"); zone.className = "t-zone";
+    var attempts = b.attempts || [];
+    if (!b.verdict) {
+      var terminal = attempts.filter(function (a) { return a.state === "terminal"; }).length;
+      zone.appendChild(zoneTitle("Review", "racing"));
+      var wait = el("p", attempts.length === 0
+        ? "The verdict lands once agents push and every attempt verifies."
+        : "Verdict lands when every attempt is terminal — " + terminal + " of " + attempts.length + " in.");
+      wait.className = "t-clean";
+      zone.appendChild(wait);
+      box.appendChild(zone);
+      return;
+    }
+    zone.appendChild(zoneTitle("Review", "decided"));
+    var panel = el("div"); panel.className = "t-verdict";
+    var order = verdictOrder(b);
+    var winner = order.length ? order[0] : null;
+    var banner = el("div"); banner.className = "t-winner";
+    if (winner) banner.appendChild(agentAvatar(winner.agent));
+    banner.appendChild(el("span", winner ? winner.agent : "—")).className = "t-winner-name";
+    var tag = el("span", "Winner"); tag.className = "t-rank first"; banner.appendChild(tag);
+    panel.appendChild(banner);
+    var rat = el("p", b.verdict.rationale || ""); rat.className = "t-rationale"; panel.appendChild(rat);
+    var model = el("p", "Deterministic ranking · rationale by " + (b.verdict.model || "unknown model")); model.className = "t-model"; panel.appendChild(model);
+    if (order.length > 1) {
+      var list = el("ol"); list.className = "t-ranklist";
+      order.forEach(function (a, i) {
+        var li = el("li");
+        var pos = el("span", String(i + 1)); pos.className = "t-pos" + (i === 0 ? " first" : ""); li.appendChild(pos);
+        li.appendChild(el("span", a.agent));
+        li.appendChild(attemptStatePill(a.state));
+        if (a.run_status) li.appendChild(pill(a.run_status));
+        list.appendChild(li);
+      });
+      panel.appendChild(list);
+    }
+    zone.appendChild(panel);
+    box.appendChild(zone);
+  }
+  function renderTournamentActivity(b) {
+    var box = document.getElementById("tActivity");
+    box.textContent = "";
+    var zone = el("div"); zone.className = "t-zone";
+    var ledger = (b.ledger || []).slice().reverse();
+    zone.appendChild(zoneTitle("History", ledger.length + " events"));
+    var list = el("ol"); list.className = "t-timeline";
+    ledger.forEach(function (l) {
+      var li = el("li");
+      var dot = el("span"); dot.className = "t-dot " + l.kind; dot.setAttribute("aria-hidden", "true"); li.appendChild(dot);
+      var kind = el("span", LEDGER_LABEL[l.kind] || l.kind); kind.className = "t-event-kind"; li.appendChild(kind);
+      var time = el("span", fmtAgo(l.created_at)); time.className = "t-event-time"; time.title = fmtTime(l.created_at); time.setAttribute("data-ago", l.created_at); li.appendChild(time);
+      if (l.body) { var body = el("div", l.body); body.className = "t-event-body mono"; li.appendChild(body); }
+      list.appendChild(li);
+    });
+    zone.appendChild(list);
+    box.appendChild(zone);
+  }
   function showTournament(id) {
     stopTournamentTimer();
+    var fresh = currentTournamentId !== id || document.getElementById("tournamentDetail").hidden;
     currentTournamentId = id;
     var err = document.getElementById("tournamentsErr");
     err.textContent = "";
+    if (fresh) {
+      skeleton(document.getElementById("tWhy"), 2, "skel-line");
+      skeleton(document.getElementById("tReview"), 2, "skel-line");
+      skeleton(document.getElementById("tLanes"), 3, "skel-row");
+      skeleton(document.getElementById("tRadar"), 1, "skel-row");
+      skeleton(document.getElementById("tActivity"), 4, "skel-line");
+    }
     api("/v1/tournaments/" + encodeURIComponent(id)).then(function (b) {
       document.getElementById("tournamentsList").textContent = "";
       document.getElementById("tournamentDetail").hidden = false;
-      document.getElementById("tournamentTitle").textContent = b.tournament.intent + " (" + b.tournament.state + ")";
-      var att = document.getElementById("tournamentAttempts");
-      att.textContent = "";
-      (b.attempts || []).forEach(function (a) {
-        var p = document.createElement("p");
-        var line = a.agent + ": " + a.state;
-        if (a.run_id) line += " run " + String(a.run_id).slice(0, 8);
-        if (a.verdict_rank) line += " rank " + a.verdict_rank;
-        p.textContent = line;
-        att.appendChild(p);
-      });
-      if ((b.attempts || []).length === 0) att.textContent = "No claims yet.";
-      var v = document.getElementById("tournamentVerdict");
-      v.textContent = "";
-      if (b.verdict) {
-        var h = document.createElement("h4");
-        h.textContent = "Verdict";
-        v.appendChild(h);
-        var p = document.createElement("p");
-        p.textContent = b.verdict.rationale || "";
-        v.appendChild(p);
-      }
-      var led = document.getElementById("tournamentLedger");
-      led.textContent = "";
-      (b.ledger || []).forEach(function (l) {
-        var lp = document.createElement("p");
-        lp.textContent = l.kind + ": " + l.body;
-        led.appendChild(lp);
-      });
+      document.title = String(b.tournament.intent).slice(0, 60) + " · Flare Actions";
+      syncHash();
+      renderTournamentWhy(b);
+      renderTournamentReview(b);
+      renderTournamentLanes(b);
+      renderTournamentRadar(b);
+      renderTournamentActivity(b);
       if (b.tournament.state !== "decided") {
         tournamentTimer = setInterval(function () {
           if (document.getElementById("tournamentDetail").hidden || tournamentsPane.hidden) { stopTournamentTimer(); return; }
@@ -1289,50 +1437,250 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       }
     }, function (e) { err.textContent = e.message; });
   }
-  tabApps.addEventListener("click", function () { selectTab("apps"); loadMyApps(); loadNotifyPrefs(); });
-  document.getElementById("searchForm").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    runLogSearch();
-  });
-  function runLogSearch() {
-    var q = document.getElementById("searchInput").value.trim();
-    var err = document.getElementById("searchErr");
-    var list = document.getElementById("searchList");
+  var currentRepo = "";
+  var currentRepoRef = "main";
+  var currentRepoPath = "";
+  function loadRepos() {
+    var err = document.getElementById("reposErr");
+    var list = document.getElementById("reposList");
     err.textContent = "";
     list.textContent = "";
-    if (!q) return;
-    api("/v1/search/logs?q=" + encodeURIComponent(q) + "&limit=50").then(function (res) {
-      var hits = (res && res.hits) || [];
-      if (hits.length === 0) {
-        list.textContent = "No matching log lines.";
+    document.getElementById("repoDetail").hidden = true;
+    currentRepo = "";
+    document.title = "Repositories · Flare Actions";
+    list.className = "t-enter";
+    skeleton(list, 4, "skel-row");
+    api("/v1/repos?limit=50").then(function (b) {
+      list.textContent = "";
+      syncHash();
+      var repos = (b && b.repos) || [];
+      if (repos.length === 0) {
+        var empty = el("div"); empty.className = "empty";
+        empty.appendChild(el("h3", "No repositories yet"));
+        empty.appendChild(el("p", "Push code to the Artifacts namespace or import a repo — it shows up here, ready to browse and race on."));
+        list.appendChild(empty);
         return;
       }
-      var table = el("table");
-      var head = el("tr");
-      ["when", "repo", "branch", "level", "line"].forEach(function (h) { head.appendChild(el("th", h)); });
-      var thead = el("thead"); thead.appendChild(head); table.appendChild(thead);
-      var body = el("tbody");
-      hits.forEach(function (h) {
-        var tr = el("tr");
-        tr.appendChild(timeCell(h.created_at));
-        tr.appendChild(el("td", h.repo + " / " + h.run_id.slice(0, 8)));
-        tr.appendChild(el("td", h.branch || "-"));
-        tr.appendChild(el("td", h.level));
-        var line = el("td", h.line); line.className = "mono";
-        tr.appendChild(line);
-        body.appendChild(tr);
+      repos.forEach(function (r) {
+        var row = el("div"); row.className = "run-row";
+        row.setAttribute("role", "button"); row.setAttribute("tabindex", "0");
+        var main = el("div"); main.className = "run-main";
+        var title = el("div", r.name); title.className = "run-repo mono"; main.appendChild(title);
+        var meta = el("div"); meta.className = "run-meta";
+        meta.appendChild(document.createTextNode(r.defaultBranch || "main"));
+        if (r.lastPushAt) {
+          meta.appendChild(document.createTextNode(" · pushed "));
+          var t = el("span", fmtAgo(r.lastPushAt)); t.setAttribute("data-ago", r.lastPushAt); meta.appendChild(t);
+        } else meta.appendChild(document.createTextNode(" · never pushed"));
+        main.appendChild(meta);
+        row.appendChild(main);
+        if (r.source) row.appendChild(chip("fork"));
+        row.addEventListener("click", function () { openRepo(r.name); });
+        row.addEventListener("keydown", function (kev) { if (kev.key === "Enter") openRepo(r.name); });
+        list.appendChild(row);
       });
-      table.appendChild(body);
-      var wrap = el("div"); wrap.className = "table-scroll"; wrap.appendChild(table);
-      list.appendChild(wrap);
-    }, function (e) {
-      err.textContent = (e && e.message) || "Search failed";
-    });
+    }, function (e) { list.textContent = ""; err.textContent = e.message; });
   }
-  document.getElementById("flakyForm").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    loadFlaky();
+  document.getElementById("backToRepos").addEventListener("click", function () {
+    currentRepo = "";
+    document.getElementById("repoDetail").hidden = true;
+    loadRepos();
   });
+  function openRepo(name) {
+    var err = document.getElementById("reposErr");
+    err.textContent = "";
+    currentRepo = name;
+    currentRepoPath = "";
+    document.getElementById("reposList").textContent = "";
+    document.getElementById("repoDetail").hidden = false;
+    document.title = name + " · Flare Actions";
+    syncHash();
+    skeleton(document.getElementById("repoHead"), 1, "skel-line");
+    skeleton(document.getElementById("repoFiles"), 3, "skel-row");
+    skeleton(document.getElementById("repoRuns"), 2, "skel-row");
+    skeleton(document.getElementById("repoCommits"), 3, "skel-line");
+    api("/v1/repos/" + encodeURIComponent(name)).then(function (info) {
+      currentRepoRef = info.defaultBranch || "main";
+      renderRepoHead(info);
+      if (!info.head) {
+        var files = document.getElementById("repoFiles");
+        files.textContent = "";
+        var empty = el("p", "Empty repository — push code to " + currentRepoRef + ", or race agents to fill it.");
+        empty.className = "t-clean"; files.appendChild(empty);
+        document.getElementById("repoCommits").textContent = "";
+        return;
+      }
+      loadRepoTree();
+      loadRepoRuns();
+      loadRepoCommits();
+    }, function (e) { err.textContent = e.message; });
+  }
+  function renderRepoHead(info) {
+    var box = document.getElementById("repoHead");
+    box.textContent = "";
+    var hero = el("div"); hero.className = "t-hero";
+    var title = el("p", info.name); title.className = "t-intent mono"; hero.appendChild(title);
+    var meta = el("div"); meta.className = "t-meta"; meta.id = "repoHeadMeta";
+    meta.appendChild(chip("branch " + (info.defaultBranch || "main")));
+    if (info.head) meta.appendChild(chip("@" + String(info.head.hash).slice(0, 7)));
+    if (info.source) meta.appendChild(chip("forked from " + info.source));
+    if (info.lastPushAt) {
+      var ago = el("span", "pushed " + fmtAgo(info.lastPushAt)); ago.className = "muted";
+      ago.setAttribute("data-ago", info.lastPushAt); ago.setAttribute("data-prefix", "pushed ");
+      meta.appendChild(ago);
+    }
+    hero.appendChild(meta);
+    var actions = el("p");
+    var race = el("button", "Race agents on this repo"); race.type = "button";
+    race.addEventListener("click", function () {
+      document.getElementById("tournamentSource").value = info.name;
+      selectTab("tournaments"); loadTournaments();
+      document.getElementById("tournamentIntent").focus();
+      toast("Describe the task, then open the race");
+    });
+    actions.appendChild(race);
+    hero.appendChild(actions);
+    box.appendChild(hero);
+  }
+  function repoCrumbs() {
+    var nav = el("p"); nav.className = "t-crumb";
+    var root = el("button", currentRepo); root.type = "button"; root.className = "ghost";
+    root.addEventListener("click", function () { currentRepoPath = ""; loadRepoTree(); });
+    nav.appendChild(root);
+    var acc = "";
+    currentRepoPath.split("/").forEach(function (seg) {
+      if (!seg) return;
+      nav.appendChild(document.createTextNode(" / "));
+      acc = acc ? acc + "/" + seg : seg;
+      (function (p, label) {
+        var b = el("button", label); b.type = "button"; b.className = "ghost";
+        b.addEventListener("click", function () { currentRepoPath = p; loadRepoTree(); });
+        nav.appendChild(b);
+      })(acc, seg);
+    });
+    return nav;
+  }
+  function loadRepoTree() {
+    var box = document.getElementById("repoFiles");
+    var err = document.getElementById("reposErr");
+    skeleton(box, 3, "skel-row");
+    api("/v1/repos/" + encodeURIComponent(currentRepo) + "/tree?ref=" + encodeURIComponent(currentRepoRef) + "&path=" + encodeURIComponent(currentRepoPath)).then(function (t) {
+      box.textContent = "";
+      if (!t.path && !document.getElementById("repoCiChip")) {
+        var hasPipeline = t.entries.some(function (e) { return e.name === "flare.yml"; });
+        var hm = document.getElementById("repoHeadMeta");
+        if (hm) {
+          var cic = chip(hasPipeline ? "CI ready" : "no pipeline");
+          cic.id = "repoCiChip";
+          hm.appendChild(cic);
+        }
+      }
+      var zone = el("div"); zone.className = "t-zone";
+      zone.appendChild(zoneTitle("Files", t.entries.length + " items"));
+      zone.appendChild(repoCrumbs());
+      if (t.entries.length === 0) {
+        var none = el("p", "Empty directory."); none.className = "t-clean"; zone.appendChild(none);
+      }
+      t.entries.forEach(function (e) {
+        var row = el("div"); row.className = "run-row";
+        row.setAttribute("role", "button"); row.setAttribute("tabindex", "0");
+        var main = el("div"); main.className = "run-main";
+        var nm = el("div", e.name + (e.type === "tree" ? "/" : "")); nm.className = "run-repo mono"; main.appendChild(nm);
+        row.appendChild(main);
+        var open = function () {
+          if (e.type === "tree") { currentRepoPath = currentRepoPath ? currentRepoPath + "/" + e.name : e.name; loadRepoTree(); }
+          else openRepoFile(currentRepoPath ? currentRepoPath + "/" + e.name : e.name);
+        };
+        row.addEventListener("click", open);
+        row.addEventListener("keydown", function (kev) { if (kev.key === "Enter") open(); });
+        zone.appendChild(row);
+      });
+      if (t.truncated) {
+        var more = el("p", "Showing the first " + t.entries.length + " entries."); more.className = "t-clean"; zone.appendChild(more);
+      }
+      box.appendChild(zone);
+    }, function (e) { box.textContent = ""; err.textContent = e.message; });
+  }
+  function openRepoFile(path) {
+    var box = document.getElementById("repoFiles");
+    var err = document.getElementById("reposErr");
+    skeleton(box, 4, "skel-line");
+    api("/v1/repos/" + encodeURIComponent(currentRepo) + "/blob?ref=" + encodeURIComponent(currentRepoRef) + "&path=" + encodeURIComponent(path)).then(function (b) {
+      box.textContent = "";
+      var zone = el("div"); zone.className = "t-zone";
+      var head = el("p");
+      var back = el("button", "Back to files"); back.type = "button"; back.className = "ghost";
+      back.addEventListener("click", loadRepoTree);
+      head.appendChild(back);
+      head.appendChild(document.createTextNode(" "));
+      head.appendChild(chip(path));
+      zone.appendChild(head);
+      if (b.binary) {
+        var bin = el("p", "Binary file — " + fmtBytes(b.size) + "."); bin.className = "t-clean"; zone.appendChild(bin);
+      } else if (b.text === null || b.text === undefined) {
+        var big = el("p", "File too large to preview — " + fmtBytes(b.size) + "."); big.className = "t-clean"; zone.appendChild(big);
+      } else {
+        var pre = el("pre", b.text); pre.className = "log"; zone.appendChild(pre);
+        if (b.truncated) {
+          var note = el("p", "Truncated preview of " + fmtBytes(b.size) + "."); note.className = "t-clean"; zone.appendChild(note);
+        }
+      }
+      box.appendChild(zone);
+    }, function (e) { box.textContent = ""; err.textContent = e.message; });
+  }
+  function loadRepoRuns() {
+    var box = document.getElementById("repoRuns");
+    api("/v1/runs?repo=" + encodeURIComponent(currentRepo) + "&limit=5").then(function (b) {
+      box.textContent = "";
+      var zone = el("div"); zone.className = "t-zone";
+      var runs = (b && b.runs) || [];
+      zone.appendChild(zoneTitle("Verifications", runs.length === 0 ? "none yet" : "latest " + runs.length));
+      if (runs.length === 0) {
+        var none = el("p", "No verification runs yet — race agents on this repo to produce the first one.");
+        none.className = "t-clean"; zone.appendChild(none);
+      }
+      runs.forEach(function (r) {
+        var row = el("div"); row.className = "run-row";
+        row.setAttribute("role", "button"); row.setAttribute("tabindex", "0");
+        var main = el("div"); main.className = "run-main";
+        var title = el("div", "@" + String(r.sha || "").slice(0, 7)); title.className = "run-repo mono"; main.appendChild(title);
+        var meta = el("div"); meta.className = "run-meta";
+        meta.appendChild(document.createTextNode((r.event || "run") + " · "));
+        var t = el("span", fmtAgo(r.created_at)); t.setAttribute("data-ago", r.created_at); meta.appendChild(t);
+        main.appendChild(meta);
+        row.appendChild(main);
+        row.appendChild(pill(r.status));
+        row.addEventListener("click", function () { selectTab("runs"); loadRun(r.id, true); });
+        row.addEventListener("keydown", function (kev) { if (kev.key === "Enter") { selectTab("runs"); loadRun(r.id, true); } });
+        zone.appendChild(row);
+      });
+      box.appendChild(zone);
+    }, function () { box.textContent = ""; });
+  }
+  function loadRepoCommits() {
+    var box = document.getElementById("repoCommits");
+    api("/v1/repos/" + encodeURIComponent(currentRepo) + "/commits?ref=" + encodeURIComponent(currentRepoRef) + "&limit=20").then(function (b) {
+      box.textContent = "";
+      var zone = el("div"); zone.className = "t-zone";
+      var commits = (b && b.commits) || [];
+      zone.appendChild(zoneTitle("History", commits.length + " commits"));
+      commits.forEach(function (c) {
+        var lane = el("div"); lane.className = "t-lane";
+        var head = el("div"); head.className = "t-lane-head";
+        head.appendChild(agentAvatar(c.authorName || "?"));
+        var msg = el("span", String(c.message || "").split(String.fromCharCode(10))[0] || "(no message)"); msg.className = "t-agent"; head.appendChild(msg);
+        head.appendChild(chip(String(c.hash).slice(0, 7)));
+        lane.appendChild(head);
+        var sub = el("p"); sub.className = "t-lane-sub";
+        sub.appendChild(document.createTextNode((c.authorName || "unknown") + " · "));
+        var iso = new Date((c.committedAt || 0) * 1000).toISOString();
+        var t = el("span", fmtAgo(iso)); t.setAttribute("data-ago", iso); sub.appendChild(t);
+        lane.appendChild(sub);
+        zone.appendChild(lane);
+      });
+      box.appendChild(zone);
+    }, function () { box.textContent = ""; });
+  }
   document.getElementById("cacheForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
     loadCacheEntries();
@@ -1340,128 +1688,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
   document.getElementById("cachePurgeBtn").addEventListener("click", function () {
     purgeCachePrefix();
   });
-  document.getElementById("quarantineForm").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var repo = document.getElementById("flakyRepo").value.trim();
-    var name = document.getElementById("quarantineName").value.trim();
-    var err = document.getElementById("flakyErr");
-    err.textContent = "";
-    if (!repo || !name) { err.textContent = "repo and test name are required"; return; }
-    api("/v1/quarantine", { method: "POST", body: JSON.stringify({ repo: repo, name: name, action: "add" }) }).then(function () {
-      document.getElementById("quarantineName").value = "";
-      loadFlaky();
-    }, function (e) {
-      err.textContent = (e && e.message) || "Quarantine failed";
-    });
-  });
-  function loadFlaky() {
-    var repo = document.getElementById("flakyRepo").value.trim();
-    var err = document.getElementById("flakyErr");
-    var flakyBody = document.getElementById("flakyBody");
-    var candidateBody = document.getElementById("candidateBody");
-    var quarantineBody = document.getElementById("quarantineBody");
-    err.textContent = "";
-    flakyBody.textContent = "";
-    candidateBody.textContent = "";
-    quarantineBody.textContent = "";
-    document.getElementById("quarantineForm").hidden = !isAdmin;
-    if (!repo) return;
-    api("/v1/flaky?repo=" + encodeURIComponent(repo) + "&days=30").then(function (res) {
-      var stats = (res && res.stats) || [];
-      if (stats.length === 0) {
-        var empty = el("tr"); var td = el("td", "No finished jobs in the last 30 days."); td.colSpan = 4; empty.appendChild(td); flakyBody.appendChild(empty);
-      }
-      stats.forEach(function (s) {
-        var tr = el("tr");
-        tr.appendChild(el("td", s.job));
-        tr.appendChild(el("td", String(s.runs)));
-        tr.appendChild(el("td", String(s.failures)));
-        var pct = typeof s.rate === "number" ? Math.round(s.rate * 100) + "%" : "-";
-        tr.appendChild(el("td", pct));
-        flakyBody.appendChild(tr);
-      });
-      var candidates = (res && res.candidates) || [];
-      if (candidates.length === 0) {
-        var cempty = el("tr"); var ctd = el("td", "No flaky candidates — nothing to quarantine."); ctd.colSpan = 4; cempty.appendChild(ctd); candidateBody.appendChild(cempty);
-      }
-      candidates.forEach(function (c) {
-        var tr = el("tr");
-        var name = el("td", c.name); name.className = "mono"; tr.appendChild(name);
-        var hist = el("td", c.sparkline || "-"); hist.className = "mono"; tr.appendChild(hist);
-        tr.appendChild(el("td", c.reason || "-"));
-        var act = el("td");
-        if (isAdmin) {
-          var btn = el("button", "Quarantine");
-          btn.className = "ghost";
-          btn.addEventListener("click", function () {
-            api("/v1/quarantine", { method: "POST", body: JSON.stringify({ repo: repo, name: c.name, action: "add" }) }).then(loadFlaky, function (e) {
-              err.textContent = (e && e.message) || "Quarantine failed";
-            });
-          });
-          act.appendChild(btn);
-        }
-        tr.appendChild(act);
-        candidateBody.appendChild(tr);
-      });
-    }, function (e) {
-      err.textContent = (e && e.message) || "Flaky stats failed";
-    });
-    api("/v1/quarantine?repo=" + encodeURIComponent(repo)).then(function (res) {
-      var tests = (res && res.tests) || [];
-      if (tests.length === 0) {
-        var empty = el("tr"); var td = el("td", "Nothing quarantined."); td.colSpan = 6; empty.appendChild(td); quarantineBody.appendChild(empty);
-        return;
-      }
-      tests.forEach(function (t) {
-        var tr = el("tr");
-        var name = el("td", t.name); name.className = "mono"; tr.appendChild(name);
-        tr.appendChild(el("td", t.status));
-        tr.appendChild(el("td", t.reason || "-"));
-        tr.appendChild(el("td", String(t.green_streak)));
-        tr.appendChild(timeCell(t.updated_at));
-        var act = el("td");
-        if (isAdmin && t.status === "active") {
-          var btn = el("button", "Reinstate");
-          btn.className = "ghost";
-          btn.addEventListener("click", function () {
-            api("/v1/quarantine", { method: "POST", body: JSON.stringify({ repo: repo, name: t.name, action: "remove" }) }).then(loadFlaky, function (e) {
-              err.textContent = (e && e.message) || "Reinstate failed";
-            });
-          });
-          act.appendChild(btn);
-        }
-        tr.appendChild(act);
-        quarantineBody.appendChild(tr);
-      });
-    }, function (e) {
-      err.textContent = (e && e.message) || "Quarantine list failed";
-    });
-  }
   tabMerge.addEventListener("click", function () { selectTab("merge"); });
-  tabTemplates.addEventListener("click", function () { selectTab("templates"); loadTemplates(); });
-  document.getElementById("migrateForm").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var err = document.getElementById("migrateErr");
-    var out = document.getElementById("migrateOut");
-    err.textContent = "";
-    out.hidden = true;
-    var workflow = document.getElementById("migrateInput").value;
-    var filename = document.getElementById("migrateFilename").value.trim();
-    if (!workflow.trim()) { err.textContent = "paste a workflow first"; return; }
-    var payload = { workflow: workflow };
-    if (filename) payload.filename = filename;
-    api("/v1/migrate", { method: "POST", body: JSON.stringify(payload) }).then(function (b) {
-      out.hidden = false;
-      document.getElementById("migrateYaml").textContent = b.yaml || "";
-      var warns = document.getElementById("migrateWarnings");
-      warns.textContent = "";
-      (b.warnings || []).forEach(function (w) { warns.appendChild(el("p", String(w))); });
-      if (!(b.warnings || []).length) warns.textContent = "No warnings — clean conversion.";
-    }, function (e) { err.textContent = e.message; });
-  });
-  document.getElementById("migrateCopy").addEventListener("click", function () {
-    copyText(document.getElementById("migrateYaml").textContent, this);
-  });
   document.getElementById("mergeForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
     loadMergeQueue();
@@ -1477,9 +1704,11 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     api("/v1/merge-queue", { method: "POST", body: JSON.stringify({ repo: repo, pr: pr, headSha: headSha }) }).then(function () {
       document.getElementById("mergePr").value = "";
       document.getElementById("mergeSha").value = "";
+      toast("PR #" + pr + " enqueued for verified landing");
       loadMergeQueue();
     }, function (e) {
       err.textContent = (e && e.message) || "Enqueue failed";
+      toast(err.textContent, true);
     });
   });
   function loadMergeQueue() {
@@ -1499,7 +1728,11 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       entries.forEach(function (e) {
         var tr = el("tr");
         tr.appendChild(el("td", "#" + e.pr));
-        tr.appendChild(el("td", e.status));
+        var mqStatus = el("td");
+        var mqPill = el("span", e.status);
+        mqPill.className = "pill " + (e.status === "landed" ? "success" : e.status === "failed" ? "failure" : e.status === "verifying" ? "running" : e.status === "queued" ? "queued" : "cancelled");
+        mqStatus.appendChild(mqPill);
+        tr.appendChild(mqStatus);
         tr.appendChild(el("td", e.agent || "-"));
         var head = el("td", (e.headSha || "").slice(0, 7)); head.className = "mono"; tr.appendChild(head);
         tr.appendChild(el("td", e.note || "-"));
@@ -1508,8 +1741,9 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
           var btn = el("button", "Cancel");
           btn.className = "ghost";
           btn.addEventListener("click", function () {
-            api("/v1/merge-queue/" + encodeURIComponent(e.id), { method: "DELETE" }).then(loadMergeQueue, function (fail) {
+            api("/v1/merge-queue/" + encodeURIComponent(e.id), { method: "DELETE" }).then(function () { toast("Queue entry cancelled"); loadMergeQueue(); }, function (fail) {
               err.textContent = (fail && fail.message) || "Cancel failed";
+              toast(err.textContent, true);
             });
           });
           act.appendChild(btn);
@@ -1518,18 +1752,29 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
         body.appendChild(tr);
       });
       var collisions = (res && res.collisions) || [];
-      if (collisions.length === 0) { radar.textContent = "No file collisions between live entries."; return; }
+      if (collisions.length === 0) {
+        var mqClean = el("p", "No file collisions between live entries — land order is free.");
+        mqClean.className = "t-clean";
+        radar.appendChild(mqClean);
+        return;
+      }
       collisions.forEach(function (c) {
-        var row = el("p", "#" + c.prs[0] + " x #" + c.prs[1] + ": " + (c.paths || []).join(", "));
-        row.className = "mono";
-        radar.appendChild(row);
+        var card = el("div"); card.className = "t-radar-card";
+        var pair = el("p"); pair.className = "t-radar-pair";
+        pair.appendChild(el("span", "#" + c.prs[0] + " × #" + c.prs[1]));
+        var shared = c.paths || [];
+        var mqN = el("span", shared.length === 1 ? "1 shared file" : shared.length + " shared files"); mqN.className = "t-count"; pair.appendChild(mqN);
+        card.appendChild(pair);
+        var wrap = el("div"); wrap.className = "t-paths";
+        shared.forEach(function (p) { wrap.appendChild(chip(p)); });
+        card.appendChild(wrap);
+        radar.appendChild(card);
       });
     }, function (e) {
       err.textContent = (e && e.message) || "Merge queue failed";
     });
   }
-  tabAccess.addEventListener("click", function () { selectTab("access"); loadTokens(); loadUsers(); loadAudit(); loadOAuthGrants(); });
-  tabSettings.addEventListener("click", function () { selectTab("settings"); loadSettings(); });
+  tabSettings.addEventListener("click", function () { selectTab("settings"); loadSettings(); loadTokens(); loadUsers(); });
 
   var selectedRunId = null;
   var lastRuns = [];
@@ -1757,128 +2002,6 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     selectTab("runs");
     loadRun(id, true);
   }
-  function loadFeed() {
-    var list = document.getElementById("feedList");
-    var err = document.getElementById("feedErr");
-    err.textContent = "";
-    list.textContent = "";
-    var loading = el("p", "Loading feed…"); loading.className = "muted"; list.appendChild(loading);
-    api("/v1/feed").then(function (data) {
-      list.textContent = "";
-      var items = data.items || [];
-      if (!items.length) { list.appendChild(el("p", "No runs yet — push to a connected repo to start the feed.")); return; }
-      items.forEach(function (item) { appendFeedItem(list, item); });
-    }).catch(function (e) {
-      list.textContent = "";
-      err.textContent = e.message;
-    });
-  }
-  function appendFeedItem(list, item) {
-    var r = item.run;
-    var failed = item.failedJobs || [];
-    var wrap = el("div"); wrap.className = "feed-item";
-    var top = el("div"); top.className = "run-row";
-    top.appendChild(pill(r.status));
-    var main = el("div"); main.className = "run-main";
-    var repo = el("div", r.repo); repo.className = "run-repo"; main.appendChild(repo);
-    var meta = el("div"); meta.className = "run-meta";
-    meta.appendChild(el("span", (r.branch || "—") + " · "));
-    var code = el("code", String(r.sha).slice(0, 7)); code.className = "mono"; meta.appendChild(code);
-    var dur = runDuration(r);
-    meta.appendChild(el("span", " · " + r.event + (dur ? " · " + dur : "") + (failed.length ? " · " + failed.length + " failed" : "")));
-    main.appendChild(meta);
-    top.appendChild(main);
-    var t = el("span", fmtAgo(r.updated_at)); t.className = "run-time"; t.title = fmtTime(r.updated_at); top.appendChild(t);
-    (function (id) { top.addEventListener("click", function () { openRunDetail(id); }); })(r.id);
-    wrap.appendChild(top);
-    var actions = el("div"); actions.className = "feed-actions";
-    if (isAdmin && failed.length) {
-      var rerun = el("button", "Rerun failed (" + failed.length + ")");
-      rerun.className = "ghost";
-      (function (runId, jobs, btn) {
-        btn.addEventListener("click", function () {
-          btn.disabled = true;
-          var chain = Promise.resolve();
-          jobs.forEach(function (f) {
-            chain = chain.then(function () {
-              return api("/v1/runs/" + encodeURIComponent(runId) + "/jobs/" + encodeURIComponent(f.id) + "/rerun", { method: "POST" });
-            });
-          });
-          chain.then(function () { loadFeed(); }, function (e) {
-            document.getElementById("feedErr").textContent = e.message;
-            btn.disabled = false;
-          });
-        });
-      })(r.id, failed, rerun);
-      actions.appendChild(rerun);
-    }
-    if (r.pr_number) {
-      var pr = el("a", "Open PR #" + r.pr_number);
-      pr.href = "https://github.com/" + r.repo + "/pull/" + r.pr_number;
-      pr.target = "_blank";
-      pr.rel = "noopener";
-      actions.appendChild(pr);
-    }
-    if (r.heal_pr_url) {
-      var fix = el("a", "Open fix PR");
-      fix.href = r.heal_pr_url;
-      fix.target = "_blank";
-      fix.rel = "noopener";
-      actions.appendChild(fix);
-    } else if (failed.length) {
-      var open = el("button", "Open run");
-      open.className = "ghost";
-      (function (id) { open.addEventListener("click", function () { openRunDetail(id); }); })(r.id);
-      actions.appendChild(open);
-    }
-    if (actions.children.length) wrap.appendChild(actions);
-    list.appendChild(wrap);
-  }
-  function loadTemplates() {
-    var list = document.getElementById("templatesList");
-    list.textContent = "";
-    var loading = el("p", "Loading templates…"); loading.className = "muted"; list.appendChild(loading);
-    api("/v1/templates").then(function (data) {
-      list.textContent = "";
-      (data.templates || []).forEach(function (t) { appendTemplateCard(list, t); });
-      if (!list.children.length) list.appendChild(el("p", "No templates published."));
-    }).catch(function (e) {
-      list.textContent = "";
-      var err = el("p", "Could not load templates: " + e.message); err.className = "err"; list.appendChild(err);
-    });
-  }
-  function appendTemplateCard(list, t) {
-    var card = el("div"); card.className = "template-card";
-    card.appendChild(el("h3", t.name));
-    card.appendChild(el("p", t.description));
-    var meta = el("p"); meta.className = "muted";
-    var tag = el("span", t.stack); tag.className = "run-src"; meta.appendChild(tag);
-    meta.appendChild(el("span", "  "));
-    var hint = el("code", "npx flare init --template " + t.id); hint.className = "mono"; meta.appendChild(hint);
-    card.appendChild(meta);
-    var view = el("button", "View YAML"); view.className = "ghost";
-    var body = el("div");
-    (function (id, btn, box) {
-      btn.addEventListener("click", function () {
-        if (box.children.length) { box.textContent = ""; btn.textContent = "View YAML"; return; }
-        btn.disabled = true;
-        api("/v1/templates/" + encodeURIComponent(id)).then(function (full) {
-          btn.disabled = false;
-          btn.textContent = "Hide YAML";
-          var pre = el("pre", full.yaml || ""); pre.className = "log"; box.appendChild(pre);
-          var copy = el("button", "Copy"); copy.className = "ghost";
-          copy.addEventListener("click", function () { copyText(full.yaml || "", copy); });
-          box.appendChild(copy);
-        }, function (e) {
-          btn.disabled = false;
-          var err = el("p", e.message); err.className = "err"; box.appendChild(err);
-        });
-      });
-    })(t.id, view, body);
-    card.appendChild(view);
-    card.appendChild(body);
-    list.appendChild(card);
-  }
 
   var runDetailOpenId = null;
   var TERMINAL = { success: 1, failure: 1, error: 1, cancelled: 1, skipped: 1 };
@@ -1895,12 +2018,29 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       box.textContent = "";
       box.hidden = false;
       runDetailOpenId = data.run.id;
+      document.title = (data.run.repo || "run") + " @ " + String(data.run.sha || "").slice(0, 7) + " · Flare Actions";
+      syncHash();
       var head = el("h2");
       head.appendChild(el("span", data.run.repo + " @ "));
       var shaCode = el("code", String(data.run.sha).slice(0, 7)); shaCode.className = "mono"; head.appendChild(shaCode);
       head.appendChild(el("span", " "));
       head.appendChild(pill(data.run.status));
       box.appendChild(head);
+      if (data.race && data.race.tournament_id) {
+        var raceLine = el("p"); raceLine.className = "t-crumb";
+        raceLine.appendChild(el("span", "Verifying " + (data.race.agent || "an agent") + " in race "));
+        var raceBtn = el("button", "Open race"); raceBtn.type = "button"; raceBtn.className = "ghost";
+        (function (tid) {
+          raceBtn.addEventListener("click", function () { selectTab("tournaments"); showTournament(tid); });
+        })(data.race.tournament_id);
+        raceLine.appendChild(raceBtn);
+        if (data.race.verdict_rank === 1) {
+          var wtag = el("span", "Winner"); wtag.className = "t-rank first"; raceLine.appendChild(wtag);
+        } else if (data.race.verdict_rank) {
+          raceLine.appendChild(el("span", "ranked #" + data.race.verdict_rank));
+        }
+        box.appendChild(raceLine);
+      }
       if (data.summary) {
         box.appendChild(el("p", data.summary.finishedJobs + "/" + data.summary.jobs + " jobs finished, " +
           data.summary.computeMinutes + " compute-min (~$" + data.summary.actionsListUsd + " at Actions list price)"));
@@ -2043,7 +2183,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       var back = el("button", "Back to runs");
       back.id = "backToRuns";
       back.className = "ghost";
-      back.addEventListener("click", function () { box.hidden = true; runDetailOpenId = null; selectedRunId = null; loadRuns(); });
+      back.addEventListener("click", function () { box.hidden = true; runDetailOpenId = null; selectedRunId = null; document.title = "Runs · Flare Actions"; loadRuns(); syncHash(); });
       box.appendChild(back);
       if (scroll) box.scrollIntoView();
     }).catch(function () {});
@@ -2134,84 +2274,6 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       })
       .catch(function (e) { err.textContent = "Save failed: " + (e.message || "error"); });
   });
-  function loadEgress() {
-    var err = document.getElementById("egressErr");
-    var box = document.getElementById("egressList");
-    err.textContent = "";
-    document.getElementById("egressOk").textContent = "";
-    box.textContent = "";
-    var loading = el("p", "Loading…"); loading.className = "muted"; box.appendChild(loading);
-    api("/v1/admin/egress-allowlist").then(function (data) {
-      box.textContent = "";
-      var lists = data.allowlists || [];
-      if (!lists.length) {
-        var none = el("p", "No repo allowlists yet — every repo runs observe-only.");
-        none.className = "muted";
-        box.appendChild(none);
-        return;
-      }
-      lists.forEach(function (a) {
-        var row = el("div");
-        row.className = "secret-row";
-        var code = el("code", a.repo + ": " + (a.domains || []).join(", ")); code.className = "mono"; row.appendChild(code);
-        var del = el("button", "Delete");
-        del.className = "danger";
-        del.addEventListener("click", function () {
-          api("/v1/admin/egress-allowlist?repo=" + encodeURIComponent(a.repo), { method: "DELETE" })
-            .then(loadEgress)
-            .catch(function (e) { err.textContent = "Delete failed: " + (e.message || "error"); });
-        });
-        row.appendChild(del);
-        box.appendChild(row);
-      });
-    }).catch(function (e) { box.textContent = ""; err.textContent = "Could not load allowlists: " + (e.message || "error"); });
-  }
-  document.getElementById("egressForm").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var err = document.getElementById("egressErr");
-    var ok = document.getElementById("egressOk");
-    err.textContent = ""; ok.textContent = "";
-    var repo = document.getElementById("egressRepoInput").value.trim();
-    var domains = document.getElementById("egressDomainsInput").value.split(",").map(function (d) { return d.trim(); }).filter(function (d) { return !!d; });
-    if (!repo) { err.textContent = "Enter a repository."; return; }
-    if (!domains.length) { err.textContent = "Enter at least one domain."; return; }
-    api("/v1/admin/egress-allowlist", { method: "POST", body: JSON.stringify({ repo: repo, domains: domains }) })
-      .then(function () {
-        ok.textContent = "Allowlist saved.";
-        document.getElementById("egressDomainsInput").value = "";
-        loadEgress();
-      })
-      .catch(function (e) { err.textContent = "Save failed: " + (e.message || "error"); });
-  });
-  function loadMirrors() {
-    var box = document.getElementById("mirrorList");
-    box.textContent = "";
-    var loading = el("p", "Loading…"); loading.className = "muted"; box.appendChild(loading);
-    api("/v1/admin/mirrors").then(function (data) {
-      box.textContent = "";
-      var mirrors = data.mirrors || [];
-      if (!mirrors.length) {
-        var none = el("p", "No mirrors yet — the first push for a repo provisions one automatically.");
-        none.className = "muted";
-        box.appendChild(none);
-        return;
-      }
-      mirrors.forEach(function (m) {
-        var row = el("div");
-        row.className = "secret-row";
-        var code = el("code", m.repo + " → " + m.mirror); code.className = "mono"; row.appendChild(code);
-        var p = pill(m.status);
-        p.className = "pill " + (m.status === "ready" ? "success" : m.status === "failed" ? "failure" : "running");
-        row.appendChild(p);
-        if (m.detail) { var d = el("span", m.detail); d.className = "muted"; row.appendChild(d); }
-        var when = el("span", "updated " + fmtAgo(m.updatedAt)); when.className = "muted"; row.appendChild(when);
-        box.appendChild(row);
-      });
-    }).catch(function () {
-      box.textContent = "";
-      var err = el("p", "Could not load mirrors."); err.className = "err"; box.appendChild(err);
-    });
-  }
   function loadTokens() {
     var body = document.getElementById("tokensBody");
     stateRow(body, 6, "Loading tokens…", "muted");
@@ -2281,108 +2343,10 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       .catch(function () { err.textContent = "Could not create a pairing code."; });
   });
 
-  function loadMyApps() {
-    var body = document.getElementById("myAppsBody");
-    if (!body) return;
-    stateRow(body, 4, "Loading your apps…", "muted");
-    api("/v1/oauth/grants").then(function (data) {
-      body.textContent = "";
-      (data.grants || []).forEach(function (g) {
-        var tr = el("tr");
-        tr.appendChild(el("td", g.clientName || g.clientId));
-        tr.appendChild(el("td", (g.scopeDescriptions || g.scope || []).join("; ")));
-        tr.appendChild(g.createdAt ? timeCell(new Date(g.createdAt * 1000).toISOString()) : el("td", "—"));
-        var tdBtn = el("td");
-        var btn = el("button", "Revoke");
-        btn.className = "danger";
-        btn.addEventListener("click", function () {
-          api("/v1/oauth/grants?grantId=" + encodeURIComponent(g.grantId), { method: "DELETE" })
-            .then(loadMyApps).catch(function () {});
-        });
-        tdBtn.appendChild(btn);
-        tr.appendChild(tdBtn);
-        body.appendChild(tr);
-      });
-      if (!body.children.length) stateRow(body, 4, "No connected apps.", "muted");
-    }).catch(function () { stateRow(body, 4, "Could not load your apps.", "err"); });
-  }
 
-  function loadNotifyPrefs() {
-    var err = document.getElementById("notifyPrefsErr");
-    err.textContent = "";
-    document.getElementById("notifyPrefsOk").textContent = "";
-    api("/v1/notify/prefs").then(function (p) {
-      document.getElementById("quietStartInput").value = p.quietStart || "";
-      document.getElementById("quietEndInput").value = p.quietEnd || "";
-      document.getElementById("newFailuresCheck").checked = !!p.newFailuresOnly;
-      document.getElementById("notifyPrefsForm").style.display = "";
-    }, function (e) {
-      // GitHub logins have no email recipient; the API says so.
-      document.getElementById("notifyPrefsForm").style.display = "none";
-      err.textContent = (e && e.message) || "Could not load notification prefs.";
-    });
-  }
 
-  document.getElementById("notifyPrefsForm").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var err = document.getElementById("notifyPrefsErr");
-    var ok = document.getElementById("notifyPrefsOk");
-    err.textContent = ""; ok.textContent = "";
-    var payload = {
-      quietStart: document.getElementById("quietStartInput").value.trim(),
-      quietEnd: document.getElementById("quietEndInput").value.trim(),
-      newFailuresOnly: document.getElementById("newFailuresCheck").checked,
-    };
-    api("/v1/notify/prefs", { method: "POST", body: JSON.stringify(payload) })
-      .then(function () {
-        ok.textContent = "Saved.";
-        loadNotifyPrefs();
-      })
-      .catch(function () { err.textContent = "Could not save (quiet hours are UTC HH:MM, both or neither)."; });
-  });
 
-  function loadOAuthGrants() {
-    var body = document.getElementById("grantsBody");
-    stateRow(body, 5, "Loading connected apps…", "muted");
-    api("/v1/admin/oauth-grants").then(function (data) {
-      body.textContent = "";
-      (data.grants || []).forEach(function (g) {
-        var tr = el("tr");
-        tr.appendChild(el("td", g.clientName || g.clientId));
-        tr.appendChild(el("td", g.userId));
-        tr.appendChild(el("td", (g.scopeDescriptions || g.scope || []).join("; ")));
-        tr.appendChild(g.createdAt ? timeCell(new Date(g.createdAt * 1000).toISOString()) : el("td", "—"));
-        var tdBtn = el("td");
-        var btn = el("button", "Revoke");
-        btn.className = "danger";
-        btn.addEventListener("click", function () {
-          api("/v1/admin/oauth-grants?grantId=" + encodeURIComponent(g.grantId) + "&userId=" + encodeURIComponent(g.userId), { method: "DELETE" })
-            .then(loadOAuthGrants).catch(function () {});
-        });
-        tdBtn.appendChild(btn);
-        tr.appendChild(tdBtn);
-        body.appendChild(tr);
-      });
-      if (!body.children.length) stateRow(body, 5, "No connected apps.", "muted");
-    }).catch(function () { stateRow(body, 5, "Could not load connected apps.", "err"); });
-  }
 
-  function loadAudit() {
-    var body = document.getElementById("auditBody");
-    stateRow(body, 4, "Loading audit log…", "muted");
-    api("/v1/admin/audit").then(function (data) {
-      body.textContent = "";
-      (data.entries || []).forEach(function (e) {
-        var tr = el("tr");
-        tr.appendChild(timeCell(e.created_at));
-        tr.appendChild(el("td", e.actor));
-        tr.appendChild(el("td", e.action));
-        tr.appendChild(el("td", e.target || "—"));
-        body.appendChild(tr);
-      });
-      if (!body.children.length) stateRow(body, 4, "No audit entries yet.", "muted");
-    }).catch(function () { stateRow(body, 4, "Could not load audit log.", "err"); });
-  }
 
   function loadUsers() {
     stateRow(document.getElementById("usersBody"), 2, "Loading…", "muted");
@@ -2491,60 +2455,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       document.getElementById("notifyWebhookInput").value = "";
       document.getElementById("notifyWebhookInfo").textContent =
         "Chat webhook: " + (s.notifyWebhookSet ? "configured (write-only)." : "not set.") + " Works with Slack, Discord, and Mattermost-compatible URLs.";
-      document.getElementById("billingTokenInput").value = "";
-      document.getElementById("billingAccountInput").value = s.cloudflareAccountId || "";
-      lastBillingAccount = s.cloudflareAccountId || "";
-      document.getElementById("billingInfo").textContent =
-        "Billable usage: " + (s.billingTokenSet && s.cloudflareAccountId ? "configured." : "not set.") + " A typed token saves; emptying the account id clears it.";
-      document.getElementById("billingOk").textContent = "";
       document.getElementById("notifyWebhookOk").textContent = "";
-      document.getElementById("badgeHiddenInput").value = s.badgeHiddenRepos || "";
-      document.getElementById("badgeOk").textContent = "";
-      document.getElementById("turnstileInfo").textContent =
-        "Bot check on login, register, bootstrap, and reset: " +
-        (s.turnstileSiteSource === "env" ? "managed via environment." :
-          s.turnstileSiteKey ? ("site key set" + (s.turnstileSecretSet ? " + secret set." : ", secret missing.")) : "off.");
-      document.getElementById("turnstileSiteInput").value = s.turnstileSiteKey || "";
-      document.getElementById("turnstileSecretInput").value = "";
-      document.getElementById("turnstileForm").style.display = s.turnstileSiteSource === "env" ? "none" : "flex";
-      document.getElementById("turnstileOk").textContent = "";
-      document.getElementById("schedInfo").textContent =
-        "Fair share caps concurrently running jobs per repo for the shared poll pool. " +
-        "The AI gateway fronts triage/generate (unified billing/logs)" +
-        (s.aiGatewaySource === "env" ? ", managed via environment." : ".") +
-        " Web search grounds triage in live results (bills gateway credits).";
-      document.getElementById("fairShareInput").value = String(s.fairSharePerRepo ?? 0);
-      document.getElementById("agentShareInput").value = String(s.fairSharePerAgent ?? 0);
-      var budgetPairs = [];
-      try {
-        var parsedBudget = JSON.parse(s.budgetMinutes || "{}");
-        Object.keys(parsedBudget).forEach(function (k) { budgetPairs.push(k + "=" + parsedBudget[k]); });
-      } catch (e) { /* leave empty on malformed stored value */ }
-      document.getElementById("budgetInput").value = budgetPairs.join(", ");
-      document.getElementById("budgetModeSelect").value = s.budgetMode || "warn";
-      document.getElementById("killMultiplierInput").value = (s.budgetKillMultiplier && s.budgetKillMultiplier !== "0") ? s.budgetKillMultiplier : "";
-      loadPaused();
-      loadEgress();
-      loadMirrors();
-      document.getElementById("supersedeCheck").checked = s.supersedeBranchRuns === "push";
-      document.getElementById("gatewayInput").value = s.aiGatewayId || "";
-      document.getElementById("gatewayInput").disabled = s.aiGatewaySource === "env";
-      document.getElementById("triageModelInput").value = s.triageModelSource === "default" ? "" : (s.triageModel || "");
-      document.getElementById("triageModelInput").disabled = s.triageModelSource === "env";
-      document.getElementById("triageModelInput").title = "effective: " + (s.triageModel || "default");
-      document.getElementById("runnerVersionInput").value = s.runnerVersion || "";
-      document.getElementById("writeConfirmCheck").checked = !!s.mcpWriteConfirm;
-      document.getElementById("webSearchCheck").checked = !!s.triageWebSearch;
-      document.getElementById("healCheck").checked = !!s.healOnFailure;
-      document.getElementById("openRegCheck").checked = !!s.openRegistration;
-      document.getElementById("schedOk").textContent = "";
-      document.getElementById("ghRunnerCheck").checked = s.githubRunnerMode === "on";
-      document.getElementById("ghRunnerLabelsInput").value = s.githubRunnerLabels || "flare";
-      document.getElementById("ghRunnerGroupInput").value = s.githubRunnerGroup || "";
-      document.getElementById("ghRunnerOk").textContent = "";
-      loadGhRunnerJobs();
-      loadSchedules();
-      loadMonitors();
       var g = s.githubApp || { source: "none", installUrl: null };
       document.getElementById("githubInfo").textContent =
         "GitHub App: " + (g.source === "none" ? "not connected." : "connected via " + g.source + ".");
@@ -2622,335 +2533,18 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       .catch(function () { err.textContent = "Could not save (a 12-512 char https URL is required; empty clears)."; });
   });
 
-  var lastBillingAccount = "";
-  document.getElementById("billingForm").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var err = document.getElementById("billingErr");
-    var ok = document.getElementById("billingOk");
-    err.textContent = ""; ok.textContent = "";
-    var body = {};
-    var token = document.getElementById("billingTokenInput").value.trim();
-    var account = document.getElementById("billingAccountInput").value.trim();
-    // Password field renders empty: only a typed token is sent (empty
-    // never clears here — clear via the API). Account id saves when
-    // changed; emptying it clears the stored id.
-    if (token) body.billingApiToken = token;
-    if (account !== lastBillingAccount) body.cloudflareAccountId = account;
-    if (Object.keys(body).length === 0) { ok.textContent = "Nothing to save."; return; }
-    api("/v1/admin/settings", { method: "POST", body: JSON.stringify(body) })
-      .then(function () {
-        document.getElementById("billingTokenInput").value = "";
-        ok.textContent = "Saved.";
-        loadSettings();
-      })
-      .catch(function () { err.textContent = "Could not save (token 20-512 chars, account id 32 hex)."; });
-  });
 
-  document.getElementById("badgeHiddenForm").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var err = document.getElementById("badgeErr");
-    var ok = document.getElementById("badgeOk");
-    err.textContent = ""; ok.textContent = "";
-    var repos = document.getElementById("badgeHiddenInput").value;
-    api("/v1/admin/settings", { method: "POST", body: JSON.stringify({ badgeHiddenRepos: repos }) })
-      .then(function () {
-        ok.textContent = "Saved.";
-        loadSettings();
-      })
-      .catch(function () { err.textContent = "Could not save (entries must be owner/name)."; });
-  });
 
-  document.getElementById("turnstileForm").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var err = document.getElementById("turnstileErr");
-    var ok = document.getElementById("turnstileOk");
-    err.textContent = ""; ok.textContent = "";
-    var payload = { turnstileSiteKey: document.getElementById("turnstileSiteInput").value.trim() };
-    var secret = document.getElementById("turnstileSecretInput").value;
-    if (secret) payload.turnstileSecretKey = secret;
-    api("/v1/admin/settings", { method: "POST", body: JSON.stringify(payload) })
-      .then(function () {
-        ok.textContent = "Saved.";
-        loadSettings();
-      })
-      .catch(function () { err.textContent = "Could not save (site key required to enable)."; });
-  });
 
-  document.getElementById("schedForm").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var err = document.getElementById("schedErr");
-    var ok = document.getElementById("schedOk");
-    err.textContent = ""; ok.textContent = "";
-    var cap = parseInt(document.getElementById("fairShareInput").value.trim(), 10);
-    if (isNaN(cap) || cap < 0 || cap > 100) {
-      err.textContent = "Fair share must be an integer 0-100.";
-      return;
-    }
-    var agentCapRaw = document.getElementById("agentShareInput").value.trim();
-    var agentCap = agentCapRaw === "" ? 0 : parseInt(agentCapRaw, 10);
-    if (isNaN(agentCap) || agentCap < 0 || agentCap > 100) {
-      err.textContent = "Per-agent share must be an integer 0-100.";
-      return;
-    }
-    var killRaw = document.getElementById("killMultiplierInput").value.trim();
-    var kill = killRaw === "" ? 0 : parseInt(killRaw, 10);
-    if (isNaN(kill) || kill < 0 || kill > 100 || (killRaw !== "" && kill < 1)) {
-      err.textContent = "Kill multiplier must be blank/0 (off) or 1-100.";
-      return;
-    }
-    var payload = {
-      fairSharePerRepo: cap,
-      fairSharePerAgent: agentCap,
-      budgetMinutes: document.getElementById("budgetInput").value.trim(),
-      budgetMode: document.getElementById("budgetModeSelect").value,
-      budgetKillMultiplier: kill,
-      supersedeBranchRuns: document.getElementById("supersedeCheck").checked ? "push" : "off",
-      mcpWriteConfirm: document.getElementById("writeConfirmCheck").checked,
-      triageWebSearch: document.getElementById("webSearchCheck").checked,
-      healOnFailure: document.getElementById("healCheck").checked,
-      openRegistration: document.getElementById("openRegCheck").checked,
-    };
-    if (!document.getElementById("gatewayInput").disabled) {
-      payload.aiGatewayId = document.getElementById("gatewayInput").value.trim();
-    }
-    if (!document.getElementById("triageModelInput").disabled) {
-      payload.triageModel = document.getElementById("triageModelInput").value.trim();
-    }
-    payload.runnerVersion = document.getElementById("runnerVersionInput").value.trim();
-    api("/v1/admin/settings", { method: "POST", body: JSON.stringify(payload) })
-      .then(function () {
-        ok.textContent = "Saved.";
-        loadSettings();
-      })
-      .catch(function () { err.textContent = "Could not save (budgets: owner/name=minutes; gateway id a 1-64 char slug; model a Workers AI id)."; });
-  });
 
-  function loadPaused() {
-    var box = document.getElementById("pausedBox");
-    box.textContent = "";
-    api("/v1/admin/paused").then(function (res) {
-      var paused = (res && res.paused) || [];
-      if (paused.length === 0) {
-        box.textContent = "Kill switch: no repos paused.";
-        return;
-      }
-      box.appendChild(el("strong", "Paused for runaway spend: "));
-      paused.forEach(function (p) {
-        var line = el("div");
-        var actors = (p.topActors || []).map(function (a) { return a.actor + " (" + a.dispatches + ")"; }).join(", ");
-        line.appendChild(el("span", p.repo + " — " + p.usedMinutes + "/" + (p.cap === null ? "?" : p.cap) + " compute-min since " + fmtAgo(p.pausedAt) + (actors ? ", top: " + actors : "") + " "));
-        var btn = el("button", "Resume");
-        btn.className = "ghost";
-        btn.addEventListener("click", function () {
-          api("/v1/admin/paused?repo=" + encodeURIComponent(p.repo), { method: "DELETE" }).then(function () {
-            loadPaused();
-          }, function (e) {
-            document.getElementById("schedErr").textContent = (e && e.message) || "Resume failed";
-          });
-        });
-        line.appendChild(btn);
-        box.appendChild(line);
-      });
-    }, function () {
-      box.textContent = "Kill switch: could not load paused repos.";
-    });
-  }
 
-  document.getElementById("ghRunnerForm").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var err = document.getElementById("ghRunnerErr");
-    var ok = document.getElementById("ghRunnerOk");
-    err.textContent = ""; ok.textContent = "";
-    var payload = {
-      githubRunnerMode: document.getElementById("ghRunnerCheck").checked ? "on" : "off",
-      githubRunnerLabels: document.getElementById("ghRunnerLabelsInput").value.trim(),
-      githubRunnerGroup: document.getElementById("ghRunnerGroupInput").value.trim(),
-    };
-    api("/v1/admin/settings", { method: "POST", body: JSON.stringify(payload) })
-      .then(function () {
-        ok.textContent = "Saved.";
-        loadSettings();
-      })
-      .catch(function () { err.textContent = "Could not save (labels: comma-separated, 1-5, e.g. flare, gpu)."; });
-  });
 
-  function loadGhRunnerJobs() {
-    return api("/v1/github/jobs?limit=5").then(function (data) {
-      var list = document.getElementById("ghRunnerList");
-      list.textContent = "";
-      var rows = data.jobs || [];
-      if (rows.length === 0) {
-        var empty = el("p", "No runner-mode jobs yet.");
-        empty.className = "muted";
-        list.appendChild(empty);
-        return;
-      }
-      rows.forEach(function (j) {
-        var row = el("div");
-        row.className = "inline";
-        var info = el("span", j.repo + " " + j.jobName + " [" + (j.labels || []).join(", ") + "]");
-        info.className = "muted";
-        var state = el("span", j.status + (j.conclusion ? " / " + j.conclusion : "") + (j.runnerName ? " on " + j.runnerName : ""));
-        state.className = "muted";
-        row.appendChild(info);
-        row.appendChild(state);
-        if (j.logDigest) {
-          var first = String(j.logDigest).split("\\n")[0].slice(0, 120);
-          var digest = el("span", first);
-          digest.className = "muted mono";
-          row.appendChild(digest);
-        }
-        list.appendChild(row);
-      });
-    }).catch(function () {
-      document.getElementById("ghRunnerErr").textContent = "Could not load runner-mode jobs.";
-    });
-  }
 
-  function scheduleAction(path, method, body) {
-    var err = document.getElementById("scheduleErr");
-    err.textContent = "";
-    api(path, { method: method, body: body ? JSON.stringify(body) : undefined })
-      .then(loadSchedules)
-      .catch(function () { err.textContent = "Could not update the schedule."; });
-  }
 
-  function loadSchedules() {
-    return api("/v1/admin/schedules").then(function (data) {
-      var list = document.getElementById("scheduleList");
-      list.textContent = "";
-      var rows = data.schedules || [];
-      if (rows.length === 0) {
-        var empty = el("p", "No schedules yet.");
-        empty.className = "muted";
-        list.appendChild(empty);
-        return;
-      }
-      rows.forEach(function (s) {
-        var row = el("div");
-        row.className = "inline";
-        var info = el("span", s.repo + "@" + s.ref + "  " + s.cron + (s.enabled ? "" : " (disabled)"));
-        info.className = "muted";
-        var last = el("span", s.lastRunAt ? "last: " + fmtAgo(s.lastRunAt) : "never ran");
-        last.className = "muted";
-        var toggle = el("button", s.enabled ? "Disable" : "Enable");
-        toggle.type = "button";
-        toggle.addEventListener("click", function () {
-          scheduleAction("/v1/admin/schedules/" + encodeURIComponent(s.id), "POST", { enabled: !s.enabled });
-        });
-        var del = el("button", "Delete");
-        del.type = "button";
-        del.addEventListener("click", function () {
-          scheduleAction("/v1/admin/schedules/" + encodeURIComponent(s.id), "DELETE");
-        });
-        row.appendChild(info);
-        row.appendChild(last);
-        row.appendChild(toggle);
-        row.appendChild(del);
-        list.appendChild(row);
-      });
-    }).catch(function () {
-      document.getElementById("scheduleErr").textContent = "Could not load schedules.";
-    });
-  }
 
-  document.getElementById("scheduleForm").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var err = document.getElementById("scheduleErr");
-    err.textContent = "";
-    var repo = document.getElementById("scheduleRepoInput").value.trim();
-    var ref = document.getElementById("scheduleRefInput").value.trim();
-    var cron = document.getElementById("scheduleCronInput").value.trim();
-    api("/v1/admin/schedules", { method: "POST", body: JSON.stringify({ repo: repo, ref: ref, cron: cron }) })
-      .then(function () {
-        document.getElementById("scheduleForm").reset();
-        loadSchedules();
-      })
-      .catch(function () {
-        err.textContent = "Could not add schedule (owner/name, branch or tag, and a valid 5-field UTC cron required).";
-      });
-  });
 
-  function monitorAction(path, method, body) {
-    var err = document.getElementById("monitorErr");
-    err.textContent = "";
-    api(path, { method: method, body: body ? JSON.stringify(body) : undefined })
-      .then(loadMonitors)
-      .catch(function () { err.textContent = "Could not update the monitor."; });
-  }
 
-  function loadMonitors() {
-    return api("/v1/admin/monitors").then(function (data) {
-      var list = document.getElementById("monitorList");
-      list.textContent = "";
-      var rows = data.monitors || [];
-      if (rows.length === 0) {
-        var empty = el("p", "No monitors yet.");
-        empty.className = "muted";
-        list.appendChild(empty);
-        return;
-      }
-      rows.forEach(function (m) {
-        var row = el("div");
-        row.className = "inline";
-        var desc = m.repo + (m.branch ? "@" + m.branch : "") + (m.job ? " job:" + m.job : "") + "  " +
-          (m.trigger === "duration" ? "over " + m.durationSeconds + "s" : m.result + " x" + m.consecutive) +
-          (m.logPattern ? " log:" + m.logPattern : "") + (m.enabled ? "" : " (disabled)") +
-          (m.mutedUntil && Date.parse(m.mutedUntil) > Date.now() ? " (muted)" : "");
-        var info = el("span", (m.name ? m.name + ": " : "") + desc);
-        info.className = "muted";
-        var last = el("span", m.lastFiredAt ? "fired " + fmtAgo(m.lastFiredAt) : "never fired");
-        last.className = "muted";
-        var toggle = el("button", m.enabled ? "Disable" : "Enable");
-        toggle.type = "button";
-        toggle.addEventListener("click", function () {
-          monitorAction("/v1/admin/monitors/" + encodeURIComponent(m.id), "POST", { enabled: !m.enabled });
-        });
-        var mute = el("button", "Mute 1h");
-        mute.type = "button";
-        mute.addEventListener("click", function () {
-          monitorAction("/v1/admin/monitors/" + encodeURIComponent(m.id), "POST", { muteMinutes: 60 });
-        });
-        var del = el("button", "Delete");
-        del.type = "button";
-        del.addEventListener("click", function () {
-          monitorAction("/v1/admin/monitors/" + encodeURIComponent(m.id), "DELETE");
-        });
-        row.appendChild(info);
-        row.appendChild(last);
-        row.appendChild(toggle);
-        row.appendChild(mute);
-        row.appendChild(del);
-        list.appendChild(row);
-      });
-    }).catch(function () {
-      document.getElementById("monitorErr").textContent = "Could not load monitors.";
-    });
-  }
 
-  document.getElementById("monitorForm").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var err = document.getElementById("monitorErr");
-    err.textContent = "";
-    var payload = {
-      repo: document.getElementById("monitorRepoInput").value.trim(),
-      branch: document.getElementById("monitorBranchInput").value.trim(),
-      job: document.getElementById("monitorJobInput").value.trim(),
-      trigger: document.getElementById("monitorTriggerSelect").value,
-      result: document.getElementById("monitorResultSelect").value,
-      consecutive: parseInt(document.getElementById("monitorNInput").value.trim() || "1", 10),
-      durationSeconds: parseInt(document.getElementById("monitorDurInput").value.trim() || "0", 10),
-      logPattern: document.getElementById("monitorPatternInput").value
-    };
-    api("/v1/admin/monitors", { method: "POST", body: JSON.stringify(payload) })
-      .then(function () {
-        document.getElementById("monitorForm").reset();
-        loadMonitors();
-      })
-      .catch(function () {
-        err.textContent = "Could not add monitor (owner/name required; duration needs 60+ seconds).";
-      });
-  });
 
   document.getElementById("webhookForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
@@ -2966,6 +2560,181 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       })
       .catch(function () { err.textContent = "Could not save (16+ characters)."; });
   });
+
+  var currentTab = "tournaments";
+  var TAB_TITLES = { runs: "Runs", tournaments: "Races", repos: "Repositories", merge: "Merge queue", settings: "Settings" };
+  function toast(msg, isErr) {
+    var box = document.getElementById("toasts");
+    var t = el("div", msg);
+    t.className = "toast" + (isErr ? " err" : "");
+    box.appendChild(t);
+    while (box.children.length > 4) box.removeChild(box.firstChild);
+    setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 4200);
+  }
+  function skeleton(parent, rows, cls) {
+    parent.textContent = "";
+    for (var i = 0; i < rows; i++) { var s = el("div"); s.className = "skel " + cls; parent.appendChild(s); }
+  }
+  function syncHash() {
+    try {
+      var h = "#/" + currentTab;
+      if (currentTab === "tournaments" && currentTournamentId && !document.getElementById("tournamentDetail").hidden) h += "/" + currentTournamentId;
+      if (currentTab === "repos" && currentRepo && !document.getElementById("repoDetail").hidden) h += "/" + currentRepo;
+      if (currentTab === "runs" && runDetailOpenId) h += "/" + runDetailOpenId;
+      history.replaceState(null, "", h);
+    } catch (e) {}
+  }
+  function palGoTab(name) {
+    selectTab(name);
+    if (name === "runs") loadRuns();
+    else if (name === "tournaments") loadTournaments();
+    else if (name === "repos") loadRepos();
+    else if (name === "settings") { loadSettings(); loadTokens(); loadUsers(); }
+  }
+  function refreshCurrent() {
+    if (currentTab === "tournaments") {
+      if (currentTournamentId && !document.getElementById("tournamentDetail").hidden) showTournament(currentTournamentId);
+      else loadTournaments();
+    } else if (currentTab === "runs" && runDetailOpenId) loadRun(runDetailOpenId, false);
+    else if (currentTab === "repos" && currentRepo && !document.getElementById("repoDetail").hidden) openRepo(currentRepo);
+    else palGoTab(currentTab);
+  }
+  function applyHashRoute() {
+    var hash = location.hash || "";
+    if (hash.slice(0, 2) !== "#/") return false;
+    var parts = hash.slice(2).split("/");
+    var tab = parts[0] || "";
+    if (!TAB_TITLES[tab]) return false;
+    if (!isAdmin && tab === "settings") return false;
+    var id = parts[1] ? decodeURIComponent(parts[1]) : "";
+    if (tab === "tournaments" && id) { selectTab("tournaments"); showTournament(id); }
+    else if (tab === "repos" && id) { selectTab("repos"); openRepo(id); }
+    else if (tab === "runs" && id) { selectTab("runs"); loadRuns(); loadRun(id, false); }
+    else palGoTab(tab);
+    return true;
+  }
+  window.addEventListener("hashchange", function () { if (!appPane.hidden) applyHashRoute(); });
+  var lastTournaments = [];
+  var palOpen = false, palItems = [], palActive = 0;
+  function palCommands() {
+    var cmds = [];
+    ["tournaments", "repos", "merge", "runs", "settings"].forEach(function (name) {
+      if (!isAdmin && name === "settings") return;
+      cmds.push({ group: "Go to", label: "Go to " + TAB_TITLES[name], run: (function (n) { return function () { palGoTab(n); }; })(name) });
+    });
+    lastTournaments.forEach(function (t) {
+      cmds.push({ group: "Tournaments", label: t.intent, kind: t.state, run: (function (id) { return function () { selectTab("tournaments"); showTournament(id); }; })(t.id) });
+    });
+    lastRuns.slice(0, 8).forEach(function (r) {
+      cmds.push({ group: "Runs", label: (r.repo || "") + " @ " + String(r.sha || "").slice(0, 7), kind: r.status, run: (function (id) { return function () { selectTab("runs"); loadRun(id, true); }; })(r.id) });
+    });
+    cmds.push({ group: "Actions", label: "Refresh current view", kind: "R", run: function () { refreshCurrent(); } });
+    if (currentTournamentId && !document.getElementById("tournamentDetail").hidden) {
+      cmds.push({ group: "Actions", label: "Copy board link", kind: "", run: function () {
+        var href = location.href;
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(href).then(function () { toast("Board link copied"); }, function () { toast("Copy failed", true); });
+        else toast("Clipboard unavailable", true);
+      } });
+    }
+    return cmds;
+  }
+  function palMarkActive() {
+    var rows = document.getElementById("paletteList").children;
+    var seen = -1;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].className.indexOf("pal-row") < 0) continue;
+      seen++;
+      if (seen === palActive) {
+        rows[i].className = "pal-row active";
+        if (rows[i].scrollIntoView) rows[i].scrollIntoView({ block: "nearest" });
+      } else rows[i].className = "pal-row";
+    }
+  }
+  function renderPalette(q) {
+    var list = document.getElementById("paletteList");
+    list.textContent = "";
+    q = (q || "").toLowerCase();
+    palItems = palCommands().filter(function (c) { return !q || c.label.toLowerCase().indexOf(q) !== -1; }).slice(0, 30);
+    palActive = 0;
+    var lastGroup = "";
+    palItems.forEach(function (c) {
+      if (c.group !== lastGroup) {
+        lastGroup = c.group;
+        var g = el("div", c.group); g.className = "pal-group"; list.appendChild(g);
+      }
+      var row = el("div"); row.className = "pal-row";
+      var label = el("span", c.label); label.className = "pal-label"; row.appendChild(label);
+      if (c.kind) { var k = el("span", c.kind); k.className = "pal-kind"; row.appendChild(k); }
+      (function (cmd) { row.addEventListener("click", function () { closePalette(); cmd.run(); }); })(c);
+      list.appendChild(row);
+    });
+    if (palItems.length === 0) {
+      var none = el("div", "No matching commands."); none.className = "pal-group"; list.appendChild(none);
+    }
+    palMarkActive();
+  }
+  function openPalette() {
+    palOpen = true;
+    document.getElementById("paletteOverlay").hidden = false;
+    var input = document.getElementById("paletteInput");
+    input.value = "";
+    renderPalette("");
+    setTimeout(function () { input.focus(); }, 0);
+  }
+  function closePalette() { palOpen = false; document.getElementById("paletteOverlay").hidden = true; }
+  function palMove(d) {
+    if (!palItems.length) return;
+    palActive = (palActive + d + palItems.length) % palItems.length;
+    palMarkActive();
+  }
+  function palRunActive() {
+    var c = palItems[palActive];
+    if (!c) return;
+    closePalette();
+    c.run();
+  }
+  document.getElementById("paletteBtn").addEventListener("click", function () { if (!appPane.hidden) openPalette(); });
+  document.getElementById("paletteOverlay").addEventListener("click", function (ev) { if (ev.target === this) closePalette(); });
+  document.getElementById("paletteInput").addEventListener("input", function () { renderPalette(this.value); });
+  var gPending = 0;
+  document.addEventListener("keydown", function (e) {
+    var tag = (e.target && e.target.tagName) || "";
+    var typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!(e.target && e.target.isContentEditable);
+    if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      if (appPane.hidden) return;
+      if (palOpen) closePalette(); else openPalette();
+      return;
+    }
+    if (palOpen) {
+      if (e.key === "Escape") closePalette();
+      else if (e.key === "ArrowDown") { e.preventDefault(); palMove(1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); palMove(-1); }
+      else if (e.key === "Enter") { e.preventDefault(); palRunActive(); }
+      return;
+    }
+    if (typing || e.metaKey || e.ctrlKey || e.altKey || appPane.hidden) return;
+    if (e.key === "Escape") {
+      if (!document.getElementById("tournamentDetail").hidden) document.getElementById("backToTournaments").click();
+      else if (!document.getElementById("repoDetail").hidden) document.getElementById("backToRepos").click();
+      return;
+    }
+    if (e.key === "g" || e.key === "G") { gPending = Date.now(); return; }
+    if (Date.now() - gPending < 900) {
+      var m = { r: "runs", t: "tournaments", o: "repos", m: "merge", e: "settings" };
+      var tab = m[String(e.key || "").toLowerCase()];
+      gPending = 0;
+      if (tab) { e.preventDefault(); palGoTab(tab); }
+      return;
+    }
+    if (e.key === "r" || e.key === "R") refreshCurrent();
+    else if (e.key === "/") { e.preventDefault(); openPalette(); }
+  });
+  setInterval(function () {
+    if (document.hidden || appPane.hidden) return;
+    var nodes = document.querySelectorAll("[data-ago]");
+    for (var i = 0; i < nodes.length; i++) nodes[i].textContent = (nodes[i].getAttribute("data-prefix") || "") + fmtAgo(nodes[i].getAttribute("data-ago"));
+  }, 30000);
 
   boot();
   startPoll();

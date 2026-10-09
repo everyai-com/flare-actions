@@ -328,4 +328,44 @@ describe("FlareClient", () => {
     expect(err).toBeInstanceOf(FlareApiError);
     expect((err as FlareApiError).code).toBe("hosted_only");
   });
+
+  it("lists races and reads one board", async () => {
+    const board = { tournament: { id: "t1", state: "open" }, attempts: [], verdict: null, ledger: [] };
+    const calls = stubFetch((url) =>
+      url.endsWith("/v1/tournaments/abc")
+        ? jsonResponse(board)
+        : jsonResponse({ tournaments: [{ id: "abc", state: "open" }] }),
+    );
+    const client = new FlareClient("https://x", "t");
+    expect(await client.listTournaments(5)).toEqual([{ id: "abc", state: "open" }]);
+    expect(await client.getTournament("abc")).toEqual(board);
+    expect(calls[0].url).toBe("https://x/v1/tournaments?limit=5");
+    expect(calls[1].url).toBe("https://x/v1/tournaments/abc");
+  });
+
+  it("claims a race lane with the agent name", async () => {
+    const calls = stubFetch(() => jsonResponse({ attemptId: "a1", forkRepo: "fork-1", remote: "https://git/1" }));
+    const out = await new FlareClient("https://x", "t").claimTournament("t1", "agent-7");
+    expect(out).toEqual({ attemptId: "a1", forkRepo: "fork-1", remote: "https://git/1" });
+    expect(calls[0].url).toBe("https://x/v1/tournaments/t1/claims");
+    expect(calls[0].init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ agent: "agent-7" });
+  });
+
+  it("browses forge repos: list, info, tree, commits", async () => {
+    const calls = stubFetch((url) => {
+      if (url.endsWith("/v1/repos?limit=10")) return jsonResponse({ repos: [{ name: "demo" }] });
+      if (url.endsWith("/v1/repos/demo")) return jsonResponse({ name: "demo", head: null });
+      if (url.includes("/v1/repos/demo/tree")) return jsonResponse({ ref: "main", path: "", head: "h", entries: [], truncated: false });
+      return jsonResponse({ commits: [{ hash: "abc" }] });
+    });
+    const client = new FlareClient("https://x", "t");
+    expect(await client.listRepos(10)).toEqual([{ name: "demo" }]);
+    expect((await client.getRepo("demo")).name).toBe("demo");
+    const tree = await client.getRepoTree("demo", "main", "src");
+    expect(tree.entries).toEqual([]);
+    expect(await client.getRepoCommits("demo", "main", 5)).toEqual([{ hash: "abc" }]);
+    expect(calls[2].url).toBe("https://x/v1/repos/demo/tree?ref=main&path=src");
+    expect(calls[3].url).toBe("https://x/v1/repos/demo/commits?limit=5&ref=main");
+  });
 });

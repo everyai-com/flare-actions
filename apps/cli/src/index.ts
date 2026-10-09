@@ -12,6 +12,7 @@ import { dispatchSource, readLocalPipeline } from "./source.ts";
 import { formatPlan } from "./dryrun.ts";
 import { runInit } from "./init.ts";
 import { runConnect } from "./connect.ts";
+import { runLogin } from "./login.ts";
 import { BoxManager } from "./devbox.ts";
 import { RemoteBoxManager } from "./devbox-remote.ts";
 import { runDevboxMcpServer } from "./mcp-serve.ts";
@@ -61,6 +62,11 @@ function usage(): never {
       "  cli mergequeue enqueue <repo> <pr> <sha>   queue a PR for verify-then-land (--base, --agent)",
       "  cli mergequeue status <repo>                queue entries + file-collision radar",
       "  cli mergequeue cancel <entryId>             cancel a queued/verifying entry",
+      "  cli login [--url U] [--code C]              pair this machine (writes .env, 0600)",
+      "  cli races [raceId]                          list agent races, or one race board",
+      "  cli repos [name] [path] [--ref R]           list forge repos, or browse one",
+      "  cli claim <raceId> <agent>                  claim a race lane (forks a workspace)",
+      "  cli verdict <raceId>                        winner ranking + why-it-won rationale",
       "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
       "  cli queue [labels]                        live queue + projected claim order (admin)",
       "  cli cache list [prefix]                     list cache entries (admin)",
@@ -105,7 +111,7 @@ function client(): FlareClient {
   const baseUrl = process.env["FLARE_ACTIONS_URL"];
   const token = process.env["RUNNER_TOKEN"];
   if (!baseUrl || !token) {
-    console.error("Run `npm run setup` first, or set FLARE_ACTIONS_URL and RUNNER_TOKEN");
+    console.error("Not logged in: run `cli login`, `npm run setup`, or set FLARE_ACTIONS_URL and RUNNER_TOKEN");
     process.exit(1);
   }
   return new FlareClient(baseUrl, token);
@@ -574,6 +580,81 @@ try {
       console.error("usage: cli mergequeue <enqueue <repo> <pr> <sha> [--base b] [--agent a] | status <repo> | cancel <entryId>>");
       process.exit(2);
     }
+  } else if (cmd === "login") {
+    const takeFlag = (flag: string): string | undefined => {
+      const i = rest.indexOf(flag);
+      return i === -1 ? undefined : rest[i + 1];
+    };
+    const out = await runLogin({ baseUrl: takeFlag("--url"), code: takeFlag("--code"), cwd: process.cwd() });
+    // Prove the saved credentials work before declaring victory.
+    await new FlareClient(out.baseUrl, out.token).listRuns();
+    if (JSON_MODE) printJson("login", { envPath: out.envPath, name: out.name });
+    else console.log(`logged in as ${out.name} — credentials saved to ${out.envPath}`);
+  } else if (cmd === "races") {
+    if (!rest[0]) {
+      const races = await client().listTournaments();
+      if (JSON_MODE) printJson("races", { races });
+      else if (races.length === 0) console.log("no races yet — start one from the dashboard Races tab");
+      else for (const t of races) console.log(`${t.state}\t${t.id}\t${t.source_repo}\t${t.intent.slice(0, 80)}`);
+    } else {
+      const board = await client().getTournament(rest[0]);
+      if (JSON_MODE) printJson("races", board);
+      else {
+        const t = board.tournament;
+        console.log(`${t.id} [${t.state}] ${t.source_repo}@${t.base_ref}`);
+        console.log(`intent: ${t.intent}`);
+        for (const a of board.attempts) {
+          const rank = a.verdict_rank === null ? "-" : `#${a.verdict_rank}`;
+          console.log(`  ${rank}\t@${a.agent}\t${a.state}\t${a.run_status ?? "no run"}\t${a.fork_repo}`);
+        }
+        if (board.verdict) console.log(`verdict (${board.verdict.model}): ${board.verdict.rationale.slice(0, 500)}`);
+        else console.log("verdict: pending");
+      }
+    }
+  } else if (cmd === "repos") {
+    if (!rest[0]) {
+      const repos = await client().listRepos();
+      if (JSON_MODE) printJson("repos", { repos });
+      else if (repos.length === 0) console.log("no repos in this namespace yet");
+      else for (const r of repos) console.log(`${r.name}\t${r.defaultBranch}\t${r.lastPushAt ?? "never pushed"}`);
+    } else {
+      const takeFlag = (flag: string): string | undefined => {
+        const i = rest.indexOf(flag);
+        return i === -1 ? undefined : rest[i + 1];
+      };
+      const ref = takeFlag("--ref");
+      const positional = rest.filter((a) => a !== "--ref" && a !== ref);
+      const name = positional[0];
+      const path = positional[1];
+      const detail = await client().getRepo(name);
+      const [tree, commits] = await Promise.all([
+        client().getRepoTree(name, ref, path),
+        path ? Promise.resolve([]) : client().getRepoCommits(name, ref, 5),
+      ]);
+      if (JSON_MODE) printJson("repos", { repo: detail, tree, commits });
+      else {
+        console.log(`${detail.name} (${detail.defaultBranch})${detail.head ? ` @ ${detail.head.hash.slice(0, 7)} ${detail.head.message.split("\n")[0]}` : " (empty)"}`);
+        for (const e of tree.entries) console.log(`  ${e.type === "tree" ? "dir " : "file"} ${e.name}`);
+        if (tree.truncated) console.log("  … truncated");
+        for (const c of commits) console.log(`  ${c.hash.slice(0, 7)} ${c.message.split("\n")[0]} — ${c.authorName}`);
+      }
+    }
+  } else if (cmd === "claim" && rest[0] && rest[1]) {
+    const out = await client().claimTournament(rest[0], rest[1]);
+    if (JSON_MODE) printJson("claim", { raceId: rest[0], agent: rest[1], ...out });
+    else {
+      console.log(`lane claimed for @${rest[1]}: ${out.forkRepo}`);
+      console.log(`  git clone ${out.remote} ${out.forkRepo}`);
+    }
+  } else if (cmd === "verdict" && rest[0]) {
+    const board = await client().getTournament(rest[0]);
+    if (JSON_MODE) printJson("verdict", { raceId: rest[0], verdict: board.verdict, winnerRunId: board.tournament.winner_run_id });
+    else if (!board.verdict) console.log(`no verdict yet — race is ${board.tournament.state}`);
+    else {
+      const ordered = board.attempts.slice().sort((a, b) => (a.verdict_rank ?? 99) - (b.verdict_rank ?? 99));
+      for (const a of ordered) console.log(`#${a.verdict_rank ?? "-"} @${a.agent} (${a.run_status ?? a.state})`);
+      console.log(`\nwhy (model ${board.verdict.model}):\n${board.verdict.rationale}`);
+    }
   } else if (cmd === "egress" && rest[0]) {
     const e = await client().getRunEgress(rest[0]);
     if (JSON_MODE) {
@@ -929,7 +1010,7 @@ try {
     const baseUrl = process.env["FLARE_ACTIONS_URL"];
     const token = process.env["RUNNER_TOKEN"];
     if (!baseUrl || !token) {
-      console.error("Run `npm run setup` first, or set FLARE_ACTIONS_URL and RUNNER_TOKEN");
+      console.error("Not logged in: run `cli login`, `npm run setup`, or set FLARE_ACTIONS_URL and RUNNER_TOKEN");
       process.exit(1);
     }
     console.log(

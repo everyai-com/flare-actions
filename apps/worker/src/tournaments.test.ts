@@ -7,6 +7,7 @@ import {
   createTournament,
   forkHead,
   forkNameFor,
+  getAttemptRace,
   getTournamentBoard,
   pollTournamentAttempts,
   validateTournamentClaim,
@@ -289,5 +290,29 @@ describe("appendLedger + getTournamentBoard", () => {
     expect(board?.verdict).toBeNull();
     expect(board?.ledger.map((r) => r.kind)).toEqual(["opened", "claimed", "custom"]);
     expect(await getTournamentBoard(db, "missing")).toBeNull();
+  });
+
+  it("attaches verification run status to board attempts", async () => {
+    const db = sqliteDb();
+    const tid = await seedTournament(db);
+    const { artifacts } = fakeArtifacts({ base: {} });
+    await claimAttempt(db, artifacts, tid, "a1");
+    await claimAttempt(db, artifacts, tid, "a2");
+    await db.prepare("INSERT INTO runs (id, status) VALUES (?, ?)").bind("run-1", "success").run();
+    await db.prepare("UPDATE attempts SET run_id = ? WHERE tournament_id = ? AND agent = ?").bind("run-1", tid, "a1").run();
+    const board = await getTournamentBoard(db, tid);
+    const byAgent = new Map((board?.attempts ?? []).map((a) => [a.agent, a.run_status]));
+    expect(byAgent.get("a1")).toBe("success");
+    expect(byAgent.get("a2")).toBeNull();
+  });
+
+  it("resolves the race behind a verification run", async () => {
+    const db = sqliteDb();
+    const tid = await seedTournament(db);
+    const { artifacts } = fakeArtifacts({ base: {} });
+    await claimAttempt(db, artifacts, tid, "a1");
+    await db.prepare("UPDATE attempts SET run_id = ? WHERE tournament_id = ?").bind("run-9", tid).run();
+    expect(await getAttemptRace(db, "run-9")).toEqual({ tournament_id: tid, agent: "a1", verdict_rank: null });
+    expect(await getAttemptRace(db, "other")).toBeNull();
   });
 });

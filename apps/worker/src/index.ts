@@ -137,8 +137,10 @@ import {
 } from "./oauth";
 import {
   consumeInvite,
+  consumeMagicToken,
   consumeResetToken,
   createInvite,
+  createMagicToken,
   createResetToken,
   dummyPasswordHash,
   hashPassword,
@@ -224,6 +226,7 @@ import { ensureRepoMirror } from "./artifacts-mirrors";
 import {
   claimAttempt,
   createTournament,
+  getAttemptRace,
   getTournamentBoard,
   listTournaments,
   pollTournamentAttempts,
@@ -231,6 +234,16 @@ import {
   validateTournamentCreate,
 } from "./tournaments";
 import { verdictPass } from "./verdict";
+import {
+  decodeRepoParam,
+  getRepoBlob,
+  getRepoCommits,
+  getRepoInfo,
+  getRepoTree,
+  listRepos,
+  normalizeRepoPath,
+  validateRef,
+} from "./repos";
 import { artifactsRemoteFor, fastForwardPass, resolvePass } from "./promote";
 import {
   cancelMergeEntry,
@@ -2620,7 +2633,13 @@ export default {
         if (agentFilter && "error" in parseAgentTag(agentFilter)) {
           return json({ error: "agent must be 1-64 chars: letters, digits, dot, dash, underscore" }, 400);
         }
-        return json({ runs: await listRuns(env.DB, limit, offset, ident.repos, agentFilter || undefined) });
+        const repoFilter = url.searchParams.get("repo") ?? "";
+        if (repoFilter && (repoFilter.length > 200 || !/^[\w./-]+$/.test(repoFilter))) {
+          return json({ error: "repo must be 1-200 chars: letters, digits, dot, dash, underscore, slash" }, 400);
+        }
+        return json({
+          runs: await listRuns(env.DB, limit, offset, ident.repos, agentFilter || undefined, repoFilter || undefined),
+        });
       }
       // Template gallery: bundled starter pipelines per stack (single
       // source in the SDK, shared with `cli init --template`).
@@ -2730,6 +2749,90 @@ export default {
         await audit(env.DB, ident.actor, "tournament.tick", JSON.stringify(tick));
         return json(tick);
       }
+      // Forge repository browsing over the ARTIFACTS namespace.
+      // Token-scoped per repo like tournament sources (`namespace/name`).
+      if (request.method === "GET" && url.pathname === "/v1/repos") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        if (!env.ARTIFACTS) return json({ error: "artifacts not configured" }, 503);
+        const limit = Number(url.searchParams.get("limit") ?? "50");
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+          return json({ error: "limit must be an integer 1-100" }, 400);
+        }
+        const cursor = url.searchParams.get("cursor") ?? undefined;
+        if (cursor && cursor.length > 500) return json({ error: "cursor too long" }, 400);
+        const page = await listRepos(env.ARTIFACTS, limit, cursor);
+        const namespace = env.ARTIFACTS_NAMESPACE ?? "";
+        const repos = page.repos.filter((r) => repoAllowed(ident, `${namespace}/${r.name}`));
+        return json({ repos, total: repos.length, ...(page.cursor ? { cursor: page.cursor } : {}) });
+      }
+      const repoTreeMatch = /^\/v1\/repos\/([^/]+)\/tree$/.exec(url.pathname);
+      if (repoTreeMatch && request.method === "GET") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        if (!env.ARTIFACTS) return json({ error: "artifacts not configured" }, 503);
+        const repo = decodeRepoParam(repoTreeMatch[1]);
+        if (!repo) return json({ error: "invalid repo name" }, 400);
+        if (!repoAllowed(ident, `${env.ARTIFACTS_NAMESPACE ?? ""}/${repo}`)) {
+          return json({ error: "token is not scoped to that repo" }, 403);
+        }
+        const ref = validateRef(url.searchParams.get("ref"), "main");
+        const path = normalizeRepoPath(url.searchParams.get("path"));
+        if (!ref || path === null) return json({ error: "invalid ref or path" }, 400);
+        const tree = await getRepoTree(env.ARTIFACTS, repo, ref, path);
+        if (!tree) return json({ error: "not found" }, 404);
+        return json(tree);
+      }
+      const repoBlobMatch = /^\/v1\/repos\/([^/]+)\/blob$/.exec(url.pathname);
+      if (repoBlobMatch && request.method === "GET") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        if (!env.ARTIFACTS) return json({ error: "artifacts not configured" }, 503);
+        const repo = decodeRepoParam(repoBlobMatch[1]);
+        if (!repo) return json({ error: "invalid repo name" }, 400);
+        if (!repoAllowed(ident, `${env.ARTIFACTS_NAMESPACE ?? ""}/${repo}`)) {
+          return json({ error: "token is not scoped to that repo" }, 403);
+        }
+        const ref = validateRef(url.searchParams.get("ref"), "main");
+        const path = normalizeRepoPath(url.searchParams.get("path"));
+        if (!ref || path === null || !path) return json({ error: "invalid ref or path" }, 400);
+        const blob = await getRepoBlob(env.ARTIFACTS, repo, ref, path);
+        if (!blob) return json({ error: "not found" }, 404);
+        return json(blob);
+      }
+      const repoCommitsMatch = /^\/v1\/repos\/([^/]+)\/commits$/.exec(url.pathname);
+      if (repoCommitsMatch && request.method === "GET") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        if (!env.ARTIFACTS) return json({ error: "artifacts not configured" }, 503);
+        const repo = decodeRepoParam(repoCommitsMatch[1]);
+        if (!repo) return json({ error: "invalid repo name" }, 400);
+        if (!repoAllowed(ident, `${env.ARTIFACTS_NAMESPACE ?? ""}/${repo}`)) {
+          return json({ error: "token is not scoped to that repo" }, 403);
+        }
+        const ref = validateRef(url.searchParams.get("ref"), "main");
+        const limit = Number(url.searchParams.get("limit") ?? "20");
+        if (!ref || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+          return json({ error: "invalid ref or limit" }, 400);
+        }
+        const commits = await getRepoCommits(env.ARTIFACTS, repo, ref, limit);
+        if (!commits) return json({ error: "not found" }, 404);
+        return json({ commits });
+      }
+      const repoInfoMatch = /^\/v1\/repos\/([^/]+)$/.exec(url.pathname);
+      if (repoInfoMatch && request.method === "GET") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        if (!env.ARTIFACTS) return json({ error: "artifacts not configured" }, 503);
+        const repo = decodeRepoParam(repoInfoMatch[1]);
+        if (!repo) return json({ error: "invalid repo name" }, 400);
+        if (!repoAllowed(ident, `${env.ARTIFACTS_NAMESPACE ?? ""}/${repo}`)) {
+          return json({ error: "token is not scoped to that repo" }, 403);
+        }
+        const info = await getRepoInfo(env.ARTIFACTS, repo);
+        if (!info) return json({ error: "not found" }, 404);
+        return json(info);
+      }
       // Attestation lookup: a verdict receipt plus independent
       // verification (the state hash recomputed from the recorded
       // run's live rows). Token-scoped to the receipt's repo.
@@ -2804,10 +2907,12 @@ export default {
         const run = await getRun(env.DB, runMatch[1]);
         if (!run || !repoAllowed(ident, run.repo)) return json({ error: "run not found" }, 404);
         const jobs = await getJobsForRun(env.DB, run.id);
+        const race = await getAttemptRace(env.DB, run.id);
         return json({
           run,
           jobs: jobs.map((j) => ({ ...j, durationMs: jobDurationMs(j) })),
           summary: summarizeRunCost(jobs),
+          race,
         });
       }
       // Blocking wait: hold the request until the run is terminal (or the
@@ -4133,6 +4238,83 @@ export default {
         await audit(env.DB, `email:${email}`, "password.reset", "");
         log("info", "password reset completed", { email });
         return json({ ok: true });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/magic/request") {
+        // Magic-link login: generic 200 always (no account-enumeration
+        // oracle), delivered only when a sender + EMAIL binding exist and
+        // the address can log in (registered, or open registration).
+        const body = (await request.json().catch(() => ({}))) as { email?: unknown; turnstileToken?: unknown };
+        const emailErr = validateEmail(body.email);
+        const email = emailErr === null ? normalizeEmail(body.email as string) : "";
+        const ipKey = await ipThrottleKey(request);
+        const keys = [...(email ? [`magic:${email}`] : []), ...(ipKey ? [ipKey] : [])];
+        if (await authThrottleBlocked(env.DB, keys)) {
+          return json({ error: "too many attempts — try again later" }, 429);
+        }
+        const captchaErr = await checkTurnstile(env.DB, env, body.turnstileToken, request.headers.get("cf-connecting-ip") ?? undefined);
+        if (captchaErr) return json({ error: captchaErr }, 400);
+        if (emailErr !== null) return json({ error: emailErr }, 400);
+        await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
+        const user = await getUser(env.DB, email);
+        const sender = resolveNotifySender(env.NOTIFY_FROM_EMAIL, await getSetting(env.DB, SETTING_KEYS.notifyFromEmail));
+        const mailer = env.EMAIL;
+        const eligible = !!user || (await isOpenRegistration(env));
+        if (eligible && sender && mailer) {
+          try {
+            const token = await createMagicToken(env.DB, email);
+            const link = new URL(`/v1/admin/magic/consume?token=${encodeURIComponent(token)}`, url).toString();
+            await mailer.send({
+              from: { name: "Flare Actions", email: sender },
+              to: email,
+              subject: "[flare] Log in to Flare Actions",
+              text: `Log in to Flare Actions as ${email}.\n\n${link}\n\nThe link expires in 15 minutes and works once. If this was not you, ignore this email.`,
+            });
+            await audit(env.DB, "magic", "session.magic_sent", email);
+            log("info", "magic link sent", { email });
+          } catch (err) {
+            log("warn", "magic link send failed", { email, error: String(err) });
+          }
+        } else {
+          log("info", "magic link skipped (ineligible or email not configured)", {
+            known: !!user,
+            sender: !!sender,
+            mail: !!mailer,
+          });
+        }
+        return json({ ok: true });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/admin/magic/consume") {
+        // Consume in the browser: set the session cookie and land on the
+        // dashboard. Failures redirect with a generic code (no oracle).
+        const fail = (code: string): Response =>
+          Response.redirect(new URL(`/dashboard?magic=${code}`, url).toString(), 302);
+        const token = url.searchParams.get("token") ?? "";
+        const ipKey = await ipThrottleKey(request);
+        const keys = ipKey ? [ipKey] : [];
+        if (await authThrottleBlocked(env.DB, keys)) return fail("throttled");
+        const email = await consumeMagicToken(env.DB, token);
+        if (!email) {
+          await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
+          return fail("expired");
+        }
+        let user = await getUser(env.DB, email);
+        if (!user) {
+          if (!(await isOpenRegistration(env))) return fail("expired");
+          await createUser(env.DB, { email, passwordHash: await hashPassword(crypto.randomUUID()), isAdmin: false });
+          user = await getUser(env.DB, email);
+          if (!user) return fail("expired");
+        }
+        await clearAuthFailures(env.DB, keys);
+        const sessionId = await createLoginSession(env.DB, { kind: "email", login: email, isAdmin: user.is_admin === 1 });
+        await audit(env.DB, `email:${email}`, "session.login", "");
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: "/dashboard",
+            "Cache-Control": "no-store",
+            "Set-Cookie": sessionSetCookie(sessionId, url.protocol === "https:"),
+          },
+        });
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/settings") {
         if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);

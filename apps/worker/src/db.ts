@@ -263,6 +263,7 @@ export async function listRuns(
   offset = 0,
   allowedRepos: string[] = [],
   agent?: string,
+  repo?: string,
 ): Promise<RunRow[]> {
   const clauses: string[] = [];
   const binds: unknown[] = [];
@@ -274,6 +275,10 @@ export async function listRuns(
   if (agent) {
     clauses.push("agent = ?");
     binds.push(agent);
+  }
+  if (repo) {
+    clauses.push("repo = ?");
+    binds.push(repo);
   }
   const filter = clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : "";
   const res = await db

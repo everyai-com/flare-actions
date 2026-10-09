@@ -165,6 +165,41 @@ export async function consumeResetToken(db: Db, token: string): Promise<string |
   }
 }
 
+// Magic-link login: single-use, 15-minute token, delivered by email. Same
+// atomic consume as resets, so a leaked link cannot be redeemed twice.
+const MAGIC_TTL_MS = 900000;
+
+function magicKey(token: string): string {
+  return `email_magic_${token}`;
+}
+
+export async function createMagicToken(db: Db, email: string): Promise<string> {
+  const token = crypto.randomUUID();
+  await setSetting(
+    db,
+    magicKey(token),
+    JSON.stringify({ email: normalizeEmail(email), expiresAt: new Date(Date.now() + MAGIC_TTL_MS).toISOString() }),
+  );
+  return token;
+}
+
+export async function consumeMagicToken(db: Db, token: string): Promise<string | null> {
+  if (!/^[A-Za-z0-9-]+$/.test(token)) return null;
+  const row = await db
+    .prepare("DELETE FROM app_settings WHERE key = ? RETURNING value")
+    .bind(magicKey(token))
+    .first<{ value: string }>();
+  if (!row) return null;
+  try {
+    const parsed = JSON.parse(row.value) as { email?: unknown; expiresAt?: unknown };
+    if (typeof parsed.email !== "string" || typeof parsed.expiresAt !== "string") return null;
+    if (Date.parse(parsed.expiresAt) <= Date.now()) return null;
+    return parsed.email;
+  } catch {
+    return null;
+  }
+}
+
 export async function listInvites(db: Db): Promise<Invite[]> {
   const res = await db
     .prepare("SELECT value FROM app_settings WHERE key LIKE 'email_invite_%'")

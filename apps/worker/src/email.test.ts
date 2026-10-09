@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   consumeInvite,
+  consumeMagicToken,
   consumeResetToken,
   createInvite,
+  createMagicToken,
   createResetToken,
   dummyPasswordHash,
   hashPassword,
@@ -32,6 +34,26 @@ describe("reset tokens", () => {
 
     expect(await consumeResetToken(db, "not a token!")).toBeNull();
     expect(await consumeResetToken(db, "missing-token")).toBeNull();
+  });
+});
+
+describe("magic tokens", () => {
+  it("issues single-use, expiring, normalized magic tokens", async () => {
+    const db = new MemEmail();
+    const token = await createMagicToken(db, "  User@Example.com ");
+    expect(token).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await consumeMagicToken(db, token)).toBe("user@example.com");
+    expect(await consumeMagicToken(db, token)).toBeNull(); // single-use
+
+    const stale = await createMagicToken(db, "a@b.co");
+    db.settings.set(
+      `email_magic_${stale}`,
+      JSON.stringify({ email: "a@b.co", expiresAt: new Date(Date.now() - 1000).toISOString() }),
+    );
+    expect(await consumeMagicToken(db, stale)).toBeNull();
+
+    expect(await consumeMagicToken(db, "not a token!")).toBeNull();
+    expect(await consumeMagicToken(db, "missing-token")).toBeNull();
   });
 });
 

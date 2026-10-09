@@ -26,37 +26,6 @@ describe("dashboard", () => {
     }
   });
 
-  it("lists connected OAuth apps", () => {
-    expect(DASHBOARD_HTML).toContain("grantsBody");
-    expect(DASHBOARD_HTML).toContain("/v1/admin/oauth-grants");
-  });
-
-  it("wires the heal-on-failure toggle to settings", () => {
-    expect(DASHBOARD_HTML).toContain("healCheck");
-    expect(DASHBOARD_HTML).toContain("healOnFailure");
-  });
-
-  it("suggests quarantine candidates with sparklines and one-click add", () => {
-    expect(DASHBOARD_HTML).toContain("candidateBody");
-    expect(DASHBOARD_HTML).toContain("Suggested for quarantine");
-    expect(DASHBOARD_HTML).toContain("res.candidates");
-    expect(DASHBOARD_HTML).toContain("c.sparkline");
-  });
-
-  it("shows the lane log digest first line on runner-mode jobs", () => {
-    expect(DASHBOARD_HTML).toContain("j.logDigest");
-  });
-
-  it("wires the fleet runner version setting", () => {
-    expect(DASHBOARD_HTML).toContain("runnerVersionInput");
-    expect(DASHBOARD_HTML).toContain("payload.runnerVersion");
-  });
-
-  it("wires the org runner group setting", () => {
-    expect(DASHBOARD_HTML).toContain("ghRunnerGroupInput");
-    expect(DASHBOARD_HTML).toContain("githubRunnerGroup");
-  });
-
   it("surfaces the Actions drop-in card and per-run pipeline source tags", () => {
     expect(DASHBOARD_HTML).toContain("Coming from GitHub Actions?");
     expect(DASHBOARD_HTML).toContain("pipelineSourceLabel");
@@ -76,52 +45,6 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("/v1/cache/stats");
   });
 
-  it("wires budget guardrails and auto-supersede", () => {
-    expect(DASHBOARD_HTML).toContain("budgetInput");
-    expect(DASHBOARD_HTML).toContain("budgetModeSelect");
-    expect(DASHBOARD_HTML).toContain("supersedeCheck");
-  });
-
-  it("wires the per-agent fair-share cap", () => {
-    expect(DASHBOARD_HTML).toContain("agentShareInput");
-    expect(DASHBOARD_HTML).toContain("fairSharePerAgent");
-  });
-
-  it("wires the kill switch multiplier and paused resume", () => {
-    expect(DASHBOARD_HTML).toContain("killMultiplierInput");
-    expect(DASHBOARD_HTML).toContain("pausedBox");
-    expect(DASHBOARD_HTML).toContain("loadPaused");
-    expect(DASHBOARD_HTML).toContain("/v1/admin/paused");
-    expect(DASHBOARD_HTML).toContain("Resume");
-  });
-
-  it("renders the flaky tab with quarantine add and reinstate", () => {
-    expect(DASHBOARD_HTML).toContain("tabFlaky");
-    expect(DASHBOARD_HTML).toContain("flakyPane");
-    expect(DASHBOARD_HTML).toContain("loadFlaky");
-    expect(DASHBOARD_HTML).toContain("/v1/flaky?repo=");
-    expect(DASHBOARD_HTML).toContain("/v1/quarantine?repo=");
-    expect(DASHBOARD_HTML).toContain("quarantineForm");
-    expect(DASHBOARD_HTML).toContain("Reinstate");
-  });
-
-  it("wires the open-registration toggle and self-serve signup", () => {
-    expect(DASHBOARD_HTML).toContain("openRegCheck");
-    expect(DASHBOARD_HTML).toContain("openRegistration");
-    expect(DASHBOARD_HTML).toContain("registerToggleBtn");
-    expect(DASHBOARD_HTML).toContain("setEmailMode");
-    expect(DASHBOARD_HTML).toContain("githubOpenHint");
-  });
-
-  it("wires the runner-mode card to settings and the jobs lane", () => {
-    expect(DASHBOARD_HTML).toContain("ghRunnerCheck");
-    expect(DASHBOARD_HTML).toContain("ghRunnerLabelsInput");
-    expect(DASHBOARD_HTML).toContain("githubRunnerMode");
-    expect(DASHBOARD_HTML).toContain("githubRunnerLabels");
-    expect(DASHBOARD_HTML).toContain("loadGhRunnerJobs");
-    expect(DASHBOARD_HTML).toContain("/v1/github/jobs?limit=5");
-  });
-
   it("renders the first-run onboarding checklist", () => {
     expect(DASHBOARD_HTML).toContain("three steps to the first one");
     expect(DASHBOARD_HTML).toContain("setupStep");
@@ -134,6 +57,16 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("oauthDivider");
     expect(DASHBOARD_HTML).toContain("or continue with");
     expect(DASHBOARD_HTML).toContain("@media (max-width: 640px)");
+  });
+
+  it("offers passwordless magic-link login", () => {
+    expect(DASHBOARD_HTML).toContain("magicForm");
+    expect(DASHBOARD_HTML).toContain("magicEmail");
+    expect(DASHBOARD_HTML).toContain("magicOk");
+    expect(DASHBOARD_HTML).toContain("magicErr");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/magic/request");
+    expect(DASHBOARD_HTML).toContain('q.get("magic")');
+    expect(DASHBOARD_HTML).toContain('=== "expired"');
   });
 
   it("wires the runner pairing card", () => {
@@ -154,62 +87,13 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("real Cloudflare spend");
   });
 
-  it("renders the feed with one-click rerun, open-PR, and fix actions", () => {
-    expect(DASHBOARD_HTML).toContain("tabFeed");
-    expect(DASHBOARD_HTML).toContain("feedPane");
-    expect(DASHBOARD_HTML).toContain("loadFeed");
-    expect(DASHBOARD_HTML).toContain("appendFeedItem");
-    expect(DASHBOARD_HTML).toContain("/v1/feed");
-    expect(DASHBOARD_HTML).toContain("Rerun failed (");
-    expect(DASHBOARD_HTML).toContain("Open PR #");
-    expect(DASHBOARD_HTML).toContain("Open fix PR");
-    expect(DASHBOARD_HTML).toContain("isAdmin && failed.length");
-  });
-
-  it("wires per-user notification attention prefs", () => {
-    expect(DASHBOARD_HTML).toContain("notifyPrefsForm");
-    expect(DASHBOARD_HTML).toContain("quietStartInput");
-    expect(DASHBOARD_HTML).toContain("quietEndInput");
-    expect(DASHBOARD_HTML).toContain("newFailuresCheck");
-    expect(DASHBOARD_HTML).toContain("loadNotifyPrefs");
-    expect(DASHBOARD_HTML).toContain("/v1/notify/prefs");
-  });
-
   it("stacks tabs, tables, and actions under 640px with no page scroll", () => {
     expect(DASHBOARD_HTML).toContain("overflow-x: hidden");
-    expect(DASHBOARD_HTML).toContain("nav.tabs { flex-wrap: wrap; }");
+    expect(DASHBOARD_HTML).toContain(".side-link { min-height: 44px; }");
     expect(DASHBOARD_HTML).toContain("thead { display: none; }");
     expect(DASHBOARD_HTML).toContain("table tr { display: block;");
     expect(DASHBOARD_HTML).toContain("table td button { width: 100%; }");
     expect(DASHBOARD_HTML).toContain("form.inline { flex-direction: column;");
-  });
-
-  it("renders the template gallery and migration wizard", () => {
-    expect(DASHBOARD_HTML).toContain("tabTemplates");
-    expect(DASHBOARD_HTML).toContain("templatesPane");
-    expect(DASHBOARD_HTML).toContain("loadTemplates");
-    expect(DASHBOARD_HTML).toContain("appendTemplateCard");
-    expect(DASHBOARD_HTML).toContain("/v1/templates");
-    expect(DASHBOARD_HTML).toContain("npx flare init --template ");
-    expect(DASHBOARD_HTML).toContain("migrateForm");
-    expect(DASHBOARD_HTML).toContain("migrateInput");
-    expect(DASHBOARD_HTML).toContain("/v1/migrate");
-    expect(DASHBOARD_HTML).toContain("migrateWarnings");
-  });
-
-  it("wires the repo egress allowlist editor to the admin API", () => {
-    expect(DASHBOARD_HTML).toContain("Egress allowlists");
-    expect(DASHBOARD_HTML).toContain("egressForm");
-    expect(DASHBOARD_HTML).toContain("egressList");
-    expect(DASHBOARD_HTML).toContain("loadEgress");
-    expect(DASHBOARD_HTML).toContain("/v1/admin/egress-allowlist");
-  });
-
-  it("lists hands-free Artifacts mirrors in Settings", () => {
-    expect(DASHBOARD_HTML).toContain("Artifacts mirrors");
-    expect(DASHBOARD_HTML).toContain("mirrorList");
-    expect(DASHBOARD_HTML).toContain("loadMirrors");
-    expect(DASHBOARD_HTML).toContain("/v1/admin/mirrors");
   });
 
   it("renders per-job peak-RSS bars with size-class hints", () => {
@@ -219,6 +103,92 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("res-fill");
     expect(DASHBOARD_HTML).toContain("peakRssOf");
     expect(DASHBOARD_HTML).toContain("FLARE_LABELS");
+  });
+
+  it("renders the tournament board around the four review questions", () => {
+    for (const id of ["tWhy", "tReview", "tLanes", "tRadar", "tActivity"]) {
+      expect(DASHBOARD_HTML).toContain('id="' + id + '"');
+    }
+    for (const fn of [
+      "renderTournamentWhy",
+      "renderTournamentReview",
+      "renderTournamentLanes",
+      "renderTournamentRadar",
+      "renderTournamentActivity",
+      "parseCollision",
+      "verdictOrder",
+      "agentAvatar",
+    ]) {
+      expect(DASHBOARD_HTML).toContain(fn);
+    }
+    expect(DASHBOARD_HTML).toContain("Why this race exists");
+    expect(DASHBOARD_HTML).toContain("Collision radar");
+    expect(DASHBOARD_HTML).toContain("Deterministic ranking");
+    expect(DASHBOARD_HTML).toContain("Open verification run");
+    expect(DASHBOARD_HTML).toContain("run_status");
+  });
+
+  it("wires the command palette, shortcuts, deep links, and toasts", () => {
+    for (const id of ["paletteOverlay", "palette", "paletteInput", "paletteList", "paletteFoot", "paletteBtn", "toasts"]) {
+      expect(DASHBOARD_HTML).toContain('id="' + id + '"');
+    }
+    for (const fn of [
+      "openPalette",
+      "closePalette",
+      "renderPalette",
+      "palMove",
+      "palRunActive",
+      "palCommands",
+      "palGoTab",
+      "refreshCurrent",
+      "applyHashRoute",
+      "syncHash",
+      "toast(",
+      "skeleton(",
+    ]) {
+      expect(DASHBOARD_HTML).toContain(fn);
+    }
+    expect(DASHBOARD_HTML).toContain("data-ago");
+    expect(DASHBOARD_HTML).toContain("skel-row");
+    expect(DASHBOARD_HTML).toContain("pane-enter");
+    expect(DASHBOARD_HTML).toContain("Copy board link");
+    expect(DASHBOARD_HTML).toContain("tPulse");
+  });
+
+  it("keeps hidden-gated flex elements hidden until shown", () => {
+    expect(DASHBOARD_HTML).toContain("#paletteOverlay[hidden]");
+    expect(DASHBOARD_HTML).toContain(".side-link[hidden]");
+    expect(DASHBOARD_HTML).toContain(".field[hidden], form.inline[hidden]");
+  });
+
+  it("renders the app sidebar with icon nav and auth gating", () => {
+    expect(DASHBOARD_HTML).toContain('id="sideNav"');
+    expect(DASHBOARD_HTML).toContain("side-link");
+    expect(DASHBOARD_HTML).toContain("body.app nav.side-nav");
+    expect(DASHBOARD_HTML).toContain("body.app main");
+    expect(DASHBOARD_HTML).toContain("@media (max-width: 900px)");
+    expect(DASHBOARD_HTML).toContain('class="wrap"');
+    expect(DASHBOARD_HTML).toContain('classList.add("app")');
+    expect(DASHBOARD_HTML).toContain("side-foot");
+    expect(DASHBOARD_HTML).toContain("side-group");
+    expect(DASHBOARD_HTML).not.toContain("nav.tabs");
+    expect(DASHBOARD_HTML.indexOf('id="tabTournaments"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabRuns"'));
+    expect(DASHBOARD_HTML).toContain('if (!applyHashRoute()) palGoTab("tournaments")');
+    expect(DASHBOARD_HTML).toContain("No races yet");
+  });
+
+  it("renders the forge repositories surface with race wiring", () => {
+    for (const id of ["tabRepos", "reposPane", "reposList", "repoDetail", "repoHead", "repoFiles", "repoRuns", "repoCommits", "backToRepos"]) {
+      expect(DASHBOARD_HTML).toContain('id="' + id + '"');
+    }
+    for (const fn of ["loadRepos", "openRepo", "renderRepoHead", "loadRepoTree", "repoCrumbs", "openRepoFile", "loadRepoRuns", "loadRepoCommits"]) {
+      expect(DASHBOARD_HTML).toContain(fn);
+    }
+    expect(DASHBOARD_HTML).toContain("Open race");
+    expect(DASHBOARD_HTML).toContain("CI ready");
+    expect(DASHBOARD_HTML).toContain("Race agents on this repo");
+    expect(DASHBOARD_HTML).toContain("/v1/repos");
+    expect(DASHBOARD_HTML).toContain("Agent races");
   });
 
   it("wires the cache browser to the admin cache API", () => {

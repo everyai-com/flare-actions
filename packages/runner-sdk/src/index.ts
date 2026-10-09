@@ -453,6 +453,109 @@ export interface FlareRunDigest {
   attestation?: { reused: boolean; receiptId: string; verdict: string };
 }
 
+// Agent forge: tournaments (races) and Artifacts repository browsing.
+export interface FlareTournament {
+  id: string;
+  intent: string;
+  source_repo: string;
+  base_ref: string;
+  base_sha: string;
+  state: string;
+  winner_run_id: string | null;
+  resolved_sha: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FlareBoardAttempt {
+  id: string;
+  tournament_id: string;
+  agent: string;
+  fork_repo: string;
+  state: string;
+  last_seen_sha: string;
+  run_id: string | null;
+  verdict_rank: number | null;
+  created_at: string;
+  updated_at: string;
+  run_status: string | null;
+}
+
+export interface FlareTournamentVerdict {
+  tournament_id: string;
+  ranking: string;
+  rationale: string;
+  model: string;
+  created_at: string;
+}
+
+export interface FlareTournamentLedgerRow {
+  id: string;
+  tournament_id: string;
+  kind: string;
+  body: string;
+  created_at: string;
+}
+
+export interface FlareTournamentBoard {
+  tournament: FlareTournament;
+  attempts: FlareBoardAttempt[];
+  verdict: FlareTournamentVerdict | null;
+  ledger: FlareTournamentLedgerRow[];
+}
+
+export interface FlareTournamentClaim {
+  attemptId: string;
+  forkRepo: string;
+  remote: string;
+}
+
+export interface FlareRepo {
+  id: string;
+  name: string;
+  description: string | null;
+  defaultBranch: string;
+  createdAt: string;
+  updatedAt: string;
+  lastPushAt: string | null;
+  source: string | null;
+  readOnly: boolean;
+}
+
+export interface FlareRepoDetail {
+  name: string;
+  defaultBranch: string;
+  description: string | null;
+  source: string | null;
+  readOnly: boolean;
+  lastPushAt: string | null;
+  updatedAt: string;
+  head: { hash: string; message: string; committedAt: number } | null;
+}
+
+export interface FlareTreeEntry {
+  name: string;
+  type: string;
+  hash: string;
+}
+
+export interface FlareTreeResult {
+  ref: string;
+  path: string;
+  head: string;
+  entries: FlareTreeEntry[];
+  truncated: boolean;
+}
+
+export interface FlareCommitSummary {
+  hash: string;
+  message: string;
+  authorName: string;
+  authorEmail: string;
+  committedAt: number;
+  parents: string[];
+}
+
 // Content-addressed verdict receipt: this exact tree + suite +
 // environment already ran, so dispatch short-circuited to the
 // recorded verdict. `verified` re-derives the state hash from the
@@ -1080,5 +1183,63 @@ export class FlareClient {
     if (!res.ok) await this.throwApiError("listGithubJobs", res);
     const data = (await res.json()) as { jobs: GithubRunnerJob[] };
     return Array.isArray(data.jobs) ? data.jobs : [];
+  }
+
+  // Agent forge: race list + board (lanes, verdict, history ledger).
+  async listTournaments(limit = 20): Promise<FlareTournament[]> {
+    const res = await this.call(`/v1/tournaments?limit=${limit}`);
+    if (!res.ok) await this.throwApiError("listTournaments", res);
+    const data = (await res.json()) as { tournaments: FlareTournament[] };
+    return Array.isArray(data.tournaments) ? data.tournaments : [];
+  }
+
+  async getTournament(id: string): Promise<FlareTournamentBoard> {
+    const res = await this.call(`/v1/tournaments/${encodeURIComponent(id)}`);
+    if (!res.ok) await this.throwApiError("getTournament", res);
+    return (await res.json()) as FlareTournamentBoard;
+  }
+
+  // Claim a lane: forks the source repo for this agent, returns the remote.
+  async claimTournament(id: string, agent: string): Promise<FlareTournamentClaim> {
+    const res = await this.call(`/v1/tournaments/${encodeURIComponent(id)}/claims`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent }),
+    });
+    if (!res.ok) await this.throwApiError("claimTournament", res);
+    return (await res.json()) as FlareTournamentClaim;
+  }
+
+  // Forge repository browsing over the Artifacts namespace (read scope).
+  async listRepos(limit = 50): Promise<FlareRepo[]> {
+    const res = await this.call(`/v1/repos?limit=${limit}`);
+    if (!res.ok) await this.throwApiError("listRepos", res);
+    const data = (await res.json()) as { repos: FlareRepo[] };
+    return Array.isArray(data.repos) ? data.repos : [];
+  }
+
+  async getRepo(name: string): Promise<FlareRepoDetail> {
+    const res = await this.call(`/v1/repos/${encodeURIComponent(name)}`);
+    if (!res.ok) await this.throwApiError("getRepo", res);
+    return (await res.json()) as FlareRepoDetail;
+  }
+
+  async getRepoTree(name: string, ref?: string, path?: string): Promise<FlareTreeResult> {
+    const qs = new URLSearchParams();
+    if (ref) qs.set("ref", ref);
+    if (path) qs.set("path", path);
+    const q = qs.toString();
+    const res = await this.call(`/v1/repos/${encodeURIComponent(name)}/tree${q ? `?${q}` : ""}`);
+    if (!res.ok) await this.throwApiError("getRepoTree", res);
+    return (await res.json()) as FlareTreeResult;
+  }
+
+  async getRepoCommits(name: string, ref?: string, limit = 20): Promise<FlareCommitSummary[]> {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (ref) qs.set("ref", ref);
+    const res = await this.call(`/v1/repos/${encodeURIComponent(name)}/commits?${qs.toString()}`);
+    if (!res.ok) await this.throwApiError("getRepoCommits", res);
+    const data = (await res.json()) as { commits: FlareCommitSummary[] };
+    return Array.isArray(data.commits) ? data.commits : [];
   }
 }
