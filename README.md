@@ -507,6 +507,7 @@ npm run cli -- tests <runId>           # per-test results and failing tests
 npm run cli -- egress <runId>          # per-job egress by host
 npm run cli -- queue [labels]          # live queue + projected claim order (admin)
 npm run cli -- cache list|purge [prefix]  # cache entries (admin)
+npm run cli -- cache stats             # shared warm-cache hit rate (7d)
 npm run cli -- usage [days] [repo]     # runs, jobs, compute-minutes for billing
 npm run cli -- paused                # repos auto-paused for runaway spend (admin)
 npm run cli -- resume <repo>         # resume a paused repo (admin)
@@ -537,6 +538,7 @@ the error line.
 - `POST /v1/admin/pair-codes`, `POST /v1/pair/exchange` — mint a pairing code (admin), exchange it for a runner token (public, throttled)
 - `GET /v1/github/jobs`, `POST /v1/github/jobs/next` — runner-mode job list + JIT claim lane (read / run scope)
 - `GET /v1/bottlenecks?repo=&days=` — slowest checks: p50/p95 run time + queue wait (read scope)
+- `GET /v1/cache/stats` — shared warm-cache hit rate over the trailing 7 days, overall plus per scope (read scope)
 - `GET|POST /v1/quarantine` — list / add / remove quarantined tests (read scope; admin writes)
 - `GET /v1/runs/:id/tests`, `GET /v1/runs/:id/egress` — per-test results, per-job egress (read scope)
 - `GET /v1/admin/queue`, `GET /v1/usage?days=` — live queue, billing usage (admin / read scope)

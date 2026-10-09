@@ -196,6 +196,23 @@ export interface FlareCacheEntry {
   uploaded: string;
 }
 
+// Shared-warm-cache stats: trailing-window hit rate overall plus per
+// cache scope (the "one cache, ten agents" proof).
+export interface FlareCacheScopeStat {
+  scope: string;
+  hits: number;
+  misses: number;
+  hitRate: number;
+}
+
+export interface FlareCacheStats {
+  days: number;
+  hits: number;
+  misses: number;
+  hitRate: number;
+  scopes: FlareCacheScopeStat[];
+}
+
 export interface FlareQueuedJob {
   id: string;
   runId: string;
@@ -474,6 +491,12 @@ export class FlareClient {
     const res = await this.call(`/v1/admin/cache?prefix=${encodeURIComponent(prefix)}`, { method: "DELETE" });
     if (!res.ok) await this.throwApiError("purgeCache", res);
     return (await res.json()) as { deleted: number; truncated: boolean };
+  }
+
+  async getCacheStats(): Promise<FlareCacheStats> {
+    const res = await this.call("/v1/cache/stats");
+    if (!res.ok) await this.throwApiError("getCacheStats", res);
+    return (await res.json()) as FlareCacheStats;
   }
 
   async listQueue(limit = 200): Promise<FlareQueue> {

@@ -49,6 +49,12 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("/v1/bottlenecks?repo=");
   });
 
+  it("renders the shared-cache hit-rate strip", () => {
+    expect(DASHBOARD_HTML).toContain("cacheStatsStrip");
+    expect(DASHBOARD_HTML).toContain("loadCacheStats");
+    expect(DASHBOARD_HTML).toContain("/v1/cache/stats");
+  });
+
   it("wires budget guardrails and auto-supersede", () => {
     expect(DASHBOARD_HTML).toContain("budgetInput");
     expect(DASHBOARD_HTML).toContain("budgetModeSelect");

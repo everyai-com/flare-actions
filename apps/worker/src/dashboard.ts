@@ -233,6 +233,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 </div>
 <h2>Runs</h2>
 <p id="usageStrip" class="muted"></p>
+<p id="cacheStatsStrip" class="muted"></p>
 <details id="dispatchBox">
 <summary>Dispatch a run…</summary>
 <form id="dispatchForm" class="inline">
@@ -1336,11 +1337,31 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
         list.toFixed(2) + " spend avoided vs Actions list price";
     }).catch(function () { /* strip stays empty when usage is unreachable */ });
   }
+  var cacheStatsAt = 0;
+  function loadCacheStats() {
+    // Same 60s cadence as the usage strip; the rollup query is cheap
+    // but the runs poll is not. Empty when there are no reads yet.
+    var now = Date.now();
+    if (now - cacheStatsAt < 60000) return;
+    cacheStatsAt = now;
+    var strip = document.getElementById("cacheStatsStrip");
+    api("/v1/cache/stats").then(function (s) {
+      var hits = typeof s.hits === "number" ? s.hits : 0;
+      var misses = typeof s.misses === "number" ? s.misses : 0;
+      var total = hits + misses;
+      if (!total) { strip.textContent = ""; return; }
+      var scopes = (s.scopes || []).length;
+      strip.textContent = "Shared cache (" + s.days + "d): " + (100 * hits / total).toFixed(1) +
+        "% hit rate · " + hits + " hits, " + misses + " misses across " + scopes +
+        " scope" + (scopes === 1 ? "" : "s") + " — one warm cache, every agent";
+    }).catch(function () { strip.textContent = ""; });
+  }
   function loadRuns() {
     var list = document.getElementById("runsList");
     list.textContent = "";
     var loading = el("p", "Loading runs…"); loading.className = "muted"; list.appendChild(loading);
     loadUsageStrip();
+    loadCacheStats();
     api("/v1/runs").then(function (data) {
       lastRuns = data.runs || [];
       renderRuns();

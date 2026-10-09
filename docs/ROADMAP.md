@@ -129,8 +129,11 @@ The recurring pains, in practitioners' own terms:
       `paused` flag)
 - [ ] CI profiles — first-class "smoke per push / full suite nightly + on
       the landing candidate" config block (the $0-bill pattern)
-- [ ] Shared-warm-cache stats — hit-rate over a week, published as the
+- [x] Shared-warm-cache stats — hit-rate over a week, published as the
       "one cache, ten agents" proof (the #1 challenged claim; prove it)
+      (shipped Oct 8: daily-aggregate `cache_stats` counters fed by both
+      executors, `GET /v1/cache/stats` trailing-7d overall + per-scope
+      rates, `cli cache stats`, dashboard strip)
 
 ### Later (months)
 

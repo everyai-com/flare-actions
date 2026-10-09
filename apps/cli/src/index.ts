@@ -18,6 +18,7 @@ import { simulateDrain } from "../../worker/src/fairness.ts";
 import { ACTIONS_LIST_USD_PER_MIN } from "../../worker/src/cost.ts";
 import { hasJsonFlag, printJson, splitPassthrough, stripJsonFlag } from "./json.ts";
 import { explainDigest } from "./explain.ts";
+import { formatCacheStats, parseCacheStats } from "./cache.ts";
 
 loadEnv();
 
@@ -56,6 +57,7 @@ function usage(): never {
       "  cli queue [labels]                        live queue + projected claim order (admin)",
       "  cli cache list [prefix]                     list cache entries (admin)",
       "  cli cache purge [prefix]                    delete cache entries (admin)",
+      "  cli cache stats                             shared warm-cache hit rate (7d)",
       "  cli usage [days] [repo]                     runs, jobs, compute-minutes for billing",
       "  cli paused                                  repos auto-paused for runaway spend (admin)",
       "  cli resume <repo>                           resume a paused repo (admin)",
@@ -450,6 +452,15 @@ try {
     const out = await client().purgeCache(rest[1] ?? "");
     if (JSON_MODE) printJson("cache", { action: "purge", prefix: rest[1] ?? "", ...out });
     else console.log(JSON.stringify(out));
+  } else if (cmd === "cache" && rest[0] === "stats") {
+    const stats = parseCacheStats(await client().getCacheStats());
+    if (!stats) {
+      console.error("unexpected cache stats response");
+      process.exit(2);
+    }
+    if (JSON_MODE) printJson("cache", { action: "stats", ...stats });
+    else console.log(formatCacheStats(stats));
+  } else if (cmd === "paused") {
     const paused = await client().listPaused();
     if (JSON_MODE) printJson("paused", { paused });
     else if (paused.length === 0) console.log("no paused repos");

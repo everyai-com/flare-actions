@@ -1,5 +1,6 @@
 // R2-backed build cache: runners PUT tarballs under content keys and
 // GET them back on later runs. Zero egress inside Cloudflare.
+import type { Db } from "./db";
 
 export const CACHE_KEY_RE = /^[\w][\w.\-/]{0,199}$/;
 export const MAX_CACHE_BYTES = 512 * 1024 * 1024;
@@ -94,4 +95,109 @@ export async function purgeCachePrefix(
     else break;
   }
   return { deleted, truncated };
+}
+
+// Shared-warm-cache stats ("one cache, ten agents"): every cache GET
+// records its hit/miss outcome as one daily-aggregate counter upsert —
+// bounded D1 writes, no per-event rows. Scopes group keys by their
+// static prefix so `node-modules` and `node-expr` report as one scope.
+export const CACHE_STATS_DAYS = 7;
+export const CACHE_STATS_SCOPE_LIMIT = 50;
+export const CACHE_STATS_RETENTION_DAYS = 90;
+
+// Scope = key prefix before the first "/" or "-", truncated so one
+// hostile key cannot widen rows. Empty input buckets to "other".
+export function cacheScope(key: string): string {
+  const first = key.split("/")[0] ?? "";
+  const scope = (first.split("-")[0] ?? "").slice(0, 64);
+  return scope || "other";
+}
+
+export interface CacheScopeStat {
+  scope: string;
+  hits: number;
+  misses: number;
+  hitRate: number;
+}
+
+export interface CacheStats {
+  days: number;
+  hits: number;
+  misses: number;
+  hitRate: number;
+  scopes: CacheScopeStat[];
+}
+
+export interface CacheStatsRow {
+  scope: string;
+  hits: number;
+  misses: number;
+}
+
+// Pure: roll per-scope day rows into the trailing-window payload the
+// endpoint serves (scopes busiest first, hit rates 0-1).
+export function summarizeCacheStats(rows: CacheStatsRow[], days = CACHE_STATS_DAYS): CacheStats {
+  const byScope = new Map<string, { hits: number; misses: number }>();
+  for (const row of rows) {
+    const scope = row.scope || "other";
+    const acc = byScope.get(scope) ?? { hits: 0, misses: 0 };
+    acc.hits += Math.max(0, row.hits);
+    acc.misses += Math.max(0, row.misses);
+    byScope.set(scope, acc);
+  }
+  const rate = (hits: number, misses: number): number => (hits + misses === 0 ? 0 : hits / (hits + misses));
+  const scopes: CacheScopeStat[] = [...byScope]
+    .map(([scope, acc]) => ({ scope, hits: acc.hits, misses: acc.misses, hitRate: rate(acc.hits, acc.misses) }))
+    .sort((a, b) => b.hits + b.misses - (a.hits + a.misses) || (a.scope < b.scope ? -1 : 1));
+  const hits = scopes.reduce((n, s) => n + s.hits, 0);
+  const misses = scopes.reduce((n, s) => n + s.misses, 0);
+  return { days, hits, misses, hitRate: rate(hits, misses), scopes: scopes.slice(0, CACHE_STATS_SCOPE_LIMIT) };
+}
+
+export function cacheStatsDay(when = new Date()): string {
+  return when.toISOString().slice(0, 10);
+}
+
+// One upsert per cache GET: the day/scope row's hit or miss counter
+// increments atomically, so concurrent executors never lose outcomes.
+export async function recordCacheOutcome(db: Db, key: string, hit: boolean, day = cacheStatsDay()): Promise<void> {
+  const scope = cacheScope(key);
+  const hits = hit ? 1 : 0;
+  const misses = hit ? 0 : 1;
+  await db
+    .prepare(
+      "INSERT INTO cache_stats (day, scope, hits, misses) VALUES (?, ?, ?, ?) " +
+        "ON CONFLICT(day, scope) DO UPDATE SET hits = cache_stats.hits + excluded.hits, misses = cache_stats.misses + excluded.misses",
+    )
+    .bind(day, scope, hits, misses)
+    .run();
+}
+
+// Trailing-window rollup: one grouped read over the daily rows, busiest
+// scopes first. Best-effort like every stats read.
+export async function getCacheStats(db: Db, days = CACHE_STATS_DAYS): Promise<CacheStats> {
+  const since = cacheStatsDay(new Date(Date.now() - (days - 1) * 86_400_000));
+  const res = await db
+    .prepare(
+      "SELECT scope, SUM(hits) AS hits, SUM(misses) AS misses FROM cache_stats WHERE day >= ? " +
+        "GROUP BY scope ORDER BY SUM(hits) + SUM(misses) DESC LIMIT ?",
+    )
+    .bind(since, CACHE_STATS_SCOPE_LIMIT)
+    .all<{ scope: string; hits: number; misses: number }>();
+  return summarizeCacheStats(
+    res.results.map((r) => ({ scope: r.scope, hits: r.hits ?? 0, misses: r.misses ?? 0 })),
+    days,
+  );
+}
+
+// Retention: drop daily rows past the window. Bounded per pass, called
+// from the webhook prune sweep next to the other retention chores.
+export async function pruneCacheStats(
+  db: Db,
+  beforeDay = cacheStatsDay(new Date(Date.now() - CACHE_STATS_RETENTION_DAYS * 86_400_000)),
+): Promise<number> {
+  const res = (await db.prepare("DELETE FROM cache_stats WHERE day < ? LIMIT 500").bind(beforeDay).run()) as {
+    meta?: { changes?: number };
+  };
+  return res?.meta?.changes ?? 0;
 }

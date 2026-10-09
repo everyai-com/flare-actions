@@ -38,6 +38,7 @@ import { recordRuntimePrior } from "../../worker/src/priors";
 import { jobDurationMs } from "../../worker/src/cost";
 import { MAX_JUNIT_BYTES, parseJUnit } from "../../worker/src/junit";
 import { seatEligible } from "../../worker/src/pipeline";
+import { recordCacheOutcome } from "../../worker/src/cache";
 import { ARTIFACTS_EVENT } from "../../worker/src/artifacts-push";
 import { annotateSpan } from "../../worker/src/trace";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
@@ -876,6 +877,10 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     let cacheHit = false;
     if (spec.cache) {
       const entry = cache ? await cache.get(`cache/${spec.cache.key}`) : null;
+      // Same daily-aggregate counters the /v1/cache lane feeds (a found
+      // blob is a hit even when the extract later fails); best-effort
+      // so a stats write never fails a job.
+      await recordCacheOutcome(deps.db, spec.cache.key, entry !== null).catch(() => undefined);
       if (!entry) {
         logParts.push(`[seat] cache miss: ${spec.cache.key}`);
       } else if (entry.size > SEAT_BLOB_CAP) {

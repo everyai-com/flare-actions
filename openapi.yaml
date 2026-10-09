@@ -957,6 +957,46 @@ paths:
           $ref: '#/components/responses/NotFound'
         '413':
           $ref: '#/components/responses/TooLarge'
+  /v1/cache/stats:
+    get:
+      tags: [cache]
+      operationId: cacheStats
+      summary: Shared warm-cache hit rate over the trailing 7 days, overall plus per scope
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Hit/miss counters and rates
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [days, hits, misses, hitRate, scopes]
+                properties:
+                  days:
+                    type: integer
+                  hits:
+                    type: integer
+                  misses:
+                    type: integer
+                  hitRate:
+                    type: number
+                  scopes:
+                    type: array
+                    items:
+                      type: object
+                      required: [scope, hits, misses, hitRate]
+                      properties:
+                        scope:
+                          type: string
+                        hits:
+                          type: integer
+                        misses:
+                          type: integer
+                        hitRate:
+                          type: number
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/cache/{key}:
     get:
       tags: [cache]

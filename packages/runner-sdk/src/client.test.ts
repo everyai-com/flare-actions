@@ -222,6 +222,16 @@ describe("FlareClient", () => {
     expect(calls[1].init?.method).toBe("DELETE");
   });
 
+  it("fetches cache hit-rate stats", async () => {
+    const calls = stubFetch(() =>
+      jsonResponse({ days: 7, hits: 10, misses: 2, hitRate: 10 / 12, scopes: [{ scope: "node", hits: 10, misses: 2, hitRate: 10 / 12 }] }),
+    );
+    const stats = await new FlareClient("https://x", "t").getCacheStats();
+    expect(calls[0].url).toBe("https://x/v1/cache/stats");
+    expect(stats.hits).toBe(10);
+    expect(stats.scopes[0].scope).toBe("node");
+  });
+
   it("lists the queue with the fair-share cap", async () => {
     const calls = stubFetch(() =>
       jsonResponse({

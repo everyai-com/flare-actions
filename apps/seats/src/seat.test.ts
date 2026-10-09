@@ -37,6 +37,7 @@ class MemDb implements Db {
   snapshots = new Map<string, Row>();
   egress: Row[] = [];
   settings = new Map<string, { value: string }>();
+  cacheStats = new Map<string, { hits: number; misses: number }>();
 
   prepare(sql: string) {
     const norm = sql.replace(/\s+/g, " ").trim();
@@ -179,6 +180,14 @@ class MemDb implements Db {
       for (let i = 0; i + 7 < values.length; i += 8) {
         this.testCases.push({ job_id: values[i], run_id: values[i + 1], suite: values[i + 2], name: values[i + 3] });
       }
+      return {};
+    }
+    if (norm.startsWith("INSERT INTO cache_stats")) {
+      const key = `${values[0] as string}|${values[1] as string}`;
+      const row = this.cacheStats.get(key) ?? { hits: 0, misses: 0 };
+      row.hits += values[2] as number;
+      row.misses += values[3] as number;
+      this.cacheStats.set(key, row);
       return {};
     }
     throw new Error(`unrouted run: ${norm}`);
@@ -1396,6 +1405,7 @@ describe("runSeatJob", () => {
     expect(new TextDecoder().decode(restore?.opts?.stdin as Uint8Array)).toBe("old-tar");
     expect(store.get("cache/k")).toBeDefined();
     expect(db.jobs.get("j1")?.log as string).toContain("[seat] cache hit: k");
+    expect([...db.cacheStats.values()]).toEqual([{ hits: 1, misses: 0 }]);
   });
 
   it("uploads a single-file artifact raw", async () => {

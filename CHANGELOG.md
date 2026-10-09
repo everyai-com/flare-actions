@@ -56,6 +56,12 @@ tagged on `main` (`v0.1.0` is the first).
   `gh_runner_jobs` table, `workflow_job` ingest, `POST
   /v1/github/jobs/next` claim lane, `cli github-jobs`, `npm run runner
   -- --github`, dashboard Settings card, and `docs/GITHUB-RUNNERS.md`.
+- Shared-warm-cache stats: every cache GET (BYO lane) and seat restore
+  records its hit/miss outcome as one daily-aggregate `cache_stats`
+  upsert — no per-event rows. `GET /v1/cache/stats` serves the
+  trailing-7-day hit rate overall plus per cache scope, `cli cache
+  stats` prints it (text + `--json`), and a dashboard strip shows the
+  "one warm cache, every agent" proof.
 
 ### Changed
 

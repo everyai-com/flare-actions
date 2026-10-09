@@ -176,7 +176,7 @@ import {
 import { basinJobTerminal, basinRunDispatched, basinSink, sendBasin, type BasinSink } from "./basin";
 import { jobDurationMs, summarizeRunCost } from "./cost";
 import { runGenerateWithStatus } from "./generate";
-import { handleCacheGet, handleCachePut, listCacheEntries, purgeCachePrefix } from "./cache";
+import { getCacheStats, handleCacheGet, handleCachePut, listCacheEntries, pruneCacheStats, purgeCachePrefix, recordCacheOutcome } from "./cache";
 import { deleteJobArtifacts, handleArtifactGet, handleArtifactPut, listRunArtifacts, pruneOldCache } from "./artifacts";
 import { ARTIFACTS_EVENT, handleArtifactsPush } from "./artifacts-push";
 import {
@@ -951,6 +951,8 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
           if (staleCache > 0) log("info", "pruned stale cache entries", { pruned: staleCache });
           const staleSources = await pruneOldSources(env.CACHE);
           if (staleSources > 0) log("info", "pruned stale sources", { pruned: staleSources });
+          const staleStats = await pruneCacheStats(env.DB);
+          if (staleStats > 0) log("info", "pruned cache stats", { pruned: staleStats });
           await pruneWebhookDeliveries(env.DB);
         } catch (err: unknown) {
           log("warn", "run prune failed", { error: String(err) });
@@ -2338,12 +2340,24 @@ export default {
         await wakeSeat(env, rerunMatch[2]);
         return json({ ok: true });
       }
+      // Shared-warm-cache stats come before the key matcher below —
+      // `/v1/cache/stats` would otherwise parse as a cache key.
+      if (request.method === "GET" && url.pathname === "/v1/cache/stats") {
+        if (!(await requireScope(request, env, "read"))) return json({ error: "unauthorized" }, 401);
+        return json(await getCacheStats(env.DB));
+      }
       const cacheMatch = /^\/v1\/cache\/(.+)$/.exec(url.pathname);
       if (cacheMatch && (request.method === "PUT" || request.method === "GET")) {
         if (!(await requireScope(request, env, "run"))) return json({ error: "unauthorized" }, 401);
         const key = decodeURIComponent(cacheMatch[1]);
         if (request.method === "PUT") return await handleCachePut(env.CACHE, key, request);
-        return await handleCacheGet(env.CACHE, key);
+        const cached = await handleCacheGet(env.CACHE, key);
+        // Hit/miss outcomes land in the daily-aggregate counters off the
+        // hot path; a stats write never fails a cache read.
+        if (cached.status === 200 || cached.status === 404) {
+          ctx.waitUntil(recordCacheOutcome(env.DB, key, cached.status === 200).catch(() => undefined));
+        }
+        return cached;
       }
       // Source dispatch: upload a working-tree tarball, then dispatch
       // with `source: <id>` and an inline pipeline (run scope only).
