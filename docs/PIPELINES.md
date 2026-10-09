@@ -49,6 +49,16 @@ jobs:
         url: https://example.com/
         expect-title: Example      # substring of <title> (or expect-text)
         screenshot: true           # PNG artifact, default true
+      - name: preview-login        # verify the PR preview deploy
+        url: https://app-git-{branch}.example.com/login
+        actions:                   # interactions before assertions (≤10)
+          - type: '#user'           # type into a CSS selector...
+            text: demo@example.com
+          - type: '#pass'           # ...secrets interpolate, never echo
+            text: ${{ secrets.DEMO_PW }}
+          - click: '#submit'        # click a selector
+          - wait: '#dashboard'      # wait for a selector (or wait-text)
+        expect-text: Welcome
     egress:                        # seats-only: outbound domain allowlist
       allow: [example.com]         # exact + subdomains pass; loopback always passes
     test-selection:                # opt-in: run only tests the diff can affect
@@ -120,12 +130,24 @@ jobs:
   -w /work`, forwarding only `FLARE_*`, job `env`, and matrix vars.
 - **`browser-checks`** (managed seats only) run worker-side via Browser
   Rendering after successful steps: each check loads its `url`
-  (https only), asserts `expect-title` and/or `expect-text`
+  (https only), runs `actions` in order (≤10: `click`/`type`/`wait`
+  on CSS selectors, `wait-text` on a substring, sharing the check's
+  30 s budget), asserts `expect-title` and/or `expect-text`
   substrings (at least one required), and stores a PNG screenshot as
   a `browser-<name>.png` artifact (unless `screenshot: false`). Any
-  miss fails the job. BYO runners and `cli local` fail closed on the
+  miss fails the job. Action failures name the step + selector, never
+  typed text. BYO runners and `cli local` fail closed on the
   key rather than silently skipping; seats without the `BROWSER`
   binding fail with a configuration pointer. Skipped when steps fail.
+- **Preview URLs**: check `url`s may carry `{branch}`, `{pr}`,
+  `{sha}`, `{short_sha}` templates resolved seat-side from the run
+  row, so one pipeline verifies every PR's preview deploy
+  (`https://app-git-{branch}.example.com`). `{branch}` slugifies
+  (non-`[A-Za-z0-9_-]` runs collapse to `-`, matching provider
+  preview rules) so fork branch names cannot break out of the URL;
+  unknown vars and malformed braces fail the file. `${{
+  secrets.NAME }}` interpolates in URLs and action text (masked in
+  logs); secret values are never scanned for placeholders.
 - **`egress.allow`** (managed seats only) is enforced by the
   LD_PRELOAD shim at `connect()` time: exact names and subdomains
   pass, loopback always passes (services), DNS always passes,
@@ -230,7 +252,7 @@ when any warning fires; the command itself exits 0).
 
 32 jobs post-expansion, 100 steps/job, 8 matrix keys × 16 values, 8 labels,
 32 env vars, 8 services, 16 cache paths, 32 artifact paths,
-10 browser-checks/job (30 s each), 32 egress allow domains, 64 KB file.
+10 browser-checks/job (30 s each, ≤10 actions/check), 32 egress allow domains, 64 KB file.
 16 profiles, 32 include/exclude entries/profile, 8 tags/job.
 
 ## Generating pipelines

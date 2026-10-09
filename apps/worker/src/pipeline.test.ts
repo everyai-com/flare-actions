@@ -329,6 +329,66 @@ describe("job definition serialization", () => {
     );
     expect(bad(eleven)).toBeNull();
   });
+
+  it("parses check actions and serializes them into the definition", () => {
+    const yaml =
+      "jobs:\n  a:\n    steps:\n      - run: echo\n    browser-checks:\n" +
+      "      - name: login\n        url: https://example.com/login\n        actions:\n" +
+      "          - type: '#user'\n            text: demo@example.com\n" +
+      "          - click: '#submit'\n" +
+      "          - wait: '#dashboard'\n" +
+      "          - wait-text: Welcome\n" +
+      "        expect-text: Welcome\n";
+    const checks = parsePipeline(yaml)?.[0].browserChecks;
+    expect(checks).toEqual([
+      {
+        name: "login",
+        url: "https://example.com/login",
+        expectText: "Welcome",
+        actions: [
+          { kind: "type", selector: "#user", text: "demo@example.com" },
+          { kind: "click", selector: "#submit" },
+          { kind: "wait", selector: "#dashboard" },
+          { kind: "wait-text", text: "Welcome" },
+        ],
+      },
+    ]);
+    const def = serializeDefinition({ name: "a", steps: [{ run: "echo" }], browserChecks: checks }, "a");
+    expect(JSON.parse(def).browserChecks[0].actions).toHaveLength(4);
+  });
+
+  it("rejects malformed check actions", () => {
+    const bad = (actions: string) =>
+      parsePipeline(
+        `jobs:\n  a:\n    steps:\n      - run: echo\n    browser-checks:\n      - name: x\n        url: https://example.com/\n        expect-text: y\n${actions}\n`,
+      );
+    expect(bad("        actions: []")).toBeNull();
+    expect(bad("        actions: notalist")).toBeNull();
+    expect(bad("        actions:\n          - clik: '#x'")).toBeNull();
+    expect(bad("        actions:\n          - click: '#x'\n            wait: '#y'")).toBeNull();
+    expect(bad("        actions:\n          - type: '#x'")).toBeNull();
+    expect(bad("        actions:\n          - click: '#x'\n            text: stray")).toBeNull();
+    expect(bad("        actions:\n          - wait-text: ok\n            text: stray")).toBeNull();
+    expect(bad("        actions:\n          - click: ''")).toBeNull();
+    expect(bad("        actions:\n          - click: 42")).toBeNull();
+    expect(bad("        actions:\n          - wait-text: ''")).toBeNull();
+    const eleven = Array.from({ length: 11 }, () => "          - click: '#x'").join("\n");
+    expect(bad(`        actions:\n${eleven}`)).toBeNull();
+  });
+
+  it("accepts preview-URL templates and rejects bad placeholders", () => {
+    const good = (url: string) =>
+      parsePipeline(`jobs:\n  a:\n    steps:\n      - run: echo\n    browser-checks:\n      - name: x\n        url: ${url}\n        expect-text: y\n`);
+    expect(good("https://app-git-{branch}.example.com/")?.[0].browserChecks?.[0].url).toBe(
+      "https://app-git-{branch}.example.com/",
+    );
+    expect(good("https://example.com/{pr}/{sha}/{short_sha}")?.[0].browserChecks).toHaveLength(1);
+    const bad = (url: string) =>
+      parsePipeline(`jobs:\n  a:\n    steps:\n      - run: echo\n    browser-checks:\n      - name: x\n        url: '${url}'\n        expect-text: y\n`);
+    expect(bad("https://{repo}.example.com/")).toBeNull();
+    expect(bad("https://example.com/{branch")).toBeNull();
+    expect(bad("https://example.com/x}")).toBeNull();
+  });
 });
 
 describe("seatEligible", () => {

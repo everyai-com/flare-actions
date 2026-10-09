@@ -18,6 +18,8 @@ import {
   type SeatDeps,
 } from "./seat";
 import type { Db } from "../../worker/src/db";
+import { encryptSecretValue, resolveSecretsKey } from "../../worker/src/secrets";
+import type { JobBrowserActionSpec } from "../../../packages/runner-sdk/src/spec";
 import { EGRESS_LOG_PATH, EGRESS_SHIM_PATH } from "./egress";
 import { SandboxFsError, type SeatDirEntry, type SeatFiles, type SeatFileStat } from "./sandbox-fs";
 
@@ -37,6 +39,7 @@ class MemDb implements Db {
   testCases: Row[] = [];
   selections = new Map<string, Row>();
   recentFailures: Row[] = [];
+  secretRows: Row[] = [];
   snapshots = new Map<string, Row>();
   egress: Row[] = [];
   settings = new Map<string, { value: string }>();
@@ -77,6 +80,9 @@ class MemDb implements Db {
     }
     if (norm.startsWith("SELECT DISTINCT t.suite AS suite")) return this.recentFailures;
     if (norm.startsWith("SELECT * FROM monitors ORDER BY")) return this.monitors;
+    if (norm.startsWith("SELECT repo, name, iv, ciphertext, updated_at FROM repo_secrets")) {
+      return this.secretRows.filter((s) => s.repo === values[0]);
+    }
     if (norm.includes("status = 'blocked'")) return [];
     if (norm.startsWith("SELECT j.definition, j.name")) return [];
     if (norm.includes("status IN ('queued', 'running', 'blocked')")) return [];
@@ -438,12 +444,15 @@ function stdinText(call: { opts?: ExecOptions }): string {
 
 function fakeBrowser(
   pages: Record<string, { title: string; text?: string; shot?: boolean; throws?: string }>,
-): BrowserDriver & { calls: string[] } {
+): BrowserDriver & { calls: string[]; actionCalls: JobBrowserActionSpec[][] } {
   const calls: string[] = [];
+  const actionCalls: JobBrowserActionSpec[][] = [];
   return {
     calls,
+    actionCalls,
     check: async (url, opts) => {
       calls.push(url);
+      actionCalls.push(opts.actions);
       const p = pages[url];
       if (!p) throw new Error(`unexpected url ${url}`);
       if (p.throws) throw new Error(p.throws);
@@ -1461,6 +1470,119 @@ describe("runSeatJob", () => {
     expect(out.status).toBe("completed");
     expect(db.jobs.get("j1")?.status).toBe("failure");
     expect(db.jobs.get("j1")?.log as string).toContain("need the BROWSER binding");
+  });
+
+  it("resolves preview-URL templates from the run row", async () => {
+    const db = new MemDb();
+    seed(
+      db,
+      DEF({
+        browserChecks: [
+          { name: "preview", url: "https://app-git-{branch}.example.com/{pr}/{short_sha}", expectText: "ok" },
+        ],
+      }),
+    );
+    const run = db.runs.get("r1") as Row;
+    run.branch = "feat-x";
+    run.pr_number = 42;
+    run.sha = "abc123def456";
+    const browser = fakeBrowser({ "https://app-git-feat-x.example.com/42/abc123d": { title: "t", text: "ok" } });
+    const out = await runSeatJob(deps(db, new FakeContainer(), { browser }), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("success");
+    expect(browser.calls).toEqual(["https://app-git-feat-x.example.com/42/abc123d"]);
+  });
+
+  it("fails the check (not the seat) when the run context lacks a used variable", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ browserChecks: [{ name: "preview", url: "https://app-git-{branch}.example.com/", expectText: "ok" }] }));
+    (db.runs.get("r1") as Row).branch = "";
+    const browser = fakeBrowser({});
+    const out = await runSeatJob(deps(db, new FakeContainer(), { browser }), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("failure");
+    expect(db.jobs.get("j1")?.log as string).toContain("{branch}");
+    expect(browser.calls).toEqual([]);
+  });
+
+  it("forwards interpolated actions to the driver in order", async () => {
+    const db = new MemDb();
+    seed(
+      db,
+      DEF({
+        browserChecks: [
+          {
+            name: "login",
+            url: "https://example.com/login",
+            expectText: "Welcome",
+            actions: [
+              { kind: "type", selector: "#user", text: "demo" },
+              { kind: "click", selector: "#submit" },
+              { kind: "wait", selector: "#dashboard" },
+              { kind: "wait-text", text: "Welcome" },
+            ],
+          },
+        ],
+      }),
+    );
+    const browser = fakeBrowser({ "https://example.com/login": { title: "Login", text: "Welcome" } });
+    const out = await runSeatJob(deps(db, new FakeContainer(), { browser }), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("success");
+    expect(browser.actionCalls).toEqual([
+      [
+        { kind: "type", selector: "#user", text: "demo" },
+        { kind: "click", selector: "#submit" },
+        { kind: "wait", selector: "#dashboard" },
+        { kind: "wait-text", text: "Welcome" },
+      ],
+    ]);
+  });
+
+  it("interpolates secrets into check URLs and action text, masked in logs", async () => {
+    const db = new MemDb();
+    const secretsKey = Buffer.from("0".repeat(32)).toString("base64");
+    const key = await resolveSecretsKey(db, secretsKey);
+    const enc = await encryptSecretValue(key, "s3cret-value");
+    db.secretRows.push({ repo: "o/r", name: "DEMO_PW", iv: enc.iv, ciphertext: enc.data, updated_at: "2026-10-09T00:00:00.000Z" });
+    seed(
+      db,
+      DEF({
+        browserChecks: [
+          {
+            name: "login",
+            url: "https://example.com/login?token=${{ secrets.DEMO_PW }}",
+            expectText: "Welcome",
+            actions: [{ kind: "type", selector: "#pass", text: "${{ secrets.DEMO_PW }}" }],
+          },
+        ],
+      }),
+    );
+    const browser = fakeBrowser({ "https://example.com/login?token=s3cret-value": { title: "t", text: "Welcome" } });
+    const out = await runSeatJob(deps(db, new FakeContainer(), { browser, secretsKey }), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("success");
+    expect(browser.calls).toEqual(["https://example.com/login?token=s3cret-value"]);
+    expect(browser.actionCalls).toEqual([[{ kind: "type", selector: "#pass", text: "s3cret-value" }]]);
+    const log = db.jobs.get("j1")?.log as string;
+    expect(log).not.toContain("s3cret-value");
+    expect(log).toContain("***");
+  });
+
+  it("masks secret values that leak through driver errors", async () => {
+    const db = new MemDb();
+    const secretsKey = Buffer.from("0".repeat(32)).toString("base64");
+    const key = await resolveSecretsKey(db, secretsKey);
+    const enc = await encryptSecretValue(key, "s3cret-value");
+    db.secretRows.push({ repo: "o/r", name: "DEMO_PW", iv: enc.iv, ciphertext: enc.data, updated_at: "2026-10-09T00:00:00.000Z" });
+    seed(db, DEF({ browserChecks: [{ name: "home", url: "https://example.com/", expectTitle: "Example" }] }));
+    const browser = fakeBrowser({ "https://example.com/": { title: "t", throws: "weird driver echo: s3cret-value" } });
+    const out = await runSeatJob(deps(db, new FakeContainer(), { browser, secretsKey }), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("failure");
+    const log = db.jobs.get("j1")?.log as string;
+    expect(log).toContain("browser error");
+    expect(log).not.toContain("s3cret-value");
   });
 
   it("skips browser checks when steps fail and honors screenshot:false", async () => {

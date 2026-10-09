@@ -49,7 +49,9 @@ import { annotateSpan } from "../../worker/src/trace";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
 import type { AiBinding } from "../../worker/src/triage";
 import { interpolateSecrets, maskSecrets } from "../../../packages/runner-sdk/src/secrets";
+import { resolveCheckUrl } from "../../../packages/runner-sdk/src/browser";
 import { matrixEnv, parseJobSpec, stepRuns, unsafeTarMember } from "../../../packages/runner-sdk/src/spec";
+import type { JobBrowserActionSpec } from "../../../packages/runner-sdk/src/spec";
 import {
   groupGrepLines,
   selectTests,
@@ -430,7 +432,10 @@ export interface BrowserPageResult {
 }
 
 export interface BrowserDriver {
-  check(url: string, opts: { screenshot: boolean; timeoutMs: number }): Promise<BrowserPageResult>;
+  check(
+    url: string,
+    opts: { screenshot: boolean; timeoutMs: number; actions: JobBrowserActionSpec[] },
+  ): Promise<BrowserPageResult>;
 }
 
 export const BROWSER_CHECK_TIMEOUT_MS = 30000;
@@ -1240,13 +1245,41 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         anyFailed = true;
         jobFailed = true;
       } else {
+        const recordCheckFailure = (name: string, url: string, startedAt: number, message: string): void => {
+          const durationMs = Date.now() - startedAt;
+          const msg = `browser error: ${message.slice(0, 300)}`;
+          records.push({ command: `browser ${name}`, exitCode: 1, durationMs, output: mask(msg) });
+          logParts.push(mask(`--- browser ${name}: ${url} ---\n${msg}\n(exit 1, ${durationMs}ms)`));
+          anyFailed = true;
+          jobFailed = true;
+        };
         for (const check of spec.browserChecks) {
-          await note(`[seat] browser check start: ${check.name} ${check.url}`);
           const startedAt = Date.now();
+          // Preview-URL templates resolve from the run row, then repo
+          // secrets interpolate (values never scanned), then the URL
+          // re-validates https-only like parse time.
+          const resolved = resolveCheckUrl(
+            check.url,
+            { branch: run.branch ?? "", prNumber: run.pr_number ?? null, sha: run.sha },
+            secrets,
+          );
+          if ("error" in resolved) {
+            recordCheckFailure(check.name, check.url, startedAt, resolved.error);
+            continue;
+          }
+          const finalUrl = resolved.url;
+          const actions: JobBrowserActionSpec[] = (check.actions ?? []).map((a) => ({
+            kind: a.kind,
+            ...(a.selector !== undefined ? { selector: interpolateSecrets(a.selector, secrets) } : {}),
+            ...(a.text !== undefined ? { text: interpolateSecrets(a.text, secrets) } : {}),
+          }));
+          // Masked: URLs and selectors may carry interpolated secrets.
+          await note(`[seat] browser check start: ${check.name} ${mask(finalUrl)}`);
           try {
-            const page = await deps.browser.check(check.url, {
+            const page = await deps.browser.check(finalUrl, {
               screenshot: check.screenshot !== false,
               timeoutMs: BROWSER_CHECK_TIMEOUT_MS,
+              actions,
             });
             const durationMs = Date.now() - startedAt;
             const titleOk = check.expectTitle === undefined || page.title.includes(check.expectTitle);
@@ -1267,18 +1300,13 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
             }
             const output = failed || `title ${JSON.stringify(page.title.slice(0, 120))} ok`;
             records.push({ command: `browser ${check.name}`, exitCode: failed ? 1 : 0, durationMs, output: mask(output) });
-            logParts.push(mask(`--- browser ${check.name}: ${check.url} ---\n${output}\n(exit ${failed ? 1 : 0}, ${durationMs}ms)`));
+            logParts.push(mask(`--- browser ${check.name}: ${finalUrl} ---\n${output}\n(exit ${failed ? 1 : 0}, ${durationMs}ms)`));
             if (failed) {
               anyFailed = true;
               jobFailed = true;
             }
           } catch (err) {
-            const durationMs = Date.now() - startedAt;
-            const msg = `browser error: ${String(err instanceof Error ? err.message : err).slice(0, 300)}`;
-            records.push({ command: `browser ${check.name}`, exitCode: 1, durationMs, output: mask(msg) });
-            logParts.push(mask(`--- browser ${check.name}: ${check.url} ---\n${msg}\n(exit 1, ${durationMs}ms)`));
-            anyFailed = true;
-            jobFailed = true;
+            recordCheckFailure(check.name, finalUrl, startedAt, String(err instanceof Error ? err.message : err));
           }
         }
       }

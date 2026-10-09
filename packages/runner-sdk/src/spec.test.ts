@@ -88,6 +88,36 @@ describe("parseJobSpec", () => {
     ).toBeNull();
   });
 
+  it("keeps check actions and preview-URL templates, rejects malformed shapes", () => {
+    const good = [
+      {
+        name: "login",
+        url: "https://app-git-{branch}.example.com/login",
+        expectText: "Welcome",
+        actions: [
+          { kind: "type", selector: "#user", text: "demo" },
+          { kind: "click", selector: "#submit" },
+          { kind: "wait", selector: "#dashboard" },
+          { kind: "wait-text", text: "Welcome" },
+        ],
+      },
+    ];
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], browserChecks: good }))?.browserChecks).toEqual(good);
+    const bad = (checks: unknown) => parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], browserChecks: checks }));
+    const check = (over: Record<string, unknown>) =>
+      bad([{ name: "x", url: "https://example.com/", expectTitle: "t", ...over }]);
+    expect(check({ actions: [] })).toBeNull();
+    expect(check({ actions: [{ kind: "hover", selector: "#x" }] })).toBeNull();
+    expect(check({ actions: [{ kind: "type", selector: "#x" }] })).toBeNull();
+    expect(check({ actions: [{ kind: "click", selector: "#x", text: "stray" }] })).toBeNull();
+    expect(check({ actions: [{ kind: "wait-text", text: "t", selector: "#x" }] })).toBeNull();
+    expect(check({ actions: [{ kind: "click", selector: "" }] })).toBeNull();
+    expect(check({ actions: [{ kind: "wait-text", text: "" }] })).toBeNull();
+    expect(check({ actions: Array.from({ length: 11 }, () => ({ kind: "click", selector: "#x" })) })).toBeNull();
+    expect(bad([{ name: "x", url: "https://{repo}.example.com/", expectTitle: "t" }])).toBeNull();
+    expect(bad([{ name: "x", url: "https://example.com/{branch", expectTitle: "t" }])).toBeNull();
+  });
+
   it("keeps CI profile tags and rejects malformed shapes", () => {
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], tags: ["fast", "smoke"] }))?.tags).toEqual(["fast", "smoke"]);
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }] }))?.tags).toBeUndefined();

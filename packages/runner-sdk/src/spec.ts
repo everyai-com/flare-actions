@@ -1,6 +1,9 @@
 // Runner-side reader for jobs.definition JSON. Forward-tolerant: steps
 // are required, every other field is validated lightly and dropped when
 // malformed so old runners keep working against newer servers.
+// (Seats-only keys like browserChecks stay strict: dropping them would
+// silently skip verification, so malformed means fail closed.)
+import { validatePreviewTemplate } from "./browser.ts";
 
 export interface JobServiceSpec {
   image: string;
@@ -61,12 +64,21 @@ export interface JobTestSelectionSpec {
   historyDays?: number;
 }
 
+export type JobBrowserActionKind = "click" | "type" | "wait" | "wait-text";
+
+export interface JobBrowserActionSpec {
+  kind: JobBrowserActionKind;
+  selector?: string;
+  text?: string;
+}
+
 export interface JobBrowserCheckSpec {
   name: string;
   url: string;
   expectTitle?: string;
   expectText?: string;
   screenshot?: boolean;
+  actions?: JobBrowserActionSpec[];
 }
 
 // Step conditionals: the bounded GitHub subset that covers cleanup and
@@ -269,6 +281,7 @@ export function parseJobSpec(definition: string): JobSpec | null {
         return null;
       }
       if (protocol !== "https:") return null;
+      if (validatePreviewTemplate(c.url) !== null) return null;
       const check: JobBrowserCheckSpec = { name: c.name, url: c.url };
       for (const field of ["expectTitle", "expectText"] as const) {
         const v = c[field];
@@ -281,6 +294,30 @@ export function parseJobSpec(definition: string): JobSpec | null {
       if (c.screenshot !== undefined) {
         if (typeof c.screenshot !== "boolean") return null;
         check.screenshot = c.screenshot;
+      }
+      if (c.actions !== undefined) {
+        if (!Array.isArray(c.actions) || c.actions.length === 0 || c.actions.length > 10) return null;
+        const actions: JobBrowserActionSpec[] = [];
+        for (const a of c.actions) {
+          if (!isRecord(a)) return null;
+          const kind = a.kind;
+          if (kind !== "click" && kind !== "type" && kind !== "wait" && kind !== "wait-text") return null;
+          if (kind === "wait-text") {
+            if (typeof a.text !== "string" || !a.text || a.text.length > 512) return null;
+            if (a.selector !== undefined) return null;
+            actions.push({ kind, text: a.text });
+            continue;
+          }
+          if (typeof a.selector !== "string" || !a.selector.trim() || a.selector.length > 256) return null;
+          if (kind === "type") {
+            if (typeof a.text !== "string" || !a.text || a.text.length > 1024) return null;
+            actions.push({ kind, selector: a.selector, text: a.text });
+          } else {
+            if (a.text !== undefined) return null;
+            actions.push({ kind, selector: a.selector });
+          }
+        }
+        check.actions = actions;
       }
       checks.push(check);
     }

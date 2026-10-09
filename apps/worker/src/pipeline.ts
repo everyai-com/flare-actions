@@ -1,4 +1,5 @@
 import { parse as parseYaml } from "yaml";
+import { validatePreviewTemplate } from "../../../packages/runner-sdk/src/browser.ts";
 import { isValidCacheKey } from "../../../packages/runner-sdk/src/parity.ts";
 import { parseTestSelectionConfig, type TestSelectionConfig } from "./testselect.ts";
 
@@ -59,13 +60,30 @@ export interface PipelineTestReports {
 
 // Managed seats only: declarative browser checks run worker-side via
 // the BROWSER binding (Browser Rendering) after successful steps
-// (BYO runners ignore them). YAML key: `browser-checks`.
+// (BYO runners and `cli local` fail closed on them). YAML key:
+// `browser-checks`.
+export type PipelineBrowserActionKind = "click" | "type" | "wait" | "wait-text";
+
+export interface PipelineBrowserAction {
+  kind: PipelineBrowserActionKind;
+  // click/type/wait target (CSS selector). Never echoed with values.
+  selector?: string;
+  // type text / wait-text substring. May carry ${{ secrets.NAME }};
+  // never echoed anywhere (assertion reports name the kind only).
+  text?: string;
+}
+
 export interface PipelineBrowserCheck {
   name: string;
+  // May carry preview-URL templates ({branch}, {pr}, {sha},
+  // {short_sha}) resolved seat-side from the run row.
   url: string;
   expectTitle?: string;
   expectText?: string;
   screenshot?: boolean;
+  // Interactions before the assertions (click/type/wait/wait-text),
+  // in order, sharing the check's 30s budget.
+  actions?: PipelineBrowserAction[];
 }
 
 // Managed seats only: outbound allowlist enforced by the LD_PRELOAD
@@ -125,6 +143,9 @@ export const MAX_PROFILE_ENTRIES = 32;
 export const MAX_TAGS = 8;
 export const MAX_SHARDS = 8;
 export const MAX_BROWSER_CHECKS = 10;
+export const MAX_BROWSER_ACTIONS = 10;
+export const MAX_BROWSER_SELECTOR = 256;
+export const MAX_BROWSER_ACTION_TEXT = 1024;
 export const MAX_EGRESS_ALLOW = 32;
 export const MAX_STEPS_PER_JOB = 100;
 export const MAX_RUN_LENGTH = 8000;
@@ -426,6 +447,9 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
       // plain-http assertions against staging hosts are a downgrade
       // footgun. Previews and prod are https.
       if (protocol !== "https:") return null;
+      // Preview-URL templates ({branch}, {pr}, {sha}, {short_sha});
+      // unknown vars and malformed braces fail the file, not the run.
+      if (validatePreviewTemplate(c.url) !== null) return null;
       const check: PipelineBrowserCheck = { name: c.name, url: c.url };
       for (const [yamlKey, field] of [
         ["expect-title", "expectTitle"],
@@ -443,6 +467,35 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
       if (c.screenshot !== undefined) {
         if (typeof c.screenshot !== "boolean") return null;
         check.screenshot = c.screenshot;
+      }
+      if (c.actions !== undefined) {
+        if (!Array.isArray(c.actions) || c.actions.length === 0 || c.actions.length > MAX_BROWSER_ACTIONS) return null;
+        const actions: PipelineBrowserAction[] = [];
+        for (const a of c.actions) {
+          if (!isRecord(a)) return null;
+          // Exactly one kind key; `text` rides `type` only (a text on
+          // click/wait is a typo, not a comment — fail it).
+          const kinds = (["click", "type", "wait", "wait-text"] as const).filter((k) => a[k] !== undefined);
+          if (kinds.length !== 1) return null;
+          const kind = kinds[0];
+          if (kind === "wait-text") {
+            const text = a[kind];
+            if (typeof text !== "string" || !text || text.length > 512) return null;
+            if (a.text !== undefined) return null;
+            actions.push({ kind, text });
+            continue;
+          }
+          const selector = a[kind];
+          if (typeof selector !== "string" || !selector.trim() || selector.length > MAX_BROWSER_SELECTOR) return null;
+          if (kind === "type") {
+            if (typeof a.text !== "string" || !a.text || a.text.length > MAX_BROWSER_ACTION_TEXT) return null;
+            actions.push({ kind, selector, text: a.text });
+          } else {
+            if (a.text !== undefined) return null;
+            actions.push({ kind, selector });
+          }
+        }
+        check.actions = actions;
       }
       checks.push(check);
     }

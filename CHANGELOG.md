@@ -8,6 +8,13 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Browser-check actions + preview self-verification: checks take
+  ≤10 ordered actions (`click`/`type`/`wait`/`wait-text`, sharing
+  the 30 s budget, selector-only failure reports) and URLs take
+  `{branch}`/`{pr}`/`{sha}`/`{short_sha}` templates resolved
+  seat-side (branch slugified so fork names cannot break out;
+  secrets interpolate into URLs + action text, masked in logs,
+  values never scanned). Staging checklist: `browser-canary-job-04`.
 - BYO resource self-report + right-sizing: runners sample their
   process subtree (`ps`, 1/s, best-effort) and report `peakRssBytes`
   + `peakCpuPercent` in result JSON with a `[resources]` log line;

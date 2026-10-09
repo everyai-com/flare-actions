@@ -53,11 +53,11 @@ tab + PR-comment section). OpenAPI is at 75 paths (was 68).
   claim order), job-level egress enforcement (`egress.allow`) +
   per-repo domain floor policy (`/v1/admin/egress-allowlist`, fan-out
   merge, dry-run preview, dashboard Settings UI),
-  browser-checks, local named dev boxes (`cli devbox` + sync +
+  browser-checks (+ actions, preview-URL templates),
+  local named dev boxes (`cli devbox` + sync +
   snapshots), new admin settings UI. Still open: remote
   (seat-persisted) named warm boxes + Files-based sync,
-  Workers VPC (blocked on platform),
-  browser preview self-verification + richer actions.
+  Workers VPC (blocked on platform).
 - **Phase 3**: AI Gateway fronting for triage + generate (env `AI_GATEWAY_ID`
   or D1, off by default), Web Search grounding for triage (opt-in
   `triage_web_search`, needs a gateway), MCP `2026-07-28` negotiation +
@@ -291,8 +291,15 @@ Needs Phase 0 done:
   `cli local` fail closed (never silent green); missing binding
   fails with a configuration pointer. Staging-validated
   (`browser-canary-job-02/03`, incl. a live assertion-miss and a
-  real PNG in R2). Still open: preview-deploy self-verification
-  jobs, richer actions (click/type/wait) if demand appears.
+  real PNG in R2). Shipped next: richer actions (`click`/`type`/
+  `wait`/`wait-text`, ≤10/check sharing the 30 s budget, selector-
+  only failure reports) and preview-deploy self-verification
+  (`{branch}`/`{pr}`/`{sha}`/`{short_sha}` URL templates resolved
+  seat-side, branch slugified against fork-name breakout, secrets
+  interpolate into URLs + action text with masking). Staging
+  checklist: `browser-canary-job-04` (login flow with typed secret
+  + preview template) — no Docker in this env, so live-Browser
+  validation rides staging, not CI.
 
 ## Phase 3 — AI + agent surface + scale
 
