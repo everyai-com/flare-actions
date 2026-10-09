@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deleteRunner, fetchChangedFiles, generateJitConfig, listMergedPulls, resolveRefToSha, timingSafeEqualHex, verifyGitHubSignature } from "./github";
+import { deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, listMergedPulls, resolveRefToSha, timingSafeEqualHex, verifyGitHubSignature } from "./github";
 
 async function sign(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -276,6 +276,62 @@ describe("listMergedPulls", () => {
         json: async (): Promise<unknown> => null,
       })) as typeof fetch;
       expect(await listMergedPulls("tok", "o/r", "2026-10-01T00:00:00.000Z")).toEqual([]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+describe("fetchJobLogDigest", () => {
+  const realFetch = globalThis.fetch;
+
+  function stubBody(text: string | null) {
+    globalThis.fetch = (async (_input: string | URL | Request) => {
+      if (text === null) return { ok: false, body: null, json: async (): Promise<unknown> => null };
+      const data = new TextEncoder().encode(text);
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(c) {
+            c.enqueue(data);
+            c.close();
+          },
+        }),
+        json: async (): Promise<unknown> => null,
+      };
+    }) as typeof fetch;
+  }
+
+  it("downloads and decodes bounded logs", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      seen.push(String(input));
+      const data = new TextEncoder().encode("line1\nline2\n");
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(c) {
+            c.enqueue(data);
+            c.close();
+          },
+        }),
+        json: async (): Promise<unknown> => null,
+      };
+    }) as typeof fetch;
+    try {
+      expect(await fetchJobLogDigest("tok", "o/r", "123")).toBe("line1\nline2\n");
+      expect(seen[0]).toBe("https://api.github.com/repos/o/r/actions/jobs/123/logs");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("returns null for bad input and failed fetches", async () => {
+    try {
+      expect(await fetchJobLogDigest("tok", "nope", "123")).toBeNull();
+      expect(await fetchJobLogDigest("tok", "o/r", "abc")).toBeNull();
+      stubBody(null);
+      expect(await fetchJobLogDigest("tok", "o/r", "123")).toBeNull();
     } finally {
       globalThis.fetch = realFetch;
     }

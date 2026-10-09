@@ -73,16 +73,17 @@ App is installed. Runner mode narrows it in practice:
 Jobs execute under GitHub's official runner on your hardware, so
 the toolchain is whatever the machine has (same as any self-hosted
 runner). The lane adds no container, cache, or artifact layer of
-its own: cache/artifacts come from GitHub, logs live on GitHub, and
-Flare keeps the job record for cost attribution, the dashboard
-card, and `cli github-jobs`.
+its own: cache/artifacts come from GitHub, and Flare keeps the job
+record for cost attribution, the dashboard card, and
+`cli github-jobs`. Full logs stay on GitHub, but failed lane jobs get
+a mirrored digest (error lines + tail, ≤4 KiB, fetched on completion):
+it rides `GET /v1/github/jobs`, the dashboard card's first line, and
+`cli github-jobs --logs <jobId>`.
 
 ## Limits (deliberate)
 
 - Managed-seat JIT runners: no (docker-in-docker is unsupported on
   Containers) — runner mode is BYO only.
-- No log mirroring or digests for lane jobs: GitHub stays the log
-  home.
 - No Windows executors yet (the official runner ships a zip with a
   different bootstrap).
 - No org-level runner groups: JIT runners register per repo.

@@ -43,6 +43,10 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("c.sparkline");
   });
 
+  it("shows the lane log digest first line on runner-mode jobs", () => {
+    expect(DASHBOARD_HTML).toContain("j.logDigest");
+  });
+
   it("surfaces the Actions drop-in card and per-run pipeline source tags", () => {
     expect(DASHBOARD_HTML).toContain("Coming from GitHub Actions?");
     expect(DASHBOARD_HTML).toContain("pipelineSourceLabel");

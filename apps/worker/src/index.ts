@@ -100,7 +100,7 @@ import {
   updateRunningJob,
   usageStats,
 } from "./db";
-import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, generateJitConfig, getDefaultBranch, getInstallationToken, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, updatePullRequestBranch, verifyGitHubSignature } from "./github";
+import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, getDefaultBranch, getInstallationToken, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, updatePullRequestBranch, verifyGitHubSignature } from "./github";
 import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
 import { DASHBOARD_HTML } from "./dashboard";
@@ -201,11 +201,13 @@ import {
   claimGhRunnerJob,
   ghRunnerUsage,
   handleWorkflowJobEvent,
+  laneLogDigestText,
   listGhRunnerJobs,
   parseStoredLabels,
   releaseGhRunnerJob,
   runnerManagedLabels,
   runnerModeOn,
+  setGhJobLogDigest,
   stampGhRunnerId,
   sweepStaleGhRunnerJobs,
   type GhRunnerJobRow,
@@ -392,6 +394,7 @@ function publicGhJob(row: GhRunnerJobRow): {
   attempts: number;
   startedAt: string | null;
   completedAt: string | null;
+  logDigest: string | null;
 } {
   return {
     id: row.id,
@@ -409,6 +412,7 @@ function publicGhJob(row: GhRunnerJobRow): {
     attempts: row.attempts,
     startedAt: row.started_at,
     completedAt: row.completed_at,
+    logDigest: row.log_digest ?? null,
   };
 }
 
@@ -550,6 +554,23 @@ async function getWebhookSecret(env: WorkerEnv): Promise<string | null> {
 
 async function getAppCreds(env: WorkerEnv): Promise<{ appId: string; privateKey: string } | null> {
   return resolveAppCreds(env.DB, { appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_PRIVATE_KEY }, env.SECRETS_KEY);
+}
+
+// Lane log digest, backgrounded off the workflow_job webhook: download
+// the job's logs, keep error lines + tail, store ≤4 KiB. Best-effort
+// throughout — a missing App, token, or log row just skips.
+async function mirrorLaneLogDigest(env: WorkerEnv, jobId: string, repo: string, installationId: number): Promise<void> {
+  try {
+    const creds = await getAppCreds(env);
+    if (!creds) return;
+    const token = await getInstallationToken(await mintAppJwt(creds.appId, creds.privateKey), installationId);
+    if (!token) return;
+    const text = await fetchJobLogDigest(token, repo, jobId);
+    if (!text) return;
+    await setGhJobLogDigest(env.DB, jobId, laneLogDigestText(text));
+  } catch (err) {
+    log("warn", "lane log digest failed", { jobId, error: String(err) });
+  }
 }
 
 async function requireScope(
@@ -1030,6 +1051,15 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
         });
         if (out.handled && out.action === "completed" && out.terminal) {
           emitGhaJobCompleted(env.ANALYTICS, { ...out.terminal });
+          // Failed lane jobs get a log digest (error lines + tail) for
+          // triage without leaving Flare; the 202 already went out, so
+          // the fetch rides waitUntil and never fails the webhook.
+          if (out.terminal.conclusion !== "success" && out.terminal.installationId) {
+            const digestJobId = out.id;
+            const digestRepo = out.terminal.repo;
+            const digestInstallation = out.terminal.installationId;
+            ctx.waitUntil(mirrorLaneLogDigest(env, digestJobId, digestRepo, digestInstallation));
+          }
         }
         log("info", "workflow_job webhook", {
           action: payload.action ?? "",

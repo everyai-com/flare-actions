@@ -245,6 +245,51 @@ export async function listMergedPulls(
   return out;
 }
 
+// One lane job's logs, bounded to 256 KiB (the endpoint 302s to a
+// signed blob URL; fetch follows it and drops Authorization
+// cross-origin per spec). Null on any failure — digest mirroring is
+// best-effort, never fatal to the webhook.
+export async function fetchJobLogDigest(token: string, repo: string, jobId: string): Promise<string | null> {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^\d+$/.test(jobId)) return null;
+  let res: Response;
+  try {
+    res = await fetch(`https://api.github.com/repos/${repo}/actions/jobs/${jobId}/logs`, {
+      headers: githubHeaders(token),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch {
+    return null;
+  }
+  if (!res.ok || !res.body) return null;
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 262144) {
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return null;
+  } finally {
+    reader.releaseLock();
+  }
+  const total = chunks.reduce((n, c) => n + c.byteLength, 0);
+  const buf = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    buf.set(c, off);
+    off += c.byteLength;
+  }
+  return new TextDecoder().decode(buf);
+}
+
 // Changed files for a run: push compare or PR file list, public-first
 // then installation token. Bounded and best-effort — an empty array
 // means "unknown", never "no changes", so callers (paths filters) must

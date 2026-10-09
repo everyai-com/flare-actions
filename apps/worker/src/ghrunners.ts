@@ -49,6 +49,7 @@ export interface GhRunnerJobRow {
   attempts: number;
   started_at: string | null;
   completed_at: string | null;
+  log_digest: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -64,6 +65,7 @@ export interface GhJobTerminal {
   conclusion: string;
   durationMs: number;
   attempts: number;
+  installationId: number | null;
 }
 
 // Labels GitHub injects around the meaningful ones (`runs-on:
@@ -212,6 +214,7 @@ export async function handleWorkflowJobEvent(
         conclusion: asString(wj.conclusion, 32) || "unknown",
         durationMs,
         attempts: row.attempts,
+        installationId: row.installation_id,
       },
     };
   }
@@ -262,6 +265,34 @@ export async function stampGhRunnerId(db: Db, id: string, runnerId: number, runn
     .bind(runnerId, runnerName.slice(0, 200), nowIso(), id)
     .run()) as { meta?: { changes?: number } };
   return (res?.meta?.changes ?? 0) > 0;
+}
+
+// Store the fetched log digest on a completed lane job (≤4 KiB).
+export async function setGhJobLogDigest(db: Db, id: string, digest: string): Promise<void> {
+  await db
+    .prepare("UPDATE gh_runner_jobs SET log_digest = ?, updated_at = ? WHERE id = ?")
+    .bind(digest.slice(0, 4096), nowIso(), id)
+    .run();
+}
+
+// Pure: lane log digest — the first error-looking lines (deduped,
+// capped) plus the tail, so a failed lane job is triageable without
+// leaving Flare. GitHub timestamps lead every line; kept verbatim.
+export function laneLogDigestText(text: string): string {
+  const lines = text.split("\n").map((l) => l.slice(0, 500));
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    if (errors.length >= 10) break;
+    if (!/error|fail|panic|exception|traceback/i.test(line)) continue;
+    const key = line.slice(0, 200);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    errors.push(line);
+  }
+  const tail = lines.slice(-30);
+  const parts = [...errors, "--- tail ---", ...tail];
+  return parts.join("\n").slice(0, 4096);
 }
 
 // Release back to queued (GitHub API failure, stale claim). Conditional

@@ -5,11 +5,13 @@ import {
   ghLabelsMatch,
   ghRunnerUsage,
   handleWorkflowJobEvent,
+  laneLogDigestText,
   listGhRunnerJobs,
   parseStoredLabels,
   releaseGhRunnerJob,
   runnerManagedLabels,
   runnerModeOn,
+  setGhJobLogDigest,
   stampGhRunnerId,
   sweepStaleGhRunnerJobs,
   targetsManagedLabel,
@@ -37,6 +39,7 @@ function row(over: Partial<GhRunnerJobRow> = {}): GhRunnerJobRow {
     attempts: 0,
     started_at: null,
     completed_at: null,
+    log_digest: null,
     created_at: "2026-10-08T10:00:00.000Z",
     updated_at: "2026-10-08T10:00:00.000Z",
     ...over,
@@ -177,9 +180,18 @@ class GhDb implements Db {
         attempts: 0,
         started_at: null,
         completed_at: null,
+        log_digest: null,
         created_at: now,
         updated_at: now,
       });
+      this.changes = 1;
+      return;
+    }
+    if (norm.startsWith("UPDATE gh_runner_jobs SET log_digest = ?")) {
+      const r = this.rows.get(values[2] as string);
+      if (!r) return;
+      r.log_digest = values[0] as string;
+      r.updated_at = values[1] as string;
       this.changes = 1;
       return;
     }
@@ -340,7 +352,7 @@ describe("handleWorkflowJobEvent", () => {
       handled: true,
       action: "completed",
       id: "101",
-      terminal: { repo: "o/r", runId: "9", jobName: "test", conclusion: "success", durationMs: 120000, attempts: 1 },
+      terminal: { repo: "o/r", runId: "9", jobName: "test", conclusion: "success", durationMs: 120000, attempts: 1, installationId: 55 },
     });
     expect(await handleWorkflowJobEvent(db, { action: "completed", repository: { full_name: "o/r" }, workflow_job: { id: 101 } }, gate)).toMatchObject({ handled: false });
   });
@@ -428,5 +440,27 @@ describe("usage + list", () => {
     expect((await listGhRunnerJobs(db, {})).map((r) => r.id)).toEqual(["b", "a"]);
     expect((await listGhRunnerJobs(db, { repo: "o/r", limit: 500 })).map((r) => r.id)).toEqual(["a"]);
     expect((await listGhRunnerJobs(db, { allowedRepos: ["o/r"] })).map((r) => r.id)).toEqual(["a"]);
+  });
+});
+
+describe("lane log digests", () => {
+  it("keeps error lines plus the tail, bounded", () => {
+    const lines = Array.from({ length: 50 }, (_, i) => `2026-10-08T10:00:${String(i).padStart(2, "0")}Z ok ${i}`);
+    lines[5] = "2026-10-08T10:00:05Z Error: boom";
+    lines[6] = "2026-10-08T10:00:05Z Error: boom";
+    const digest = laneLogDigestText(lines.join("\n"));
+    expect(digest).toContain("Error: boom");
+    expect(digest.match(/Error: boom/g)).toHaveLength(1);
+    expect(digest).toContain("--- tail ---");
+    expect(digest).toContain("ok 49");
+    expect(digest).not.toContain("ok 0\n");
+    expect(digest.length).toBeLessThanOrEqual(4096);
+  });
+
+  it("stores the digest on the lane job row", async () => {
+    const db = new GhDb();
+    db.rows.set("101", row({ status: "completed" }));
+    await setGhJobLogDigest(db, "101", "Error: boom\n--- tail ---\nok");
+    expect(db.rows.get("101")?.log_digest).toBe("Error: boom\n--- tail ---\nok");
   });
 });

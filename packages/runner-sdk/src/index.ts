@@ -351,6 +351,7 @@ export interface GithubRunnerJob {
   attempts: number;
   startedAt: string | null;
   completedAt: string | null;
+  logDigest: string | null;
 }
 
 export interface GithubRunnerClaim {

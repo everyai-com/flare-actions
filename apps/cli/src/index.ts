@@ -71,6 +71,7 @@ function usage(): never {
       "  cli paused                                  repos auto-paused for runaway spend (admin)",
       "  cli resume <repo>                           resume a paused repo (admin)",
       "  cli github-jobs [repo]                    ephemeral runner-mode jobs (status, duration, list price)",
+      "  cli github-jobs --logs <jobId> [repo]    print one lane job's log digest",
       "  cli search <query...>                       search all job logs (branch:main level:error ...)",
       "  cli artifacts <runId>                       list a run's artifacts",
       "  cli badge <repo> [branch]                   print badge markdown + url",
@@ -713,6 +714,22 @@ try {
         }
       }
     }
+  } else if (cmd === "github-jobs" && rest.includes("--logs")) {
+    const args = rest.filter((a) => a !== "--logs");
+    const jobId = args[0];
+    const repo = args[1];
+    if (!jobId) {
+      console.error("usage: cli github-jobs --logs <jobId> [repo]");
+      process.exit(2);
+    }
+    const jobs = await client().listGithubJobs(repo, 100);
+    const job = jobs.find((j) => j.id === jobId);
+    if (!job) {
+      console.error(`job ${jobId} not found in recent lane jobs${repo ? ` for ${repo}` : ""}`);
+      process.exit(1);
+    }
+    if (JSON_MODE) printJson("github-jobs", { job });
+    else console.log(job.logDigest ?? "(no digest yet — success conclusions and pending fetches have none)");
   } else if (cmd === "github-jobs") {
     const jobs = await client().listGithubJobs(rest[0]);
     if (JSON_MODE) {

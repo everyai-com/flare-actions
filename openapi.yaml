@@ -4477,6 +4477,10 @@ components:
         completedAt:
           type: string
           nullable: true
+        logDigest:
+          type: string
+          nullable: true
+          description: Error lines + tail for failed lane jobs (null when none)
     LogHit:
       type: object
       description: FTS log match (run, job, line, rank)

@@ -2788,6 +2788,12 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
         state.className = "muted";
         row.appendChild(info);
         row.appendChild(state);
+        if (j.logDigest) {
+          var first = String(j.logDigest).split("\\n")[0].slice(0, 120);
+          var digest = el("span", first);
+          digest.className = "muted mono";
+          row.appendChild(digest);
+        }
         list.appendChild(row);
       });
     }).catch(function () {

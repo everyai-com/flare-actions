@@ -62,8 +62,10 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   whose `runs-on` includes a managed label (`github_runner_mode` off by
   default, `github_runner_labels` default `flare`). `workflow_job`
   webhooks mirror queued → running → completed into `gh_runner_jobs`
-  (always 202, never 5xx); `POST /v1/github/jobs/next` claims + mints
-  the JIT (conditional claim/stamp, release on GitHub failure);
+  (always 202, never 5xx); non-success completions background-fetch a
+  log digest (error lines + tail, `log_digest`); `POST
+  /v1/github/jobs/next` claims + mints the JIT (conditional
+  claim/stamp, release on GitHub failure);
   `GET /v1/github/jobs` lists; the per-minute cron sweeps stale claims
   (delete orphaned runner first, conditional release wins races);
   completions emit `gha.job.completed` analytics. JIT blobs are

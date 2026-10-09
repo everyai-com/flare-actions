@@ -8,6 +8,12 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Lane log digests for runner-mode jobs: non-success completions fetch
+  the job's GitHub logs in the background (bounded 256 KiB download)
+  and store error lines + tail (≤4 KiB `log_digest` column, new in
+  migration 0041) for triage without leaving Flare — served on
+  `GET /v1/github/jobs`, the dashboard card, and
+  `cli github-jobs --logs <jobId>`.
 - Cost-per-merged-PR trend: `GET /v1/usage/merged-pr-cost?repo=&weeks=`
   buckets window CI minutes by GitHub merge week (bounded pulls scan,
   501 without the App) with list-price dollars and per-PR means;

@@ -126,6 +126,7 @@ describe("pollGithubOnce", () => {
       attempts: 1,
       startedAt: null,
       completedAt: null,
+      logDigest: null,
       ...over,
     };
   }
