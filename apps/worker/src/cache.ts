@@ -1,13 +1,20 @@
 // R2-backed build cache: runners PUT tarballs under content keys and
 // GET them back on later runs. Zero egress inside Cloudflare.
 import type { Db } from "./db";
+import {
+  CACHE_KEY_RE as PARITY_CACHE_KEY_RE,
+  cacheObjectKey as parityCacheObjectKey,
+  isValidCacheKey,
+} from "../../../packages/runner-sdk/src/parity.ts";
 
-export const CACHE_KEY_RE = /^[\w][\w.\-/]{0,199}$/;
+export const CACHE_KEY_RE = PARITY_CACHE_KEY_RE;
 export const MAX_CACHE_BYTES = 512 * 1024 * 1024;
 
 export function cacheObjectKey(key: string): string {
-  return `cache/${key}`;
+  return parityCacheObjectKey(key);
 }
+
+export { isValidCacheKey };
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {

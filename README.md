@@ -374,9 +374,10 @@ MCP, or CLI. No git ceremony, no sleep loops, no log spelunking.
   working tree, on this machine, with no server and no commit: the
   working-tree code, a warm local cache (`~/.flare/cache`), artifacts in
   `.flare/artifacts/`, and the same execution engine as the server
-  (`continue-on-error`, `if:`, needs, matrix). Server dispatch stays the
-  parity check.
   (`continue-on-error`, `if:`, needs, matrix) with the same curated
+  step env (`FLARE_*`, `CI=true`). `cli local --parity` reports
+  image/cache/env divergences against the predicted cloud lane without
+  running. Server dispatch stays the final parity check.
 - **Priority lane** — `priority: 0–10` on dispatch jumps queued batch
   work, so an agent's verification beats the nightly backlog.
 - **Explain, don't spelunk** — `cli explain <runId>` turns a run into

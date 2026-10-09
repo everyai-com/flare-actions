@@ -7,7 +7,7 @@ import {
   loadEnv,
   type FlareRunDigest,
 } from "flare-actions-runner-sdk";
-import { runLocal } from "./local.ts";
+import { formatParityReport, runLocal, runLocalParity } from "./local.ts";
 import { dispatchSource, readLocalPipeline } from "./source.ts";
 import { formatPlan } from "./dryrun.ts";
 import { runInit } from "./init.ts";
@@ -37,6 +37,7 @@ function usage(): never {
       "  cli logs <runId>                           show run jobs, steps, triage, logs",
       "  cli explain <runId>                        one narrative: verdict, failures, next command",
       "  cli local [job] [--file flare.yml]         run the pipeline in this directory (no server, warm cache)",
+      "  cli local --parity [--file] [job]          report local-vs-cloud divergences (image, cache, env) without running",
       "  cli run <repo> <sha|branch|tag> [ref]      dispatch, wait, print the compact digest (exit 1 on failure)",
       "  run/dispatch accept --agent <tag>          tag the run for per-agent caps + attribution",
       "  run/dispatch accept --profile <name>      run one CI profile from flare.yml (else the event default, else all jobs)",
@@ -216,18 +217,30 @@ try {
   } else if (cmd === "local") {
     let file: string | undefined;
     const positional: string[] = [];
+    let parity = false;
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === "--file") {
         file = rest[++i];
+      } else if (rest[i] === "--parity") {
+        parity = true;
       } else {
         positional.push(rest[i]);
       }
     }
-    const result = await runLocal({ cwd: process.cwd(), file, job: positional[0], ...(JSON_MODE ? { quiet: true } : {}) });
-    if (JSON_MODE) printJson("local", result);
-    process.exitCode = result.ok ? 0 : 1;
+    if (parity) {
+      const report = runLocalParity({ cwd: process.cwd(), file, job: positional[0], quiet: true });
+      if (JSON_MODE) printJson("local", report);
+      else console.log(formatParityReport(report));
+    } else {
+      const result = await runLocal({
+        cwd: process.cwd(),
+        file,
+        job: positional[0],
+        ...(JSON_MODE ? { quiet: true } : {}),
+      });
       if (JSON_MODE) printJson("local", result);
       process.exitCode = result.ok ? 0 : 1;
+    }
   } else if (cmd === "run" && rest[0]) {
     const { args: noPriority, priority } = takePriority(rest);
     const { args: noAgent, agent } = takeAgent(noPriority);

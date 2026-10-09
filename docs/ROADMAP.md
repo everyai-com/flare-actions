@@ -165,9 +165,16 @@ The recurring pains, in practitioners' own terms:
       re-queue when the base moves, file-collision radar over live
       entries, `POST|GET /v1/merge-queue` + `DELETE /v1/merge-queue/:id`,
       `cli mergequeue`, dashboard Merge queue tab — `docs/MERGE-QUEUE.md`)
-- [ ] Same-machine verify parity — `cli local` exists; remaining: mirror
+- [x] Same-machine verify parity — `cli local` exists; remaining: mirror
       cloud runs exactly (images, cache keys) so "works on my machine"
       and "in CI" are the same sentence
+      (shipped Oct 8: shared `runner-sdk/parity.ts` code path — one
+      `buildFlareEnv` for all three executors, one cache-key validator
+      + R2 object mapping, one image resolver; `cli local` gains
+      `FLARE_CHANGED_FILES`, branch-derived `FLARE_REF`, and forced
+      `CI=true` with the warm directory-scoped cache kept; `cli local
+      --parity` reports per-job image/cache/env divergences against
+      the predicted seats/BYO lane with warn/info findings)
 
 ### Agent-friendliness (checklist)
 

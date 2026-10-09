@@ -3,6 +3,7 @@ import { arch, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assertSafeTar,
+  buildFlareEnv,
   checkoutRepo,
   extractTar,
   FlareClient,
@@ -159,14 +160,16 @@ async function pollOnce(): Promise<boolean> {
       cwd: srcdir,
       env: {
         ...process.env,
-        FLARE_REPO: job.repo,
-        FLARE_SHA: job.sha,
-        FLARE_RUN_ID: job.run_id,
-        FLARE_JOB_ID: job.id,
-        FLARE_REF: job.branch ?? "",
-        FLARE_CHANGED_FILES: job.changed_files ?? "",
-        FLARE_TEST_SELECTION: selectionMode,
-        FLARE_SELECTED_TESTS: selectedTests,
+        ...buildFlareEnv({
+          repo: job.repo,
+          sha: job.sha,
+          runId: job.run_id,
+          jobId: job.id,
+          ref: job.branch ?? "",
+          changedFiles: job.changed_files ?? "",
+          selectionMode,
+          selectedTests,
+        }),
       },
       client,
       jobId: job.id,

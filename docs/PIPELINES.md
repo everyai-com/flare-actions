@@ -182,7 +182,15 @@ Selection precedence is explicit override → schedule pin → event default:
 /v1/admin/schedules`). Unknown names fail the dispatch (`unknown_profile`,
 never silent widening); webhooks with a broken selection run everything
 so pushes never fail to dispatch. Dry-run plans report the selected
+profile.
 
+## Local ⇄ cloud parity
+
+`cli local` runs the same execution engine as the cloud on the same
+`JobSpec`, and all three executors (`cli local`, BYO runners, managed
+seats) build the curated step environment from one shared path
+(`buildFlareEnv` in `packages/runner-sdk/src/parity.ts`): `FLARE_REPO`
+/ `FLARE_SHA` / `FLARE_RUN_ID` / `FLARE_JOB_ID` / `FLARE_REF` /
 `FLARE_CHANGED_FILES`, `CI=true`, and the test-selection contract.
 Locally the identity values are working-tree readings (`local`, the
 git branch for `FLARE_REF`, the `git diff --name-only` for
@@ -198,6 +206,18 @@ Two splits remain by design:
   the runner host in the cloud. Pin exact tags or digests: `:latest`
   (or an untagged ref) can resolve to different bytes per pull.
 - **Cache keys**: the key string is identical and validated by the
+  same expression everywhere, but local entries live in a
+  directory-scoped warm cache (`~/.flare/cache/<repo>`) while the
+  cloud shares one global R2 keyspace — the first cloud run after
+  local-only work misses.
+
+`cli local --parity [--file] [job]` reports every divergence per job
+without running anything: the predicted cloud lane (`seats` vs `byo`),
+image and cache-key comparison, the full curated-env table (`=` same,
+`~` expected placeholder, `!` divergence), and warn/info findings
+(mutable tags, cross-kernel host execution, host env vars seats never
+provide). `--json` emits the same report for gating (`ok` is false
+when any warning fires; the command itself exits 0).
 
 ## Limits
 

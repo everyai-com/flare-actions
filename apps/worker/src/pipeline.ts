@@ -1,4 +1,5 @@
 import { parse as parseYaml } from "yaml";
+import { isValidCacheKey } from "../../../packages/runner-sdk/src/parity.ts";
 import { parseTestSelectionConfig, type TestSelectionConfig } from "./testselect.ts";
 
 export interface PipelineStep {
@@ -317,7 +318,7 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
   if (def.cache !== undefined) {
     if (!isRecord(def.cache)) return null;
     const key = def.cache.key;
-    if (typeof key !== "string" || !/^[\w][\w.\-/]{0,199}$/.test(key)) return null;
+    if (typeof key !== "string" || !isValidCacheKey(key)) return null;
     const paths = asStringArray(def.cache.paths, MAX_CACHE_PATHS, 256);
     if (!paths) return null;
     job.cache = { key, paths };

@@ -8,6 +8,17 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Same-machine verify parity: one shared `runner-sdk/parity.ts` code
+  path for step images, cache keys, and the curated step env
+  (`buildFlareEnv`, one cache-key validator + R2 object mapping, one
+  image resolver with mutable-tag detection) used by `cli local`, BYO
+  runners, and managed seats. `cli local` now sets
+  `FLARE_CHANGED_FILES` (working-tree diff) and a branch-derived
+  `FLARE_REF`, and forces `CI=true` (job `env` may still override)
+  while keeping its warm directory-scoped cache. `cli local --parity
+  [--file] [job]` reports per-job divergences against the predicted
+  seats/BYO lane — image, cache key + scope, the full env table, and
+  warn/info findings — with `--json` for gating (`docs/PIPELINES.md`).
 - Agent merge queue: agent PRs land one at a time against a moving
   main — enqueue, rebase onto the current head (update-branch), verify
   with a real CI run, merge on green. One live verification per repo

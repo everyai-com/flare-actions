@@ -52,6 +52,7 @@ import {
   groupGrepLines,
   selectTests,
 } from "../../../packages/runner-sdk/src/testselect";
+import { buildFlareEnv, cacheObjectKey } from "../../../packages/runner-sdk/src/parity";
 
 // Managed-seat job execution: the seat Durable Object drives a Linux
 // container purely through exec calls while writing D1/R2 directly.
@@ -982,7 +983,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     // Cache restore.
     let cacheHit = false;
     if (spec.cache) {
-      const entry = cache ? await cache.get(`cache/${spec.cache.key}`) : null;
+      const entry = cache ? await cache.get(cacheObjectKey(spec.cache.key)) : null;
       // Same daily-aggregate counters the /v1/cache lane feeds (a found
       // blob is a hit even when the extract later fails); best-effort
       // so a stats write never fails a job.
@@ -1003,16 +1004,18 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     const jobEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(spec.env ?? {})) jobEnv[k] = interpolateSecrets(v, secrets);
     const stepEnv: Record<string, string> = {
-      FLARE_REPO: run.repo,
-      FLARE_SHA: run.sha,
-      FLARE_RUN_ID: run.id,
-      FLARE_JOB_ID: job.id,
-      FLARE_REF: run.branch ?? "",
-      FLARE_CHANGED_FILES: run.changed_files ?? "",
-      // GitHub parity (see runner-sdk job.ts); job env may override.
-      CI: "true",
-      FLARE_TEST_SELECTION: selectionMode,
-      FLARE_SELECTED_TESTS: selectedTests,
+      // Same curated keys as BYO runners and `cli local` (runner-sdk
+      // parity.ts); job env may still override (notably CI).
+      ...buildFlareEnv({
+        repo: run.repo,
+        sha: run.sha,
+        runId: run.id,
+        jobId: job.id,
+        ref: run.branch ?? "",
+        changedFiles: run.changed_files ?? "",
+        selectionMode,
+        selectedTests,
+      }),
       ...jobEnv,
       ...matrixEnv(spec.matrix),
     };
@@ -1234,7 +1237,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
           if (Number.isFinite(bytes) && bytes <= SEAT_BLOB_CAP) {
             const blob = await execBounded(["cat", "/tmp/cache.tgz"], {}, timing.blobMs);
             if (!blob.timedOut && blob.exitCode === 0) {
-              await cache.put(`cache/${spec.cache.key}`, blob.stdout);
+              await cache.put(cacheObjectKey(spec.cache.key), blob.stdout);
               logParts.push(`[seat] cache saved ${spec.cache.key} (${blob.stdout.byteLength}b)`);
             }
           } else {

@@ -1,18 +1,28 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { arch, homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  buildFlareEnv,
+  checkJobParity,
+  envParityRows,
+  FLARE_ENV_KEYS,
   hasSecretPlaceholders,
+  matrixEnv,
   runJob,
   selectTests,
+  specParityView,
+  type EnvParityRow,
   type JobClient,
   type JobSpec,
+  type ParityCacheSummary,
+  type ParityFinding,
+  type ParityImageSummary,
   type RunJobResult,
 } from "flare-actions-runner-sdk";
-import { parsePipeline, type PipelineJob } from "../../worker/src/pipeline.ts";
 import { collectWorkspaceFiles } from "../../../packages/runner-sdk/src/testselect-fs.ts";
+import { parsePipeline, seatEligible, serializeDefinition, type PipelineJob } from "../../worker/src/pipeline.ts";
 import { buildCompatJobs, type WorkflowFile } from "../../worker/src/actionsCompat.ts";
 
 // `cli local`: run flare.yml in the current working tree, on this
@@ -47,6 +57,24 @@ export interface LocalOptions {
   cacheDir?: string;
   // Suppress per-job narration (tests).
   quiet?: boolean;
+}
+
+export interface ParityJobReport {
+  name: string;
+  lane: "seats" | "byo";
+  image: ParityImageSummary;
+  cache: ParityCacheSummary | null;
+  env: EnvParityRow[];
+  findings: ParityFinding[];
+}
+
+export interface ParityReport {
+  // False when any job carries a warn-severity finding. Informational:
+  // the report command still exits 0; gate on this field in --json.
+  ok: boolean;
+  jobs: ParityJobReport[];
+  warnings: number;
+  infos: number;
 }
 
 function hashKey(key: string): string {
@@ -95,6 +123,24 @@ function localChangedFiles(cwd: string): string[] {
     return out.split("\n").map((s) => s.trim()).filter(Boolean);
   } catch {
     return [];
+  }
+}
+
+// Best-effort current branch for FLARE_REF: the cloud sets the run's
+// branch, so mirroring the checkout's branch keeps branch-gated steps
+// and Actions-compat `github.ref` mappings honest. Falls back to the
+// historical "local" placeholder outside a git tree.
+function localRef(cwd: string): string {
+  try {
+    const out = execFileSync("git", ["branch", "--show-current"], {
+      cwd,
+      encoding: "utf8",
+      timeout: 15000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return out || "local";
+  } catch {
+    return "local";
   }
 }
 
@@ -162,7 +208,12 @@ function printOutcome(name: string, outcome: RunJobResult, artifactsDir: string)
   }
 }
 
-export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
+interface LoadedJobs {
+  selected: PipelineJob[];
+  sourceLabel: string;
+}
+
+function loadLocalJobs(opts: LocalOptions): LoadedJobs {
   const filePath = resolve(opts.cwd, opts.file ?? "flare.yml");
   let jobs: PipelineJob[] | null = null;
   let sourceLabel = filePath;
@@ -198,6 +249,11 @@ export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
     selected = jobs.filter((j) => j.base === opts.job || j.name === opts.job);
     if (selected.length === 0) throw new Error(`no job named "${opts.job}" in ${sourceLabel}`);
   }
+  return { selected, sourceLabel };
+}
+
+export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
+  const { selected } = loadLocalJobs(opts);
 
   const env = opts.env ?? process.env;
   const secrets = collectSecrets(env);
@@ -213,6 +269,14 @@ export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
   // diff feeds FLARE_CHANGED_FILES (like the cloud's changed_files)
   // and test selection, and the branch feeds FLARE_REF.
   const changed = localChangedFiles(opts.cwd);
+  const changedFiles = changed.join("\n");
+  const ref = localRef(opts.cwd);
+  // Cloud parity: the curated keys come from the shared builder, and
+  // the host CI value is dropped — cloud steps always see CI=true
+  // unless the job env overrides it, so a dirty shell must not flip
+  // local runs (job `env:` still wins via the runJob merge).
+  const baseEnv = { ...env };
+  delete baseEnv.CI;
 
   const done = new Map<string, boolean>();
   const results: LocalJobResult[] = [];
@@ -261,14 +325,17 @@ export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
     const outcome = await runJob(spec, {
       cwd: opts.cwd,
       env: {
-        ...env,
-        FLARE_REPO: "local",
-        FLARE_SHA: "local",
-        FLARE_RUN_ID: "local",
-        FLARE_JOB_ID: slugify(job.name),
-        FLARE_REF: "local",
-        FLARE_TEST_SELECTION: selectionMode,
-        FLARE_SELECTED_TESTS: selectedTests,
+        ...baseEnv,
+        ...buildFlareEnv({
+          repo: "local",
+          sha: "local",
+          runId: "local",
+          jobId: slugify(job.name),
+          ref,
+          changedFiles,
+          selectionMode,
+          selectedTests,
+        }),
       },
       client: localClient(cacheDir, artifactsDir, slugify(job.name)),
       jobId: slugify(job.name),
@@ -284,4 +351,99 @@ export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
     done.set(base, outcome.success);
   }
   return { ok: results.every((r) => r.status === "success"), jobs: results };
+}
+
+// Parity report: compare each job's local execution against its
+// predicted cloud lane (image, cache key + scope, curated env) without
+// running anything. Pure reads — no steps, no cache writes.
+export function runLocalParity(opts: LocalOptions): ParityReport {
+  const { selected } = loadLocalJobs(opts);
+  const env = opts.env ?? process.env;
+  const changedFiles = localChangedFiles(opts.cwd).join("\n");
+  const ref = localRef(opts.cwd);
+  const hostPlatform = `${platform()}/${arch()}`;
+  // Selection is computed at run time on both sides by the same
+  // walker, so the report compares the rule, not a prediction.
+  const atRunTime = "<computed at run time>";
+  const jobs: ParityJobReport[] = selected.map((job) => {
+    const spec = toSpec(job);
+    const base = job.base ?? job.name;
+    const lane = seatEligible(serializeDefinition(job, base)) ? "seats" : "byo";
+    const localFlare = buildFlareEnv({
+      repo: "local",
+      sha: "local",
+      runId: "local",
+      jobId: slugify(job.name),
+      ref,
+      changedFiles,
+      selectionMode: atRunTime,
+      selectedTests: atRunTime,
+    });
+    const cloudFlare = buildFlareEnv({
+      repo: "<run repo>",
+      sha: "<run sha>",
+      runId: "<run id>",
+      jobId: "<job id>",
+      ref: "<branch>",
+      changedFiles: "<diff at sha>",
+      selectionMode: atRunTime,
+      selectedTests: atRunTime,
+    });
+    // Host keys forwarded into local steps beyond the curated set and
+    // the job's own env/matrix keys (bounded, sorted).
+    const curated = new Set([
+      ...FLARE_ENV_KEYS,
+      ...Object.keys(spec.env ?? {}),
+      ...Object.keys(matrixEnv(spec.matrix)),
+      "CI",
+    ]);
+    const extraHostKeys = Object.keys(env)
+      .filter((k) => env[k] !== undefined && !curated.has(k))
+      .sort()
+      .slice(0, 200);
+    const result = checkJobParity(specParityView(spec), {
+      lane,
+      hostPlatform,
+      localFlare,
+      cloudFlare,
+      extraHostKeys,
+    });
+    return {
+      name: job.name,
+      lane,
+      image: result.image,
+      cache: result.cache,
+      env: envParityRows(localFlare, cloudFlare),
+      findings: result.findings,
+    };
+  });
+  const warnings = jobs.reduce((n, j) => n + j.findings.filter((f) => f.severity === "warn").length, 0);
+  const infos = jobs.reduce((n, j) => n + j.findings.filter((f) => f.severity === "info").length, 0);
+  return { ok: warnings === 0, jobs, warnings, infos };
+}
+
+function shortValue(value: string, limit = 80): string {
+  const flat = value.replace(/\s+/g, " ").trim();
+  if (!flat) return "(empty)";
+  return flat.length <= limit ? flat : `${flat.slice(0, limit)}…`;
+}
+
+export function formatParityReport(report: ParityReport): string {
+  const lines: string[] = [];
+  for (const job of report.jobs) {
+    lines.push(`== ${job.name} (cloud lane: ${job.lane}) ==`);
+    lines.push(`  image: ${job.image.local} -> ${job.image.cloud}`);
+    lines.push(
+      job.cache ? `  cache ${job.cache.key}: ${job.cache.local} -> ${job.cache.cloud}` : "  cache: none",
+    );
+    for (const row of job.env) {
+      const mark = row.status === "same" ? "=" : row.status === "expected" ? "~" : "!";
+      lines.push(`  env ${mark} ${row.key}: ${shortValue(row.local)} -> ${shortValue(row.cloud)}`);
+    }
+    for (const finding of job.findings) {
+      lines.push(`  [${finding.severity}] ${finding.area}/${finding.key}: ${finding.note}`);
+    }
+  }
+  lines.push(`${report.jobs.length} job(s), ${report.warnings} warning(s), ${report.infos} note(s)`);
+  return lines.join("\n");
 }

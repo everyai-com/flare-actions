@@ -29,6 +29,32 @@ export { dockerArgsForService, dockerArgsForStep, dockerAvailable, dockerService
 export type { ServiceHandle, ServicesCtl } from "./services.ts";
 export { collectArtifactFiles, runJob, sanitizeArtifactName } from "./job.ts";
 export type { JobClient, RunJobOptions, RunJobResult } from "./job.ts";
+export {
+  buildFlareEnv,
+  cacheObjectKey,
+  checkJobParity,
+  cloudImageForLane,
+  describeStepImage,
+  envParityRows,
+  isMutableImageTag,
+  isValidCacheKey,
+  normalizeImageRef,
+  resolveStepImage,
+  specParityView,
+  CACHE_KEY_RE,
+  FLARE_ENV_KEYS,
+} from "./parity.ts";
+export type {
+  EnvParityRow,
+  FlareEnvInput,
+  ParityCacheSummary,
+  ParityContext,
+  ParityFinding,
+  ParityImageSummary,
+  ParityResult,
+  ParitySpec,
+  StepImage,
+} from "./parity.ts";
 export { hasSecretPlaceholders, interpolateSecrets, maskSecrets } from "./secrets.ts";
 export { convertActionsWorkflow, isImportSuccess, mapRunsOn, sanitizeCacheKey } from "./importActions.ts";
 export type { ImportFailure, ImportResult, ImportSuccess } from "./importActions.ts";
