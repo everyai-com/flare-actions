@@ -18,6 +18,12 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Agent forge surface (Cloudflare git competition entry): forge-first
+  dashboard (Races, Repositories, Merge queue, Runs) with sidebar,
+  command palette, and deep links; Artifacts repo browsing
+  (`GET /v1/repos…`); race context on runs; passwordless magic-link
+  login; `cli login` plus `races` / `repos` / `claim` / `verdict`
+  commands. Flare CI stays the verification engine underneath.
 - Agent purchasing scaffold (hosted, inert on OSS): single-use
   prepaid top-up links (mint + unfurl-safe preview + pairing-style
   throttled redeem, grant-then-consume so money is never created or

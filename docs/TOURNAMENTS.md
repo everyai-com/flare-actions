@@ -47,7 +47,7 @@ npm run harness
 
 Watch it live instead: open
 `https://try-tournaments-flare-actions.<you>.workers.dev/dashboard`,
-Tournaments tab, while the harness runs. Ask the machine why:
+Races tab, while the harness runs. Ask the machine why:
 
 ```bash
 # MCP (Claude / Cursor / any MCP client): tournament_why
@@ -92,6 +92,8 @@ Clean up: `npx wrangler preview delete --name try-tournaments`
 | `GET /v1/tournaments/:id` | board: attempts, verdict, ledger |
 | `POST /v1/admin/tournaments/tick` | one machine tick (admin; staging/demo) |
 | MCP `tournament_why` | read-tier: winner + rationale + collisions |
+| `cli races\|claim\|verdict` | list boards, claim a lane, read the verdict |
+| `GET /v1/repos…` | browse the Artifacts namespace (Repositories tab) |
 
 Full shapes: `openapi.yaml` (`Tournament`, `TournamentAttempt`,
 `TournamentBoard`) and `docs/MCP.md`.

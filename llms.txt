@@ -18,7 +18,7 @@
 - [skills/flare-setup](https://github.com/everyai-com/flare-actions/blob/main/skills/flare-setup/SKILL.md): agent skill for one-command onboarding (`connect`, wiring, executor, verify).
 - [GitHub runners](https://github.com/everyai-com/flare-actions/blob/main/docs/GITHUB-RUNNERS.md): `runs-on: flare` runner mode — GitHub keeps orchestrating, Flare supplies ephemeral JIT runners.
 - [Error codes](https://github.com/everyai-com/flare-actions/blob/main/docs/ERRORS.md): stable `code` + `hint` on core-lane failures.
-- [Tournaments](https://github.com/everyai-com/flare-actions/blob/main/docs/TOURNAMENTS.md): agent races with verified CI, collision radar, AI verdict, ledger.
+- [Tournaments](https://github.com/everyai-com/flare-actions/blob/main/docs/TOURNAMENTS.md): agent races with verified CI, collision radar, AI verdict, ledger (dashboard Races tab; `cli races|claim|verdict|repos`).
 
 ## Agent quickstart
 

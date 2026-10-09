@@ -22,6 +22,14 @@ approvals stay on GitHub.
 
 GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → external pull-runner → status callback. Dashboard + API + CLI.
 
+Plus the **agent forge** (our [Cloudflare "next git platform"
+competition](https://developers.cloudflare.com/artifacts/) entry): race N
+agents on one task — isolated Artifacts forks, real Flare CI verifying every
+attempt, collision radar, ranked verdict with rationale, immutable ledger.
+[Live staging
+demo](https://try-tournaments-flare-actions.everyai-com.workers.dev/dashboard)
+· [try it](docs/TOURNAMENTS.md).
+
 ## Why
 
 - Faster: warm edge dispatch, no 2–3 min hosted queue waits.
@@ -42,7 +50,7 @@ GitHub App webhook → Worker (verify) → D1 run row → Queue dispatch → ext
   job orchestrator, Actions importer
 - `apps/runner` — external pull-runner: labels, checkout, containers,
   services, cache, artifacts
-- `apps/cli` — CLI: runs, logs, dispatch, rerun, flaky, import, badges, MCP config
+- `apps/cli` — CLI: runs, logs, dispatch, rerun, flaky, import, badges, MCP config, login, forge (races, repos, claim, verdict)
 - `apps/seats` — managed executor worker (seat DO + container image)
 - `docs/` — [pipeline reference](docs/PIPELINES.md),
   [runners](docs/RUNNERS.md), [MCP](docs/MCP.md),
@@ -60,7 +68,7 @@ auto-provisions the Worker's D1 database, R2 bucket, queues, and Workers AI
 binding. When it finishes, open `https://&lt;your-worker&gt;/dashboard`:
 
 1. Open the dashboard and **create your admin account** (email +
-   password) — first signup claims admin.
+   password, or a passwordless magic link) — first signup claims admin.
 2. Hit **Connect GitHub** (one click, no naming — the App name is
    automatic), install the App on your repos, and push. Prefer GitHub
    login? Connect first, then Login with GitHub instead. Invite
@@ -211,49 +219,40 @@ secret from dashboard Settings) triggers runs with no App installed.
 
 ## Dashboard
 
-Open `https://<worker>/dashboard` and log in with GitHub or email
-(first login of either kind claims admin). Allow more GitHub users or
-invite teammates by email in the Access tab — or flip on open
-registration in Settings so anyone can join from the login page
-(non-admin readers, by email or GitHub). The CLI works with any
-token scope — `readonly` reads, `runner` also dispatches and reruns;
-issue named tokens in the Access tab.
+Open `https://<worker>/dashboard` and log in with GitHub, email +
+password, or a passwordless magic link (first login of any kind claims
+admin). The CLI works with any token scope — `readonly` reads, `runner`
+also dispatches and reruns; issue named tokens in Settings.
 
-- **Runs** — see every run and drill into job logs; admins can dispatch
-  runs by branch, tag, or SHA, and re-run finished jobs from the detail view.
-  A 30-day usage strip (runs, compute-minutes, spend avoided) sits on top.
-  Every terminal job also posts a GitHub **Check Run** — the PR page shows
-  the failing command, its output tail, and inline annotations parsed from
-  `file:line` output — without opening the dashboard (requires the App's
-  checks:write permission; commit statuses still work without it). Pull
-  request runs also get **one summary comment**, edited in place as the
-  run completes (needs pull_requests:write), including a section naming
-  quarantined failures the green check skipped.
-- **Tournaments** — race coding agents on one task with verified CI,
-  collision radar, AI verdict, and an immutable ledger (see
+- **Races** — agent races on one task: per-agent lanes on isolated
+  Artifacts forks, live verification status, collision radar, AI
+  verdict with rationale, and the immutable ledger (see
   [docs/TOURNAMENTS.md](docs/TOURNAMENTS.md)).
-- **Search** — full-text search across all job logs with
-  `repo:`/`branch:`/`level:` filters.
-- **Flaky** — per-job failure rates plus the quarantine list: admins can
-  quarantine a test out of the blocking gate or reinstate it.
-- **Apps** — OAuth apps you authorized on the MCP endpoint, revocable
-  in one click.
-- **Access** — allow GitHub users (view runs), invite teammates by
-  email (single-use links, 24h), and issue named tokens: `runner`
-  tokens pull jobs and report status (CI machines, teammates),
-  `readonly` tokens only view runs, `admin` tokens do everything (CLI
-  admin commands). Each token can be **scoped to specific repos**
-  (`repos: owner/name, …`) or whole orgs (`org/*`); unscoped tokens
-  see everything. Each token
-  is shown once at creation; revoke any token and it stops working
-  immediately. **Pair a runner** mints a single-use 10-minute code —
-  paste one command on a fresh machine and it exchanges the code for
-  a token and starts polling. Email users can reset their own password
-  from the login screen when a mail sender is configured. The tab also
-  shows the audit log — who dispatched, reran, or changed settings,
-  most recent first.
-- **Settings** — webhook secret, GitHub App connect, run notifications,
-  budgets, runner mode (`runs-on: flare`), self-healing, and registration.
+- **Repositories** — browse the Artifacts namespace: file trees,
+  file contents, commit history, and each repo's verification runs.
+- **Merge queue** — verify-then-land for pull requests: entries queue
+  per repo, verify against current main, and land one at a time (see
+  [docs/MERGE-QUEUE.md](docs/MERGE-QUEUE.md)).
+- **Runs** — every run with job logs, triage, and cost; admins can
+  dispatch by branch, tag, or SHA, and re-run finished jobs. Runs
+  linked to a race show their lane and verdict rank. Every terminal
+  job also posts a GitHub **Check Run** — the PR page shows the
+  failing command, its output tail, and inline annotations parsed from
+  `file:line` output (requires the App's checks:write permission;
+  commit statuses still work without it). Pull request runs also get
+  **one summary comment**, edited in place as the run completes
+  (needs pull_requests:write), including quarantined failures the
+  green check skipped.
+- **Settings** — webhook secret, GitHub App connect, run
+  notifications, budgets, runner mode (`runs-on: flare`),
+  self-healing, registration, teammates (allow GitHub users, invite
+  by email with single-use 24h links), named API tokens (`runner` /
+  `readonly` / `admin`, optionally scoped to repos or `org/*`, shown
+  once, revocable), **Pair a runner** single-use codes for `cli
+  login`, and the audit log.
+
+Press `⌘K` (or `/`) for the command palette, `g t` / `g o` / `g m` /
+`g r` to jump between views — every view is a shareable `#/...` link.
 
 ## Preview environments
 
@@ -364,7 +363,17 @@ in [docs/MCP.md](docs/MCP.md).
 
 Race N coding agents on one task: isolated forks, real CI per attempt,
 collision radar, AI verdict, winner fast-forwarded, immutable ledger.
-Try it on staging in ~10 minutes — [docs/TOURNAMENTS.md](docs/TOURNAMENTS.md).
+The dashboard shows it as **Races** + **Repositories** + **Merge queue**
+next to Runs — same CI engine underneath, verifying every attempt.
+Try it on staging in ~10 minutes — [docs/TOURNAMENTS.md](docs/TOURNAMENTS.md):
+
+```bash
+npm run cli -- login               # pair this machine (writes .env)
+npm run cli -- races               # list races, or `races <id>` for one board
+npm run cli -- claim <raceId> <agent>  # claim a lane (forks a workspace)
+npm run cli -- verdict <raceId>    # ranking + why-it-won rationale
+npm run cli -- repos [name]        # browse the Artifacts namespace
+```
 
 ## Built for agents
 
@@ -526,6 +535,11 @@ npm run cli -- mcp-config              # MCP client config
 npm run cli -- devbox ...              # persistent warm dev boxes (local docker)
 npm run cli -- connect [repo] [--wire] [--dry-run]  # probe, wire, and verify this repo in one command
 npm run cli -- github-jobs [repo]      # ephemeral runner-mode jobs (status, duration, list price)
+npm run cli -- login [--url U] [--code C]  # pair this machine (writes .env)
+npm run cli -- races [raceId]         # list agent races, or one race board
+npm run cli -- repos [name] [path]    # list forge repos, or browse one
+npm run cli -- claim <raceId> <agent>  # claim a race lane (forks a workspace)
+npm run cli -- verdict <raceId>        # winner ranking + why-it-won rationale
 ```
 
 Every command accepts `--json`: stdout becomes one versioned envelope
@@ -581,8 +595,12 @@ the error line.
 - `POST /v1/admin/register` — redeem an invite, or self-register by email when open registration is on (public, throttled)
 - `POST /v1/admin/bootstrap` — first-run admin claim (open until claimed, throttled)
 - `POST /v1/admin/login`, `POST /v1/admin/logout` — email sessions (throttled)
+- `POST /v1/admin/magic/request`, `GET /v1/admin/magic/consume?token=` — passwordless magic-link login (public, throttled, single-use 15 min)
 - `GET|POST /v1/admin/github/*` — GitHub App connect + login flows
 - `GET /v1/admin/status` — setup state for the dashboard (public)
+- `GET /v1/tournaments`, `GET /v1/tournaments/:id` — race list + board: attempts, verdict, ledger (read scope)
+- `POST /v1/tournaments`, `POST /v1/tournaments/:id/claims` — open a race, claim a lane (run scope)
+- `GET /v1/repos`, `GET /v1/repos/:name` + `/tree`, `/blob`, `/commits` — browse the Artifacts namespace (read scope)
 
 ## Cost
 
