@@ -8,6 +8,13 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- BYO resource self-report + right-sizing: runners sample their
+  process subtree (`ps`, 1/s, best-effort) and report `peakRssBytes`
+  + `peakCpuPercent` in result JSON with a `[resources]` log line;
+  the digest carries `peakRssBytes` + `sizeHint` (`size-s/m/l/xl`
+  at 512MB/2GB/8GB), the dashboard run page graphs per-job peak RSS
+  bars with label hints, and `cli explain` names the heaviest job.
+  See `docs/RUNNERS.md` for the fleet-segmentation recipe.
 - Per-repo egress floor policy: `/v1/admin/egress-allowlist` (admin
   GET/POST/DELETE + dashboard Settings UI) stores one hostname list
   per repo; fan-out merges it into every job (undeclared jobs inherit

@@ -95,7 +95,8 @@ jobs:
   failing job can never loop forever. The run only reports failure once
   retries are exhausted (each attempt is logged on the job).
 - **`runs-on`** labels match runners that carry *every* listed label.
-  Label-less jobs match any runner. See `docs/RUNNERS.md`.
+  Label-less jobs match any runner. See `docs/RUNNERS.md` — including
+  the `size-s/m/l/xl` right-sizing convention from peak-RSS hints.
 - **`concurrency`** groups serialize across runs of the same repo (oldest
   first). With `cancel-in-progress: true`, a new run cancels
   queued/running/blocked same-group jobs from other runs.

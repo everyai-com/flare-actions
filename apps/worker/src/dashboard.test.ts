@@ -176,4 +176,13 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("migrateWarnings");
   });
 
+  it("renders per-job peak-RSS bars with size-class hints", () => {
+    expect(DASHBOARD_HTML).toContain("Resources (peak RSS per job)");
+    expect(DASHBOARD_HTML).toContain("sizeClassForPeak");
+    expect(DASHBOARD_HTML).toContain("SIZE_CLASS_BLURB");
+    expect(DASHBOARD_HTML).toContain("res-fill");
+    expect(DASHBOARD_HTML).toContain("peakRssOf");
+    expect(DASHBOARD_HTML).toContain("FLARE_LABELS");
+  });
+
 });

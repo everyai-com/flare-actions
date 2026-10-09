@@ -44,6 +44,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 #dispatchBox summary { cursor: pointer; color: var(--accent-ink); font-weight: 600; margin-bottom: 8px; }
 #dispatchBox p { margin: 6px 0 0; }
 .secret-row { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
+.res-row { display: flex; gap: 8px; align-items: center; margin: 4px 0; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
+.res-row code { min-width: 140px; }
+.res-bar { flex: 1 1 120px; max-width: 280px; height: 10px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.res-fill { height: 100%; background: var(--ring); }
 #secretNames { margin: 4px 0 8px; }
 #runsCount { margin: 0 0 8px; font-size: 12.5px; }
 a { color: var(--accent-ink); }
@@ -635,6 +639,33 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     var a = Date.parse(r.created_at), b = Date.parse(r.updated_at);
     if (!isFinite(a) || !isFinite(b)) return null;
     return fmtDur(b - a);
+  }
+  function fmtBytes(bytes) {
+    if (!isFinite(bytes) || bytes < 0) return "0 B";
+    var units = ["B", "KB", "MB", "GB", "TB"];
+    var n = bytes; var u = 0;
+    while (n >= 1024 && u < units.length - 1) { n /= 1024; u += 1; }
+    return (u === 0 ? Math.round(n) : Math.round(n * 10) / 10) + " " + units[u];
+  }
+  // Mirror of rightsize.ts — keep thresholds + blurbs in sync.
+  function sizeClassForPeak(peak) {
+    if (!isFinite(peak) || peak < 512 * 1024 * 1024) return "s";
+    if (peak < 2 * 1024 * 1024 * 1024) return "m";
+    if (peak < 8 * 1024 * 1024 * 1024) return "l";
+    return "xl";
+  }
+  var SIZE_CLASS_BLURB = {
+    s: "fits small runners",
+    m: "fits standard runners",
+    l: "needs 8gb+ runners",
+    xl: "needs 16gb+ runners"
+  };
+  function peakRssOf(j) {
+    try {
+      var parsed = j.result ? JSON.parse(j.result) : null;
+      var peak = parsed && parsed.peakRssBytes;
+      return (typeof peak === "number" && isFinite(peak) && peak > 0) ? Math.floor(peak) : null;
+    } catch (e) { return null; }
   }
   function stateRow(body, cols, text, cls) {
     body.textContent = "";
@@ -1831,6 +1862,34 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
           });
         }).catch(function () {});
       })(data.run.id);
+      var resBox = document.createElement("div");
+      box.appendChild(resBox);
+      (function renderResources(jobs) {
+        var measured = [];
+        (jobs || []).forEach(function (j) {
+          var peak = peakRssOf(j);
+          if (peak !== null) measured.push({ job: j, peak: peak });
+        });
+        if (!measured.length) return;
+        var max = 0;
+        measured.forEach(function (m) { if (m.peak > max) max = m.peak; });
+        resBox.appendChild(el("h3", "Resources (peak RSS per job)"));
+        measured.forEach(function (m) {
+          var row = el("div");
+          row.className = "res-row";
+          var name = el("code", m.job.name || String(m.job.id).slice(0, 8)); name.className = "mono"; row.appendChild(name);
+          var bar = el("div"); bar.className = "res-bar";
+          var fill = el("div"); fill.className = "res-fill";
+          fill.style.width = Math.max(2, Math.round(m.peak / max * 100)) + "%";
+          bar.appendChild(fill); row.appendChild(bar);
+          var cls = sizeClassForPeak(m.peak);
+          row.appendChild(el("span", fmtBytes(m.peak) + " · size-" + cls + " (" + SIZE_CLASS_BLURB[cls] + ")"));
+          resBox.appendChild(row);
+        });
+        var legend = el("p", "Size classes: size-s <512 MB · size-m <2 GB · size-l <8 GB · size-xl ≥8 GB — tag job labels + runner FLARE_LABELS to segment the fleet.");
+        legend.className = "muted";
+        resBox.appendChild(legend);
+      })(data.jobs);
       (data.jobs || []).forEach(function (j) {
         var jhead = el("h3");
         jhead.appendChild(el("span", "Job " + (j.name ? j.name + " " : "") + j.id.slice(0, 8) + " "));

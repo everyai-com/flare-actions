@@ -56,8 +56,7 @@ tab + PR-comment section). OpenAPI is at 75 paths (was 68).
   browser-checks, local named dev boxes (`cli devbox` + sync +
   snapshots), new admin settings UI. Still open: remote
   (seat-persisted) named warm boxes + Files-based sync,
-  dashboard RSS graphs + label-size hints, BYO
-  peak RSS/CPU self-report, Workers VPC (blocked on platform),
+  Workers VPC (blocked on platform),
   browser preview self-verification + richer actions.
 - **Phase 3**: AI Gateway fronting for triage + generate (env `AI_GATEWAY_ID`
   or D1, off by default), Web Search grounding for triage (opt-in
@@ -264,10 +263,12 @@ Needs Phase 0 done:
   above, execution spec in `.agents/plans/2026-10-06-git-competition.md`).
 - **Per-job CPU/mem + right-sizing** (shipped: seats peak-RSS sampling
   via exec/cgroupfs into result-JSON `peakRssBytes`, hourly
-  per-job-name runtime priors with LPT claim order in `priors.ts`):
-  still open are BYO peak RSS/CPU self-report in status callbacks,
-  dashboard RSS graphs, and label-size hints. Container-native
-  metrics stay the fallback when the API exposes them.
+  per-job-name runtime priors with LPT claim order in `priors.ts`,
+  BYO peak RSS/CPU self-report via `ps` subtree sampling in
+  `resources.ts`, dashboard per-job RSS bars + `size-s/m/l/xl`
+  label-size hints, digest `sizeHint`, `cli explain` heaviest-job
+  line). Container-native metrics stay the fallback when the API
+  exposes them.
 - **Scheduling fairness**: oldest-first within priority already matches;
   add per-org/repo concurrency shares so one tenant's burst can't starve
   others, and a deterministic simulator to validate policy changes

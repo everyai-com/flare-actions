@@ -16,6 +16,33 @@ without `runs-on` match every runner.
 FLARE_LABELS=gpu,docker npm run runner   # picks up runs-on: [linux, gpu] etc.
 ```
 
+## Resource self-report + size labels
+
+While a job runs, the runner samples its process subtree once a second
+(one `ps` invocation; Linux/macOS, failing open where `ps` is
+missing) and reports peak RSS + peak CPU% in the result JSON
+(`peakRssBytes`, `peakCpuPercent`) plus a `[resources]` log line.
+Seats report the same `peakRssBytes` via cgroupfs. Container-step work
+runs inside Docker, so host-side peaks cover non-container steps, tar
+cache ops, and service shims — the work footprint, not the runner
+baseline.
+
+Peaks feed right-sizing hints: the run digest carries `sizeHint`, the
+dashboard run page graphs peak RSS per job with bars, and `cli
+explain` names the heaviest job. Classes:
+
+| peak RSS | label | meaning |
+| -------- | ----- | ------- |
+| <512 MB | `size-s` | fits small runners |
+| <2 GB | `size-m` | fits standard runners |
+| <8 GB | `size-l` | needs 8gb+ runners |
+| ≥8 GB | `size-xl` | needs 16gb+ runners |
+
+To segment a fleet, tag heavy jobs (`runs-on: [linux, size-l]`) and
+advertise the label on big boxes (`FLARE_LABELS=size-l`) — small jobs
+keep draining on small runners instead of queueing behind memory
+hogs.
+
 ## Pairing (zero-config machines)
 
 Dashboard Access → **Pair a runner** mints a short single-use code and

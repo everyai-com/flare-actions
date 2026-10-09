@@ -367,6 +367,8 @@ export interface FlareDigestJob {
   failing?: FlareDigestStep;
   triage?: string;
   selection?: FlareDigestSelection;
+  peakRssBytes?: number;
+  sizeHint?: string;
 }
 
 export interface FlareRunDigest {

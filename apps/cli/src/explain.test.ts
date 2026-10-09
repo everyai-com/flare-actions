@@ -59,6 +59,24 @@ describe("explainDigest", () => {
     expect(out.narrative).toContain("Slowest job: test (1m 0s).");
   });
 
+  it("names the heaviest job when executors self-reported peaks", () => {
+    const out = explainDigest(
+      digest({
+        status: "success",
+        failedJobs: 0,
+        jobs: [
+          { id: "a", name: "test", status: "success", durationMs: 60000, stepCount: 1, peakRssBytes: 100 * 1024 * 1024 },
+          { id: "b", name: "build", status: "success", durationMs: 10000, stepCount: 1, peakRssBytes: 3 * 1024 * 1024 * 1024, sizeHint: "size-l" },
+        ],
+      }),
+    );
+    expect(out.narrative).toContain("Heaviest job: build (peak 3 GB, size-l).");
+  });
+
+  it("stays silent on resources when nothing was measured", () => {
+    expect(explainDigest(digest()).narrative).not.toContain("Heaviest job:");
+  });
+
   it("reports pending runs with a watch hint", () => {
     const out = explainDigest(
       digest({

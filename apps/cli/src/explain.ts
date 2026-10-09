@@ -34,6 +34,18 @@ function tailLines(text: string, n: number): string[] {
   return text.split("\n").filter((l) => l.trim()).slice(-n);
 }
 
+function fmtBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let n = bytes;
+  let u = 0;
+  while (n >= 1024 && u < units.length - 1) {
+    n /= 1024;
+    u += 1;
+  }
+  return `${u === 0 ? Math.round(n) : Math.round(n * 10) / 10} ${units[u]}`;
+}
+
 export function explainDigest(digest: FlareRunDigest): RunExplanation {
   const pendingStates = new Set(["queued", "running", "blocked"]);
   const okStates = new Set(["success", "skipped"]);
@@ -77,6 +89,14 @@ export function explainDigest(digest: FlareRunDigest): RunExplanation {
       lines.push(`  rerun: cli rerun ${digest.runId} ${job.id}`);
     }
     if (failing.length > 5) lines.push("", `…and ${failing.length - 5} more failing jobs (see: cli logs ${digest.runId})`);
+  }
+  const heaviest = [...digest.jobs]
+    .filter((j): j is FlareDigestJob & { peakRssBytes: number } => typeof j.peakRssBytes === "number")
+    .sort((a, b) => b.peakRssBytes - a.peakRssBytes)[0];
+  if (heaviest) {
+    lines.push(
+      `Heaviest job: ${heaviest.name} (peak ${fmtBytes(heaviest.peakRssBytes)}${heaviest.sizeHint ? `, ${heaviest.sizeHint}` : ""}).`,
+    );
   }
   if (digest.testSelection && digest.testSelection.jobs > 0) {
     const sel = digest.testSelection;

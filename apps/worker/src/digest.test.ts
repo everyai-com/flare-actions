@@ -136,6 +136,20 @@ describe("buildRunDigest", () => {
     expect(await buildRunDigest(new DigestDb(null), "nope")).toBeNull();
   });
 
+  it("carries peak RSS and the size hint when the executor measured it", async () => {
+    const measured = jobRow({
+      id: "job-2",
+      name: "build",
+      status: "success",
+      result: JSON.stringify({ steps: [{ command: "build", exitCode: 0 }], peakRssBytes: 3 * 1024 * 1024 * 1024 }),
+    });
+    const unmeasured = jobRow({ id: "job-3", name: "lint", status: "success", result: JSON.stringify({ steps: [] }) });
+    const digest = await buildRunDigest(new DigestDb(runRow(), [measured, unmeasured]), "run-1");
+    expect(digest?.jobs[0]).toMatchObject({ peakRssBytes: 3 * 1024 * 1024 * 1024, sizeHint: "size-l" });
+    expect(digest?.jobs[1].peakRssBytes).toBeUndefined();
+    expect(digest?.jobs[1].sizeHint).toBeUndefined();
+  });
+
   it("carries retain deadlines and an egress summary", async () => {
     const failed = jobRow({ retained_until: "2026-10-02T10:31:00.000Z" });
     const digest = await buildRunDigest(

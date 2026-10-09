@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
 import { createTar, restoreCache, safeCachePaths, saveCache, type CacheClient } from "./cache.ts";
 import { executeSteps } from "./execute.ts";
+import { formatBytes, JobResourceMonitor, type ResourceMonitor, type ResourcePeaks } from "./resources.ts";
 import { interpolateSecrets, maskSecrets } from "./secrets.ts";
 import { dockerServicesCtl, type ServiceHandle, type ServicesCtl } from "./services.ts";
 import { matrixEnv, type JobServiceSpec, type JobSpec } from "./spec.ts";
@@ -37,6 +38,9 @@ export interface RunJobOptions {
   // True when stored secrets failed to decrypt server-side: placeholders
   // render empty and the job log carries a warning.
   secretsError?: boolean;
+  // Test hook; production samples the runner's process subtree for
+  // peak RSS/CPU (best-effort, never fails the job).
+  resources?: ResourceMonitor;
 }
 
 export interface RunJobResult {
@@ -270,8 +274,10 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
   const stop = () => ctl.stop(handles).catch(() => undefined);
   const timeoutMs = opts.timeoutMs ?? (spec.timeoutMinutes ?? DEFAULT_TIMEOUT_MINUTES) * 60000;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const resources = opts.resources ?? new JobResourceMonitor();
 
   try {
+    resources.start();
     const work = (async (): Promise<RunJobResult> => {
       let cacheHit = false;
       if (spec.cache) {
@@ -318,10 +324,24 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
       } catch (err) {
         logParts.push(`[tests] upload failed: ${String(err)}`);
       }
+      const peaks: ResourcePeaks = await resources.stop();
+      if (peaks.peakRssBytes > 0) {
+        logParts.push(
+          `[resources] peak rss ${formatBytes(peaks.peakRssBytes)}${peaks.peakCpuPercent > 0 ? `, cpu ${peaks.peakCpuPercent}%` : ""}`,
+        );
+      }
       return {
         success: outcome.success,
         log: mask(logParts.join("\n")),
-        resultJson: mask(JSON.stringify({ steps: outcome.results, cacheHit, artifacts })),
+        resultJson: mask(
+          JSON.stringify({
+            steps: outcome.results,
+            cacheHit,
+            artifacts,
+            ...(peaks.peakRssBytes > 0 ? { peakRssBytes: peaks.peakRssBytes } : {}),
+            ...(peaks.peakCpuPercent > 0 ? { peakCpuPercent: peaks.peakCpuPercent } : {}),
+          }),
+        ),
         cacheHit,
         artifacts,
       };
@@ -343,6 +363,7 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
     return result;
   } finally {
     if (timer) clearTimeout(timer);
+    await resources.stop().catch(() => undefined);
     await stop();
   }
 }

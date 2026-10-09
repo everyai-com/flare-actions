@@ -178,6 +178,78 @@ describe("runJob", () => {
   });
 });
 
+describe("runJob resources", () => {
+  it("reports injected peaks in the result and log", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-res-"));
+    try {
+      const events: string[] = [];
+      const res = await runJob(
+        { steps: [{ run: "echo hi" }] },
+        {
+          cwd: dir,
+          env: { ...process.env },
+          client: fakeClient(),
+          jobId: "j1",
+          resources: {
+            start: () => {
+              events.push("start");
+            },
+            stop: async () => {
+              events.push("stop");
+              return { peakRssBytes: 3 * 1024 * 1024 * 1024, peakCpuPercent: 137.5 };
+            },
+          },
+        },
+      );
+      expect(res.success).toBe(true);
+      expect(events).toEqual(["start", "stop", "stop"]);
+      expect(JSON.parse(res.resultJson)).toMatchObject({ peakRssBytes: 3 * 1024 * 1024 * 1024, peakCpuPercent: 137.5 });
+      expect(res.log).toContain("[resources] peak rss 3 GB, cpu 137.5%");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("omits peaks when the sampler reports nothing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-res0-"));
+    try {
+      const res = await runJob(
+        { steps: [{ run: "echo hi" }] },
+        {
+          cwd: dir,
+          env: { ...process.env },
+          client: fakeClient(),
+          jobId: "j1",
+          resources: { start: () => undefined, stop: async () => ({ peakRssBytes: 0, peakCpuPercent: 0 }) },
+        },
+      );
+      expect(res.success).toBe(true);
+      const parsed = JSON.parse(res.resultJson) as Record<string, unknown>;
+      expect("peakRssBytes" in parsed).toBe(false);
+      expect("peakCpuPercent" in parsed).toBe(false);
+      expect(res.log).not.toContain("[resources]");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("self-reports real peaks for a live step (live ps)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-reslive-"));
+    try {
+      const res = await runJob(
+        { steps: [{ run: "sleep 2" }] },
+        { cwd: dir, env: { ...process.env }, client: fakeClient(), jobId: "j1" },
+      );
+      expect(res.success).toBe(true);
+      const parsed = JSON.parse(res.resultJson) as { peakRssBytes?: number };
+      expect(parsed.peakRssBytes).toBeGreaterThan(0);
+      expect(res.log).toContain("[resources] peak rss");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+});
+
 describe("runJob CI env", () => {
   it("sets CI=true for steps like GitHub Actions", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flare-job-ci-"));

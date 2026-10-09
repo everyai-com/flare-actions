@@ -4219,6 +4219,12 @@ components:
           type: string
         selection:
           $ref: '#/components/schemas/DigestSelection'
+        peakRssBytes:
+          type: integer
+          description: Peak RSS self-reported by the executor (absent when unmeasured)
+        sizeHint:
+          type: string
+          description: Right-sizing label for the peak (size-s/m/l/xl); present iff measured
     DigestStep:
       type: object
       required: [command, exitCode, durationMs, outputTail]

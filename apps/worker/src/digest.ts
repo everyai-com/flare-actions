@@ -1,6 +1,7 @@
 import { getJobsForRun, getRun, getRunEgress, getRunSelections, type Db } from "./db";
 import { getAttestationReceipt } from "./attestation";
 import { jobDurationMs } from "./cost";
+import { parsePeakRssBytes, sizeLabelForPeakRss } from "./rightsize";
 
 // Token-efficient run digest for agents: failures first-class, bounded
 // output tails, no full logs. This is the payload an agent should feed
@@ -26,6 +27,12 @@ export interface DigestJob {
   retainedUntil?: string;
   // Smart test selection outcome (absent when the job didn't opt in).
   selection?: DigestSelection;
+  // Peak RSS self-reported by the executor (absent when unmeasured:
+  // queued/running jobs, legacy rows, samplers without ps/cgroupfs).
+  peakRssBytes?: number;
+  // Right-sizing label for the peak (size-s/m/l/xl) — tag job labels
+  // + runner FLARE_LABELS to segment the fleet. Present iff measured.
+  sizeHint?: string;
 }
 
 export interface DigestSelection {
@@ -109,6 +116,11 @@ export async function buildRunDigest(db: Db, runId: string): Promise<RunDigest |
     if (failing) job.failing = failing;
     if (j.triage) job.triage = j.triage.slice(0, 800);
     if (j.retained_until) job.retainedUntil = j.retained_until;
+    const peak = parsePeakRssBytes(j.result);
+    if (peak !== null) {
+      job.peakRssBytes = peak;
+      job.sizeHint = sizeLabelForPeakRss(peak);
+    }
     const selection = selectionByJob.get(j.id);
     if (selection) {
       job.selection = {
