@@ -6,6 +6,16 @@ tagged on `main` (`v0.1.0` is the first).
 
 ## [Unreleased]
 
+### Fixed
+
+- Two deploy blockers that 500'd every route on fresh preview deploys
+  (and would have hit prod next): index.ts exported a non-function
+  value (workerd rejects it at boot), and `ensureSchema` created
+  indexes before the backfill ALTERs so `idx_runs_agent` threw "no
+  such column" on databases predating the column. Indexes now apply
+  after the ALTERs; staging self-healed on redeploy. Regression test
+  runs `ensureSchema` against an old-database fake.
+
 ### Added
 
 - Agent purchasing scaffold (hosted, inert on OSS): single-use

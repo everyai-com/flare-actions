@@ -110,7 +110,8 @@ The recurring pains, in practitioners' own terms:
       workflows + an idempotent AGENTS.md snippet + next steps), the
       `skills/flare-verify` skill for Claude Code / Codex / Cursor
 - [x] `llms.txt` + `pricing.json` (machine-readable plans); [ ] MCP
-      registry listings (mcp.so, Smithery) — manual submissions
+      registry listings (mcp.so, Smithery) — packet ready in
+      docs/MCP-LISTINGS.md, submissions themselves are manual
 - [x] One-command adoption: `cli connect` (probe → wire → verify HEAD)
       + the `skills/flare-setup` skill + README agent paste prompt
 - [x] `runs-on: flare` runner mode: opt-in ephemeral JIT runners so

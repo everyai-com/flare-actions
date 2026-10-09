@@ -1,8 +1,12 @@
 # Tournament video script (Cloudflare git competition)
 
-The entry is verified demo-ready: `npm run harness` went green on the
-`try-tournaments` preview on Oct 8 (race → verify → collision → verdict
-→ promote → ledger, 12 checks). Record against the live preview:
+The entry is verified demo-ready: `npm run harness` went green
+3-in-a-row on the `try-tournaments` preview on Oct 9 (race → verify
+→ collision → verdict → promote → ledger, 13 checks each) running
+current `main` incl. Waves 0–6. Two deploy blockers found and fixed
+during the refresh (entry-module value export, schema index
+ordering) — the preview self-healed on first request. Record
+against the live preview:
 
 - Board: https://try-tournaments-flare-actions.everyai-com.workers.dev/dashboard
   (Tournaments tab; admin token in `/tmp/tour-token.txt` if the session asks)
@@ -24,8 +28,14 @@ The entry is verified demo-ready: `npm run harness` went green on the
 6. **Close (2:30–3:00)** — ledger close-up. "Every decision recorded.
    Flare Tournaments — agent races you can audit."
 
-## After recording
+## Submit checklist (due Oct 14)
 
-- Submit the video + repo link at the competition page before Oct 14.
-- Tear down the preview: `npx wrangler preview delete --name try-tournaments`
+- [ ] Pre-flight: one more `npm run harness` green on the morning of
+  recording (same env as above); seats warm (`KEEP=1` rehearsal).
+- [ ] Record the shots above (~3 min) against the live preview board.
+- [ ] Submit at the competition page: video + repo link
+  (`https://github.com/everyai-com/flare-actions`) before Oct 14.
+- [ ] Confirm the submission renders (video plays, link resolves).
+- [ ] After the deadline: tear down the preview
+  (`npx wrangler preview delete --name try-tournaments`).
   and `git branch -D try-tournaments` (the branch carries no unique commits).
