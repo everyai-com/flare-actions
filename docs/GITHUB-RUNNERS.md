@@ -80,12 +80,22 @@ a mirrored digest (error lines + tail, ≤4 KiB, fetched on completion):
 it rides `GET /v1/github/jobs`, the dashboard card's first line, and
 `cli github-jobs --logs <jobId>`.
 
+## Org runner groups
+
+Set an org group name in the lane settings (blank = the default
+group) and JIT runners register into it — for orgs that route runners
+by compliance boundary. The name resolves to a group id per org on
+first claim (cached 1 hour; re-saving clears the cache). Unresolvable
+names fail the claim loudly (`runner_group_unknown`, job stays queued)
+rather than landing the runner in the wrong group, so check the group
+exists and the repo can use it (selected-repositories access must
+include the repo).
+
 ## Limits (deliberate)
 
 - Managed-seat JIT runners: no (docker-in-docker is unsupported on
   Containers) — runner mode is BYO only.
 - No Windows executors yet (the official runner ships a zip with a
   different bootstrap).
-- No org-level runner groups: JIT runners register per repo.
 - No PAT fallback: the lane needs the App's admin grant. Repos that
   won't grant it stay on full Flare orchestration.

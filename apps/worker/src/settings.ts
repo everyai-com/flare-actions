@@ -24,6 +24,8 @@ export const SETTING_KEYS = {
   cloudflareAccountId: "cloudflare_account_id",
   triageModel: "triage_model",
   runnerVersion: "runner_version",
+  githubRunnerGroup: "github_runner_group",
+  githubRunnerGroupIds: "github_runner_group_ids",
   healOnFailure: "heal_on_failure",
   openRegistration: "open_registration",
   budgetMinutes: "budget_minutes",
@@ -345,4 +347,69 @@ export function validateRunnerVersion(version: unknown): string | null {
     return "runner version must be semver like 0.2.0";
   }
   return null;
+}
+
+// Runner-mode org group name: JIT runners register into it instead of
+// the default group. GitHub names are free text; Flare allows 1-100
+// printable chars. Empty clears (default group).
+export function validateGithubRunnerGroupName(name: unknown): string | null {
+  if (typeof name !== "string" || !/^[^\x00-\x1f\x7f]{1,100}$/.test(name.trim())) {
+    return "runner group must be 1-100 printable characters";
+  }
+  return null;
+}
+
+// Org → group-name → id cache (D1 JSON): JIT claims must not pay a
+// group lookup per claim. 1h TTL; bounded to 50 orgs (oldest evicted);
+// re-saving the group name clears the blob. Tolerant parse — garbage
+// means empty, never a throw.
+export type RunnerGroupCache = Record<string, { id: number; at: number }>;
+
+export function runnerGroupCacheKey(org: string, name: string): string {
+  return `${org.toLowerCase()}\0${name}`;
+}
+
+export function parseRunnerGroupCache(raw: string | null): RunnerGroupCache {
+  if (!raw) return {};
+  try {
+    const json = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof json !== "object" || json === null) return {};
+    const out: RunnerGroupCache = {};
+    for (const [k, v] of Object.entries(json)) {
+      if (typeof v !== "object" || v === null) continue;
+      const { id, at } = v as { id?: unknown; at?: unknown };
+      if (typeof id === "number" && Number.isInteger(id) && typeof at === "number") out[k] = { id, at };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function runnerGroupCacheGet(
+  cache: RunnerGroupCache,
+  org: string,
+  name: string,
+  nowMs: number,
+  ttlMs = 3600000,
+): number | null {
+  const hit = cache[runnerGroupCacheKey(org, name)];
+  if (!hit || nowMs - hit.at > ttlMs) return null;
+  return hit.id;
+}
+
+export function runnerGroupCacheSet(
+  cache: RunnerGroupCache,
+  org: string,
+  name: string,
+  id: number,
+  nowMs: number,
+): RunnerGroupCache {
+  const out = { ...cache, [runnerGroupCacheKey(org, name)]: { id, at: nowMs } };
+  const keys = Object.keys(out);
+  if (keys.length <= 50) return out;
+  keys.sort((a, b) => out[a].at - out[b].at);
+  const trimmed: RunnerGroupCache = {};
+  for (const k of keys.slice(keys.length - 50)) trimmed[k] = out[k];
+  return trimmed;
 }

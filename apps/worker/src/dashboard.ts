@@ -450,6 +450,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <form id="ghRunnerForm" class="inline">
 <label><input type="checkbox" id="ghRunnerCheck"> runner mode on</label>
 <input id="ghRunnerLabelsInput" placeholder="labels, e.g. flare, gpu" maxlength="128" size="30">
+<input id="ghRunnerGroupInput" placeholder="org group (blank = default)" maxlength="100" size="24" aria-label="Org runner group">
 <button type="submit">Save</button>
 </form>
 <p id="ghRunnerErr" class="err"></p>
@@ -2539,6 +2540,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       document.getElementById("schedOk").textContent = "";
       document.getElementById("ghRunnerCheck").checked = s.githubRunnerMode === "on";
       document.getElementById("ghRunnerLabelsInput").value = s.githubRunnerLabels || "flare";
+      document.getElementById("ghRunnerGroupInput").value = s.githubRunnerGroup || "";
       document.getElementById("ghRunnerOk").textContent = "";
       loadGhRunnerJobs();
       loadSchedules();
@@ -2762,6 +2764,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     var payload = {
       githubRunnerMode: document.getElementById("ghRunnerCheck").checked ? "on" : "off",
       githubRunnerLabels: document.getElementById("ghRunnerLabelsInput").value.trim(),
+      githubRunnerGroup: document.getElementById("ghRunnerGroupInput").value.trim(),
     };
     api("/v1/admin/settings", { method: "POST", body: JSON.stringify(payload) })
       .then(function () {

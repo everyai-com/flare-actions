@@ -29,6 +29,7 @@ export const ERROR_CODES = [
   "pairing_invalid",
   "token_mint_failed",
   "jit_mint_failed",
+  "runner_group_unknown",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -58,6 +59,7 @@ export const ERROR_HINTS: Record<ErrorCode, string> = {
   pairing_invalid: "codes are single-use and expire in 10 minutes — mint a fresh one in the dashboard",
   token_mint_failed: "reconnect the GitHub App in the dashboard, then retry",
   jit_mint_failed: "check the App accepted administration:write (reinstall), then retry",
+  runner_group_unknown: "create the runner group in the org (or fix its name in Settings), then retry",
 };
 
 export interface ApiErrorBody {

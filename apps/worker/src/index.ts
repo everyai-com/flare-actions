@@ -100,7 +100,7 @@ import {
   updateRunningJob,
   usageStats,
 } from "./db";
-import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, getDefaultBranch, getInstallationToken, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, updatePullRequestBranch, verifyGitHubSignature } from "./github";
+import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, getDefaultBranch, getInstallationToken, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, resolveRunnerGroupId, updatePullRequestBranch, verifyGitHubSignature } from "./github";
 import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
 import { DASHBOARD_HTML } from "./dashboard";
@@ -116,7 +116,7 @@ import {
   validateSecretName,
   validateSecretValue,
 } from "./secrets";
-import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseBudgetMinutes, parseBudgetMode, parseBudgetKillMultiplier, parseFairSharePerRepo, parseFairSharePerAgent, parseAgentTag, parseGithubRunnerLabels, parseGithubRunnerMode, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseStoredBudgets, parseSupersedeBranchRuns, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateRunnerVersion, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
+import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseBudgetMinutes, parseBudgetMode, parseBudgetKillMultiplier, parseFairSharePerRepo, parseFairSharePerAgent, parseAgentTag, parseGithubRunnerLabels, parseGithubRunnerMode, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseRunnerGroupCache, parseStoredBudgets, parseSupersedeBranchRuns, parseTriageWebSearch, runnerGroupCacheGet, runnerGroupCacheSet, validateBillingApiToken, validateCloudflareAccountId, validateGithubRunnerGroupName, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateRunnerVersion, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
 import {
   addAllowedUser,
   beginOAuth,
@@ -1924,6 +1924,7 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       supersedeBranchRuns?: unknown;
       githubRunnerMode?: unknown;
       githubRunnerLabels?: unknown;
+      githubRunnerGroup?: unknown;
       billingApiToken?: unknown;
       cloudflareAccountId?: unknown;
       triageModel?: unknown;
@@ -1954,6 +1955,7 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
     const hasSupersede = body.supersedeBranchRuns !== undefined;
     const hasGhMode = body.githubRunnerMode !== undefined;
     const hasGhLabels = body.githubRunnerLabels !== undefined;
+    const hasGhGroup = body.githubRunnerGroup !== undefined;
     const hasBillingToken = body.billingApiToken !== undefined;
     const hasAccountId = body.cloudflareAccountId !== undefined;
     const hasTriageModel = body.triageModel !== undefined;
@@ -1961,7 +1963,7 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
     if (
       !hasWebhook && !hasNotifyFrom && !hasNotifyMode && !hasNotifyWebhook && !hasBadgeHidden &&
       !hasTurnstileSite && !hasTurnstileSecret && !hasFairShare && !hasAgentShare && !hasGateway && !hasWriteConfirm && !hasWebSearch &&
-      !hasHeal && !hasOpenReg && !hasBudget && !hasBudgetMode && !hasKillMultiplier && !hasSupersede && !hasGhMode && !hasGhLabels && !hasBillingToken && !hasAccountId && !hasTriageModel && !hasRunnerVersion
+      !hasHeal && !hasOpenReg && !hasBudget && !hasBudgetMode && !hasKillMultiplier && !hasSupersede && !hasGhMode && !hasGhLabels && !hasGhGroup && !hasBillingToken && !hasAccountId && !hasTriageModel && !hasRunnerVersion
     ) {
       return json({ error: "no settings provided" }, 400);
     }
@@ -2136,6 +2138,20 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       if ("error" in parsed) return json({ error: parsed.error }, 400);
       await setSetting(env.DB, SETTING_KEYS.githubRunnerLabels, parsed.labels.join(","));
       await audit(env.DB, ident.actor, "settings.github_runner_labels", parsed.labels.join(","));
+    }
+    if (hasGhGroup) {
+      const value = body.githubRunnerGroup;
+      if (value === null || value === "") {
+        await setSetting(env.DB, SETTING_KEYS.githubRunnerGroup, "");
+        await audit(env.DB, ident.actor, "settings.github_runner_group", "cleared");
+      } else {
+        const err = validateGithubRunnerGroupName(value);
+        if (err) return json({ error: err }, 400);
+        await setSetting(env.DB, SETTING_KEYS.githubRunnerGroup, (value as string).trim());
+        await audit(env.DB, ident.actor, "settings.github_runner_group", (value as string).trim());
+      }
+      // Re-saving busts the group-id cache (renames resolve fresh).
+      await setSetting(env.DB, SETTING_KEYS.githubRunnerGroupIds, "");
     }
     if (hasBillingToken) {
       if (env.BILLING_API_TOKEN) {
@@ -2894,7 +2910,30 @@ export default {
           (l) => l.toLowerCase() === "self-hosted" || !RESERVED_RUNNER_LABELS.has(l.toLowerCase()),
         ).slice(0, 20);
         const runnerName = `flare-${job.id}-${crypto.randomUUID().slice(0, 8)}`;
-        const jit = await generateJitConfig(token, job.repo, { name: runnerName, labels: jitLabels });
+        // Org group routing: a configured group name resolves (cached)
+        // to its id; unresolvable fails the claim loudly (release +
+        // 503) rather than landing the runner in the wrong group.
+        let runnerGroupId = 1;
+        const groupName = (await getSetting(env.DB, SETTING_KEYS.githubRunnerGroup))?.trim() || "";
+        if (groupName) {
+          const org = job.repo.split("/")[0] ?? "";
+          const cache = parseRunnerGroupCache(await getSetting(env.DB, SETTING_KEYS.githubRunnerGroupIds));
+          const cached = runnerGroupCacheGet(cache, org, groupName, Date.now());
+          const resolved = cached ?? (await resolveRunnerGroupId(token, org, groupName));
+          if (resolved === null) {
+            await releaseGhRunnerJob(env.DB, job.id);
+            return json(apiError("runner_group_unknown", `runner group "${groupName}" not found in ${org}`), 503);
+          }
+          if (cached === null) {
+            await setSetting(
+              env.DB,
+              SETTING_KEYS.githubRunnerGroupIds,
+              JSON.stringify(runnerGroupCacheSet(cache, org, groupName, resolved, Date.now())),
+            );
+          }
+          runnerGroupId = resolved;
+        }
+        const jit = await generateJitConfig(token, job.repo, { name: runnerName, labels: jitLabels, runnerGroupId });
         if (!jit) {
           await releaseGhRunnerJob(env.DB, job.id);
           return json(apiError("jit_mint_failed", "GitHub JIT mint failed"), 503);
@@ -3963,6 +4002,7 @@ export default {
           supersedeBranchRuns: (await getSetting(env.DB, SETTING_KEYS.supersedeBranchRuns)) ?? "off",
           githubRunnerMode: (await getSetting(env.DB, SETTING_KEYS.githubRunnerMode)) ?? "off",
           githubRunnerLabels: (await getSetting(env.DB, SETTING_KEYS.githubRunnerLabels)) ?? "flare",
+          githubRunnerGroup: (await getSetting(env.DB, SETTING_KEYS.githubRunnerGroup)) ?? "",
           aiGatewayId: env.AI_GATEWAY_ID ?? (await getSetting(env.DB, SETTING_KEYS.aiGatewayId)) ?? "",
           aiGatewaySource: gatewaySource,
           mcpWriteConfirm: "on" in writeConfirmParsed ? writeConfirmParsed.on : false,

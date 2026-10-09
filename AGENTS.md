@@ -65,7 +65,8 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   (always 202, never 5xx); non-success completions background-fetch a
   log digest (error lines + tail, `log_digest`); `POST
   /v1/github/jobs/next` claims + mints the JIT (conditional
-  claim/stamp, release on GitHub failure);
+  claim/stamp, release on GitHub failure; optional org group pin via
+  cached name→id resolve, `runner_group_unknown` on miss);
   `GET /v1/github/jobs` lists; the per-minute cron sweeps stale claims
   (delete orphaned runner first, conditional release wins races);
   completions emit `gha.job.completed` analytics. JIT blobs are

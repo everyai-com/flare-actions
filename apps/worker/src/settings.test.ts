@@ -13,12 +13,16 @@ import {
   parseGithubRunnerLabels,
   parseGithubRunnerMode,
   parseMcpWriteConfirm,
+  parseRunnerGroupCache,
+  runnerGroupCacheGet,
+  runnerGroupCacheSet,
   parseOpenRegistration,
   parseStoredBudgets,
   parseSupersedeBranchRuns,
   parseTriageWebSearch,
   validateBillingApiToken,
   validateCloudflareAccountId,
+  validateGithubRunnerGroupName,
   validateNotifyFromEmail,
   validateNotifyMode,
   validateNotifyWebhookUrl,
@@ -282,5 +286,25 @@ describe("github runner mode settings", () => {
     expect("error" in parseGithubRunnerLabels("a,b,c,d,e,f")).toBe(true);
     expect("error" in parseGithubRunnerLabels("has space")).toBe(true);
     expect("error" in parseGithubRunnerLabels(42)).toBe(true);
+  });
+
+  it("validates org group names", () => {
+    expect(validateGithubRunnerGroupName("GPU Fleet")).toBeNull();
+    expect(validateGithubRunnerGroupName("")).not.toBeNull();
+    expect(validateGithubRunnerGroupName("x".repeat(101))).not.toBeNull();
+    expect(validateGithubRunnerGroupName("has\nnewline")).not.toBeNull();
+  });
+
+  it("caches group ids with TTL, tolerance, and bounds", () => {
+    expect(parseRunnerGroupCache(null)).toEqual({});
+    expect(parseRunnerGroupCache("garbage{")).toEqual({});
+    const t0 = 1_700_000_000_000;
+    let cache = runnerGroupCacheSet({}, "Acme", "GPU Fleet", 7, t0);
+    expect(runnerGroupCacheGet(cache, "acme", "GPU Fleet", t0 + 1000)).toBe(7);
+    expect(runnerGroupCacheGet(cache, "acme", "GPU Fleet", t0 + 3700000)).toBeNull();
+    expect(runnerGroupCacheGet(cache, "other", "GPU Fleet", t0 + 1000)).toBeNull();
+    for (let i = 0; i < 60; i++) cache = runnerGroupCacheSet(cache, `org${i}`, "g", i, t0 + i);
+    expect(Object.keys(cache)).toHaveLength(50);
+    expect(cache).not.toHaveProperty("org0\0g");
   });
 });

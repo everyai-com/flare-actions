@@ -2229,6 +2229,9 @@ paths:
                 githubRunnerLabels:
                   type: string
                   description: Comma-separated runs-on labels this deployment serves (default flare)
+                githubRunnerGroup:
+                  type: string
+                  description: Org runner group for JIT registration (blank = default group)
                 billingApiToken:
                   type: string
                 cloudflareAccountId:

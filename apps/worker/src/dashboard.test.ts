@@ -52,6 +52,11 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("payload.runnerVersion");
   });
 
+  it("wires the org runner group setting", () => {
+    expect(DASHBOARD_HTML).toContain("ghRunnerGroupInput");
+    expect(DASHBOARD_HTML).toContain("githubRunnerGroup");
+  });
+
   it("surfaces the Actions drop-in card and per-run pipeline source tags", () => {
     expect(DASHBOARD_HTML).toContain("Coming from GitHub Actions?");
     expect(DASHBOARD_HTML).toContain("pipelineSourceLabel");

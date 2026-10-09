@@ -8,6 +8,10 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Org-level runner groups for the flare lane: a dashboard group name
+  pins JIT registration to that org group (resolved per org, cached
+  1 hour, re-save busts); unknown groups fail the claim with
+  `runner_group_unknown` (job stays queued) instead of misrouting.
 - Runner auto-update for BYO fleets: a dashboard fleet version
   (`runner_version`, blank = off) served on `GET /v1/runner/version`;
   idle runners check every 10 minutes (both lanes), warn hourly when

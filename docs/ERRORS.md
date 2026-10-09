@@ -39,3 +39,4 @@ lane by lane.
 | `pairing_invalid` | 404 | code unknown/consumed/expired | mint a fresh code (single-use, 10 min) |
 | `token_mint_failed` | 503 | installation token mint failed | reconnect the GitHub App, retry |
 | `jit_mint_failed` | 503 | GitHub JIT config mint failed | check `administration:write`, reinstall, retry |
+| `runner_group_unknown` | 503 | Runner group not found in the org | create the group, or fix its name in Settings |

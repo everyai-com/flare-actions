@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, listMergedPulls, resolveRefToSha, timingSafeEqualHex, verifyGitHubSignature } from "./github";
+import { deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, listMergedPulls, resolveRefToSha, resolveRunnerGroupId, timingSafeEqualHex, verifyGitHubSignature } from "./github";
 
 async function sign(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -332,6 +332,63 @@ describe("fetchJobLogDigest", () => {
       expect(await fetchJobLogDigest("tok", "o/r", "abc")).toBeNull();
       stubBody(null);
       expect(await fetchJobLogDigest("tok", "o/r", "123")).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+describe("resolveRunnerGroupId", () => {
+  const realFetch = globalThis.fetch;
+
+  function stub(handler: (url: string) => { ok: boolean; body?: unknown }) {
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      calls.push(String(input));
+      const out = handler(String(input));
+      return { ok: out.ok, status: out.ok ? 200 : 500, json: async () => out.body ?? null };
+    }) as typeof fetch;
+    return calls;
+  }
+
+  it("resolves exact group names to ids", async () => {
+    const calls = stub((url) =>
+      url.endsWith("/orgs/acme/actions/runner-groups?per_page=100")
+        ? { ok: true, body: { runner_groups: [{ id: 1, name: "Default" }, { id: 7, name: "GPU Fleet" }] } }
+        : { ok: false },
+    );
+    try {
+      expect(await resolveRunnerGroupId("tok", "acme", "GPU Fleet")).toBe(7);
+      expect(await resolveRunnerGroupId("tok", "acme", "gpu fleet")).toBeNull();
+      expect(await resolveRunnerGroupId("tok", "acme", "Missing")).toBeNull();
+      expect(calls).toHaveLength(3);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("returns null for bad input and API failures", async () => {
+    try {
+      expect(await resolveRunnerGroupId("tok", "bad org", "g")).toBeNull();
+      expect(await resolveRunnerGroupId("tok", "acme", "")).toBeNull();
+      stub(() => ({ ok: false }));
+      expect(await resolveRunnerGroupId("tok", "acme", "g")).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("pins the runner group on JIT mint", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      seen.push(String(init?.body ?? ""));
+      return { ok: true, status: 200, json: async () => ({ runner: { id: 9 }, encoded_jit_config: "blob" }) };
+    }) as typeof fetch;
+    try {
+      await generateJitConfig("tok", "o/r", { name: "n", labels: [], runnerGroupId: 7 });
+      await generateJitConfig("tok", "o/r", { name: "n", labels: [] });
+      expect(JSON.parse(seen[0]).runner_group_id).toBe(7);
+      expect(JSON.parse(seen[1]).runner_group_id).toBe(1);
     } finally {
       globalThis.fetch = realFetch;
     }

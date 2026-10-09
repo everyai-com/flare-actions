@@ -406,15 +406,31 @@ export async function openDraftPullRequest(
 export async function generateJitConfig(
   token: string,
   repo: string,
-  input: { name: string; labels: string[] },
+  input: { name: string; labels: string[]; runnerGroupId?: number },
 ): Promise<{ runnerId: number; jitConfig: string } | null> {
   const data = (await githubJson(token, `/repos/${repo}/actions/runners/generate-jitconfig`, {
     method: "POST",
-    body: JSON.stringify({ name: input.name, runner_group_id: 1, labels: input.labels }),
+    body: JSON.stringify({ name: input.name, runner_group_id: input.runnerGroupId ?? 1, labels: input.labels }),
   })) as { runner?: { id?: unknown }; encoded_jit_config?: unknown } | null;
   if (!data || typeof data.encoded_jit_config !== "string" || !data.encoded_jit_config) return null;
   const runnerId = typeof data.runner?.id === "number" ? data.runner.id : 0;
   return { runnerId, jitConfig: data.encoded_jit_config };
+}
+
+// Resolve an org runner group name to its id (JIT registration pins
+// it). Exact match, first 100 groups; null when missing or on any API
+// failure — callers fail the claim loudly rather than landing the
+// runner in the wrong group.
+export async function resolveRunnerGroupId(token: string, org: string, name: string): Promise<number | null> {
+  if (!/^[\w.-]+$/.test(org) || !name) return null;
+  const data = (await githubJson(token, `/orgs/${org}/actions/runner-groups?per_page=100`)) as {
+    runner_groups?: { id?: unknown; name?: unknown }[];
+  } | null;
+  if (!data || !Array.isArray(data.runner_groups)) return null;
+  for (const g of data.runner_groups) {
+    if (typeof g === "object" && g !== null && g.name === name && typeof g.id === "number") return g.id;
+  }
+  return null;
 }
 
 // Merge queue: fold the base branch into the PR (the queue's "rebase
