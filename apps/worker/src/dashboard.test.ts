@@ -200,4 +200,13 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("FLARE_LABELS");
   });
 
+  it("wires the cache browser to the admin cache API", () => {
+    expect(DASHBOARD_HTML).toContain("Cache browser");
+    expect(DASHBOARD_HTML).toContain("cacheForm");
+    expect(DASHBOARD_HTML).toContain("cacheBody");
+    expect(DASHBOARD_HTML).toContain("loadCacheEntries");
+    expect(DASHBOARD_HTML).toContain("purgeCachePrefix");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/cache");
+  });
+
 });

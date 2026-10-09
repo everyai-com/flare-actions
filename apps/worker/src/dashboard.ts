@@ -272,6 +272,17 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <h2>Runs</h2>
 <p id="usageStrip" class="muted"></p>
 <p id="cacheStatsStrip" class="muted"></p>
+<details id="cacheBox" hidden>
+<summary>Cache browser…</summary>
+<form id="cacheForm" class="inline">
+<input id="cachePrefix" placeholder="key prefix (empty = all)" maxlength="100" aria-label="Cache key prefix">
+<button type="submit">List</button>
+<button id="cachePurgeBtn" type="button">Purge prefix</button>
+</form>
+<p id="cacheErr" class="err"></p>
+<p id="cacheNote" class="muted"></p>
+<div class="table-scroll"><table><thead><tr><th>Key</th><th>Size</th><th>Uploaded</th></tr></thead><tbody id="cacheBody"></tbody></table></div>
+</details>
 <details id="dispatchBox">
 <summary>Dispatch a run…</summary>
 <form id="dispatchForm" class="inline">
@@ -1317,6 +1328,13 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     ev.preventDefault();
     loadFlaky();
   });
+  document.getElementById("cacheForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    loadCacheEntries();
+  });
+  document.getElementById("cachePurgeBtn").addEventListener("click", function () {
+    purgeCachePrefix();
+  });
   document.getElementById("quarantineForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
     var repo = document.getElementById("flakyRepo").value.trim();
@@ -1604,12 +1622,45 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
         " scope" + (scopes === 1 ? "" : "s") + " — one warm cache, every agent";
     }).catch(function () { strip.textContent = ""; });
   }
+  function cachePrefix() { return document.getElementById("cachePrefix").value.trim(); }
+  function loadCacheEntries() {
+    var err = document.getElementById("cacheErr");
+    var note = document.getElementById("cacheNote");
+    var body = document.getElementById("cacheBody");
+    err.textContent = "";
+    note.textContent = "";
+    body.textContent = "";
+    api("/v1/admin/cache?prefix=" + encodeURIComponent(cachePrefix()) + "&limit=100").then(function (data) {
+      var entries = data.entries || [];
+      entries.sort(function (a, b) { return String(b.uploaded || "") < String(a.uploaded || "") ? -1 : 1; });
+      if (!entries.length) { note.textContent = "No cache entries under this prefix."; return; }
+      note.textContent = entries.length + " entr" + (entries.length === 1 ? "y" : "ies") + " (newest first, max 100).";
+      entries.forEach(function (e) {
+        var tr = el("tr");
+        tr.appendChild(el("td", e.key));
+        tr.appendChild(el("td", fmtBytes(e.size)));
+        tr.appendChild(el("td", e.uploaded ? String(e.uploaded).slice(0, 19).replace("T", " ") : ""));
+        body.appendChild(tr);
+      });
+    }).catch(function (e) { err.textContent = e && e.message ? e.message : "Could not load cache entries."; });
+  }
+  function purgeCachePrefix() {
+    var err = document.getElementById("cacheErr");
+    var note = document.getElementById("cacheNote");
+    err.textContent = "";
+    api("/v1/admin/cache?prefix=" + encodeURIComponent(cachePrefix()), { method: "DELETE" }).then(function (out) {
+      note.textContent = "Purged " + out.deleted + " entr" + (out.deleted === 1 ? "y" : "ies") +
+        (out.truncated ? " (more remain — purge again)" : "") + ".";
+      loadCacheEntries();
+    }).catch(function (e) { err.textContent = e && e.message ? e.message : "Could not purge cache."; });
+  }
   function loadRuns() {
     var list = document.getElementById("runsList");
     list.textContent = "";
     var loading = el("p", "Loading runs…"); loading.className = "muted"; list.appendChild(loading);
     loadUsageStrip();
     loadCacheStats();
+    document.getElementById("cacheBox").hidden = !isAdmin;
     api("/v1/runs").then(function (data) {
       lastRuns = data.runs || [];
       renderRuns();

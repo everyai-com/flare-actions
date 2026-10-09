@@ -96,7 +96,13 @@ function toSpec(job: PipelineJob): JobSpec {
   if (job.env) spec.env = job.env;
   if (job.container) spec.container = job.container;
   if (job.services) spec.services = job.services;
-  if (job.cache) spec.cache = { key: job.cache.key, paths: job.cache.paths };
+  if (job.cache) {
+    spec.cache = {
+      key: job.cache.key,
+      paths: job.cache.paths,
+      ...(job.cache.restoreKeys ? { restoreKeys: job.cache.restoreKeys } : {}),
+    };
+  }
   if (job.artifacts) {
     spec.artifacts = {
       paths: job.artifacts.paths,
@@ -146,6 +152,22 @@ function localRef(cwd: string): string {
 
 // Warm, persistent cache across local runs; artifacts land in the tree
 // so agents can pick them up without a download step.
+interface LocalCacheIndex {
+  [key: string]: { file: string; updatedAt: string };
+}
+
+function readLocalCacheIndex(cacheDir: string): LocalCacheIndex {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(cacheDir, "index.json"), "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    return parsed as LocalCacheIndex;
+  } catch {
+    // Missing or corrupt: exact restores still work (hashed files),
+    // prefix scans just miss until the next save rebuilds it.
+    return {};
+  }
+}
+
 function localClient(cacheDir: string, artifactsDir: string, jobSlug: string): JobClient {
   return {
     getCache: async (key) => {
@@ -156,9 +178,46 @@ function localClient(cacheDir: string, artifactsDir: string, jobSlug: string): J
         return null;
       }
     },
+    getCacheOrPrefix: async (key, restoreKeys) => {
+      const exact = join(cacheDir, hashKey(key));
+      try {
+        return { data: new Uint8Array(readFileSync(exact)), key };
+      } catch {
+        // Exact miss: fall through to the prefix scan.
+      }
+      const index = readLocalCacheIndex(cacheDir);
+      for (const prefix of restoreKeys) {
+        const candidates = Object.keys(index)
+          .filter((k) => k.startsWith(prefix) && typeof index[k]?.updatedAt === "string")
+          .sort((a, b) => ((index[a]?.updatedAt ?? "") < (index[b]?.updatedAt ?? "") ? 1 : -1));
+        for (const candidate of candidates) {
+          try {
+            const data = new Uint8Array(readFileSync(join(cacheDir, index[candidate]?.file ?? "")));
+            return { data, key: candidate };
+          } catch {
+            // Stale index entry (blob deleted outside the CLI): try
+            // the next candidate instead of failing the restore.
+          }
+        }
+      }
+      return null;
+    },
     putCache: async (key, data) => {
       mkdirSync(cacheDir, { recursive: true });
       writeFileSync(join(cacheDir, hashKey(key)), data);
+      // The index powers prefix scans (filenames are hashes); a failed
+      // index write degrades future scans, never this save.
+      try {
+        const index = readLocalCacheIndex(cacheDir);
+        index[key] = { file: hashKey(key), updatedAt: new Date().toISOString() };
+        const cutoff = Date.now() - 90 * 24 * 3600 * 1000;
+        for (const k of Object.keys(index)) {
+          if (Date.parse(index[k]?.updatedAt ?? "") < cutoff) delete index[k];
+        }
+        writeFileSync(join(cacheDir, "index.json"), JSON.stringify(index));
+      } catch {
+        // Index best-effort; the blob above is the source of truth.
+      }
     },
     uploadArtifact: async (_jobId, name, data) => {
       const dir = join(artifactsDir, jobSlug);

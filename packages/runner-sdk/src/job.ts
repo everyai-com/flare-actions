@@ -281,9 +281,11 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
     const work = (async (): Promise<RunJobResult> => {
       let cacheHit = false;
       if (spec.cache) {
-        const r = await restoreCache(opts.client, { key: spec.cache.key, dir: opts.cwd });
+        const r = await restoreCache(opts.client, { key: spec.cache.key, dir: opts.cwd, restoreKeys: spec.cache.restoreKeys });
         cacheHit = r.hit;
-        logParts.push(r.hit ? `[cache] hit: ${spec.cache.key}` : `[cache] miss: ${spec.cache.key}${r.error ? ` (${r.error})` : ""}`);
+        if (!r.hit) logParts.push(`[cache] miss: ${spec.cache.key}${r.error ? ` (${r.error})` : ""}`);
+        else if (r.viaRestoreKey) logParts.push(`[cache] hit: ${r.key} (restore-key ${r.viaRestoreKey})`);
+        else logParts.push(`[cache] hit: ${r.key ?? spec.cache.key}`);
       }
       const matrix = matrixEnv(spec.matrix);
       const jobEnv: Record<string, string> = {};

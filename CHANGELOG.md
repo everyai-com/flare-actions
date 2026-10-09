@@ -8,6 +8,16 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Cache `restore-keys` + dashboard cache browser: jobs take ≤10
+  prefix fallbacks tried in order on an exact-key miss (newest
+  entry wins, logged with the matching prefix; saves still land
+  under the exact key). Works on BYO (`GET /v1/cache/<key>?`
+  `restore_key=…`, matched entry in `X-Flare-Cache-Key`), seats
+  (direct R2 list + shared pick-newest), `cli local` (indexed
+  `~/.flare/cache`), and the Actions importer (multiline
+  `restore-keys` mapped, trimmed to 10 with a warning). Admins
+  browse (newest-first) and purge by prefix from the dashboard
+  Cache browser.
 - Remote named warm dev boxes: `cli devbox --remote` and
   `cli mcp-serve --remote` run the same eight box operations against
   the seats worker (one `BoxSeat` Durable Object per box, `devboxes`

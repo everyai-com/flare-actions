@@ -432,6 +432,12 @@ function deps(db: MemDb, container: FakeContainer, over: Partial<SeatDeps> = {})
       put: async (k: string, v: Uint8Array) => {
         store.set(k, v);
       },
+      list: async (opts: { prefix: string; limit: number }) => ({
+        objects: [...store.keys()]
+          .filter((k) => k.startsWith(opts.prefix))
+          .slice(0, opts.limit)
+          .map((k) => ({ key: k, uploaded: new Date(0) })),
+      }),
     },
     queue: { send: async () => undefined },
     ai: { run: async () => ({ response: "Cause: x. Culprit: y. Fix: z." }) },
@@ -483,6 +489,7 @@ function spyCache(): { puts: Map<string, Uint8Array>; cache: SeatDeps["cache"] }
       put: async (k: string, v: Uint8Array) => {
         puts.set(k, v);
       },
+      list: async () => ({ objects: [] }),
     },
   };
 }
@@ -941,6 +948,12 @@ describe("runSeatJob", () => {
       put: async (k: string, v: Uint8Array) => {
         store.set(k, v);
       },
+      list: async (opts: { prefix: string; limit: number }) => ({
+        objects: [...store.keys()]
+          .filter((k) => k.startsWith(opts.prefix))
+          .slice(0, opts.limit)
+          .map((k) => ({ key: k, uploaded: new Date(0) })),
+      }),
     };
     const out = await runSeatJob(d, "j1");
     expect(out.status).toBe("completed");
@@ -1824,6 +1837,12 @@ describe("runSeatJob", () => {
       put: async (k: string, v: Uint8Array) => {
         store.set(k, v);
       },
+      list: async (opts: { prefix: string; limit: number }) => ({
+        objects: [...store.keys()]
+          .filter((k) => k.startsWith(opts.prefix))
+          .slice(0, opts.limit)
+          .map((k) => ({ key: k, uploaded: new Date(0) })),
+      }),
     };
     const out = await runSeatJob(d, "j1");
     expect(out.status).toBe("completed");
@@ -1832,6 +1851,37 @@ describe("runSeatJob", () => {
     expect(new TextDecoder().decode(restore?.opts?.stdin as Uint8Array)).toBe("old-tar");
     expect(store.get("cache/k")).toBeDefined();
     expect(db.jobs.get("j1")?.log as string).toContain("[seat] cache hit: k");
+    expect([...db.cacheStats.values()]).toEqual([{ hits: 1, misses: 0 }]);
+  });
+
+  it("restores through restore-keys and names the matching prefix", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ cache: { key: "node-missing", paths: ["node_modules"], restoreKeys: ["zzz-", "node-"] } }));
+    const container = new FakeContainer();
+    const store = new Map<string, Uint8Array>([["cache/node-abc", bytes("old-tar")]]);
+    const d = deps(db, container);
+    d.cache = {
+      get: async (k: string) => {
+        const v = store.get(k);
+        if (!v) return null;
+        return { size: v.byteLength, arrayBuffer: async () => v.buffer as ArrayBuffer };
+      },
+      put: async (k: string, v: Uint8Array) => {
+        store.set(k, v);
+      },
+      list: async (opts: { prefix: string; limit: number }) => ({
+        objects: [...store.keys()]
+          .filter((k) => k.startsWith(opts.prefix))
+          .slice(0, opts.limit)
+          .map((k) => ({ key: k, uploaded: new Date(0) })),
+      }),
+    };
+    const out = await runSeatJob(d, "j1");
+    expect(out.status).toBe("completed");
+    expect(JSON.parse((db.jobs.get("j1")?.result ?? "{}") as string).cacheHit).toBe(true);
+    expect(db.jobs.get("j1")?.log as string).toContain("[seat] cache hit: node-abc (restore-key node-)");
+    // Prefix restores still save under the exact key for next time.
+    expect(store.get("cache/node-missing")).toBeDefined();
     expect([...db.cacheStats.values()]).toEqual([{ hits: 1, misses: 0 }]);
   });
 
@@ -1846,6 +1896,7 @@ describe("runSeatJob", () => {
       put: async (k: string, v: Uint8Array) => {
         store.set(k, v);
       },
+      list: async () => ({ objects: [] }),
     };
     await runSeatJob(d, "j1");
     expect([...store.keys()]).toEqual(["artifacts/j1/README.md"]);

@@ -36,6 +36,24 @@ describe("runLocal", () => {
     expect(existsSync(join(dir, "out.txt"))).toBe(true);
   });
 
+  it("restores caches through restore-keys across runs", async () => {
+    const cdir = cacheDir();
+    const dir = workspace({
+      "flare.yml":
+        "jobs:\n  a:\n    cache:\n      key: v1-data\n      paths: [store]\n    steps:\n      - run: mkdir -p store && echo v1 > store/blob.txt\n",
+    });
+    const first = await runLocal({ cwd: dir, cacheDir: cdir, env: { ...process.env }, quiet: true });
+    expect(first.ok).toBe(true);
+    rmSync(join(dir, "store"), { recursive: true, force: true });
+    writeFileSync(
+      join(dir, "flare.yml"),
+      "jobs:\n  a:\n    cache:\n      key: v2-data\n      paths: [store]\n      restore-keys: [v1-]\n    steps:\n      - run: cat store/blob.txt\n",
+    );
+    const second = await runLocal({ cwd: dir, cacheDir: cdir, env: { ...process.env }, quiet: true });
+    expect(second.ok).toBe(true);
+    expect(readFileSync(join(dir, "store", "blob.txt"), "utf8").trim()).toBe("v1");
+  });
+
   it("skips dependents when a needed job fails", async () => {
     const dir = workspace({
       "flare.yml":

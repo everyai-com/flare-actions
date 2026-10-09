@@ -204,7 +204,7 @@ import {
 import { basinJobTerminal, basinRunDispatched, basinSink, sendBasin, type BasinSink } from "./basin";
 import { jobDurationMs, summarizeRunCost } from "./cost";
 import { runGenerateWithStatus } from "./generate";
-import { getCacheStats, handleCacheGet, handleCachePut, listCacheEntries, pruneCacheStats, purgeCachePrefix, recordCacheOutcome } from "./cache";
+import { getCacheStats, handleCacheGet, handleCachePut, listCacheEntries, parseRestoreKeysParam, pruneCacheStats, purgeCachePrefix, recordCacheOutcome } from "./cache";
 import { deleteJobArtifacts, handleArtifactGet, handleArtifactPut, listRunArtifacts, pruneOldCache } from "./artifacts";
 import { ARTIFACTS_EVENT, handleArtifactsPush } from "./artifacts-push";
 import { ensureRepoMirror } from "./artifacts-mirrors";
@@ -2889,7 +2889,9 @@ export default {
         if (!(await requireScope(request, env, "run"))) return json({ error: "unauthorized" }, 401);
         const key = decodeURIComponent(cacheMatch[1]);
         if (request.method === "PUT") return await handleCachePut(env.CACHE, key, request);
-        const cached = await handleCacheGet(env.CACHE, key);
+        const parsedKeys = parseRestoreKeysParam(url.searchParams);
+        if ("error" in parsedKeys) return json({ error: parsedKeys.error }, 400);
+        const cached = await handleCacheGet(env.CACHE, key, parsedKeys.keys);
         // Hit/miss outcomes land in the daily-aggregate counters off the
         // hot path; a stats write never fails a cache read.
         if (cached.status === 200 || cached.status === 404) {

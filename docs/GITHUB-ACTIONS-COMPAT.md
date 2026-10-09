@@ -129,7 +129,9 @@ still takes `flare.yml` or an inline pipeline.
 
 - No expression engine, no job outputs, no reusable/composite workflows,
   no JS or container actions.
-- Caches use Flare's cache semantics (per-key restore, no `restore-keys`).
+- Caches use Flare's cache semantics (exact-key restore, then
+  `restore-keys` prefixes newest-first; saves always land under the
+  exact key, even on an exact hit).
 - `runs-on` labels map `ubuntu-*` / `macos-*` / `windows-*` onto portable
   runner labels; anything else matches BYO runner labels verbatim.
 - Artifacts land in Flare's artifact store (downloadable via the

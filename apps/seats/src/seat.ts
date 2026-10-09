@@ -43,7 +43,7 @@ import { jobDurationMs } from "../../worker/src/cost";
 import { MAX_JUNIT_BYTES, parseJUnit } from "../../worker/src/junit";
 import { seatEligible } from "../../worker/src/pipeline";
 import { decideSelectionMode, DEFAULT_HISTORY_DAYS } from "../../worker/src/testselect";
-import { recordCacheOutcome } from "../../worker/src/cache";
+import { pickNewestCacheHit, recordCacheOutcome } from "../../worker/src/cache";
 import { ARTIFACTS_EVENT } from "../../worker/src/artifacts-push";
 import { annotateSpan } from "../../worker/src/trace";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
@@ -127,6 +127,10 @@ export interface ContainerCtl {
 export interface SeatBlobStore {
   get(key: string): Promise<{ size: number; arrayBuffer(): Promise<ArrayBuffer> } | null>;
   put(key: string, data: Uint8Array): Promise<unknown>;
+  // Prefix listing for restore-keys (full object keys in and out;
+  // the seat slices via pickNewestCacheHit). R2Bucket satisfies this
+  // structurally, which is why seat-do.ts passes env.CACHE directly.
+  list(options: { prefix: string; limit: number }): Promise<{ objects: { key: string; uploaded: Date }[] }>;
 }
 
 export interface SeatTiming {
@@ -533,6 +537,9 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
           tally(egressHostForKey(key), data.byteLength, 0);
           return blob.put(key, data);
         },
+        // Listings are metadata-only and untallied (single bounded
+        // call); the blob GET of the picked entry tallies above.
+        list: (options: { prefix: string; limit: number }) => blob.list(options),
       }
     : undefined;
 
@@ -1109,7 +1116,26 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     // Cache restore.
     let cacheHit = false;
     if (spec.cache) {
-      const entry = cache ? await cache.get(cacheObjectKey(spec.cache.key)) : null;
+      let matched = spec.cache.key;
+      let viaRestoreKey: string | undefined;
+      let entry = cache ? await cache.get(cacheObjectKey(spec.cache.key)) : null;
+      // Exact miss: same prefix walk as the /v1/cache lane, newest
+      // entry under each prefix. The listing runs on the raw bucket
+      // (metadata only, untallied); the blob GET below still tallies.
+      if (!entry && deps.cache) {
+        for (const prefix of spec.cache.restoreKeys ?? []) {
+          const listed = await deps.cache.list({ prefix: cacheObjectKey(prefix), limit: 1000 });
+          const hit = pickNewestCacheHit(listed.objects);
+          if (hit && cache) {
+            matched = hit;
+            viaRestoreKey = prefix;
+            entry = await cache.get(cacheObjectKey(hit));
+            if (entry) break;
+            matched = spec.cache.key;
+            viaRestoreKey = undefined;
+          }
+        }
+      }
       // Same daily-aggregate counters the /v1/cache lane feeds (a found
       // blob is a hit even when the extract later fails); best-effort
       // so a stats write never fails a job.
@@ -1122,7 +1148,9 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         const blob = new Uint8Array(await entry.arrayBuffer());
         const r = await execBounded(["tar", "-xzf", "-", "-C", WORKDIR], { stdin: blob }, timing.blobMs);
         cacheHit = !r.timedOut && r.exitCode === 0;
-        logParts.push(cacheHit ? `[seat] cache hit: ${spec.cache.key}` : "[seat] cache extract failed");
+        if (!cacheHit) logParts.push("[seat] cache extract failed");
+        else if (viaRestoreKey) logParts.push(`[seat] cache hit: ${matched} (restore-key ${viaRestoreKey})`);
+        else logParts.push(`[seat] cache hit: ${matched}`);
       }
     }
 

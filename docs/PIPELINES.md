@@ -25,6 +25,7 @@ jobs:
     cache:
       key: node-modules            # R2 cache key (static string)
       paths: [node_modules]        # restored before, saved after success
+      restore-keys: [node-]        # prefix fallbacks on exact miss (≤10, newest wins)
     artifacts:
       name: build                  # single file uploads raw; else name.tar.gz
       paths: [dist]
@@ -251,7 +252,7 @@ when any warning fires; the command itself exits 0).
 ## Limits
 
 32 jobs post-expansion, 100 steps/job, 8 matrix keys × 16 values, 8 labels,
-32 env vars, 8 services, 16 cache paths, 32 artifact paths,
+32 env vars, 8 services, 16 cache paths, 10 cache restore-keys, 32 artifact paths,
 10 browser-checks/job (30 s each, ≤10 actions/check), 32 egress allow domains, 64 KB file.
 16 profiles, 32 include/exclude entries/profile, 8 tags/job.
 

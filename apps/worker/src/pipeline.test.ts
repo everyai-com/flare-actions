@@ -219,6 +219,23 @@ describe("parsePipeline v2 keys", () => {
     expect(parsePipeline("jobs:\n  a:\n    timeout-minutes: 0\n    steps:\n      - run: echo\n")).toBeNull();
   });
 
+  it("parses cache restore-keys (list or single string) with a cap", () => {
+    const list = parsePipeline(
+      "jobs:\n  a:\n    cache:\n      key: node-abc\n      paths: [node_modules]\n      restore-keys: [node-, npm-]\n    steps:\n      - run: echo\n",
+    );
+    expect(list?.[0].cache).toEqual({ key: "node-abc", paths: ["node_modules"], restoreKeys: ["node-", "npm-"] });
+    const single = parsePipeline(
+      "jobs:\n  a:\n    cache:\n      key: node-abc\n      paths: [node_modules]\n      restore-keys: node-\n    steps:\n      - run: echo\n",
+    );
+    expect(single?.[0].cache).toEqual({ key: "node-abc", paths: ["node_modules"], restoreKeys: ["node-"] });
+    const many = Array.from({ length: 11 }, (_, i) => `p${i}-`).join(", ");
+    expect(
+      parsePipeline(`jobs:\n  a:\n    cache:\n      key: k\n      paths: [y]\n      restore-keys: [${many}]\n    steps:\n      - run: echo\n`),
+    ).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    cache:\n      key: k\n      paths: [y]\n      restore-keys: ['../x']\n    steps:\n      - run: echo\n")).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    cache:\n      key: k\n      paths: [y]\n      restore-keys: []\n    steps:\n      - run: echo\n")).toBeNull();
+  });
+
   it("parses test-reports paths and rejects bad shapes", () => {
     const jobs = parsePipeline(
       "jobs:\n  a:\n    test-reports:\n      paths: [junit.xml, reports]\n    steps:\n      - run: echo\n",

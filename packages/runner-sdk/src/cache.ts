@@ -7,6 +7,9 @@ import { unsafeTarMember } from "./spec.ts";
 
 export interface CacheClient {
   getCache(key: string): Promise<Uint8Array | null>;
+  // Exact key first, then restore-key prefixes in order; resolves the
+  // entry that actually restored (or null on a total miss).
+  getCacheOrPrefix(key: string, restoreKeys: string[]): Promise<{ data: Uint8Array; key: string } | null>;
   putCache(key: string, data: Uint8Array): Promise<void>;
 }
 
@@ -83,13 +86,17 @@ export async function assertSafeTar(data: Uint8Array): Promise<void> {
 
 export async function restoreCache(
   client: CacheClient,
-  opts: { key: string; dir: string },
-): Promise<{ hit: boolean; error?: string }> {
+  opts: { key: string; dir: string; restoreKeys?: string[] },
+): Promise<{ hit: boolean; key?: string; viaRestoreKey?: string; error?: string }> {
   try {
-    const blob = await client.getCache(opts.key);
-    if (!blob) return { hit: false };
-    await extractTar(opts.dir, blob);
-    return { hit: true };
+    const found = await client.getCacheOrPrefix(opts.key, opts.restoreKeys ?? []);
+    if (!found) return { hit: false };
+    await extractTar(opts.dir, found.data);
+    if (found.key === opts.key) return { hit: true, key: found.key };
+    // The server names the entry; the client names the prefix — the
+    // first listed prefix it starts with is the one that matched.
+    const via = (opts.restoreKeys ?? []).find((p) => found.key.startsWith(p));
+    return via ? { hit: true, key: found.key, viaRestoreKey: via } : { hit: true, key: found.key };
   } catch (err) {
     return { hit: false, error: String(err) };
   }

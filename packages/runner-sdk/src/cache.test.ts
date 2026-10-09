@@ -84,6 +84,15 @@ describe("cache tar", () => {
     const store = new Map<string, Uint8Array>();
     const client = {
       getCache: async (k: string) => store.get(k) ?? null,
+      getCacheOrPrefix: async (k: string, restoreKeys: string[]) => {
+        const exact = store.get(k);
+        if (exact) return { data: exact, key: k };
+        for (const p of restoreKeys) {
+          const hit = [...store.keys()].find((sk) => sk.startsWith(p));
+          if (hit) return { data: store.get(hit) as Uint8Array, key: hit };
+        }
+        return null;
+      },
       putCache: async (k: string, v: Uint8Array) => {
         store.set(k, v);
       },
@@ -96,7 +105,7 @@ describe("cache tar", () => {
       const saved = await saveCache(client, { key: "k", dir, paths: ["data"] });
       expect(saved.saved).toBe(true);
       rmSync(join(dir, "data"), { recursive: true, force: true });
-      expect(await restoreCache(client, { key: "k", dir })).toEqual({ hit: true });
+      expect(await restoreCache(client, { key: "k", dir })).toEqual({ hit: true, key: "k" });
       expect(readFileSync(join(dir, "data", "f.txt"), "utf8")).toBe("v");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -106,6 +115,9 @@ describe("cache tar", () => {
   it("converts backend failures into miss/save-false", async () => {
     const failing = {
       getCache: async () => {
+        throw new Error("down");
+      },
+      getCacheOrPrefix: async (): Promise<never> => {
         throw new Error("down");
       },
       putCache: async () => {
@@ -120,6 +132,45 @@ describe("cache tar", () => {
       expect(miss.error).toContain("down");
       const saved = await saveCache(failing, { key: "k", dir, paths: ["d"] });
       expect(saved.saved).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("restores through restore-keys and names the matching prefix", async () => {
+    const store = new Map<string, Uint8Array>([
+      ["node-abc", new TextEncoder().encode("blob")],
+      ["go-xyz", new TextEncoder().encode("blob")],
+    ]);
+    const client = {
+      getCache: async (k: string) => store.get(k) ?? null,
+      getCacheOrPrefix: async (k: string, restoreKeys: string[]) => {
+        const exact = store.get(k);
+        if (exact) return { data: exact, key: k };
+        for (const p of restoreKeys) {
+          const hit = [...store.keys()].find((sk) => sk.startsWith(p));
+          if (hit) return { data: store.get(hit) as Uint8Array, key: hit };
+        }
+        return null;
+      },
+      putCache: async (k: string, v: Uint8Array) => {
+        store.set(k, v);
+      },
+    };
+    const dir = mkdtempSync(join(tmpdir(), "flare-cache-rk-"));
+    try {
+      mkdirSync(join(dir, "data"), { recursive: true });
+      writeFileSync(join(dir, "data", "f.txt"), "v");
+      // Seed a real tarball under the prefix key, then restore it via
+      // a missing exact key.
+      const saved = await saveCache(client, { key: "node-abc", dir, paths: ["data"] });
+      expect(saved.saved).toBe(true);
+      rmSync(join(dir, "data"), { recursive: true, force: true });
+      const hit = await restoreCache(client, { key: "node-missing", dir, restoreKeys: ["zzz-", "node-"] });
+      expect(hit).toEqual({ hit: true, key: "node-abc", viaRestoreKey: "node-" });
+      expect(readFileSync(join(dir, "data", "f.txt"), "utf8")).toBe("v");
+      const miss = await restoreCache(client, { key: "node-missing", dir, restoreKeys: ["zzz-"] });
+      expect(miss).toEqual({ hit: false });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

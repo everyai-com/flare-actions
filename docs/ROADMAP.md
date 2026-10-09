@@ -298,8 +298,9 @@ billing event per run.
 - Per-agent-identity attribution for anomaly alerts (repo + branch land
   today).
 - Cost-per-merged-PR trend (the remaining slice of the budget story).
-- Cache management: `restore-keys` semantics + a dashboard cache
-  browser/eviction.
+- [x] Cache management: `restore-keys` semantics + a dashboard cache
+  browser/eviction (shipped Oct 9: ≤10 prefixes, newest-wins,
+  BYO/seats/local/importer, admin Cache browser + prefix purge).
 - Step/job outputs and a richer `if:` expression subset.
 - MCP tools for artifacts and schedules (runs/jobs/flaky already exist).
 - Org-level allowlists for API tokens (repo allowlists shipped).

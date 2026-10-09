@@ -3,8 +3,10 @@
 import type { Db } from "./db";
 import {
   CACHE_KEY_RE as PARITY_CACHE_KEY_RE,
+  MAX_RESTORE_KEYS,
   cacheObjectKey as parityCacheObjectKey,
   isValidCacheKey,
+  isValidRestoreKey,
 } from "../../../packages/runner-sdk/src/parity.ts";
 
 export const CACHE_KEY_RE = PARITY_CACHE_KEY_RE;
@@ -35,15 +37,66 @@ export async function handleCachePut(bucket: R2Bucket | undefined, key: string, 
   return json({ ok: true, key });
 }
 
-export async function handleCacheGet(bucket: R2Bucket | undefined, key: string): Promise<Response> {
+export async function handleCacheGet(
+  bucket: R2Bucket | undefined,
+  key: string,
+  restoreKeys: string[] = [],
+): Promise<Response> {
   if (!CACHE_KEY_RE.test(key)) return json({ error: "invalid cache key" }, 400);
   if (!bucket) return json({ error: "cache storage not configured" }, 501);
-  const obj = await bucket.get(cacheObjectKey(key));
+  let matched = key;
+  let obj = await bucket.get(cacheObjectKey(key));
+  // Exact miss: walk the restore-key prefixes in order (GitHub
+  // semantics), newest entry under each prefix wins.
+  for (const prefix of restoreKeys) {
+    if (obj) break;
+    const hit = await findCachePrefixHit(bucket, prefix);
+    if (hit) {
+      matched = hit;
+      obj = await bucket.get(cacheObjectKey(hit));
+    }
+  }
   if (!obj) return json({ error: "cache miss" }, 404);
   const headers = new Headers({ "Content-Type": "application/octet-stream", "Cache-Control": "no-store" });
   obj.writeHttpMetadata(headers);
   headers.set("etag", obj.httpEtag);
+  // Runners log which entry actually restored (exact vs prefix).
+  headers.set("X-Flare-Cache-Key", matched);
   return new Response(obj.body, { headers });
+}
+
+// Repeated `?restore_key=` params off the cache GET route. Same cap
+// and charset as the YAML key so hand-built URLs cannot scan wider
+// than a pipeline can.
+export function parseRestoreKeysParam(params: URLSearchParams): { keys: string[] } | { error: string } {
+  const keys = params.getAll("restore_key");
+  if (keys.length > MAX_RESTORE_KEYS) return { error: `at most ${MAX_RESTORE_KEYS} restore_key params` };
+  for (const k of keys) {
+    if (!isValidRestoreKey(k)) return { error: "invalid restore_key" };
+  }
+  return { keys };
+}
+
+// Newest entry of a listing, or null. Full R2 object keys in, cache
+// key out; ties break lexicographically so two executors racing the
+// same prefix restore the same entry. Shared by the /v1/cache lane
+// (findCachePrefixHit) and seats (direct list + this reducer).
+export function pickNewestCacheHit(objects: { key: string; uploaded: Date }[]): string | null {
+  let best: { key: string; uploaded: number } | null = null;
+  for (const obj of objects) {
+    const uploaded = obj.uploaded.getTime();
+    if (!best || uploaded > best.uploaded || (uploaded === best.uploaded && obj.key < best.key)) {
+      best = { key: obj.key, uploaded };
+    }
+  }
+  return best ? best.key.slice("cache/".length) : null;
+}
+
+// Newest entry whose key starts with prefix, or null. One bounded
+// list call (1000 objects).
+export async function findCachePrefixHit(bucket: R2Bucket, prefix: string): Promise<string | null> {
+  const listed = await bucket.list({ prefix: `cache/${prefix}`, limit: 1000 });
+  return pickNewestCacheHit(listed.objects);
 }
 
 export interface CacheEntry {

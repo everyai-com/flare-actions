@@ -1,6 +1,6 @@
 import { parse as parseYaml } from "yaml";
 import { validatePreviewTemplate } from "../../../packages/runner-sdk/src/browser.ts";
-import { isValidCacheKey } from "../../../packages/runner-sdk/src/parity.ts";
+import { MAX_RESTORE_KEYS, isValidCacheKey, isValidRestoreKey } from "../../../packages/runner-sdk/src/parity.ts";
 import { parseTestSelectionConfig, type TestSelectionConfig } from "./testselect.ts";
 
 export interface PipelineStep {
@@ -47,6 +47,7 @@ export interface PipelineService {
 export interface PipelineCache {
   key: string;
   paths: string[];
+  restoreKeys?: string[];
 }
 
 export interface PipelineArtifacts {
@@ -361,7 +362,13 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     if (typeof key !== "string" || !isValidCacheKey(key)) return null;
     const paths = asStringArray(def.cache.paths, MAX_CACHE_PATHS, 256);
     if (!paths) return null;
-    job.cache = { key, paths };
+    let restoreKeys: string[] | undefined;
+    if (def.cache["restore-keys"] !== undefined) {
+      const raw = asStringArray(def.cache["restore-keys"], MAX_RESTORE_KEYS, 200);
+      if (!raw || !raw.every(isValidRestoreKey)) return null;
+      restoreKeys = raw;
+    }
+    job.cache = restoreKeys ? { key, paths, restoreKeys } : { key, paths };
   }
   if (def.artifacts !== undefined) {
     if (!isRecord(def.artifacts)) return null;

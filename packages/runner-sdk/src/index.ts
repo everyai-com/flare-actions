@@ -604,6 +604,17 @@ export class FlareClient {
     return new Uint8Array(await res.arrayBuffer());
   }
 
+  async getCacheOrPrefix(key: string, restoreKeys: string[]): Promise<{ data: Uint8Array; key: string } | null> {
+    const query = restoreKeys.map((p) => `restore_key=${encodeURIComponent(p)}`).join("&");
+    const res = await this.call(`/v1/cache/${FlareClient.encodeKey(key)}${query ? `?${query}` : ""}`, undefined, 300000);
+    if (res.status === 404) return null;
+    if (!res.ok) await this.throwApiError("getCacheOrPrefix", res);
+    // Old servers predate the header and only serve exact hits, so a
+    // missing header means the requested key — skew-safe by design.
+    const matched = res.headers.get("X-Flare-Cache-Key") || key;
+    return { data: new Uint8Array(await res.arrayBuffer()), key: matched };
+  }
+
   async putCache(key: string, data: Uint8Array): Promise<void> {
     const res = await this.call(`/v1/cache/${FlareClient.encodeKey(key)}`, {
       method: "PUT",

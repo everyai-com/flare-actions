@@ -1,8 +1,9 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { collectArtifactFiles, collectTestReportXml, runJob, sanitizeArtifactName, type JobClient } from "./job";
+import { saveCache } from "./cache";
 
 function fakeClient(store = new Map<string, Uint8Array>()): JobClient & { store: Map<string, Uint8Array>; artifacts: Map<string, Uint8Array>; reports: string[] } {
   const artifacts = new Map<string, Uint8Array>();
@@ -12,6 +13,15 @@ function fakeClient(store = new Map<string, Uint8Array>()): JobClient & { store:
     artifacts,
     reports,
     getCache: async (k: string) => store.get(k) ?? null,
+    getCacheOrPrefix: async (k: string, restoreKeys: string[]) => {
+      const exact = store.get(k);
+      if (exact) return { data: exact, key: k };
+      for (const p of restoreKeys) {
+        const hit = [...store.keys()].find((sk) => sk.startsWith(p));
+        if (hit) return { data: store.get(hit) as Uint8Array, key: hit };
+      }
+      return null;
+    },
     putCache: async (k: string, v: Uint8Array) => {
       store.set(k, v);
     },
@@ -37,6 +47,29 @@ const fakeCtl = (available: boolean, events: string[] = []) => ({
 });
 
 describe("runJob", () => {
+  it("logs prefix restores with the matching restore-key", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-rk-"));
+    try {
+      const client = fakeClient();
+      mkdirSync(join(dir, "data"), { recursive: true });
+      writeFileSync(join(dir, "data", "f.txt"), "v");
+      await saveCache(client, { key: "node-abc", dir, paths: ["data"] });
+      rmSync(join(dir, "data"), { recursive: true, force: true });
+      const res = await runJob(
+        {
+          steps: [{ run: "true" }],
+          cache: { key: "node-missing", paths: ["data"], restoreKeys: ["zzz-", "node-"] },
+        },
+        { cwd: dir, env: { ...process.env }, client, jobId: "j1" },
+      );
+      expect(res.success).toBe(true);
+      expect(res.log).toContain("[cache] hit: node-abc (restore-key node-)");
+      expect(readFileSync(join(dir, "data", "f.txt"), "utf8")).toBe("v");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("runs steps with env and matrix propagation", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flare-job-"));
     try {

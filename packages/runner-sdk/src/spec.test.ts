@@ -59,6 +59,17 @@ describe("parseJobSpec", () => {
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], cache: { key: "k" } }))).toBeNull();
   });
 
+  it("keeps cache restoreKeys and rejects malformed shapes", () => {
+    const good = { steps: [{ run: "x" }], cache: { key: "k", paths: ["y"], restoreKeys: ["node-", "npm-"] } };
+    expect(parseJobSpec(JSON.stringify(good))?.cache).toEqual({ key: "k", paths: ["y"], restoreKeys: ["node-", "npm-"] });
+    const bad = { steps: [{ run: "x" }], cache: { key: "k", paths: ["y"] } };
+    expect(parseJobSpec(JSON.stringify({ ...bad, cache: { ...bad.cache, restoreKeys: [] } }))).toBeNull();
+    expect(parseJobSpec(JSON.stringify({ ...bad, cache: { ...bad.cache, restoreKeys: ["../x"] } }))).toBeNull();
+    expect(parseJobSpec(JSON.stringify({ ...bad, cache: { ...bad.cache, restoreKeys: "node-" } }))).toBeNull();
+    const many = Array.from({ length: 11 }, (_, i) => `p${i}-`);
+    expect(parseJobSpec(JSON.stringify({ ...bad, cache: { ...bad.cache, restoreKeys: many } }))).toBeNull();
+  });
+
   it("keeps test-reports paths and rejects malformed shapes", () => {
     expect(
       parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], testReports: { paths: ["junit.xml", "reports"] } }))?.testReports,

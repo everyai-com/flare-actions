@@ -20,6 +20,16 @@ export function isValidCacheKey(key: string): boolean {
   return CACHE_KEY_RE.test(key);
 }
 
+// Restore-keys (GitHub `restore-keys` parity): prefix fallbacks tried
+// in order on an exact-key miss. Same charset as keys (a prefix is a
+// key that happens to match many entries), at most 10 per job, and
+// never empty (an empty prefix would scan the whole namespace).
+export const MAX_RESTORE_KEYS = 10;
+
+export function isValidRestoreKey(prefix: string): boolean {
+  return prefix.length > 0 && CACHE_KEY_RE.test(prefix);
+}
+
 // Canonical R2 object key for a cache entry. Seats read/write this
 // path directly; BYO runners reach it through the cache API.
 export function cacheObjectKey(key: string): string {

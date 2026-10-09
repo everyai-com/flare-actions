@@ -1317,7 +1317,7 @@ paths:
     get:
       tags: [cache]
       operationId: getCache
-      summary: Fetch a cache tarball by key
+      summary: Fetch a cache tarball by key (exact, else restore-key prefixes)
       security:
         - bearerAuth: []
       parameters:
@@ -1326,9 +1326,22 @@ paths:
           required: true
           schema:
             type: string
+        - name: restore_key
+          in: query
+          required: false
+          description: Prefix fallback, repeatable up to 10; newest entry under the first matching prefix restores on exact miss
+          schema:
+            type: array
+            items:
+              type: string
       responses:
         '200':
           description: Cache bytes
+          headers:
+            X-Flare-Cache-Key:
+              description: The entry that restored (exact key or prefix match)
+              schema:
+                type: string
           content:
             application/octet-stream:
               schema:

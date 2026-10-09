@@ -1,5 +1,6 @@
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { normalizeStepCondition } from "./spec.ts";
+import { MAX_RESTORE_KEYS } from "./parity.ts";
 
 // GitHub Actions workflow -> flare.yml translator. Pure and lossless
 // where the models overlap; everything else becomes a warning so the
@@ -73,6 +74,7 @@ interface JobAcc {
   env: Record<string, string>;
   cachePaths: string[];
   cacheKey: string | null;
+  cacheRestoreKeys: string[];
   artifactPaths: string[];
   artifactName: string | null;
 }
@@ -106,6 +108,20 @@ function convertUses(
       acc.cachePaths.push(...paths);
       if (!acc.cacheKey) acc.cacheKey = sanitizeCacheKey(key);
       if (/\$\{\{/.test(key)) warnings.push(`${jobId}: cache key had expressions, staticized to \`${sanitizeCacheKey(key)}\``);
+      // restore-keys is usually a multiline string; strList splits it.
+      // Sanitized like keys (same charset), capped so the imported
+      // file always validates.
+      const restores = strList(withBlock["restore-keys"]);
+      if (restores) {
+        for (const r of restores) {
+          const clean = sanitizeCacheKey(r);
+          if (!acc.cacheRestoreKeys.includes(clean)) acc.cacheRestoreKeys.push(clean);
+        }
+        if (acc.cacheRestoreKeys.length > MAX_RESTORE_KEYS) {
+          warnings.push(`${jobId}: trimmed restore-keys to ${MAX_RESTORE_KEYS}`);
+          acc.cacheRestoreKeys.length = MAX_RESTORE_KEYS;
+        }
+      }
     } else {
       warnings.push(`${jobId}: dropped actions/cache (needs path + key)`);
     }
@@ -214,7 +230,7 @@ export function convertActionsWorkflow(text: string): ImportResult {
       warnings.push(`${jobId}: dropped (not a map)`);
       continue;
     }
-    const acc: JobAcc = { steps: [], env: {}, cachePaths: [], cacheKey: null, artifactPaths: [], artifactName: null };
+    const acc: JobAcc = { steps: [], env: {}, cachePaths: [], cacheKey: null, cacheRestoreKeys: [], artifactPaths: [], artifactName: null };
     if (topEnv) for (const [k, v] of Object.entries(topEnv)) acc.env[k] = String(v);
     if (isRecord(jobDef.env)) for (const [k, v] of Object.entries(jobDef.env)) acc.env[k] = String(v);
     const workdir =
@@ -286,7 +302,11 @@ export function convertActionsWorkflow(text: string): ImportResult {
       if (Object.keys(services).length > 0) out.services = services;
     }
     if (acc.cacheKey && acc.cachePaths.length > 0) {
-      out.cache = { key: acc.cacheKey, paths: [...new Set(acc.cachePaths)] };
+      out.cache = {
+        key: acc.cacheKey,
+        paths: [...new Set(acc.cachePaths)],
+        ...(acc.cacheRestoreKeys.length > 0 ? { "restore-keys": acc.cacheRestoreKeys } : {}),
+      };
     }
     if (acc.artifactPaths.length > 0) {
       const artifacts: Record<string, unknown> = { paths: [...new Set(acc.artifactPaths)] };

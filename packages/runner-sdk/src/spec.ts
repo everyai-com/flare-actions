@@ -4,6 +4,7 @@
 // (Seats-only keys like browserChecks stay strict: dropping them would
 // silently skip verification, so malformed means fail closed.)
 import { validatePreviewTemplate } from "./browser.ts";
+import { MAX_RESTORE_KEYS, isValidRestoreKey } from "./parity.ts";
 
 export interface JobServiceSpec {
   image: string;
@@ -14,6 +15,7 @@ export interface JobServiceSpec {
 export interface JobCacheSpec {
   key: string;
   paths: string[];
+  restoreKeys?: string[];
 }
 
 export interface JobArtifactsSpec {
@@ -237,7 +239,16 @@ export function parseJobSpec(definition: string): JobSpec | null {
     if (!isRecord(parsed.cache) || typeof parsed.cache.key !== "string" || !parsed.cache.key) return null;
     const paths = strList(parsed.cache.paths);
     if (!paths) return null;
-    spec.cache = { key: parsed.cache.key, paths };
+    // Definitions carry camelCase (pipeline.ts serializes the parsed
+    // `restore-keys` YAML key as `restoreKeys`).
+    let restoreKeys: string[] | undefined;
+    if (parsed.cache.restoreKeys !== undefined) {
+      const raw = parsed.cache.restoreKeys;
+      if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_RESTORE_KEYS) return null;
+      if (!raw.every((s): s is string => typeof s === "string" && isValidRestoreKey(s))) return null;
+      restoreKeys = raw;
+    }
+    spec.cache = restoreKeys ? { key: parsed.cache.key, paths, restoreKeys } : { key: parsed.cache.key, paths };
   }
   if (parsed.artifacts !== undefined) {
     if (!isRecord(parsed.artifacts)) return null;

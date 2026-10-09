@@ -32,6 +32,45 @@ describe("convertActionsWorkflow", () => {
     expect(res.warnings.join("\n")).toContain("on:");
   });
 
+  it("maps actions/cache restore-keys (multiline) with a cap", () => {
+    const res = convertActionsWorkflow(`
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: node-abc123
+          restore-keys: |
+            node-
+            npm-\${{ runner.os }}-
+      - run: npm test
+`);
+    expect(isImportSuccess(res)).toBe(true);
+    if (!isImportSuccess(res)) return;
+    expect(res.yaml).toContain("restore-keys:");
+    expect(res.yaml).toContain("node-");
+    expect(res.yaml).toContain("npm-expr-");
+    const overflow = Array.from({ length: 12 }, (_, i) => `p${i}-`).join("\n            ");
+    const capped = convertActionsWorkflow(`
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: k
+          restore-keys: |
+            ${overflow}
+      - run: npm test
+`);
+    expect(isImportSuccess(capped)).toBe(true);
+    if (!isImportSuccess(capped)) return;
+    expect(capped.warnings.join("\n")).toContain("trimmed restore-keys to 10");
+  });
+
   it("passes through matrix, needs, services, container", () => {
     const res = convertActionsWorkflow(`
 jobs:
