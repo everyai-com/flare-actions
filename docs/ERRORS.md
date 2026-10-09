@@ -22,6 +22,7 @@ lane by lane.
 | `unresolvable_ref` | 400 | branch/tag resolved to nothing | paste a full commit SHA |
 | `unknown_profile` | 400 | `profile` names nothing in `flare.yml` | drop `--profile` / the field, or add the profile |
 | `budget_exceeded` | 429 | monthly compute-minute cap hit (block mode) | raise `budgetMinutes` or wait for reset |
+| `egress_policy_violation` | 400 | job declares domains outside the repo allowlist | narrow `egress.allow` or widen the repo list |
 | `repo_paused` | 429 | repo auto-paused for runaway spend | resume in Settings → Budgets or `cli resume` |
 | `rate_limited` | 429 | too many auth/pairing attempts | wait a minute and retry |
 | `webhook_not_configured` | 500 | no webhook secret set | set it in dashboard Settings |

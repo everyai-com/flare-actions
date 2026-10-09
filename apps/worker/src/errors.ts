@@ -12,6 +12,7 @@ export const ERROR_CODES = [
   "unresolvable_ref",
   "unknown_profile",
   "budget_exceeded",
+  "egress_policy_violation",
   "repo_paused",
   "rate_limited",
   "webhook_not_configured",
@@ -40,6 +41,7 @@ export const ERROR_HINTS: Record<ErrorCode, string> = {
   unresolvable_ref: "paste a full commit SHA, or push the branch/tag so it resolves",
   unknown_profile: "drop --profile (or the profile field) to run every job, or add the profile to the flare.yml profiles block",
   budget_exceeded: "raise budgetMinutes in dashboard Settings, or wait for the monthly reset",
+  egress_policy_violation: "narrow the job's egress.allow to the repo list, or widen the repo allowlist in dashboard Settings",
   repo_paused: "the repo was auto-paused for runaway spend — resume it in dashboard Settings → Budgets (or `cli resume owner/name`)",
   rate_limited: "too many attempts — wait a minute and retry",
   webhook_not_configured: "set the webhook secret in the dashboard Settings tab",
@@ -78,5 +80,6 @@ export function dispatchErrorCode(message: string): ErrorCode {
   if (message.startsWith("could not resolve ref")) return "unresolvable_ref";
   if (message.startsWith("unknown profile")) return "unknown_profile";
   if (message.includes("selected no jobs")) return "invalid_pipeline";
+  if (message.startsWith("egress policy violation")) return "egress_policy_violation";
   return "invalid_request";
 }

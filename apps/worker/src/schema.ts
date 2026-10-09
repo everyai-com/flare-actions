@@ -350,6 +350,11 @@ export const SCHEMA_STATEMENTS = [
     new_failures_only INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS repo_egress_allow (
+    repo TEXT PRIMARY KEY,
+    domains TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
 ];
 
 // Additive columns for databases created before the matching migration.

@@ -328,7 +328,7 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [name, base, needs, group, labels, status, blockedReason, wouldCancelInProgress, priorMs]
+                      required: [name, base, needs, group, labels, status, blockedReason, wouldCancelInProgress, egressAllow, policyViolation, priorMs]
                       properties:
                         name:
                           type: string
@@ -354,6 +354,16 @@ paths:
                           enum: [needs, group, null]
                         wouldCancelInProgress:
                           type: boolean
+                        egressAllow:
+                          type: array
+                          nullable: true
+                          description: Effective outbound allowlist after the repo floor policy (null = observe-only)
+                          items:
+                            type: string
+                        policyViolation:
+                          type: string
+                          nullable: true
+                          description: Set when the job declares domains outside the repo allowlist (a real dispatch would reject)
                         priorMs:
                           type: integer
                   queued:
@@ -2605,6 +2615,124 @@ paths:
                 $ref: '#/components/schemas/Ok'
         '400':
           $ref: '#/components/responses/BadRequest'
+  /v1/admin/egress-allowlist:
+    get:
+      tags: [admin]
+      operationId: getEgressAllowlist
+      summary: Get a repo egress allowlist, or every allowlist without ?repo=
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: false
+          schema:
+            type: string
+          description: owner/name (omit to list every repo policy)
+      responses:
+        '200':
+          description: Egress allowlist(s)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [repo, domains]
+                    properties:
+                      repo:
+                        type: string
+                      domains:
+                        type: array
+                        items:
+                          type: string
+                  - type: object
+                    required: [allowlists]
+                    properties:
+                      allowlists:
+                        type: array
+                        items:
+                          type: object
+                          required: [repo, domains, updatedAt]
+                          properties:
+                            repo:
+                              type: string
+                            domains:
+                              type: array
+                              items:
+                                type: string
+                            updatedAt:
+                              type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [admin]
+      operationId: setEgressAllowlist
+      summary: Set a repo egress floor policy (1-32 hostnames; every job inherits it)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, domains]
+              properties:
+                repo:
+                  type: string
+                domains:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Allowlist stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    delete:
+      tags: [admin]
+      operationId: deleteEgressAllowlist
+      summary: Delete a repo egress allowlist (jobs return to observe-only)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Allowlist deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/admin/secrets:
     get:
       tags: [admin]

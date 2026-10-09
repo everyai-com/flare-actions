@@ -1012,6 +1012,60 @@ export async function deleteRepoSecret(db: Db, repo: string, name: string): Prom
   return (res?.meta?.changes ?? 0) > 0;
 }
 
+export interface RepoEgressAllowRow {
+  repo: string;
+  domains: string;
+  updated_at: string;
+}
+
+// Per-repo egress floor policy. Missing row = no policy. Domains are
+// written normalized (shared pipeline.ts validator); a corrupt row is
+// a bug, so reads throw loud rather than silently unconfining.
+function parseStoredEgressDomains(repo: string, raw: string): string[] {
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed) || parsed.some((d) => typeof d !== "string")) {
+    throw new Error(`corrupt egress allowlist for ${repo}`);
+  }
+  return parsed;
+}
+
+export async function getRepoEgressAllow(db: Db, repo: string): Promise<string[] | null> {
+  const row = await db
+    .prepare("SELECT domains FROM repo_egress_allow WHERE repo = ?")
+    .bind(repo)
+    .first<{ domains: string }>();
+  if (!row) return null;
+  return parseStoredEgressDomains(repo, row.domains);
+}
+
+export async function setRepoEgressAllow(db: Db, repo: string, domains: string[]): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO repo_egress_allow (repo, domains, updated_at) VALUES (?, ?, ?) ON CONFLICT(repo) DO UPDATE SET domains = excluded.domains, updated_at = excluded.updated_at",
+    )
+    .bind(repo, JSON.stringify(domains), nowIso())
+    .run();
+}
+
+export async function deleteRepoEgressAllow(db: Db, repo: string): Promise<boolean> {
+  const res = (await db.prepare("DELETE FROM repo_egress_allow WHERE repo = ?").bind(repo).run()) as {
+    meta?: { changes?: number };
+  };
+  return (res?.meta?.changes ?? 0) > 0;
+}
+
+export async function listRepoEgressAllow(db: Db): Promise<{ repo: string; domains: string[]; updatedAt: string }[]> {
+  const res = await db
+    .prepare("SELECT repo, domains, updated_at FROM repo_egress_allow ORDER BY repo ASC")
+    .bind()
+    .all<RepoEgressAllowRow>();
+  return res.results.map((r) => ({
+    repo: r.repo,
+    domains: parseStoredEgressDomains(r.repo, r.domains),
+    updatedAt: r.updated_at,
+  }));
+}
+
 // Most recent App installation seen for a repo (dispatch uses it to
 // resolve branches on private repos the App can read).
 export async function latestInstallationId(db: Db, repo: string): Promise<number | null> {

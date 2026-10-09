@@ -8,6 +8,14 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Per-repo egress floor policy: `/v1/admin/egress-allowlist` (admin
+  GET/POST/DELETE + dashboard Settings UI) stores one hostname list
+  per repo; fan-out merges it into every job (undeclared jobs inherit
+  the full list, narrower job lists pass, anything outside rejects
+  the whole dispatch with zero writes — `egress_policy_violation` on
+  the API, 200-skip on webhooks). Dry-run previews the effective
+  list per job (`egressAllow` + `policyViolation`); seats enforce,
+  BYO runners fail closed.
 - Per-Worker API token scoping: `token:mint --worker <script>`
   (repeatable, ci + debug profiles) replaces the account-wide
   Workers Scripts group with the Individual Workers group on nested

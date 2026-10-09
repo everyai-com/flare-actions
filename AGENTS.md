@@ -114,7 +114,7 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   takes `--json` (`apps/cli/src/json.ts`, `{ version: 1, command, data }`).
 - `apps/worker/src/errors.ts` — stable `code` + next-step `hint` on
   dispatch/dry-run/claim/webhook/auth/pairing failures (`docs/ERRORS.md`
-  catalogs all 21; messages keep their wording). The SDK throws
+  catalogs all 22; messages keep their wording). The SDK throws
   `FlareApiError` (status/code/hint); the CLI prints `hint [code]`.
 - `apps/worker/src/checks.ts` — per-job GitHub Check Runs (failing
   command + bounded tail + `file:line` annotations on the PR page).

@@ -31,6 +31,9 @@ describe("dispatchErrorCode", () => {
     expect(dispatchErrorCode('could not resolve ref "main" — paste a full commit SHA')).toBe("unresolvable_ref");
     expect(dispatchErrorCode('unknown profile "smoke" (pipeline defines no profiles)')).toBe("unknown_profile");
     expect(dispatchErrorCode('profile "smoke" selected no jobs')).toBe("invalid_pipeline");
+    expect(dispatchErrorCode('egress policy violation: job "bad" allows [evil.example] outside the o/r allowlist')).toBe(
+      "egress_policy_violation",
+    );
     expect(dispatchErrorCode("something else")).toBe("invalid_request");
   });
 });

@@ -16,6 +16,7 @@ import {
   createToken,
   createUser,
   deleteMonitor,
+  deleteRepoEgressAllow,
   deleteRepoSecret,
   deleteSchedule,
   deleteSession,
@@ -45,6 +46,7 @@ import {
   listMonitors,
   listQuarantinedTests,
   listQueuedJobs,
+  listRepoEgressAllow,
   listRepoSecretNames,
   listRuns,
   listSchedules,
@@ -57,6 +59,7 @@ import {
   pruneWebhookDeliveries,
   SEAT_SNAPSHOT_MAX_AGE_MS,
   getPausedRepos,
+  getRepoEgressAllow,
   isRepoPaused,
   resumeRepo,
   topDispatchActors,
@@ -75,6 +78,7 @@ import {
   setMonitorEnabled,
   setMonitorMutedUntil,
   setNotifyPref,
+  setRepoEgressAllow,
   setRepoSecret,
   setRunPrComment,
   setScheduleEnabled,
@@ -141,6 +145,7 @@ import {
   defaultPipeline,
   emptyProfiles,
   fetchPipeline,
+  parseEgressAllow,
   parsePipelineWithProfiles,
   parseProfileName,
   readRetryPolicy,
@@ -150,6 +155,7 @@ import {
   type PipelineJob,
   type PipelineProfiles,
 } from "./pipeline";
+import { applyRepoEgressPolicy, EgressPolicyViolationError } from "./egress-policy";
 import { buildCompatJobs, fetchWorkflowFiles, type WorkflowEventContext } from "./actionsCompat";
 import { promoteBlockedJobs, maybeRetryJob, reportGitHubStatus, requeueStaleJobs, triageAndStore } from "./finish";
 import {
@@ -860,6 +866,9 @@ async function createRunAndFanOut(
     prNumber?: number | null;
     agent?: string;
     profile?: string | null;
+    // Pre-loaded repo egress policy (webhook pre-checks it to skip
+    // with a 200 instead of throwing); otherwise read inside.
+    repoEgress?: string[] | null;
   },
   basin?: BasinSink,
 ): Promise<{ runId: string; jobIds: string[]; queuedIds: string[]; blocked: number; reused: { receiptId: string; verdict: string } | null }> {
@@ -870,6 +879,15 @@ async function createRunAndFanOut(
   if (receipt) {
     return createAttestedRun(env, input, receipt, basin);
   }
+  // Repo egress floor policy: merged here, the single fan-out choke,
+  // before the first write — a violation rejects the whole dispatch
+  // with zero rows. (Attested runs execute nothing, so they skip this.)
+  const repoEgress = input.repoEgress !== undefined ? input.repoEgress : await getRepoEgressAllow(env.DB, input.repo);
+  const policed = applyRepoEgressPolicy(input.jobs, repoEgress);
+  if (policed.violations.length > 0) {
+    throw new EgressPolicyViolationError(input.repo, repoEgress ?? [], policed.violations);
+  }
+  const jobs = policed.jobs;
   const runId = crypto.randomUUID();
   await createRun(env.DB, {
     id: runId,
@@ -888,7 +906,7 @@ async function createRunAndFanOut(
   const jobIds: string[] = [];
   const queuedIds: string[] = [];
   let blocked = 0;
-  for (const job of input.jobs) {
+  for (const job of jobs) {
     const jobId = crypto.randomUUID();
     const base = job.base ?? job.name;
     if (job.group && job.cancelInProgress) {
@@ -1054,6 +1072,16 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     }
     const webhookJobs = "error" in webhookSelection ? loaded.jobs : webhookSelection.jobs;
     const webhookProfile = "error" in webhookSelection ? null : webhookSelection.profile;
+    // Egress guard: a job outside the repo allowlist skips the webhook
+    // (200 so GitHub stops retrying), mirroring the budget guard.
+    const webhookEgress = await getRepoEgressAllow(env.DB, repo);
+    const webhookPoliced = applyRepoEgressPolicy(webhookJobs, webhookEgress);
+    if (webhookPoliced.violations.length > 0) {
+      const violating = webhookPoliced.violations.map((v) => v.job);
+      await audit(env.DB, "system", "egress-policy.skip", `${repo} ${violating.join(",")}`);
+      log("warn", "run skipped: egress policy violation", { repo, jobs: violating });
+      return json({ skipped: "egress-policy", jobs: violating }, 200);
+    }
     const { runId, jobIds, queuedIds, blocked, reused } = await createRunAndFanOut(env, {
       repo,
       sha,
@@ -1065,6 +1093,7 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
       changedFiles: serializeChangedFiles(changedFiles),
       prNumber,
       profile: webhookProfile,
+      repoEgress: webhookEgress,
     }, basinSink(env, ctx));
 
     // Auto-supersede (opt-in): one run per branch head — cancel the
@@ -1599,18 +1628,31 @@ export interface PlannedJob {
   status: "queued" | "blocked";
   blockedReason: "needs" | "group" | null;
   wouldCancelInProgress: boolean;
+  // Effective outbound allowlist after the repo floor policy (null =
+  // observe-only), plus the violation detail when the job declares
+  // domains outside the repo list (a real dispatch would reject).
+  egressAllow: string[] | null;
+  policyViolation: string | null;
 }
 
 // Pure mirror of createRunAndFanOut's per-job status call: needs park
 // the job, otherwise an active same-group job parks it unless the job
 // cancels in progress (which instead supersedes the group). The dry-run
-// route feeds live group state; unit tests feed fakes.
-export function planFanOut(jobs: PipelineJob[], groupActive: (group: string) => boolean): PlannedJob[] {
-  return jobs.map((job) => {
+// route feeds live group state and the repo egress policy; unit tests
+// feed fakes.
+export function planFanOut(
+  jobs: PipelineJob[],
+  groupActive: (group: string) => boolean,
+  repoAllow: string[] | null = null,
+): PlannedJob[] {
+  const policed = applyRepoEgressPolicy(jobs, repoAllow);
+  const violated = new Map(policed.violations.map((v) => [v.job, v.outside]));
+  return policed.jobs.map((job) => {
     const base = job.base ?? job.name;
     const needsBlocked = (job.needs?.length ?? 0) > 0;
     const groupBlocked = !!job.group && !job.cancelInProgress && groupActive(job.group);
     const status = needsBlocked || groupBlocked ? "blocked" : "queued";
+    const outside = violated.get(job.name) ?? null;
     return {
       name: job.name,
       base,
@@ -1620,6 +1662,8 @@ export function planFanOut(jobs: PipelineJob[], groupActive: (group: string) => 
       status,
       blockedReason: needsBlocked ? "needs" : groupBlocked ? "group" : null,
       wouldCancelInProgress: !!job.group && !!job.cancelInProgress,
+      egressAllow: job.egress && job.egress.allow.length > 0 ? job.egress.allow : null,
+      policyViolation: outside ? `allows [${outside.join(", ")}] outside the repo allowlist` : null,
     };
   });
 }
@@ -1703,6 +1747,40 @@ async function handleRepoSecrets(request: Request, env: WorkerEnv): Promise<Resp
   const enc = await encryptSecretValue(key, body.value as string);
   await setRepoSecret(env.DB, body.repo, body.name as string, enc.iv, enc.data);
   await audit(env.DB, ident.actor, "secret.set", `${body.repo}:${body.name as string}`);
+  return json({ ok: true });
+}
+
+async function handleEgressAllowlist(request: Request, env: WorkerEnv): Promise<Response> {
+  const ident = await authIdentity(request, env);
+  if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+  const url = new URL(request.url);
+  if (request.method === "GET") {
+    const repo = url.searchParams.get("repo") ?? "";
+    if (!repo) return json({ allowlists: await listRepoEgressAllow(env.DB) });
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
+    if (!repoAllowed(ident, repo)) return json({ error: "token is not scoped to that repo" }, 403);
+    const domains = await getRepoEgressAllow(env.DB, repo);
+    if (!domains) return json({ error: "no egress allowlist for that repo" }, 404);
+    return json({ repo, domains });
+  }
+  if (request.method === "DELETE") {
+    const repo = url.searchParams.get("repo") ?? "";
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
+    if (!repoAllowed(ident, repo)) return json({ error: "token is not scoped to that repo" }, 403);
+    const deleted = await deleteRepoEgressAllow(env.DB, repo);
+    if (!deleted) return json({ error: "no egress allowlist for that repo" }, 404);
+    await audit(env.DB, ident.actor, "egress-allowlist.delete", repo);
+    return json({ ok: true });
+  }
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  if (typeof body.repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(body.repo)) {
+    return json({ error: "repo must be owner/name" }, 400);
+  }
+  if (!repoAllowed(ident, body.repo)) return json({ error: "token is not scoped to that repo" }, 403);
+  const domains = parseEgressAllow(body.domains);
+  if (!domains) return json({ error: "domains must be 1-32 unique hostnames" }, 400);
+  await setRepoEgressAllow(env.DB, body.repo, domains);
+  await audit(env.DB, ident.actor, "egress-allowlist.set", `${body.repo} ${domains.length} domains`);
   return json({ ok: true });
 }
 
@@ -2317,7 +2395,8 @@ export default {
               }
             }
           }
-          const planned = planFanOut(loaded.jobs, groupActive);
+          const dryEgress = await getRepoEgressAllow(env.DB, valid.repo);
+          const planned = planFanOut(loaded.jobs, groupActive, dryEgress);
           const jobs = await Promise.all(
             planned.map(async (job) => ({
               ...job,
@@ -3764,6 +3843,12 @@ export default {
         url.pathname === "/v1/admin/secrets"
       ) {
         return await handleRepoSecrets(request, env);
+      }
+      if (
+        (request.method === "GET" || request.method === "POST" || request.method === "DELETE") &&
+        url.pathname === "/v1/admin/egress-allowlist"
+      ) {
+        return await handleEgressAllowlist(request, env);
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/settings") {
         return await handleSettingsUpdate(request, env);

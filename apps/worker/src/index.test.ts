@@ -226,6 +226,30 @@ describe("planFanOut", () => {
     const planned = planFanOut([job({ name: "deploy", group: "prod", cancelInProgress: true })], () => true);
     expect(planned[0]).toMatchObject({ status: "queued", wouldCancelInProgress: true });
   });
+
+  it("reports observe-only with no repo policy", () => {
+    const planned = planFanOut([job({ name: "build" })], () => false);
+    expect(planned[0]).toMatchObject({ egressAllow: null, policyViolation: null });
+  });
+
+  it("shows the effective allowlist after the repo floor policy", () => {
+    const planned = planFanOut(
+      [job({ name: "build" }), job({ name: "test", egress: { allow: ["github.com"] } })],
+      () => false,
+      ["github.com", "registry.npmjs.org"],
+    );
+    expect(planned[0]).toMatchObject({ egressAllow: ["github.com", "registry.npmjs.org"], policyViolation: null });
+    expect(planned[1]).toMatchObject({ egressAllow: ["github.com"], policyViolation: null });
+  });
+
+  it("flags jobs outside the repo list without rejecting the plan", () => {
+    const planned = planFanOut([job({ name: "bad", egress: { allow: ["evil.example"] } })], () => false, ["github.com"]);
+    expect(planned[0]).toMatchObject({
+      status: "queued",
+      egressAllow: ["evil.example"],
+      policyViolation: "allows [evil.example] outside the repo allowlist",
+    });
+  });
 });
 
 describe("validateMigrateInput", () => {

@@ -77,9 +77,9 @@ The recurring pains, in practitioners' own terms:
 - [x] JUnit analytics, monitors, AI failure triage, NL pipeline generation,
       healing (draft PR + verification run)
 - [x] D1 full-text log search, warm dev boxes, per-domain egress
-      report + per-job `egress.allow` enforcement (repo-level domain
-      policy still open), browser-test jobs (preview self-verification
-      still open)
+      report + per-job `egress.allow` enforcement + per-repo domain
+      floor policy (fan-out merge, dry-run preview, dashboard UI),
+      browser-test jobs (preview self-verification still open)
 
 ### Tournaments
 

@@ -50,11 +50,13 @@ tab + PR-comment section). OpenAPI is at 75 paths (was 68).
   simulator
   (`fairness.ts`, `/v1/admin/queue`, `cli queue`), seats peak-RSS
   sampling (`peakRssBytes`), hourly runtime priors (`priors.ts`, LPT
-  claim order), job-level egress enforcement (`egress.allow`),
+  claim order), job-level egress enforcement (`egress.allow`) +
+  per-repo domain floor policy (`/v1/admin/egress-allowlist`, fan-out
+  merge, dry-run preview, dashboard Settings UI),
   browser-checks, local named dev boxes (`cli devbox` + sync +
   snapshots), new admin settings UI. Still open: remote
-  (seat-persisted) named warm boxes + Files-based sync, per-repo
-  domain allowlists, dashboard RSS graphs + label-size hints, BYO
+  (seat-persisted) named warm boxes + Files-based sync,
+  dashboard RSS graphs + label-size hints, BYO
   peak RSS/CPU self-report, Workers VPC (blocked on platform),
   browser preview self-verification + richer actions.
 - **Phase 3**: AI Gateway fronting for triage + generate (env `AI_GATEWAY_ID`
@@ -228,10 +230,13 @@ Needs Phase 0 done:
   `LD_PRELOAD` shim (`apps/seats/egress.c`, compiled into the seat
   image): per-domain req/resp bytes in `job_egress` next to the `r2:*`
   and `(interface)` rows — zero traffic-path change, staging-validated
-  across curl/Node/Python with byte-exact counts. Still open: opt-in
-  per-repo domain allowlists (their Part 2 is still unannounced — we
-  can ship first), via the Sandbox SDK outbound handler or shim-side
-  enforcement (needs staging validation either way).
+  across curl/Node/Python with byte-exact counts. Shipped next, ahead
+  of their still-unannounced Part 2: opt-in per-repo domain floor
+  policy — repo default merged at fan-out (undeclared jobs inherit,
+  narrower job lists pass), strict-subset violations reject the whole
+  dispatch with zero writes (`egress_policy_violation` on the API,
+  200-skip on webhooks), dry-run previews the effective list per job;
+  the seat shim enforces, BYO runners fail closed.
 - **Artifacts repo mirroring** (open beta Oct 1, Paid-only, billing
   from Oct 15): shipped seats-side mirror preference
   (`ARTIFACTS_MIRROR_REMOTE` template + read-scoped token, mirror

@@ -145,6 +145,25 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+export const EGRESS_DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+// Shared by the YAML parser and the repo-allowlist admin API: one
+// hostname alphabet and cap, so the fan-out subset check compares
+// normalized lists. Returns the normalized domains, or null.
+export function parseEgressAllow(allow: unknown): string[] | null {
+  if (!Array.isArray(allow) || allow.length === 0 || allow.length > MAX_EGRESS_ALLOW) return null;
+  const domains: string[] = [];
+  const seen = new Set<string>();
+  for (const d of allow) {
+    if (typeof d !== "string") return null;
+    const dom = d.trim().toLowerCase();
+    if (!EGRESS_DOMAIN_RE.test(dom) || seen.has(dom)) return null;
+    seen.add(dom);
+    domains.push(dom);
+  }
+  return domains;
+}
+
 function asStringArray(v: unknown, max: number, itemMax: number): string[] | null {
   const list = typeof v === "string" ? [v] : v;
   if (!Array.isArray(list) || list.length === 0 || list.length > max) return null;
@@ -431,22 +450,8 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
   }
   if (def.egress !== undefined) {
     if (!isRecord(def.egress)) return null;
-    const allow = def.egress.allow;
-    if (!Array.isArray(allow) || allow.length === 0 || allow.length > MAX_EGRESS_ALLOW) return null;
-    const domains: string[] = [];
-    const seen = new Set<string>();
-    for (const d of allow) {
-      if (typeof d !== "string") return null;
-      const dom = d.trim().toLowerCase();
-      if (
-        !/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(dom) ||
-        seen.has(dom)
-      ) {
-        return null;
-      }
-      seen.add(dom);
-      domains.push(dom);
-    }
+    const domains = parseEgressAllow(def.egress.allow);
+    if (!domains) return null;
     job.egress = { allow: domains };
   }
   if (def["test-selection"] !== undefined) {

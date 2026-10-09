@@ -5,7 +5,11 @@ import {
   claimAdminMarker,
   claimNextJob,
   claimWebhookDelivery,
+  deleteRepoEgressAllow,
   flakyCandidates,
+  getRepoEgressAllow,
+  listRepoEgressAllow,
+  setRepoEgressAllow,
   isAdminMarkerClaimed,
   pruneSeatSnapshots,
   pruneWebhookDeliveries,
@@ -399,6 +403,79 @@ describe("claimAdminMarker", () => {
     await releaseAdminMarker(db);
     expect(await isAdminMarkerClaimed(db)).toBe(false);
     expect(await claimAdminMarker(db)).toBe(true);
+  });
+});
+
+// Routes the repo-egress-allowlist SQL against an in-memory map.
+class EgressDb implements Db {
+  store = new Map<string, { domains: string; updated_at: string }>();
+
+  prepare(sql: string) {
+    const norm = sql.replace(/\s+/g, " ").trim();
+    return {
+      bind: (...values: unknown[]) => ({
+        all: async <T,>() => {
+          if (norm.startsWith("SELECT repo, domains, updated_at FROM repo_egress_allow")) {
+            const rows = [...this.store.entries()]
+              .sort(([a], [b]) => (a < b ? -1 : 1))
+              .map(([repo, v]) => ({ repo, domains: v.domains, updated_at: v.updated_at }));
+            return { results: rows as T[] };
+          }
+          throw new Error(`unrouted all: ${norm}`);
+        },
+        first: async <T,>(): Promise<T | null> => {
+          if (norm.startsWith("SELECT domains FROM repo_egress_allow")) {
+            const v = this.store.get(values[0] as string);
+            return (v === undefined ? null : { domains: v.domains }) as T | null;
+          }
+          throw new Error(`unrouted first: ${norm}`);
+        },
+        run: async () => {
+          if (norm.startsWith("INSERT INTO repo_egress_allow")) {
+            const [repo, domains, updated_at] = values as string[];
+            this.store.set(repo, { domains, updated_at });
+            return {};
+          }
+          if (norm.startsWith("DELETE FROM repo_egress_allow")) {
+            const existed = this.store.delete(values[0] as string);
+            return { meta: { changes: existed ? 1 : 0 } };
+          }
+          throw new Error(`unrouted run: ${norm}`);
+        },
+      }),
+    };
+  }
+}
+
+describe("repo egress allowlists", () => {
+  it("round-trips a policy, upserts on conflict, deletes by repo", async () => {
+    const db = new EgressDb();
+    expect(await getRepoEgressAllow(db, "o/r")).toBeNull();
+    await setRepoEgressAllow(db, "o/r", ["github.com"]);
+    expect(await getRepoEgressAllow(db, "o/r")).toEqual(["github.com"]);
+    await setRepoEgressAllow(db, "o/r", ["github.com", "registry.npmjs.org"]);
+    expect(await getRepoEgressAllow(db, "o/r")).toEqual(["github.com", "registry.npmjs.org"]);
+    expect(await deleteRepoEgressAllow(db, "o/r")).toBe(true);
+    expect(await deleteRepoEgressAllow(db, "o/r")).toBe(false);
+    expect(await getRepoEgressAllow(db, "o/r")).toBeNull();
+  });
+
+  it("lists policies ordered by repo", async () => {
+    const db = new EgressDb();
+    await setRepoEgressAllow(db, "o/b", ["a.example"]);
+    await setRepoEgressAllow(db, "o/a", ["b.example"]);
+    const all = await listRepoEgressAllow(db);
+    expect(all.map((a) => a.repo)).toEqual(["o/a", "o/b"]);
+    expect(all[0].domains).toEqual(["b.example"]);
+    expect(typeof all[0].updatedAt).toBe("string");
+  });
+
+  it("throws loud on a corrupt row instead of silently unconfining", async () => {
+    const db = new EgressDb();
+    db.store.set("o/r", { domains: "not-json", updated_at: "2026-10-09T00:00:00.000Z" });
+    await expect(getRepoEgressAllow(db, "o/r")).rejects.toThrow();
+    db.store.set("o/r", { domains: JSON.stringify({ not: "an-array" }), updated_at: "2026-10-09T00:00:00.000Z" });
+    await expect(getRepoEgressAllow(db, "o/r")).rejects.toThrow("corrupt egress allowlist");
   });
 });
 

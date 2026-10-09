@@ -133,7 +133,13 @@ jobs:
   so direct-IP externals break by design; statically linked binaries
   bypass the shim (as with attribution), and connectionless UDP is
   unenforced. BYO runners and `cli local` fail closed on the key.
-  Absent the key, seats observe without enforcing.
+  Absent the key, seats observe without enforcing. A repo-level floor
+  policy (`/v1/admin/egress-allowlist`, dashboard Settings) merges at
+  fan-out: jobs that declare nothing inherit the repo list, narrower
+  job lists pass, anything outside rejects the dispatch
+  (`egress_policy_violation`); dry-run previews the effective list
+  per job. (`cli local` cannot read the repo policy, so it runs
+  unmerged — local is dev-only, never a security boundary.)
 - **`test-selection`** (opt-in smart test selection) maps the run's
   changed files to affected tests: the executor walks the import
   graph (TypeScript/JavaScript; more languages later) from each

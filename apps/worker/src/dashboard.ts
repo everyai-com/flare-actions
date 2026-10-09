@@ -479,6 +479,16 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 </form>
 <p id="secretErr" class="err"></p>
 <p id="secretOk"></p>
+<h2>Egress allowlists</h2>
+<p class="muted">Per-repo outbound floor policy for managed seats: every job inherits the repo list, jobs may narrow it, anything outside rejects the dispatch. BYO runners fail closed on confined jobs. Deleting a repo returns it to observe-only.</p>
+<form id="egressForm" class="inline">
+<input id="egressRepoInput" placeholder="owner/repo" maxlength="100" aria-label="Repository">
+<input id="egressDomainsInput" placeholder="github.com, registry.npmjs.org" maxlength="2000" size="40" aria-label="Allowed domains">
+<button type="submit">Save allowlist</button>
+</form>
+<p id="egressErr" class="err"></p>
+<p id="egressOk"></p>
+<div id="egressList"></div>
 <h2>GitHub App</h2>
 <p class="muted" id="githubInfo"></p>
 <form id="githubForm" class="inline">
@@ -1981,6 +1991,55 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       })
       .catch(function (e) { err.textContent = "Save failed: " + (e.message || "error"); });
   });
+  function loadEgress() {
+    var err = document.getElementById("egressErr");
+    var box = document.getElementById("egressList");
+    err.textContent = "";
+    document.getElementById("egressOk").textContent = "";
+    box.textContent = "";
+    var loading = el("p", "Loading…"); loading.className = "muted"; box.appendChild(loading);
+    api("/v1/admin/egress-allowlist").then(function (data) {
+      box.textContent = "";
+      var lists = data.allowlists || [];
+      if (!lists.length) {
+        var none = el("p", "No repo allowlists yet — every repo runs observe-only.");
+        none.className = "muted";
+        box.appendChild(none);
+        return;
+      }
+      lists.forEach(function (a) {
+        var row = el("div");
+        row.className = "secret-row";
+        var code = el("code", a.repo + ": " + (a.domains || []).join(", ")); code.className = "mono"; row.appendChild(code);
+        var del = el("button", "Delete");
+        del.className = "danger";
+        del.addEventListener("click", function () {
+          api("/v1/admin/egress-allowlist?repo=" + encodeURIComponent(a.repo), { method: "DELETE" })
+            .then(loadEgress)
+            .catch(function (e) { err.textContent = "Delete failed: " + (e.message || "error"); });
+        });
+        row.appendChild(del);
+        box.appendChild(row);
+      });
+    }).catch(function (e) { box.textContent = ""; err.textContent = "Could not load allowlists: " + (e.message || "error"); });
+  }
+  document.getElementById("egressForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("egressErr");
+    var ok = document.getElementById("egressOk");
+    err.textContent = ""; ok.textContent = "";
+    var repo = document.getElementById("egressRepoInput").value.trim();
+    var domains = document.getElementById("egressDomainsInput").value.split(",").map(function (d) { return d.trim(); }).filter(function (d) { return !!d; });
+    if (!repo) { err.textContent = "Enter a repository."; return; }
+    if (!domains.length) { err.textContent = "Enter at least one domain."; return; }
+    api("/v1/admin/egress-allowlist", { method: "POST", body: JSON.stringify({ repo: repo, domains: domains }) })
+      .then(function () {
+        ok.textContent = "Allowlist saved.";
+        document.getElementById("egressDomainsInput").value = "";
+        loadEgress();
+      })
+      .catch(function (e) { err.textContent = "Save failed: " + (e.message || "error"); });
+  });
   function loadTokens() {
     var body = document.getElementById("tokensBody");
     stateRow(body, 6, "Loading tokens…", "muted");
@@ -2293,6 +2352,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       document.getElementById("budgetModeSelect").value = s.budgetMode || "warn";
       document.getElementById("killMultiplierInput").value = (s.budgetKillMultiplier && s.budgetKillMultiplier !== "0") ? s.budgetKillMultiplier : "";
       loadPaused();
+      loadEgress();
       document.getElementById("supersedeCheck").checked = s.supersedeBranchRuns === "push";
       document.getElementById("gatewayInput").value = s.aiGatewayId || "";
       document.getElementById("gatewayInput").disabled = s.aiGatewaySource === "env";
