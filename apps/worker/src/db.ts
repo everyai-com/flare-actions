@@ -1616,6 +1616,19 @@ export async function topBranchForRepo(db: Db, repo: string, sinceIso: string): 
   return row ? { branch: row.branch, runs: row.n } : null;
 }
 
+// Busiest agent tag for a repo since `sinceIso` (anomaly attribution:
+// names the loop). Untagged runs ('') are humans/webhooks, never an
+// agent burst — excluded, so a human-driven spike yields no agent line.
+export async function topAgentForRepo(db: Db, repo: string, sinceIso: string): Promise<{ agent: string; runs: number } | null> {
+  const row = await db
+    .prepare(
+      "SELECT agent, COUNT(*) AS n FROM runs WHERE repo = ? AND created_at >= ? AND agent != '' GROUP BY agent ORDER BY n DESC LIMIT 1",
+    )
+    .bind(repo, sinceIso)
+    .first<{ agent: string; n: number }>();
+  return row ? { agent: row.agent, runs: row.n } : null;
+}
+
 // Per-test pass/fail tally over the window (flaky auto-quarantine input).
 export async function testTally(
   db: Db,

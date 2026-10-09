@@ -89,6 +89,7 @@ import {
   shouldReinstate,
   summarizeUsageAnomalies,
   testTally,
+  topAgentForRepo,
   topBranchForRepo,
   touchJob,
   touchScheduleRun,
@@ -4223,11 +4224,13 @@ export default {
           const anomalies = summarizeUsageAnomalies(await repoUsageByDay(env.DB, 8), { today });
           for (const anomaly of anomalies.slice(0, 3)) {
             const top = await topBranchForRepo(env.DB, anomaly.repo, `${today}T00:00:00.000Z`);
+            const topAgent = await topAgentForRepo(env.DB, anomaly.repo, `${today}T00:00:00.000Z`);
             const factor = anomaly.medianMinutes > 0 ? (anomaly.todayMinutes / anomaly.medianMinutes).toFixed(1) : "many";
             const text = [
               `CI usage anomaly: ${anomaly.repo}`,
               `Today: ${anomaly.todayRuns} runs, ${anomaly.todayMinutes} compute-min (trailing median ${anomaly.medianRuns} runs, ${anomaly.medianMinutes} min — ${factor}x).`,
               top ? `Busiest branch today: ${top.branch} (${top.runs} runs).` : "",
+              topAgent ? `Top agent today: ${topAgent.agent} (${topAgent.runs} runs).` : "",
               "If this is an agent loop, cap it: dashboard → Settings → Budgets (warn/block).",
             ]
               .filter(Boolean)
@@ -4241,7 +4244,7 @@ export default {
                 .join(""),
               auditTag: "anomaly",
             });
-            await audit(env.DB, "system", "anomaly.usage", `${anomaly.repo} ${anomaly.todayMinutes}/${anomaly.medianMinutes}min`);
+            await audit(env.DB, "system", "anomaly.usage", `${anomaly.repo} ${anomaly.todayMinutes}/${anomaly.medianMinutes}min${topAgent ? ` agent:${topAgent.agent}` : ""}`);
           }
           // Flaky auto-quarantine + reinstate, bounded per tick.
           const activeRepos = await env.DB.prepare("SELECT DISTINCT repo FROM runs WHERE created_at >= ? LIMIT 10")

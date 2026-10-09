@@ -8,6 +8,10 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Per-agent attribution on usage-anomaly alerts: the hourly fleet tick
+  names the busiest agent tag behind a spike (untagged human/webhook
+  runs excluded) in the alert and the `anomaly.usage` audit row, next
+  to the existing busiest-branch line.
 - MCP tools for artifacts + schedules: `list_artifacts`/`get_artifact`
   (repo-scoped; bounded text previews with exact truncation, binaries
   stay on the HTTP download route) and `list/create/toggle/delete`

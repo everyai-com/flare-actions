@@ -21,6 +21,7 @@ import {
   shouldReinstate,
   summarizeBottlenecks,
   summarizeUsageAnomalies,
+  topAgentForRepo,
   updateRunningJob,
   usageStats,
 } from "./db";
@@ -768,6 +769,26 @@ describe("summarizeUsageAnomalies", () => {
 
   it("ignores repos with a single day of data", () => {
     expect(summarizeUsageAnomalies([day("o/new", "2026-10-04", 500, 900)], { today: "2026-10-04" })).toEqual([]);
+  });
+
+  it("names the top agent behind a spike, ignoring untagged runs", async () => {
+    const seen: { sql: string; values: unknown[] }[] = [];
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind: (...values: unknown[]) => ({
+            first: async () => {
+              seen.push({ sql, values });
+              return { agent: "atlas-1", n: 187 };
+            },
+          }),
+        };
+      },
+    } as unknown as Db;
+    const out = await topAgentForRepo(db, "o/r", "2026-10-04T00:00:00.000Z");
+    expect(out).toEqual({ agent: "atlas-1", runs: 187 });
+    expect(seen[0].sql).toContain("agent != ''");
+    expect(seen[0].values).toEqual(["o/r", "2026-10-04T00:00:00.000Z"]);
   });
 });
 

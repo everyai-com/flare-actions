@@ -302,8 +302,11 @@ billing event per run.
   browser/eviction (shipped Oct 9: ≤10 prefixes, newest-wins,
   BYO/seats/local/importer, admin Cache browser + prefix purge).
 - [x] Step/job outputs (shipped Oct 9: `$FLARE_OUTPUT`/`$GITHUB_OUTPUT`
-  collection, `id:` + `outputs:` mapping, `resultJson`, importer).
-  Remaining: a richer `if:` expression subset + `needs` consumption.
-- MCP tools for artifacts and schedules (runs/jobs/flaky already exist).
-- Org-level allowlists for API tokens (repo allowlists shipped).
+  collection, `id:` + `outputs:` mapping, `resultJson`, importer;
+  richer `if:` + `needs` shipped Oct 9: bounded comparisons, needs
+  context on claims, fan-out root gating, GitHub truth table).
+- [x] MCP tools for artifacts and schedules (shipped Oct 9:
+  repo-scoped artifact list/preview, admin-gated schedule CRUD).
+- [x] Org-level allowlists for API tokens (shipped Oct 9: `org/*`
+  entries everywhere, one shared SQL builder, case-insensitive).
 - Runner auto-update for BYO fleets.
