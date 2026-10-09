@@ -267,6 +267,18 @@ describe("FlareClient", () => {
     expect(calls[0].url).toBe("https://x/v1/usage?days=7&repo=o%2Fr");
   });
 
+  it("fetches merged-PR cost with repo and weeks", async () => {
+    const body = {
+      repo: "o/r",
+      weeks: [{ week: "2026-10-05", mergedPrs: 2, computeMinutes: 40, actionsListUsd: 0.32, costPerPrMinutes: 20 }],
+      totals: { mergedPrs: 2, computeMinutes: 40, costPerPrMinutes: 20 },
+    };
+    const calls = stubFetch(() => jsonResponse(body));
+    const out = await new FlareClient("https://x", "t").getMergedPrCost("o/r", 4);
+    expect(out).toEqual(body);
+    expect(calls[0].url).toBe("https://x/v1/usage/merged-pr-cost?repo=o%2Fr&weeks=4");
+  });
+
   it("fetches billable usage and degrades on 401/502", async () => {
     const calls = stubFetch(() => jsonResponse({ configured: true, totalCost: 4.5, families: [] }));
     const b = await new FlareClient("https://x", "t").getBillableUsage(7);

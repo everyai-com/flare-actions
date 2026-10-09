@@ -319,6 +319,20 @@ export interface FlareUsage {
   githubRunnerListUsd?: number;
 }
 
+export interface FlareMergedPrWeek {
+  week: string;
+  mergedPrs: number;
+  computeMinutes: number;
+  actionsListUsd: number;
+  costPerPrMinutes: number;
+}
+
+export interface FlareMergedPrCost {
+  repo: string;
+  weeks: FlareMergedPrWeek[];
+  totals: { mergedPrs: number; computeMinutes: number; costPerPrMinutes: number };
+}
+
 // Runner mode (the flare lane): one ephemeral JIT-backed GitHub job,
 // as served by GET /v1/github/jobs and POST /v1/github/jobs/next.
 export interface GithubRunnerJob {
@@ -776,6 +790,12 @@ export class FlareClient {
     const res = await this.call(`/v1/usage?${qs}`);
     if (!res.ok) await this.throwApiError("getUsage", res);
     return (await res.json()) as FlareUsage;
+  }
+
+  async getMergedPrCost(repo: string, weeks = 8): Promise<FlareMergedPrCost> {
+    const res = await this.call(`/v1/usage/merged-pr-cost?repo=${encodeURIComponent(repo)}&weeks=${weeks}`);
+    if (!res.ok) await this.throwApiError("getMergedPrCost", res);
+    return (await res.json()) as FlareMergedPrCost;
   }
 
   async listArtifacts(runId: string): Promise<FlareArtifact[]> {

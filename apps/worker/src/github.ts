@@ -206,6 +206,45 @@ function filenameList(json: unknown): string[] {
   return out;
 }
 
+// Recently merged PRs (number + merged_at), newest first, for merged-PR
+// cost attribution. Closed PRs sorted by update, ≤3 pages of 100;
+// stops at the first page older than `sinceIso`. Best-effort: any
+// failure returns what was collected so far (possibly nothing).
+export async function listMergedPulls(
+  token: string,
+  repo: string,
+  sinceIso: string,
+): Promise<{ number: number; mergedAt: string }[]> {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return [];
+  const out: { number: number; mergedAt: string }[] = [];
+  for (let page = 1; page <= 3; page++) {
+    let res: Response;
+    try {
+      res = await fetch(`https://api.github.com/repos/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`, {
+        headers: githubHeaders(token),
+        signal: AbortSignal.timeout(8000),
+      });
+    } catch {
+      return out;
+    }
+    if (!res.ok) return out;
+    const json = (await res.json().catch(() => null)) as
+      | { number?: unknown; merged_at?: unknown; updated_at?: unknown }[]
+      | null;
+    if (!Array.isArray(json) || json.length === 0) return out;
+    let pageNewest = "";
+    for (const pr of json) {
+      if (typeof pr !== "object" || pr === null) continue;
+      if (typeof pr.updated_at === "string" && pr.updated_at > pageNewest) pageNewest = pr.updated_at;
+      if (typeof pr.number === "number" && typeof pr.merged_at === "string" && pr.merged_at >= sinceIso) {
+        out.push({ number: pr.number, mergedAt: pr.merged_at });
+      }
+    }
+    if (pageNewest && pageNewest < sinceIso) return out;
+  }
+  return out;
+}
+
 // Changed files for a run: push compare or PR file list, public-first
 // then installation token. Bounded and best-effort — an empty array
 // means "unknown", never "no changes", so callers (paths filters) must

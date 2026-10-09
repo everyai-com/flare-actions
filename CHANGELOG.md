@@ -8,6 +8,11 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Cost-per-merged-PR trend: `GET /v1/usage/merged-pr-cost?repo=&weeks=`
+  buckets window CI minutes by GitHub merge week (bounded pulls scan,
+  501 without the App) with list-price dollars and per-PR means;
+  `cli usage --merged-pr <repo> [weeks]` prints the trend (plain +
+  `--json`).
 - Quarantine auto-suggest + history sparklines: `GET /v1/flaky` returns
   `candidates` (same flaky rule as the fleet tick, window-labeled
   reasons, 14-run ●/○/· sparklines), surfaced in the dashboard Flaky

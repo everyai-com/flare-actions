@@ -53,8 +53,10 @@ import {
   listSchedules,
   listTokens,
   listUsers,
+  mergedPrCostTrend,
   monthlyComputeMinutes,
   pauseRepo,
+  prComputeMinutes,
   pruneOldRuns,
   pruneSeatSnapshots,
   pruneWebhookDeliveries,
@@ -94,10 +96,11 @@ import {
   topBranchForRepo,
   touchJob,
   touchScheduleRun,
+  trailingWeekStarts,
   updateRunningJob,
   usageStats,
 } from "./db";
-import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, generateJitConfig, getDefaultBranch, getInstallationToken, getRepoTreePaths, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, updatePullRequestBranch, verifyGitHubSignature } from "./github";
+import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, generateJitConfig, getDefaultBranch, getInstallationToken, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, updatePullRequestBranch, verifyGitHubSignature } from "./github";
 import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
 import { DASHBOARD_HTML } from "./dashboard";
@@ -208,7 +211,7 @@ import {
   type GhRunnerJobRow,
 } from "./ghrunners";
 import { basinJobTerminal, basinRunDispatched, basinSink, sendBasin, type BasinSink } from "./basin";
-import { jobDurationMs, summarizeRunCost } from "./cost";
+import { ACTIONS_LIST_USD_PER_MIN, jobDurationMs, summarizeRunCost } from "./cost";
 import { runGenerateWithStatus } from "./generate";
 import { getCacheStats, handleCacheGet, handleCachePut, listCacheEntries, parseRestoreKeysParam, pruneCacheStats, purgeCachePrefix, recordCacheOutcome } from "./cache";
 import { deleteJobArtifacts, handleArtifactGet, handleArtifactPut, listRunArtifacts, pruneOldCache } from "./artifacts";
@@ -3198,6 +3201,51 @@ export default {
         const stats = await usageStats(env.DB, Math.floor(days), ident.repos);
         const gh = await ghRunnerUsage(env.DB, Math.floor(days), ident.repos);
         return json({ ...stats, githubRunnerJobs: gh.jobs, githubRunnerMinutes: gh.computeMinutes, githubRunnerListUsd: gh.actionsListUsd });
+      }
+      // Cost-per-merged-PR trend: window CI minutes on PRs, bucketed by
+      // merge week via the GitHub API (best-effort, like every GitHub
+      // call — but merge detection itself needs the App, hence 501
+      // without it rather than a silently empty trend).
+      if (request.method === "GET" && url.pathname === "/v1/usage/merged-pr-cost") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const repo = url.searchParams.get("repo") ?? "";
+        if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
+        if (!repoAllowed(ident, repo)) return json({ error: "token is not scoped to that repo" }, 403);
+        const weeks = Number(url.searchParams.get("weeks") ?? "8");
+        if (!Number.isInteger(weeks) || weeks < 1 || weeks > 26) return json({ error: "weeks must be an integer 1-26" }, 400);
+        const weekStarts = trailingWeekStarts(new Date(), weeks);
+        const sinceIso = `${weekStarts[weekStarts.length - 1]}T00:00:00.000Z`;
+        const [compute, installationId, creds] = await Promise.all([
+          prComputeMinutes(env.DB, repo, sinceIso),
+          latestInstallationId(env.DB, repo),
+          getAppCreds(env),
+        ]);
+        if (!installationId || !creds) {
+          return json({ error: "merged-PR detection needs the GitHub App connected and a prior App-run for this repo" }, 501);
+        }
+        const jwt = await mintAppJwt(creds.appId, creds.privateKey);
+        const token = await getInstallationToken(jwt, installationId);
+        if (!token) return json({ error: "merged-PR detection needs the GitHub App connected and a prior App-run for this repo" }, 501);
+        const merged = await listMergedPulls(token, repo, sinceIso);
+        const trend = mergedPrCostTrend(compute, merged, weekStarts).map((w) => ({
+          ...w,
+          actionsListUsd: Math.round(w.computeMinutes * ACTIONS_LIST_USD_PER_MIN * 10000) / 10000,
+          costPerPrMinutes: w.mergedPrs > 0 ? Math.round((w.computeMinutes / w.mergedPrs) * 1000) / 1000 : 0,
+        }));
+        const totals = trend.reduce(
+          (acc, w) => ({ mergedPrs: acc.mergedPrs + w.mergedPrs, computeMinutes: acc.computeMinutes + w.computeMinutes }),
+          { mergedPrs: 0, computeMinutes: 0 },
+        );
+        return json({
+          repo,
+          weeks: trend,
+          totals: {
+            ...totals,
+            computeMinutes: Math.round(totals.computeMinutes * 1000) / 1000,
+            costPerPrMinutes: totals.mergedPrs > 0 ? Math.round((totals.computeMinutes / totals.mergedPrs) * 1000) / 1000 : 0,
+          },
+        });
       }
       // Real Cloudflare dollars from the Billable Usage API (admin-only:
       // account spend). Unconfigured credentials degrade to

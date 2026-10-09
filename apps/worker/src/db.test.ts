@@ -11,6 +11,8 @@ import {
   flakyCandidates,
   getRepoEgressAllow,
   listRepoEgressAllow,
+  mergedPrCostTrend,
+  prComputeMinutes,
   setRepoEgressAllow,
   isAdminMarkerClaimed,
   pruneSeatSnapshots,
@@ -24,6 +26,7 @@ import {
   summarizeUsageAnomalies,
   testSparkline,
   topAgentForRepo,
+  trailingWeekStarts,
   updateRunningJob,
   usageStats,
 } from "./db";
@@ -811,6 +814,49 @@ describe("summarizeUsageAnomalies", () => {
 
   it("ignores repos with a single day of data", () => {
     expect(summarizeUsageAnomalies([day("o/new", "2026-10-04", 500, 900)], { today: "2026-10-04" })).toEqual([]);
+  });
+
+  it("buckets merged-PR compute by merge week with continuous zeros", () => {
+    const out = mergedPrCostTrend(
+      [
+        { prNumber: 9, computeMinutes: 30 },
+        { prNumber: 10, computeMinutes: 10 },
+      ],
+      [
+        { number: 9, mergedAt: "2026-10-07T10:00:00Z" },
+        { number: 11, mergedAt: "2026-09-29T10:00:00Z" },
+      ],
+      ["2026-10-05", "2026-09-28"],
+    );
+    expect(out).toEqual([
+      { week: "2026-10-05", mergedPrs: 1, computeMinutes: 30 },
+      { week: "2026-09-28", mergedPrs: 1, computeMinutes: 0 },
+    ]);
+  });
+
+  it("emits Monday week starts newest-first", () => {
+    // 2026-10-09 is a Friday; its Monday is 2026-10-05.
+    expect(trailingWeekStarts(new Date("2026-10-09T12:00:00Z"), 3)).toEqual(["2026-10-05", "2026-09-28", "2026-09-21"]);
+  });
+
+  it("rolls per-PR compute minutes from finished jobs", async () => {
+    const seen: { sql: string; values: unknown[] }[] = [];
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind: (...values: unknown[]) => ({
+            all: async () => {
+              seen.push({ sql, values });
+              return { results: [{ pr: 9, minutes: 12.5 }] };
+            },
+          }),
+        };
+      },
+    } as unknown as Db;
+    const out = await prComputeMinutes(db, "o/r", "2026-09-01T00:00:00.000Z");
+    expect(out).toEqual([{ prNumber: 9, computeMinutes: 12.5 }]);
+    expect(seen[0].sql).toContain("r.pr_number IS NOT NULL");
+    expect(seen[0].values).toEqual(["o/r", "2026-09-01T00:00:00.000Z"]);
   });
 
   it("names the top agent behind a spike, ignoring untagged runs", async () => {

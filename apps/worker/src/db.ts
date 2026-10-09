@@ -1557,6 +1557,66 @@ export interface RepoDayUsage {
   computeMinutes: number;
 }
 
+export interface PrComputeRow {
+  prNumber: number;
+  computeMinutes: number;
+}
+
+// Per-PR finished-job compute minutes since `sinceIso` (merged-PR cost
+// input). Runs without a PR number are not PR spend and stay out.
+export async function prComputeMinutes(db: Db, repo: string, sinceIso: string): Promise<PrComputeRow[]> {
+  const res = await db
+    .prepare(
+      `SELECT r.pr_number AS pr, COALESCE(SUM((julianday(j.finished_at) - julianday(j.started_at)) * 1440.0), 0) AS minutes
+       FROM jobs j JOIN runs r ON r.id = j.run_id
+       WHERE r.repo = ? AND r.created_at >= ? AND r.pr_number IS NOT NULL
+         AND j.started_at IS NOT NULL AND j.finished_at IS NOT NULL
+       GROUP BY r.pr_number`,
+    )
+    .bind(repo, sinceIso)
+    .all<{ pr: number; minutes: number }>();
+  return res.results.map((r) => ({ prNumber: r.pr, computeMinutes: Math.round(r.minutes * 1000) / 1000 }));
+}
+
+// Pure: cost-per-merged-PR trend. Each merged PR's window compute lands
+// in its merge week; weeks with no merges report zeros (never null —
+// the trend line stays continuous). `merged` beyond the week list
+// (stale merged_at) falls into the oldest bucket.
+export interface MergedPrWeek {
+  week: string;
+  mergedPrs: number;
+  computeMinutes: number;
+}
+
+export function mergedPrCostTrend(
+  prCompute: PrComputeRow[],
+  merged: { number: number; mergedAt: string }[],
+  weekStarts: string[],
+): MergedPrWeek[] {
+  const minutesByPr = new Map(prCompute.map((p) => [p.prNumber, p.computeMinutes]));
+  const buckets = weekStarts.map((week) => ({ week, mergedPrs: 0, computeMinutes: 0 }));
+  for (const m of merged) {
+    const day = m.mergedAt.slice(0, 10);
+    let idx = buckets.findIndex((b) => day >= b.week);
+    if (idx === -1) idx = buckets.length - 1;
+    buckets[idx].mergedPrs += 1;
+    buckets[idx].computeMinutes += minutesByPr.get(m.number) ?? 0;
+  }
+  return buckets.map((b) => ({ ...b, computeMinutes: Math.round(b.computeMinutes * 1000) / 1000 }));
+}
+
+// Monday (UTC) week starts, newest first, `weeks` long.
+export function trailingWeekStarts(now: Date, weeks: number): string[] {
+  const out: string[] = [];
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+  for (let i = 0; i < weeks; i++) {
+    out.push(d.toISOString().slice(0, 10));
+    d.setUTCDate(d.getUTCDate() - 7);
+  }
+  return out;
+}
+
 // Per-repo daily rollup over the trailing window (anomaly detection).
 export async function repoUsageByDay(db: Db, days = 8): Promise<RepoDayUsage[]> {
   const cutoff = new Date(Date.now() - Math.min(30, Math.max(2, days)) * 86400000).toISOString();

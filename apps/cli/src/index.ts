@@ -67,6 +67,7 @@ function usage(): never {
       "  cli cache purge [prefix]                    delete cache entries (admin)",
       "  cli cache stats                             shared warm-cache hit rate (7d)",
       "  cli usage [days] [repo]                     runs, jobs, compute-minutes for billing",
+      "  cli usage --merged-pr <repo> [weeks]       cost-per-merged-PR trend (needs the GitHub App)",
       "  cli paused                                  repos auto-paused for runaway spend (admin)",
       "  cli resume <repo>                           resume a paused repo (admin)",
       "  cli github-jobs [repo]                    ephemeral runner-mode jobs (status, duration, list price)",
@@ -648,6 +649,26 @@ try {
     const resumed = await client().resumeRepo(rest[0]);
     if (JSON_MODE) printJson("resume", { repo: rest[0], resumed });
     else console.log(resumed ? `${rest[0]} resumed` : `${rest[0]} was not paused`);
+  } else if (cmd === "usage" && rest.includes("--merged-pr")) {
+    const args = rest.filter((a) => a !== "--merged-pr");
+    const repo = args[0];
+    const weeks = args[1] === undefined ? 8 : Number(args[1]);
+    if (!repo || !repo.includes("/")) {
+      console.error("usage: cli usage --merged-pr <owner/repo> [weeks]");
+      process.exit(2);
+    }
+    if (!Number.isInteger(weeks) || weeks < 1 || weeks > 26) {
+      console.error("weeks must be an integer 1-26");
+      process.exit(2);
+    }
+    const out = await client().getMergedPrCost(repo, weeks);
+    if (JSON_MODE) printJson("usage", { mergedPrCost: out });
+    else {
+      for (const w of out.weeks) {
+        console.log(`${w.week}: ${w.mergedPrs} merged PRs, ${w.computeMinutes} compute-min (${w.costPerPrMinutes}/PR, ~$${w.actionsListUsd} list)`);
+      }
+      console.log(`total: ${out.totals.mergedPrs} merged PRs, ${out.totals.costPerPrMinutes} compute-min/PR`);
+    }
   } else if (cmd === "usage") {
     let days = 30;
     let repo: string | undefined;

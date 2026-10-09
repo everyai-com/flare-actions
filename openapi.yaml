@@ -1828,6 +1828,58 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /v1/usage/merged-pr-cost:
+    get:
+      tags: [analytics]
+      operationId: mergedPrCost
+      summary: Cost-per-merged-PR trend by merge week (needs the GitHub App)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: owner/name
+        - name: weeks
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 26
+            default: 8
+      responses:
+        '200':
+          description: Weekly merged-PR counts and CI minutes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [repo, weeks, totals]
+                properties:
+                  repo:
+                    type: string
+                  weeks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MergedPrWeek'
+                  totals:
+                    type: object
+                    required: [mergedPrs, computeMinutes, costPerPrMinutes]
+                    properties:
+                      mergedPrs:
+                        type: integer
+                      computeMinutes:
+                        type: number
+                      costPerPrMinutes:
+                        type: number
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /v1/usage/billable:
     get:
       tags: [analytics]
@@ -4342,6 +4394,22 @@ components:
     FlakyStat:
       type: object
       description: Per-job failure rate row (job, runs, failures, rate)
+    MergedPrWeek:
+      type: object
+      description: One merge week (Monday start, merged count, CI minutes, list dollars, per-PR minutes)
+      required: [week, mergedPrs, computeMinutes, actionsListUsd, costPerPrMinutes]
+      properties:
+        week:
+          type: string
+          description: Monday date YYYY-MM-DD
+        mergedPrs:
+          type: integer
+        computeMinutes:
+          type: number
+        actionsListUsd:
+          type: number
+        costPerPrMinutes:
+          type: number
     QuarantineCandidate:
       type: object
       description: Suggested quarantine (name, reason, 14-run history sparkline)

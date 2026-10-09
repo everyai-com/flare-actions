@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deleteRunner, fetchChangedFiles, generateJitConfig, resolveRefToSha, timingSafeEqualHex, verifyGitHubSignature } from "./github";
+import { deleteRunner, fetchChangedFiles, generateJitConfig, listMergedPulls, resolveRefToSha, timingSafeEqualHex, verifyGitHubSignature } from "./github";
 
 async function sign(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -234,6 +234,48 @@ describe("jit runners", () => {
     globalThis.fetch = (async () => { throw new Error("down"); }) as typeof fetch;
     try {
       expect(await deleteRunner("tok", "o/r", 77)).toBe(false);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+describe("listMergedPulls", () => {
+  const realFetch = globalThis.fetch;
+
+  function stubPages(pages: Record<number, unknown>) {
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      const page = Number(/[?&]page=(\d+)/.exec(url)?.[1] ?? "1");
+      const body = pages[page] ?? [];
+      return { ok: true, json: async () => body };
+    }) as typeof fetch;
+  }
+
+  it("collects merged PRs and stops past the window", async () => {
+    stubPages({
+      1: [
+        { number: 9, merged_at: "2026-10-07T10:00:00Z", updated_at: "2026-10-07T10:00:00Z" },
+        { number: 8, merged_at: null, updated_at: "2026-10-06T10:00:00Z" },
+      ],
+      2: [{ number: 7, merged_at: "2026-09-01T10:00:00Z", updated_at: "2026-09-01T10:00:00Z" }],
+    });
+    try {
+      const out = await listMergedPulls("tok", "o/r", "2026-10-01T00:00:00.000Z");
+      expect(out).toEqual([{ number: 9, mergedAt: "2026-10-07T10:00:00Z" }]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("returns nothing for bad repos and degrades on failure", async () => {
+    try {
+      expect(await listMergedPulls("tok", "nope", "2026-10-01T00:00:00.000Z")).toEqual([]);
+      globalThis.fetch = (async (_input: string | URL | Request) => ({
+        ok: false,
+        json: async (): Promise<unknown> => null,
+      })) as typeof fetch;
+      expect(await listMergedPulls("tok", "o/r", "2026-10-01T00:00:00.000Z")).toEqual([]);
     } finally {
       globalThis.fetch = realFetch;
     }
