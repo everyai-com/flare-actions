@@ -103,6 +103,7 @@ function toSpec(job: PipelineJob): JobSpec {
       ...(job.cache.restoreKeys ? { restoreKeys: job.cache.restoreKeys } : {}),
     };
   }
+  if (job.outputs) spec.outputs = { ...job.outputs };
   if (job.artifacts) {
     spec.artifacts = {
       paths: job.artifacts.paths,

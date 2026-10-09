@@ -45,6 +45,10 @@ jobs:
         if: always()
       - run: ./scripts/notify.sh     # only when something failed earlier
         if: failure()
+      - run: echo "tag=$(git describe)" >> "$FLARE_OUTPUT"
+        id: build                  # step handle for outputs ($GITHUB_OUTPUT aliases it)
+    outputs:                       # job outputs: stable names from step refs
+      image: build.tag             # lands in resultJson + downstream needs (≤16)
     browser-checks:                # seats-only: Browser Rendering checks after steps
       - name: homepage
         url: https://example.com/
@@ -252,7 +256,7 @@ when any warning fires; the command itself exits 0).
 ## Limits
 
 32 jobs post-expansion, 100 steps/job, 8 matrix keys × 16 values, 8 labels,
-32 env vars, 8 services, 16 cache paths, 10 cache restore-keys, 32 artifact paths,
+32 env vars, 8 services, 16 cache paths, 10 cache restore-keys, 16 job outputs, 32 artifact paths,
 10 browser-checks/job (30 s each, ≤10 actions/check), 32 egress allow domains, 64 KB file.
 16 profiles, 32 include/exclude entries/profile, 8 tags/job.
 

@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { executeSteps, parseDefinition } from "./execute";
 
@@ -90,6 +93,63 @@ describe("executeSteps", () => {
     expect(out.success).toBe(false);
     expect(out.results[0].durationMs).toBeLessThan(10000);
   });
+
+  it("collects $FLARE_OUTPUT per step id with a step<N> fallback", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-exec-out-"));
+    try {
+      const out = await executeSteps(
+        [
+          { run: 'echo "url=https://x.example" >> "$FLARE_OUTPUT"', id: "deploy" },
+          { run: 'echo "sha=abc" >> "$GITHUB_OUTPUT"' },
+        ],
+        { cwd: dir, env: { ...process.env } },
+      );
+      expect(out.success).toBe(true);
+      expect(out.stepOutputs).toEqual({ deploy: { url: "https://x.example" }, step2: { sha: "abc" } });
+      expect(out.log).toContain("[outputs] step deploy: url=https://x.example");
+      expect(existsSync(join(dir, ".flare-output-0"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes failed-step outputs but nothing for skipped steps", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-exec-out-"));
+    try {
+      const out = await executeSteps(
+        [
+          { run: 'echo "partial=1" >> "$FLARE_OUTPUT"; exit 3' },
+          { run: 'echo "never=1" >> "$FLARE_OUTPUT"' },
+        ],
+        { cwd: dir, env: { ...process.env } },
+      );
+      expect(out.success).toBe(false);
+      expect(out.stepOutputs).toEqual({ step1: { partial: "1" } });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("notes truncated values and ignored lines", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-exec-out-"));
+    try {
+      const out = await executeSteps(
+        [
+          {
+            run: 'python3 -c "print(\'big=\' + \'x\'*2000)" >> "$FLARE_OUTPUT"; echo "garbage line" >> "$FLARE_OUTPUT"; echo "ok=1" >> "$FLARE_OUTPUT"',
+          },
+        ],
+        { cwd: dir, env: { ...process.env } },
+      );
+      expect(out.success).toBe(true);
+      expect(out.stepOutputs.step1?.big?.length).toBe(1024);
+      expect(out.stepOutputs.step1?.ok).toBe("1");
+      expect(out.log).toContain("truncated values: big");
+      expect(out.log).toContain("ignored lines: 1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("parseDefinition", () => {
@@ -106,5 +166,11 @@ describe("parseDefinition", () => {
       { run: "a", continueOnError: true },
     ]);
     expect(parseDefinition(JSON.stringify({ steps: [{ run: "a", continueOnError: "yes" }] }))).toBeNull();
+  });
+
+  it("round-trips step ids and rejects bad or duplicate ones", () => {
+    expect(parseDefinition(JSON.stringify({ steps: [{ run: "a", id: "deploy" }] }))).toEqual([{ run: "a", id: "deploy" }]);
+    expect(parseDefinition(JSON.stringify({ steps: [{ run: "a", id: "9bad" }] }))).toBeNull();
+    expect(parseDefinition(JSON.stringify({ steps: [{ run: "a", id: "x" }, { run: "b", id: "x" }] }))).toBeNull();
   });
 });

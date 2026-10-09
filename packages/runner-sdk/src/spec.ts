@@ -4,6 +4,7 @@
 // (Seats-only keys like browserChecks stay strict: dropping them would
 // silently skip verification, so malformed means fail closed.)
 import { validatePreviewTemplate } from "./browser.ts";
+import { MAX_JOB_OUTPUTS, isValidOutputName, parseOutputRef } from "./outputs.ts";
 import { MAX_RESTORE_KEYS, isValidRestoreKey } from "./parity.ts";
 
 export interface JobServiceSpec {
@@ -28,7 +29,9 @@ export interface JobTestReportsSpec {
 }
 
 export interface JobSpec {
-  steps: { run: string; continueOnError?: boolean; if?: string; timeoutMinutes?: number; shell?: string }[];
+  steps: { run: string; id?: string; continueOnError?: boolean; if?: string; timeoutMinutes?: number; shell?: string }[];
+  // Job outputs: stable names mapped from step refs (`stepid.key`).
+  outputs?: Record<string, string>;
   base?: string;
   // Selector labels for CI profiles (mirrors worker pipeline.ts `tags`).
   tags?: string[];
@@ -165,12 +168,18 @@ export function parseJobSpec(definition: string): JobSpec | null {
     return null;
   }
   if (!isRecord(parsed) || !Array.isArray(parsed.steps) || parsed.steps.length === 0) return null;
-  const steps: { run: string; continueOnError?: boolean; if?: string; timeoutMinutes?: number; shell?: string }[] = [];
+  const steps: { run: string; id?: string; continueOnError?: boolean; if?: string; timeoutMinutes?: number; shell?: string }[] = [];
+  const seenIds = new Set<string>();
   for (const s of parsed.steps) {
     if (!isRecord(s) || typeof s.run !== "string" || !s.run.trim()) return null;
-    const step: { run: string; continueOnError?: boolean; if?: string; timeoutMinutes?: number; shell?: string } = {
+    const step: { run: string; id?: string; continueOnError?: boolean; if?: string; timeoutMinutes?: number; shell?: string } = {
       run: s.run,
     };
+    if (s.id !== undefined) {
+      if (typeof s.id !== "string" || !isValidOutputName(s.id) || seenIds.has(s.id)) return null;
+      seenIds.add(s.id);
+      step.id = s.id;
+    }
     if (s.continueOnError !== undefined) {
       if (typeof s.continueOnError !== "boolean") return null;
       step.continueOnError = s.continueOnError;
@@ -193,6 +202,17 @@ export function parseJobSpec(definition: string): JobSpec | null {
     steps.push(step);
   }
   const spec: JobSpec = { steps };
+  if (parsed.outputs !== undefined) {
+    if (!isRecord(parsed.outputs)) return null;
+    const entries = Object.entries(parsed.outputs);
+    if (entries.length === 0 || entries.length > MAX_JOB_OUTPUTS) return null;
+    const outputs: Record<string, string> = {};
+    for (const [name, ref] of entries) {
+      if (!isValidOutputName(name) || typeof ref !== "string" || !parseOutputRef(ref)) return null;
+      outputs[name] = ref;
+    }
+    spec.outputs = outputs;
+  }
   if (typeof parsed.base === "string" && parsed.base) spec.base = parsed.base;
   if (parsed.tags !== undefined) {
     if (

@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
 import { createTar, restoreCache, safeCachePaths, saveCache, type CacheClient } from "./cache.ts";
 import { executeSteps } from "./execute.ts";
+import { formatOutputsLine, resolveJobOutputs } from "./outputs.ts";
 import { formatBytes, JobResourceMonitor, type ResourceMonitor, type ResourcePeaks } from "./resources.ts";
 import { interpolateSecrets, maskSecrets } from "./secrets.ts";
 import { dockerServicesCtl, type ServiceHandle, type ServicesCtl } from "./services.ts";
@@ -49,6 +50,7 @@ export interface RunJobResult {
   resultJson: string;
   cacheHit: boolean;
   artifacts: string[];
+  outputs: Record<string, string>;
 }
 
 export const MAX_ARTIFACT_FILES = 1000;
@@ -231,6 +233,7 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
     resultJson: mask(JSON.stringify({ steps: [], error: msg })),
     cacheHit: false,
     artifacts: [],
+    outputs: {},
   });
   if (opts.secretsError) {
     logParts.push("[setup] warning: repo secrets unavailable (decrypt failed), placeholders render empty");
@@ -307,6 +310,17 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
         containerEnv: forwardKeys,
       });
       logParts.push(outcome.log);
+      // Job outputs resolve from collected step outputs (missing refs
+      // stay absent — a typo must not publish an empty value).
+      const resolved = resolveJobOutputs(spec.outputs ?? {}, outcome.stepOutputs);
+      if (spec.outputs) {
+        if (Object.keys(resolved.outputs).length > 0) {
+          logParts.push(`[outputs] job: ${formatOutputsLine(resolved.outputs)}`);
+        }
+        for (const name of resolved.missing) {
+          logParts.push(`[outputs] missing: ${name} (${spec.outputs[name]} not emitted)`);
+        }
+      }
       if (spec.cache && outcome.success) {
         const s = await saveCache(opts.client, { key: spec.cache.key, dir: opts.cwd, paths: spec.cache.paths });
         logParts.push(s.saved ? `[cache] saved ${spec.cache.key} (${s.bytes}b)` : `[cache] save skipped${s.error ? `: ${s.error}` : ""}`);
@@ -340,12 +354,14 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
             steps: outcome.results,
             cacheHit,
             artifacts,
+            ...(spec.outputs ? { outputs: resolved.outputs } : {}),
             ...(peaks.peakRssBytes > 0 ? { peakRssBytes: peaks.peakRssBytes } : {}),
             ...(peaks.peakCpuPercent > 0 ? { peakCpuPercent: peaks.peakCpuPercent } : {}),
           }),
         ),
         cacheHit,
         artifacts,
+        outputs: resolved.outputs,
       };
     })();
     const timeout = new Promise<null>((resolve) => {
@@ -360,6 +376,7 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
         resultJson: mask(JSON.stringify({ steps: [], timedOut: true })),
         cacheHit: false,
         artifacts: [],
+        outputs: {},
       };
     }
     return result;

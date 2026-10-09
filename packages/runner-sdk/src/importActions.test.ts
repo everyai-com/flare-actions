@@ -71,6 +71,27 @@ jobs:
     expect(capped.warnings.join("\n")).toContain("trimmed restore-keys to 10");
   });
 
+  it("keeps step ids and maps static job-output refs", () => {
+    const res = convertActionsWorkflow(`
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    outputs:
+      image: \${{ steps.build.outputs.tag }}
+      fancy: \${{ needs.other.outputs.x }}
+    steps:
+      - id: build
+        run: echo tag=v1 >> $GITHUB_OUTPUT
+      - run: npm test
+`);
+    expect(isImportSuccess(res)).toBe(true);
+    if (!isImportSuccess(res)) return;
+    expect(res.yaml).toContain("id: build");
+    expect(res.yaml).toContain("image: build.tag");
+    expect(res.yaml).not.toContain("fancy");
+    expect(res.warnings.join("\n")).toContain("dropped job output `fancy`");
+  });
+
   it("passes through matrix, needs, services, container", () => {
     const res = convertActionsWorkflow(`
 jobs:

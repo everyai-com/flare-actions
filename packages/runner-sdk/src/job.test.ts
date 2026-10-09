@@ -70,6 +70,26 @@ describe("runJob", () => {
     }
   });
 
+  it("resolves job outputs into resultJson and logs missing refs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-out-"));
+    try {
+      const res = await runJob(
+        {
+          steps: [{ run: 'echo "tag=v9" >> "$FLARE_OUTPUT"', id: "build" }],
+          outputs: { image: "build.tag", missing: "build.nope" },
+        },
+        { cwd: dir, env: { ...process.env }, client: fakeClient(), jobId: "j1" },
+      );
+      expect(res.success).toBe(true);
+      expect(res.outputs).toEqual({ image: "v9" });
+      expect(JSON.parse(res.resultJson).outputs).toEqual({ image: "v9" });
+      expect(res.log).toContain("[outputs] job: image=v9");
+      expect(res.log).toContain("[outputs] missing: missing (build.nope not emitted)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("runs steps with env and matrix propagation", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flare-job-"));
     try {

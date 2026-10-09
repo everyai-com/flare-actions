@@ -1,5 +1,6 @@
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { normalizeStepCondition } from "./spec.ts";
+import { MAX_JOB_OUTPUTS, isValidOutputName } from "./outputs.ts";
 import { MAX_RESTORE_KEYS } from "./parity.ts";
 
 // GitHub Actions workflow -> flare.yml translator. Pure and lossless
@@ -70,7 +71,7 @@ const TOOLCHAIN_CHECKS: [RegExp, string][] = [
 ];
 
 interface JobAcc {
-  steps: { run: string; "continue-on-error"?: boolean; if?: string; "timeout-minutes"?: number; shell?: string }[];
+  steps: { run: string; id?: string; "continue-on-error"?: boolean; if?: string; "timeout-minutes"?: number; shell?: string }[];
   env: Record<string, string>;
   cachePaths: string[];
   cacheKey: string | null;
@@ -183,7 +184,12 @@ function convertStep(step: unknown, acc: JobAcc, warnings: string[], jobId: stri
   if (typeof step.run === "string" && step.run.trim()) {
     let run = step.run.trim();
     if (workdir) run = `(cd ${JSON.stringify(workdir)} &&\n${run}\n)`;
-    const out: { run: string; "continue-on-error"?: boolean; if?: string; "timeout-minutes"?: number; shell?: string } = { run };
+    const out: { run: string; id?: string; "continue-on-error"?: boolean; if?: string; "timeout-minutes"?: number; shell?: string } = { run };
+    if (typeof step.id === "string" && isValidOutputName(step.id)) {
+      out.id = step.id;
+    } else if (step.id !== undefined) {
+      warnings.push(`${jobId}: dropped invalid step id \`${String(step.id)}\``);
+    }
     if (step["continue-on-error"] === true) {
       out["continue-on-error"] = true;
     } else if (step["continue-on-error"] !== undefined && step["continue-on-error"] !== false) {
@@ -324,7 +330,33 @@ export function convertActionsWorkflow(text: string): ImportResult {
       if (norm) out.if = norm;
       else warnings.push(`${jobId}: dropped unsupported job condition \`${String(jobDef.if)}\``);
     }
-    if (jobDef.outputs !== undefined) warnings.push(`${jobId}: job outputs ignored`);
+    // Job outputs: only static step refs (`${{ steps.id.outputs.key }}`)
+    // transfer; anything else is warned, never guessed.
+    if (jobDef.outputs !== undefined) {
+      if (!isRecord(jobDef.outputs)) {
+        warnings.push(`${jobId}: dropped unparseable job outputs`);
+      } else {
+        const mapped: Record<string, string> = {};
+        for (const [name, expr] of Object.entries(jobDef.outputs)) {
+          const m = typeof expr === "string" ? /^\$\{\{\s*steps\.([A-Za-z_][\w-]*)\.outputs\.([A-Za-z_][\w-]*)\s*\}\}$/.exec(expr.trim()) : null;
+          if (!isValidOutputName(name) || !m) {
+            warnings.push(`${jobId}: dropped job output \`${name}\` (needs a steps.<id>.outputs.<key> ref)`);
+            continue;
+          }
+          if (!isValidOutputName(m[1]) || !isValidOutputName(m[2])) {
+            warnings.push(`${jobId}: dropped job output \`${name}\` (invalid step ref)`);
+            continue;
+          }
+          mapped[name] = `${m[1]}.${m[2]}`;
+        }
+        const names = Object.keys(mapped);
+        if (names.length > MAX_JOB_OUTPUTS) {
+          warnings.push(`${jobId}: trimmed job outputs to ${MAX_JOB_OUTPUTS}`);
+          for (const extra of names.slice(MAX_JOB_OUTPUTS)) delete mapped[extra];
+        }
+        if (Object.keys(mapped).length > 0) out.outputs = mapped;
+      }
+    }
     out.steps = acc.steps;
     jobs[jobId] = out;
   }

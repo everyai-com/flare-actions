@@ -59,6 +59,25 @@ describe("parseJobSpec", () => {
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], cache: { key: "k" } }))).toBeNull();
   });
 
+  it("keeps step ids and job outputs, rejecting malformed shapes", () => {
+    const good = {
+      steps: [{ run: "x", id: "build" }],
+      outputs: { image: "build.tag" },
+    };
+    const spec = parseJobSpec(JSON.stringify(good));
+    expect(spec?.steps).toEqual([{ run: "x", id: "build" }]);
+    expect(spec?.outputs).toEqual({ image: "build.tag" });
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x", id: "9bad" }] }))).toBeNull();
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x", id: "a" }, { run: "y", id: "a" }] }))).toBeNull();
+    const withSteps = { steps: [{ run: "x", id: "build" }] };
+    expect(parseJobSpec(JSON.stringify({ ...withSteps, outputs: {} }))).toBeNull();
+    expect(parseJobSpec(JSON.stringify({ ...withSteps, outputs: { bad: "no-dot" } }))).toBeNull();
+    expect(parseJobSpec(JSON.stringify({ ...withSteps, outputs: { "9bad": "build.tag" } }))).toBeNull();
+    const many: Record<string, string> = {};
+    for (let i = 0; i < 17; i++) many[`o${i}`] = "build.tag";
+    expect(parseJobSpec(JSON.stringify({ ...withSteps, outputs: many }))).toBeNull();
+  });
+
   it("keeps cache restoreKeys and rejects malformed shapes", () => {
     const good = { steps: [{ run: "x" }], cache: { key: "k", paths: ["y"], restoreKeys: ["node-", "npm-"] } };
     expect(parseJobSpec(JSON.stringify(good))?.cache).toEqual({ key: "k", paths: ["y"], restoreKeys: ["node-", "npm-"] });

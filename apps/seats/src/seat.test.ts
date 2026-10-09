@@ -261,6 +261,8 @@ class FakeContainer implements ContainerCtl {
   // served for cat calls that hit those paths.
   testScan = "";
   testXml = new Map<string, string>();
+  // $FLARE_OUTPUT file contents served for cat calls (step outputs).
+  outputFiles = new Map<string, string>();
   // Smart test selection harvest answers: the `find` listing and the
   // import-line `grep` output the seat feeds the shared walker.
   selectionFind = "";
@@ -348,6 +350,11 @@ class FakeContainer implements ContainerCtl {
       return { exitCode: 0, stdout: bytes(sample) };
     }
     if (cmd[0] === "cat") {
+      const out = this.outputFiles.get(cmd[1] ?? "");
+      if (out !== undefined) return { exitCode: 0, stdout: bytes(out) };
+      // Steps usually publish nothing: a missing outputs file reads as
+      // absent (exit 1), not as the default test-XML blob.
+      if ((cmd[1] ?? "").startsWith("/tmp/flare-output-")) return { exitCode: 1, stdout: bytes("") };
       const hit = this.testXml.get(cmd[1] ?? "");
       return { exitCode: 0, stdout: bytes(hit ?? "blob-bytes-12") };
     }
@@ -1852,6 +1859,29 @@ describe("runSeatJob", () => {
     expect(store.get("cache/k")).toBeDefined();
     expect(db.jobs.get("j1")?.log as string).toContain("[seat] cache hit: k");
     expect([...db.cacheStats.values()]).toEqual([{ hits: 1, misses: 0 }]);
+  });
+
+  it("collects step outputs and resolves the job mapping", async () => {
+    const db = new MemDb();
+    seed(
+      db,
+      DEF({
+        steps: [
+          { run: "echo build", id: "build" },
+          { run: "echo done" },
+        ],
+        outputs: { image: "build.tag", missing: "build.nope" },
+      }),
+    );
+    const container = new FakeContainer();
+    container.outputFiles.set("/tmp/flare-output-0", "tag=v1.2.3\n");
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.log as string).toContain("[outputs] step build: tag=v1.2.3");
+    expect(db.jobs.get("j1")?.log as string).toContain("[outputs] job: image=v1.2.3");
+    expect(db.jobs.get("j1")?.log as string).toContain("[outputs] missing: missing (build.nope not emitted)");
+    expect(JSON.parse((db.jobs.get("j1")?.result ?? "{}") as string).outputs).toEqual({ image: "v1.2.3" });
+    expect(container.calls.some((c) => c.cmd[0] === "cat" && c.cmd[1] === "/tmp/flare-output-0")).toBe(true);
   });
 
   it("restores through restore-keys and names the matching prefix", async () => {

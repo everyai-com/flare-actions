@@ -49,6 +49,7 @@ import { annotateSpan } from "../../worker/src/trace";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
 import type { AiBinding } from "../../worker/src/triage";
 import { interpolateSecrets, maskSecrets } from "../../../packages/runner-sdk/src/secrets";
+import { formatOutputsLine, parseStepOutputs, resolveJobOutputs } from "../../../packages/runner-sdk/src/outputs";
 import { resolveCheckUrl } from "../../../packages/runner-sdk/src/browser";
 import { matrixEnv, parseJobSpec, stepRuns, unsafeTarMember } from "../../../packages/runner-sdk/src/spec";
 import type { JobBrowserActionSpec } from "../../../packages/runner-sdk/src/spec";
@@ -1220,6 +1221,26 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     let timedOutJob = false;
     let anyFailed = false;
     let jobFailed = false;
+    // Collected $FLARE_OUTPUT values by step id (`step<N>` fallback).
+    const stepOutputs: Record<string, Record<string, string>> = {};
+    const collectStepOutputs = async (index: number, label: string): Promise<void> => {
+      // Killed steps still publish what they wrote before dying; a
+      // missing file means the step published nothing.
+      const bytes = await readContainerFile(`/tmp/flare-output-${index}`, 65536);
+      if (!bytes) return;
+      const parsed = parseStepOutputs(decode(bytes));
+      if (Object.keys(parsed.outputs).length > 0) {
+        stepOutputs[label] = parsed.outputs;
+        logParts.push(mask(`[outputs] step ${label}: ${formatOutputsLine(parsed.outputs)}`));
+      }
+      if (parsed.truncated.length > 0 || parsed.ignored > 0) {
+        logParts.push(
+          mask(
+            `[outputs] step ${label}: ${parsed.truncated.length > 0 ? `truncated values: ${parsed.truncated.join(", ")}; ` : ""}ignored lines: ${parsed.ignored}`,
+          ),
+        );
+      }
+    };
     for (let i = 0; i < spec.steps.length; i++) {
       if (Date.now() > deadline) {
         timedOutJob = true;
@@ -1236,15 +1257,18 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       const startedAt = Date.now();
       const shell = step.shell ?? "sh";
       const stepTimeout = step.timeoutMinutes !== undefined ? step.timeoutMinutes * 60000 : timing.stepMs;
+      const outFile = `/tmp/flare-output-${i}`;
       const r = await execBounded(
         ["sh", "-c", `${shell} -s > /tmp/step.log 2>&1; printf 'EXIT:%d' $?`],
-        { stdin: command, env: stepEnv, cwd: WORKDIR },
+        { stdin: command, env: { ...stepEnv, FLARE_OUTPUT: outFile, GITHUB_OUTPUT: outFile }, cwd: WORKDIR },
         stepTimeout,
       );
       const durationMs = Date.now() - startedAt;
+      const label = step.id ?? `step${i + 1}`;
       if (r.timedOut) {
         records.push({ command: mask(command), exitCode: 124, durationMs, output: "[seat] step timed out after 10m" });
         logParts.push(mask(`--- step ${i + 1}: ${command} ---\n[seat] step timed out after 10m\n(exit 124, ${durationMs}ms)`));
+        await collectStepOutputs(i, label);
         anyFailed = true;
         if (step.continueOnError) {
           logParts.push(`--- step ${i + 1} failed but continue-on-error is set ---`);
@@ -1268,6 +1292,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       const output = tail.timedOut ? "" : mask(decode(tail.stdout).trimEnd());
       records.push({ command: mask(command), exitCode, durationMs, output });
       logParts.push(mask(`--- step ${i + 1}: ${command} ---\n${output}\n(exit ${exitCode}, ${durationMs}ms)`));
+      await collectStepOutputs(i, label);
       if (exitCode !== 0) {
         anyFailed = true;
         if (step.continueOnError) {
@@ -1275,6 +1300,17 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
           continue;
         }
         jobFailed = true;
+      }
+    }
+    // Job outputs resolve from collected step outputs (missing refs
+    // stay absent — a typo must not publish an empty value).
+    const resolvedOutputs = resolveJobOutputs(spec.outputs ?? {}, stepOutputs);
+    if (spec.outputs) {
+      if (Object.keys(resolvedOutputs.outputs).length > 0) {
+        logParts.push(mask(`[outputs] job: ${formatOutputsLine(resolvedOutputs.outputs)}`));
+      }
+      for (const name of resolvedOutputs.missing) {
+        logParts.push(mask(`[outputs] missing: ${name} (${spec.outputs[name]} not emitted)`));
       }
     }
     // Shim-log collection: the rows tally at terminal accounting
@@ -1574,6 +1610,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         cacheHit,
         artifacts: uploaded,
         executor: "seat",
+        ...(spec.outputs ? { outputs: resolvedOutputs.outputs } : {}),
         ...(peakRssBytes > 0 ? { peakRssBytes } : {}),
       }),
     ).slice(0, SEAT_RESULT_CAP);

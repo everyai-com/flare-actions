@@ -127,8 +127,10 @@ still takes `flare.yml` or an inline pipeline.
 
 ## Known differences
 
-- No expression engine, no job outputs, no reusable/composite workflows,
-  no JS or container actions.
+- No expression engine, no reusable/composite workflows, no JS or
+  container actions. Step/job outputs transfer (`id:` + static
+  `steps.<id>.outputs.<key>` refs only); single-line `KEY=VALUE`
+  writes to `$GITHUB_OUTPUT` (no heredoc syntax).
 - Caches use Flare's cache semantics (exact-key restore, then
   `restore-keys` prefixes newest-first; saves always land under the
   exact key, even on an exact hit).

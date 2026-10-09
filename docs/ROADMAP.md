@@ -301,7 +301,9 @@ billing event per run.
 - [x] Cache management: `restore-keys` semantics + a dashboard cache
   browser/eviction (shipped Oct 9: ≤10 prefixes, newest-wins,
   BYO/seats/local/importer, admin Cache browser + prefix purge).
-- Step/job outputs and a richer `if:` expression subset.
+- [x] Step/job outputs (shipped Oct 9: `$FLARE_OUTPUT`/`$GITHUB_OUTPUT`
+  collection, `id:` + `outputs:` mapping, `resultJson`, importer).
+  Remaining: a richer `if:` expression subset + `needs` consumption.
 - MCP tools for artifacts and schedules (runs/jobs/flaky already exist).
 - Org-level allowlists for API tokens (repo allowlists shipped).
 - Runner auto-update for BYO fleets.

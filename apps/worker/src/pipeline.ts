@@ -1,10 +1,13 @@
 import { parse as parseYaml } from "yaml";
 import { validatePreviewTemplate } from "../../../packages/runner-sdk/src/browser.ts";
+import { MAX_JOB_OUTPUTS, isValidOutputName, parseOutputRef } from "../../../packages/runner-sdk/src/outputs.ts";
 import { MAX_RESTORE_KEYS, isValidCacheKey, isValidRestoreKey } from "../../../packages/runner-sdk/src/parity.ts";
 import { parseTestSelectionConfig, type TestSelectionConfig } from "./testselect.ts";
 
 export interface PipelineStep {
   run: string;
+  // Stable handle for outputs (`steps.<id>.outputs.<key>`).
+  id?: string;
   // GitHub parity: a failing step with continue-on-error marks the step
   // failed but lets the job proceed and still succeed.
   continueOnError?: boolean;
@@ -130,6 +133,8 @@ export interface PipelineJob {
   // context is needs — `always()`/`failure()` still run after a failed
   // need, `success()` (default) skips.
   if?: string;
+  // Job outputs: stable names mapped from step refs (`stepid.key`).
+  outputs?: Record<string, string>;
   // Managed seats only: keep the failed container for debugging (BYO
   // runners ignore it). YAML key: `retain-on-failure`.
   retainOnFailure?: boolean;
@@ -276,6 +281,7 @@ interface RawJob {
   // recipes. Multiplies with a matrix when both are present.
   shards?: number;
   if?: string;
+  outputs?: Record<string, string>;
   retainOnFailure?: boolean;
   browserChecks?: PipelineBrowserCheck[];
   egress?: PipelineEgress;
@@ -287,11 +293,17 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
   const stepsRaw = def.steps;
   if (!Array.isArray(stepsRaw) || stepsRaw.length === 0 || stepsRaw.length > MAX_STEPS_PER_JOB) return null;
   const steps: PipelineStep[] = [];
+  const seenIds = new Set<string>();
   for (const s of stepsRaw) {
     if (!isRecord(s)) return null;
     const run = s.run;
     if (typeof run !== "string" || !run.trim() || run.length > MAX_RUN_LENGTH) return null;
     const step: PipelineStep = { run: run.trim() };
+    if (s.id !== undefined) {
+      if (typeof s.id !== "string" || !isValidOutputName(s.id) || seenIds.has(s.id)) return null;
+      seenIds.add(s.id);
+      step.id = s.id;
+    }
     if (s["continue-on-error"] !== undefined) {
       if (typeof s["continue-on-error"] !== "boolean") return null;
       step.continueOnError = s["continue-on-error"];
@@ -429,6 +441,17 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     const cond = normalizeStepCondition(def.if);
     if (!cond) return null;
     job.if = cond;
+  }
+  if (def.outputs !== undefined) {
+    if (!isRecord(def.outputs)) return null;
+    const entries = Object.entries(def.outputs);
+    if (entries.length === 0 || entries.length > MAX_JOB_OUTPUTS) return null;
+    const outputs: Record<string, string> = {};
+    for (const [name, ref] of entries) {
+      if (!isValidOutputName(name) || typeof ref !== "string" || !parseOutputRef(ref)) return null;
+      outputs[name] = ref;
+    }
+    job.outputs = outputs;
   }
   if (def["retain-on-failure"] !== undefined) {
     if (typeof def["retain-on-failure"] !== "boolean") return null;
@@ -693,6 +716,7 @@ export function parsePipelineWithProfiles(text: string): ParsedPipeline | null {
         if (r.timeoutMinutes !== undefined) job.timeoutMinutes = r.timeoutMinutes;
         if (r.retry !== undefined) job.retry = r.retry;
         if (r.if !== undefined) job.if = r.if;
+        if (r.outputs) job.outputs = r.outputs;
         if (r.retainOnFailure !== undefined) job.retainOnFailure = r.retainOnFailure;
         if (r.browserChecks) job.browserChecks = r.browserChecks;
         if (r.egress) job.egress = r.egress;
@@ -790,6 +814,7 @@ export function serializeDefinition(job: PipelineJob, baseName: string): string 
     timeoutMinutes: job.timeoutMinutes,
     retry: job.retry,
     if: job.if,
+    outputs: job.outputs,
     retainOnFailure: job.retainOnFailure,
     browserChecks: job.browserChecks,
     egress: job.egress,

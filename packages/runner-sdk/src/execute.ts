@@ -1,9 +1,15 @@
 import { execFile } from "node:child_process";
+import { readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { formatOutputsLine, isValidOutputName, parseStepOutputs } from "./outputs.ts";
 import { dockerArgsForStep } from "./services.ts";
 import { normalizeStepCondition, stepRuns } from "./spec.ts";
 
 export interface ExecStep {
   run: string;
+  // Stable handle for outputs (`steps.<id>.outputs.<key>`); defaults to
+  // `step<N>` when absent.
+  id?: string;
   // GitHub parity: the step may fail without failing the rest of the job.
   continueOnError?: boolean;
   // Bounded condition subset (always()/success()/failure()/cancelled()
@@ -25,6 +31,8 @@ export interface StepsOutcome {
   success: boolean;
   results: StepResult[];
   log: string;
+  // Collected $FLARE_OUTPUT values by step id (`step<N>` fallback).
+  stepOutputs: Record<string, Record<string, string>>;
 }
 
 export interface ExecuteOptions {
@@ -90,6 +98,7 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
   const outputLimit = opts.outputLimitPerStep ?? DEFAULT_OUTPUT_LIMIT;
   const results: StepResult[] = [];
   const logParts: string[] = [];
+  const stepOutputs: Record<string, Record<string, string>> = {};
   // Failure state drives conditionals: default steps stop once the job
   // has failed, while `if: failure()` / `if: always()` steps (cleanup,
   // notifications) still run.
@@ -101,18 +110,47 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
       logParts.push(`--- step ${i + 1}: skipped (${step.if}) ---`);
       continue;
     }
+    // Step outputs: a hidden file under the workdir both sides can see
+    // (container steps run with cwd mounted at /work, so the in-step
+    // path differs but the bytes land in the same file).
+    const outRel = `.flare-output-${i}`;
+    const outHost = join(opts.cwd, outRel);
+    const outStep = opts.container ? `/work/${outRel}` : outHost;
     const r = await runOne({
       command: step.run,
       cwd: opts.cwd,
-      env: opts.env,
+      env: { ...opts.env, FLARE_OUTPUT: outStep, GITHUB_OUTPUT: outStep },
       timeoutMs: step.timeoutMinutes !== undefined ? step.timeoutMinutes * 60000 : timeoutMs,
       outputLimit,
       container: opts.container,
-      containerEnv: opts.containerEnv,
+      containerEnv: opts.container ? [...(opts.containerEnv ?? []), "FLARE_OUTPUT", "GITHUB_OUTPUT"] : opts.containerEnv,
       shell: step.shell ?? "sh",
     });
     results.push(r);
     logParts.push(`--- step ${i + 1}: ${step.run} ---\n${r.output}\n(exit ${r.exitCode}, ${r.durationMs}ms)`);
+    // Failed steps still publish what they wrote before dying (skipped
+    // steps never ran, so they publish nothing).
+    const label = step.id ?? `step${i + 1}`;
+    try {
+      const parsed = parseStepOutputs(readFileSync(outHost, "utf8"));
+      const names = Object.keys(parsed.outputs);
+      if (names.length > 0) {
+        stepOutputs[label] = parsed.outputs;
+        logParts.push(`[outputs] step ${label}: ${formatOutputsLine(parsed.outputs)}`);
+      }
+      if (parsed.truncated.length > 0 || parsed.ignored > 0) {
+        logParts.push(
+          `[outputs] step ${label}: ${parsed.truncated.length > 0 ? `truncated values: ${parsed.truncated.join(", ")}; ` : ""}ignored lines: ${parsed.ignored}`,
+        );
+      }
+    } catch {
+      // No outputs file: the step published nothing.
+    }
+    try {
+      rmSync(outHost, { force: true });
+    } catch {
+      // Best effort; a stale file never affects the next step.
+    }
     if (r.exitCode !== 0) {
       anyFailed = true;
       if (step.continueOnError) {
@@ -122,7 +160,7 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
       }
     }
   }
-  return { success: results.length > 0 && !jobFailed, results, log: logParts.join("\n") };
+  return { success: results.length > 0 && !jobFailed, results, log: logParts.join("\n"), stepOutputs };
 }
 
 export function parseDefinition(definition: string): ExecStep[] | null {
@@ -130,12 +168,18 @@ export function parseDefinition(definition: string): ExecStep[] | null {
     const parsed = JSON.parse(definition) as { steps?: unknown };
     if (!parsed || !Array.isArray(parsed.steps) || parsed.steps.length === 0) return null;
     const steps: ExecStep[] = [];
+    const seenIds = new Set<string>();
     for (const s of parsed.steps) {
       if (typeof s !== "object" || s === null) return null;
       const rec = s as Record<string, unknown>;
       const run = rec.run;
       if (typeof run !== "string" || !run.trim()) return null;
       const step: ExecStep = { run };
+      if (rec.id !== undefined) {
+        if (typeof rec.id !== "string" || !isValidOutputName(rec.id) || seenIds.has(rec.id)) return null;
+        seenIds.add(rec.id);
+        step.id = rec.id;
+      }
       if (rec.continueOnError !== undefined) {
         if (typeof rec.continueOnError !== "boolean") return null;
         step.continueOnError = rec.continueOnError;

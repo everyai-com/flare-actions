@@ -8,6 +8,15 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Step/job outputs: steps publish `KEY=VALUE` lines to `$FLARE_OUTPUT`
+  (`$GITHUB_OUTPUT` aliases it; ≤16 pairs/step, ≤1 KiB values,
+  truncated/ignored counts logged), addressable by step `id:` (unique,
+  else `step<N>`); job `outputs:` maps stable names from static
+  `stepid.key` refs (missing refs stay absent with a log note) and
+  lands in `resultJson` (readable via `GET /v1/runs/:id`). Works on
+  BYO, seats, and `cli local`; the Actions importer keeps `id:` and
+  maps static `steps.<id>.outputs.<key>` refs. Consuming outputs in
+  `needs` contexts and `if:` conditions follows next.
 - Cache `restore-keys` + dashboard cache browser: jobs take ≤10
   prefix fallbacks tried in order on an exact-key miss (newest
   entry wins, logged with the matching prefix; saves still land

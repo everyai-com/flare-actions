@@ -219,6 +219,18 @@ describe("parsePipeline v2 keys", () => {
     expect(parsePipeline("jobs:\n  a:\n    timeout-minutes: 0\n    steps:\n      - run: echo\n")).toBeNull();
   });
 
+  it("parses step ids and job outputs with refs", () => {
+    const jobs = parsePipeline(
+      "jobs:\n  a:\n    outputs:\n      image: build.tag\n    steps:\n      - run: echo x\n        id: build\n",
+    );
+    expect(jobs?.[0].steps).toEqual([{ run: "echo x", id: "build" }]);
+    expect(jobs?.[0].outputs).toEqual({ image: "build.tag" });
+    expect(parsePipeline("jobs:\n  a:\n    steps:\n      - run: x\n        id: 9bad\n")).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    steps:\n      - run: x\n        id: dup\n      - run: y\n        id: dup\n")).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    outputs:\n      bad: no-dot\n    steps:\n      - run: x\n")).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    outputs: {}\n    steps:\n      - run: x\n")).toBeNull();
+  });
+
   it("parses cache restore-keys (list or single string) with a cap", () => {
     const list = parsePipeline(
       "jobs:\n  a:\n    cache:\n      key: node-abc\n      paths: [node_modules]\n      restore-keys: [node-, npm-]\n    steps:\n      - run: echo\n",
