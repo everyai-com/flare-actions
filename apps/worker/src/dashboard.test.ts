@@ -176,6 +176,14 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("migrateWarnings");
   });
 
+  it("wires the repo egress allowlist editor to the admin API", () => {
+    expect(DASHBOARD_HTML).toContain("Egress allowlists");
+    expect(DASHBOARD_HTML).toContain("egressForm");
+    expect(DASHBOARD_HTML).toContain("egressList");
+    expect(DASHBOARD_HTML).toContain("loadEgress");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/egress-allowlist");
+  });
+
   it("renders per-job peak-RSS bars with size-class hints", () => {
     expect(DASHBOARD_HTML).toContain("Resources (peak RSS per job)");
     expect(DASHBOARD_HTML).toContain("sizeClassForPeak");
