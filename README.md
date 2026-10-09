@@ -216,12 +216,23 @@ issue named tokens in the Access tab.
 
 - **Runs** — see every run and drill into job logs; admins can dispatch
   runs by branch, tag, or SHA, and re-run finished jobs from the detail view.
+  A 30-day usage strip (runs, compute-minutes, spend avoided) sits on top.
   Every terminal job also posts a GitHub **Check Run** — the PR page shows
   the failing command, its output tail, and inline annotations parsed from
   `file:line` output — without opening the dashboard (requires the App's
   checks:write permission; commit statuses still work without it). Pull
   request runs also get **one summary comment**, edited in place as the
-  run completes (needs pull_requests:write).
+  run completes (needs pull_requests:write), including a section naming
+  quarantined failures the green check skipped.
+- **Tournaments** — race coding agents on one task with verified CI,
+  collision radar, AI verdict, and an immutable ledger (see
+  [docs/TOURNAMENTS.md](docs/TOURNAMENTS.md)).
+- **Search** — full-text search across all job logs with
+  `repo:`/`branch:`/`level:` filters.
+- **Flaky** — per-job failure rates plus the quarantine list: admins can
+  quarantine a test out of the blocking gate or reinstate it.
+- **Apps** — OAuth apps you authorized on the MCP endpoint, revocable
+  in one click.
 - **Access** — allow GitHub users (view runs), invite teammates by
   email (single-use links, 24h), and issue named tokens: `runner`
   tokens pull jobs and report status (CI machines, teammates),
@@ -229,10 +240,14 @@ issue named tokens in the Access tab.
   admin commands). Each token can be **scoped to specific repos**
   (`repos: owner/name, …`); unscoped tokens see everything. Each token
   is shown once at creation; revoke any token and it stops working
-  immediately. Email users can reset their own password from the login
-  screen when a mail sender is configured. The tab also shows the
-  audit log — who dispatched, reran, or changed settings, most recent
-  first.
+  immediately. **Pair a runner** mints a single-use 10-minute code —
+  paste one command on a fresh machine and it exchanges the code for
+  a token and starts polling. Email users can reset their own password
+  from the login screen when a mail sender is configured. The tab also
+  shows the audit log — who dispatched, reran, or changed settings,
+  most recent first.
+- **Settings** — webhook secret, GitHub App connect, run notifications,
+  budgets, runner mode (`runs-on: flare`), self-healing, and registration.
 
 ## Preview environments
 
@@ -361,8 +376,19 @@ MCP, or CLI. No git ceremony, no sleep loops, no log spelunking.
   `.flare/artifacts/`, and the same execution engine as the server
   (`continue-on-error`, `if:`, needs, matrix). Server dispatch stays the
   parity check.
+  (`continue-on-error`, `if:`, needs, matrix) with the same curated
 - **Priority lane** — `priority: 0–10` on dispatch jumps queued batch
   work, so an agent's verification beats the nightly backlog.
+- **Explain, don't spelunk** — `cli explain <runId>` turns a run into
+  one narrative: verdict first, then failing steps, output tails, triage,
+  and exact rerun commands (`--json` included).
+- **Dry-run dispatch** — append `--dry-run` to `run` / `dispatch`
+  (including `--source`, with no upload) to plan the fan-out —
+  queued/blocked + reasons, runtime priors, live group state, budget
+  verdict — with zero writes.
+- **Machine-shaped I/O** — every CLI command accepts `--json` (one
+  versioned envelope on stdout), and API failures carry a stable `code`
+  + next-step `hint` ([docs/ERRORS.md](docs/ERRORS.md)).
 - **Token-efficient digests** — `GET /v1/runs/:id/digest` (or
   `get_run_digest`) returns each job's failing step command, exit code, a
   bounded output tail, and AI triage in a few KB — context-window friendly,
@@ -467,19 +493,36 @@ npm run cli -- runs                    # list runs
 npm run cli -- local [job]             # run flare.yml here (no server, warm cache)
 npm run cli -- run <repo> <sha>        # dispatch, wait, print the compact digest (exit 1 on failure)
 npm run cli -- run <repo> --source     # upload the working tree and run it (no commit needed)
+npm run cli -- run|dispatch ... --dry-run  # plan the fan-out (queued/blocked/budget), zero writes
 npm run cli -- watch <runId>           # wait on an existing run + digest
 npm run cli -- cancel <runId>          # cancel queued/blocked jobs of a run
 npm run cli -- logs <runId>            # jobs, steps, triage, logs
+npm run cli -- explain <runId>         # one narrative: verdict, failures, next command
 npm run cli -- dispatch <repo> <sha> [--priority N]   # trigger a run
 npm run cli -- rerun <runId> <jobId>   # reset a finished job
 npm run cli -- flaky <repo>            # per-job failure rates
+npm run cli -- bottlenecks <repo>      # slowest checks: p50/p95 run time + queue wait
+npm run cli -- quarantine list|add|remove <repo> [test]  # flaky-test quarantine (admin writes)
+npm run cli -- tests <runId>           # per-test results and failing tests
+npm run cli -- egress <runId>          # per-job egress by host
+npm run cli -- queue [labels]          # live queue + projected claim order (admin)
+npm run cli -- cache list|purge [prefix]  # cache entries (admin)
+npm run cli -- usage [days] [repo]     # runs, jobs, compute-minutes for billing
+npm run cli -- search <query...>       # search all job logs (branch:main level:error ...)
 npm run cli -- artifacts <runId>       # list artifacts
 npm run cli -- badge <repo> [branch]   # badge snippet
 npm run cli -- import <workflow.yml>   # Actions -> flare.yml
 npm run cli -- mcp-config              # MCP client config
-npm run cli -- connect [repo] [--wire] # probe, wire, and verify this repo in one command
+npm run cli -- devbox ...              # persistent warm dev boxes (local docker)
+npm run cli -- connect [repo] [--wire] [--dry-run]  # probe, wire, and verify this repo in one command
 npm run cli -- github-jobs [repo]      # ephemeral runner-mode jobs (status, duration, list price)
 ```
+
+Every command accepts `--json`: stdout becomes one versioned envelope
+`{ version: 1, command, data }` (failures keep stderr + exit codes).
+API failures carry a stable `code` + next-step `hint`
+([docs/ERRORS.md](docs/ERRORS.md)); the CLI prints `hint [code]` after
+the error line.
 
 ## API
 
@@ -487,7 +530,15 @@ npm run cli -- github-jobs [repo]      # ephemeral runner-mode jobs (status, dur
 - `POST /webhooks/github` — GitHub App webhook (HMAC verified)
 - `GET /mcp` — MCP server metadata (public); `POST /mcp` — MCP JSON-RPC
 - `POST /v1/runs/dispatch` — trigger a run by SHA, branch, or tag, optional inline `pipeline`, `priority` (0–10), or `source` (uploaded working tree)
+- `POST /v1/runs/dispatch/dry-run` — plan the fan-out with zero writes (run scope)
 - `POST /v1/source` — upload a gzipped working-tree tarball (≤50 MB); `GET /v1/source/:id` — fetch it (run scope)
+- `POST /v1/admin/pair-codes`, `POST /v1/pair/exchange` — mint a pairing code (admin), exchange it for a runner token (public, throttled)
+- `GET /v1/github/jobs`, `POST /v1/github/jobs/next` — runner-mode job list + JIT claim lane (read / run scope)
+- `GET /v1/bottlenecks?repo=&days=` — slowest checks: p50/p95 run time + queue wait (read scope)
+- `GET|POST /v1/quarantine` — list / add / remove quarantined tests (read scope; admin writes)
+- `GET /v1/runs/:id/tests`, `GET /v1/runs/:id/egress` — per-test results, per-job egress (read scope)
+- `GET /v1/admin/queue`, `GET /v1/usage?days=` — live queue, billing usage (admin / read scope)
+- `GET /v1/search/logs?q=` — full-text log search (read scope)
 - `GET /v1/runs/:id/wait?timeout=` — block until terminal (1–90s), returns the run + `timedOut`
 - `GET|POST|DELETE /v1/admin/secrets` — repo secrets, names listed, values write-only (admin only)
 - `GET /v1/runs?limit=&offset=` — list runs, newest first (admin, runner, or readonly token; limit 1–200)
@@ -542,10 +593,11 @@ See [Workers](https://developers.cloudflare.com/workers/platform/pricing/),
 
 Clone the repo and point any coding agent at it — [AGENTS.md](AGENTS.md)
 teaches it the stack, commands, architecture, and conventions. Scaffold a
-repo in one command with `npx flare init` (writes `flare.yml` + an
-AGENTS.md snippet teaching the verify loop), or install the
+`flare.yml` + an AGENTS.md snippet teaching the verify loop), or install the
 [flare-verify skill](skills/flare-verify/SKILL.md) in Claude Code / Codex
-/ Cursor. `npm run setup` is fully non-interactive (preview with
+/ Cursor — plus the [flare-setup skill](skills/flare-setup/SKILL.md) for
+one-command onboarding (`connect`, wiring, executor, verify).
+`npm run setup` is fully non-interactive (preview with
 `npm run setup -- --dry-run`). The inner loop is `npm run check`: oxlint on
 changed files + one type check + only the affected tests, serialized across
 worktrees (see [docs/DEV-SPEED.md](docs/DEV-SPEED.md)); `npm run check --

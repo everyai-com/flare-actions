@@ -31,7 +31,7 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `npm test` — vitest, colocated `*.test.ts`, must pass
 - `npm run deploy` / `npm run deploy:dry` — deploy / validate only
 - `npm run runner` — external pull-runner (reads `.env` automatically)
-- `npm run cli -- <runs|logs|local|run|watch|cancel|dispatch|rerun|flaky|artifacts|badge|import|mcp-config|tests|cache|usage|egress|queue|devbox|mcp-serve>`
+- `npm run cli -- <runs|logs|explain|local|run|watch|cancel|dispatch|rerun|flaky|bottlenecks|quarantine|init|connect|tests|egress|queue|cache|usage|github-jobs|search|artifacts|badge|import|mcp-config|devbox|mcp-serve>`
   — CLI (reads `.env` automatically)
 
 ## Architecture
@@ -92,7 +92,8 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   maintains flaky quarantine: `flakyCandidates` auto-add, 3-green
   `shouldReinstate`, and both executors run `quarantineDowngrade` before
   the terminal write so an all-quarantined failure lands as success
-  (log note, checks/notify see green).
+  (log note, checks/notify see green). Surface: `GET|POST /v1/quarantine`
+  + `cli quarantine` + the dashboard Flaky tab (admin writes).
 - `apps/worker/src/ratelimit.ts` — auth endpoint throttling (failure
   windows per email + hashed client IP in D1 `auth_attempts`).
 - `apps/worker/src/cron.ts` — 5-field UTC cron parser for scheduled
@@ -101,6 +102,15 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   run digests (failing step + bounded output tail + triage, no full logs)
   and the blocking wait (`GET /v1/runs/:id/wait`) that replaces client
   poll loops. MCP `run_and_wait` composes dispatch + wait + digest.
+  `cli explain` (`apps/cli/src/explain.ts`) narrates a digest;
+  `POST /v1/runs/dispatch/dry-run` (pure `planFanOut` + the shared
+  `loadDispatchJobs` phase) plans fan-out with zero writes; `--dry-run`
+  rides `cli run`/`cli dispatch` incl. `--source`. Every CLI command
+  takes `--json` (`apps/cli/src/json.ts`, `{ version: 1, command, data }`).
+- `apps/worker/src/errors.ts` — stable `code` + next-step `hint` on
+  dispatch/dry-run/claim/webhook/auth/pairing failures (`docs/ERRORS.md`
+  catalogs all 21; messages keep their wording). The SDK throws
+  `FlareApiError` (status/code/hint); the CLI prints `hint [code]`.
 - `apps/worker/src/checks.ts` — per-job GitHub Check Runs (failing
   command + bounded tail + `file:line` annotations on the PR page).
   Needs the App's checks:write; best-effort like every GitHub call.
@@ -108,8 +118,10 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `apps/worker/src/{sources,prcomment}.ts` — source dispatch (uploaded
   working-tree tarballs under `sources/<uuid>`; content-length required,
   50MB cap, 7-day prune, traversal-guarded on extraction) and the single,
-  edited-in-place PR summary comment (pull_requests:write). Source runs
-  (`event: "source"`) skip commit statuses and checks — there is no commit.
+  edited-in-place PR summary comment (pull_requests:write), including a
+  "Quarantined — not blocking" section (`listQuarantinedFailingTests`).
+  Source runs (`event: "source"`) skip commit statuses and checks —
+  there is no commit.
 - `scripts/bench.mjs` (`npm run bench`) — dispatch → claim → terminal
   latency against FLARE_ACTIONS_URL + RUNNER_TOKEN; the script plays the
   runner through the real `/v1/jobs/next` path, so numbers include queue,
@@ -326,6 +338,7 @@ gaps so one-click deploys need zero `wrangler secret` commands.
   `innerHTML`, for API data.
 - Tests colocated as `*.test.ts`; keep Worker unit tests runtime-free
   (`timingSafeEqual` doesn't exist in Node — `bytesEqual` has the fallback).
+  verified (command + date), so readers can tell draft from record.
 
 ## Secrets
 
