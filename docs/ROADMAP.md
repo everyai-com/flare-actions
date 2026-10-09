@@ -267,10 +267,12 @@ round-ups, no creeping meters. Enterprise bills as platform fee + runner
 pool + published overage + a hard cap: over-budget runs are rejected, not
 just alerted — "estimate next month's bill in under five minutes."
 
-**Agent purchasing** (hosted tier): [ ] `flare signup --agent`, prepaid
-credits (buy runner-months), approval-link top-ups, a skill buy-flow, and
-an x402 spike — mapped so an agent can buy capacity without a human
-billing event per run.
+**Agent purchasing** (hosted tier): [x] scaffold shipped Oct 9 —
+`FLARE_CLOUD` flag seam, plan entitlements, prepaid credit ledger,
+and `GET /v1/cloud/status` probe (docs/HOSTED.md; inert on OSS).
+[ ] `flare signup --agent`, approval-link top-ups, a skill
+buy-flow, and an x402 spike — mapped so an agent can buy capacity
+without a human billing event per run.
 
 ## Non-goals (for now)
 

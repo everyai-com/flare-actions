@@ -40,3 +40,5 @@ lane by lane.
 | `token_mint_failed` | 503 | installation token mint failed | reconnect the GitHub App, retry |
 | `jit_mint_failed` | 503 | GitHub JIT config mint failed | check `administration:write`, reinstall, retry |
 | `runner_group_unknown` | 503 | Runner group not found in the org | create the group, or fix its name in Settings |
+| `plan_limit_exceeded` | 429 | hosted plan saturated (concurrent jobs at cap) | raise the cap in Cloud billing, or wait for drain |
+| `hosted_only` | 501 | Cloud surface hit on a self-hosted deploy | runs on Flare Cloud only; OSS stays unlimited |

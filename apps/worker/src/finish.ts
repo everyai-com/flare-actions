@@ -144,6 +144,7 @@ export async function promoteBlockedJobs(
   onQueued?: (job: { runId: string; jobId: string }) => unknown,
   analytics?: AnalyticsEngineDataset,
   basin?: BasinSink,
+  cloud?: { hosted: boolean },
 ): Promise<string[]> {
   const blocked = await listBlockedJobsInRepo(db, repo);
   const promoted: string[] = [];
@@ -175,14 +176,14 @@ export async function promoteBlockedJobs(
       for (const w of needsCtx.warnings) log("warn", "needs context", { runId: job.run_id, jobId: job.id, warning: w });
       if (!jobConditionSatisfied(spec.if, anyFailed, needsCtx.needs)) {
         await setJobStatus(db, job.id, "skipped");
-        await rollupRunStatus(db, job.run_id, analytics, basin);
+        await rollupRunStatus(db, job.run_id, analytics, basin, cloud);
         runJobsCache.delete(job.run_id);
         continue;
       }
     }
     if (spec.group && (await hasActiveGroupJob(db, repo, spec.group))) continue;
     await setJobStatus(db, job.id, "queued");
-    await rollupRunStatus(db, job.run_id, analytics, basin);
+    await rollupRunStatus(db, job.run_id, analytics, basin, cloud);
     await queue.send({ runId: job.run_id, jobId: job.id, repo: job.repo, sha: job.sha });
     await onQueued?.({ runId: job.run_id, jobId: job.id });
     promoted.push(job.id);

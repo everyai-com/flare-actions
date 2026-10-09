@@ -371,6 +371,15 @@ export const SCHEMA_STATEMENTS = [
     last_used_at TEXT NOT NULL,
     snapshots TEXT NOT NULL DEFAULT '[]'
   )`,
+  `CREATE TABLE IF NOT EXISTS credit_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    memo TEXT NOT NULL DEFAULT '',
+    ref TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_ref ON credit_ledger(ref)`,
 ];
 
 // Additive columns for databases created before the matching migration.

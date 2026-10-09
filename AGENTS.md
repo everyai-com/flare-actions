@@ -104,6 +104,13 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   + `cli quarantine` + the dashboard Flaky tab (admin writes);
   `GET /v1/flaky` also suggests candidates (`suggestQuarantine` +
   14-run `testSparkline`) rendered in the tab and `cli flaky`.
+- Flare Cloud scaffold (`cloud.ts`, inert on OSS): env-only
+  `FLARE_CLOUD=1` flag; `cloudVerdict` enforces a concurrent-runner
+  cap (`cloud_entitlements` JSON) at all four dispatch entries;
+  `credit_ledger` tracks prepaid grants + exactly-once run spend
+  (1¢/min, `run:<id>` refs) behind `cloud_metering`, threaded into
+  every terminal rollup (worker + seats); admin settings provision
+  both; `GET /v1/cloud/status` probes. Docs: `docs/HOSTED.md`.
 - `apps/worker/src/ratelimit.ts` — auth endpoint throttling (failure
   windows per email + hashed client IP in D1 `auth_attempts`).
 - `apps/worker/src/cron.ts` — 5-field UTC cron parser for scheduled

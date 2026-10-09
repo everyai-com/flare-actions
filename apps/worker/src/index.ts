@@ -11,6 +11,7 @@ import {
   claimWebhookDelivery,
   createJob,
   createMonitor,
+  countActiveJobs,
   createRun,
   createSchedule,
   createToken,
@@ -116,7 +117,7 @@ import {
   validateSecretName,
   validateSecretValue,
 } from "./secrets";
-import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseBudgetMinutes, parseBudgetMode, parseBudgetKillMultiplier, parseFairSharePerRepo, parseFairSharePerAgent, parseAgentTag, parseGithubRunnerLabels, parseGithubRunnerMode, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseRunnerGroupCache, parseStoredBudgets, parseSupersedeBranchRuns, parseTriageWebSearch, runnerGroupCacheGet, runnerGroupCacheSet, validateBillingApiToken, validateCloudflareAccountId, validateGithubRunnerGroupName, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateRunnerVersion, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
+import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseBudgetMinutes, parseBudgetMode, parseBudgetKillMultiplier, parseFairSharePerRepo, parseFairSharePerAgent, parseAgentTag, parseGithubRunnerLabels, parseGithubRunnerMode, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseRunnerGroupCache, parseStoredBudgets, parseSupersedeBranchRuns, parseTriageWebSearch, runnerGroupCacheGet, runnerGroupCacheSet, validateBillingApiToken, validateCloudEntitlements, validateCloudMetering, validateCloudflareAccountId, validateGithubRunnerGroupName, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateRunnerVersion, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
 import {
   addAllowedUser,
   beginOAuth,
@@ -214,6 +215,7 @@ import {
 } from "./ghrunners";
 import { basinJobTerminal, basinRunDispatched, basinSink, sendBasin, type BasinSink } from "./basin";
 import { ACTIONS_LIST_USD_PER_MIN, jobDurationMs, summarizeRunCost } from "./cost";
+import { cloudMetering, creditBalance, grantCredits, hostedMode, parseCloudEntitlements, recentLedger } from "./cloud";
 import { runGenerateWithStatus } from "./generate";
 import { getCacheStats, handleCacheGet, handleCachePut, listCacheEntries, parseRestoreKeysParam, pruneCacheStats, purgeCachePrefix, recordCacheOutcome } from "./cache";
 import { deleteJobArtifacts, handleArtifactGet, handleArtifactPut, listRunArtifacts, pruneOldCache } from "./artifacts";
@@ -469,6 +471,11 @@ async function serveMcpRequest(
           await audit(env.DB, props.actor, "budget.blocked", `${input.repo} ${verdict.usedMinutes}/${verdict.cap}`);
           throw new Error(`monthly budget exceeded for ${input.repo} (${verdict.usedMinutes}/${verdict.cap} compute-minutes)`);
         }
+        const cloud = await cloudVerdict(env);
+        if (cloud) {
+          await audit(env.DB, props.actor, "cloud.plan_limited", `${input.repo} ${cloud.used}/${cloud.cap}`);
+          throw new Error(`Flare Cloud plan saturated (${cloud.used}/${cloud.cap} concurrent jobs) — raise the cap or wait for jobs to drain`);
+        }
         const out = await dispatchRun(env, { repo: input.repo, sha: input.sha, ref: input.ref ?? "", pipeline: input.pipeline, agent: input.agent, profile: input.profile }, basin);
         await audit(env.DB, props.actor, "run.dispatch", out.runId);
         for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
@@ -721,6 +728,19 @@ async function budgetVerdict(
   return { mode: "mode" in parsed ? parsed.mode : "warn", cap, usedMinutes };
 }
 
+// Flare Cloud entitlement verdict: null on self-hosted deploys (no
+// gate, zero queries) and on hosted deploys under (or without) a
+// concurrent-runner cap; { cap, used } once the plan is saturated.
+// Mirrors budgetVerdict's enforcement points (MCP/API/webhook/schedule).
+async function cloudVerdict(env: WorkerEnv): Promise<{ cap: number; used: number } | null> {
+  if (!hostedMode(env)) return null;
+  const { maxConcurrentJobs } = parseCloudEntitlements(await getSetting(env.DB, SETTING_KEYS.cloudEntitlements));
+  if (maxConcurrentJobs === null) return null;
+  const used = await countActiveJobs(env.DB);
+  if (used < maxConcurrentJobs) return null;
+  return { cap: maxConcurrentJobs, used };
+}
+
 // Kill switch: when the multiplier is set and a repo burns past
 // cap × multiplier, pause it (dispatch/webhook/schedule refuse until
 // resume) and alert. Idempotent — only the first trip audits + alerts.
@@ -878,7 +898,7 @@ async function createAttestedRun(
     await appendJobLog(env.DB, jobId, `[flare] reused verdict ${planned.status} from attestation ${receipt.id} (identical tree + suite + environment)\n`);
     jobIds.push(jobId);
   }
-  await rollupRunStatus(env.DB, runId, env.ANALYTICS, basin);
+  await rollupRunStatus(env.DB, runId, env.ANALYTICS, basin, cloudMetering(env));
   await audit(env.DB, "system", "attestation.reused", `${input.repo} ${receipt.id} -> ${runId}`);
   log("info", "run attested: reused recorded verdict", { runId, repo: input.repo, sha: input.sha, receiptId: receipt.id, verdict: receipt.verdict });
   return { runId, jobIds, queuedIds: [], blocked: 0, reused: { receiptId: receipt.id, verdict: receipt.verdict } };
@@ -949,7 +969,7 @@ async function createRunAndFanOut(
     const verdict = initialJobStatus(job, groupBlocked);
     // A job that will never run must not supersede its group.
     if (job.group && job.cancelInProgress && verdict.status !== "skipped") {
-      const cancelled = await cancelGroupJobs(env.DB, input.repo, job.group, runId, env.ANALYTICS, basin);
+      const cancelled = await cancelGroupJobs(env.DB, input.repo, job.group, runId, env.ANALYTICS, basin, cloudMetering(env));
       if (cancelled.length > 0) log("info", "concurrency cancelled superseded jobs", { group: job.group, cancelled });
     }
     const status = verdict.status;
@@ -970,12 +990,12 @@ async function createRunAndFanOut(
       await env.RUN_QUEUE.send({ runId, jobId, repo: input.repo, sha: input.sha } satisfies QueueJobMessage);
     }
   }
-  await rollupRunStatus(env.DB, runId, env.ANALYTICS, basin);
+  await rollupRunStatus(env.DB, runId, env.ANALYTICS, basin, cloudMetering(env));
   // Skipped-at-fan-out roots never transition, so without this their
   // dependents would park forever — promote once when any root skipped
   // (promoted jobs queue and wake exactly like fanned-out ones).
   if (skipped > 0 && blocked > 0) {
-    const promoted = await promoteBlockedJobs(env.DB, env.RUN_QUEUE, input.repo, undefined, env.ANALYTICS, basin);
+    const promoted = await promoteBlockedJobs(env.DB, env.RUN_QUEUE, input.repo, undefined, env.ANALYTICS, basin, cloudMetering(env));
     queuedIds.push(...promoted);
   }
   return { runId, jobIds, queuedIds, blocked, reused: null };
@@ -1098,6 +1118,14 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
       await audit(env.DB, "system", "budget.warn", `${repo} ${verdict.usedMinutes}/${verdict.cap}`);
       log("warn", "monthly budget exceeded (warn mode)", { repo, usedMinutes: verdict.usedMinutes, cap: verdict.cap });
     }
+    // Plan guard: a saturated hosted plan skips the webhook like a
+    // budget block (200 so GitHub stops retrying). Self-hosted: null.
+    const cloud = await cloudVerdict(env);
+    if (cloud) {
+      await audit(env.DB, "system", "cloud.plan_limited", `${repo} ${cloud.used}/${cloud.cap}`);
+      log("warn", "run skipped: plan saturated", { repo, used: cloud.used, cap: cloud.cap });
+      return json({ skipped: "plan", used: cloud.used, cap: cloud.cap }, 200);
+    }
     const branch = branchFromRef(payload.ref) || payload.pull_request?.head?.ref || "";
     const tag = payload.ref?.startsWith("refs/tags/") ? payload.ref.slice("refs/tags/".length) : "";
 
@@ -1161,6 +1189,7 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
           runId,
           env.ANALYTICS,
           basinSink(env, ctx),
+          cloudMetering(env),
         );
         if (cancelled.length > 0) {
           log("info", "auto-superseded earlier branch runs", { repo, branch, cancelled: cancelled.length });
@@ -1317,7 +1346,7 @@ async function handleStatusCallback(
         skipped: selectionReport.skipped,
       }).catch((err: unknown) => log("warn", "selection report save failed", { runId, jobId, error: String(err) }));
     }
-    await rollupRunStatus(env.DB, runId, env.ANALYTICS, basinSink(env, ctx));
+    await rollupRunStatus(env.DB, runId, env.ANALYTICS, basinSink(env, ctx), cloudMetering(env));
     // Same post-response maintenance as webhooks: dispatch-driven
     // instances with no push traffic still sweep stuck claims.
     ctx.waitUntil(
@@ -1336,7 +1365,7 @@ async function handleStatusCallback(
     ctx.waitUntil(annotateSpan({ "run.id": runId, "job.id": jobId, status: effectiveStatus }));
     if (isTerminal(effectiveStatus)) {
       const basin = basinSink(env, ctx);
-      const promoted = await promoteBlockedJobs(env.DB, env.RUN_QUEUE, run.repo, (job) => wakeSeat(env, job.jobId), env.ANALYTICS, basin);
+      const promoted = await promoteBlockedJobs(env.DB, env.RUN_QUEUE, run.repo, (job) => wakeSeat(env, job.jobId), env.ANALYTICS, basin, cloudMetering(env));
       if (promoted.length > 0) log("info", "blocked jobs promoted", { runId, promoted });
       // Result monitors ride the terminal transition (best-effort, never blocking).
       const finishedJob = await getJob(env.DB, jobId);
@@ -1785,7 +1814,7 @@ async function rerunJobAndQueue(
   if (!job || job.run_id !== runId) return { ok: false, error: "job not found" };
   const reset = await rerunJob(env.DB, jobId);
   if (!reset) return { ok: false, error: "job not found" };
-  await rollupRunStatus(env.DB, runId, env.ANALYTICS, basin);
+  await rollupRunStatus(env.DB, runId, env.ANALYTICS, basin, cloudMetering(env));
   await env.RUN_QUEUE.send({ runId, jobId, repo: reset.repo, sha: reset.sha } satisfies QueueJobMessage);
   return { ok: true };
 }
@@ -1929,6 +1958,8 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       cloudflareAccountId?: unknown;
       triageModel?: unknown;
       runnerVersion?: unknown;
+      cloudEntitlements?: unknown;
+      cloudMetering?: unknown;
     };
     try {
       body = (await request.json()) as typeof body;
@@ -1960,10 +1991,12 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
     const hasAccountId = body.cloudflareAccountId !== undefined;
     const hasTriageModel = body.triageModel !== undefined;
     const hasRunnerVersion = body.runnerVersion !== undefined;
+    const hasCloudEnt = body.cloudEntitlements !== undefined;
+    const hasCloudMetering = body.cloudMetering !== undefined;
     if (
       !hasWebhook && !hasNotifyFrom && !hasNotifyMode && !hasNotifyWebhook && !hasBadgeHidden &&
       !hasTurnstileSite && !hasTurnstileSecret && !hasFairShare && !hasAgentShare && !hasGateway && !hasWriteConfirm && !hasWebSearch &&
-      !hasHeal && !hasOpenReg && !hasBudget && !hasBudgetMode && !hasKillMultiplier && !hasSupersede && !hasGhMode && !hasGhLabels && !hasGhGroup && !hasBillingToken && !hasAccountId && !hasTriageModel && !hasRunnerVersion
+      !hasHeal && !hasOpenReg && !hasBudget && !hasBudgetMode && !hasKillMultiplier && !hasSupersede && !hasGhMode && !hasGhLabels && !hasGhGroup && !hasBillingToken && !hasAccountId && !hasTriageModel && !hasRunnerVersion && !hasCloudEnt && !hasCloudMetering
     ) {
       return json({ error: "no settings provided" }, 400);
     }
@@ -2210,6 +2243,25 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
         await setSetting(env.DB, SETTING_KEYS.runnerVersion, (value as string).trim());
         await audit(env.DB, ident.actor, "settings.runner_version", (value as string).trim());
       }
+    }
+    if (hasCloudEnt) {
+      const value = body.cloudEntitlements;
+      if (value === null || value === "") {
+        await setSetting(env.DB, SETTING_KEYS.cloudEntitlements, "");
+        await audit(env.DB, ident.actor, "settings.cloud_entitlements", "cleared");
+      } else {
+        const err = validateCloudEntitlements(value);
+        if (err) return json({ error: err }, 400);
+        await setSetting(env.DB, SETTING_KEYS.cloudEntitlements, (value as string).trim());
+        await audit(env.DB, ident.actor, "settings.cloud_entitlements", (value as string).trim());
+      }
+    }
+    if (hasCloudMetering) {
+      const value = body.cloudMetering;
+      const err = validateCloudMetering(value);
+      if (err) return json({ error: err }, 400);
+      await setSetting(env.DB, SETTING_KEYS.cloudMetering, value as string);
+      await audit(env.DB, ident.actor, "settings.cloud_metering", value as string);
     }
     return json({ ok: true });
   } catch (e) {
@@ -2462,6 +2514,18 @@ export default {
             );
           }
         }
+        const cloud = await cloudVerdict(env);
+        if (cloud) {
+          await audit(env.DB, ident.actor, "cloud.plan_limited", `${valid.repo} ${cloud.used}/${cloud.cap}`);
+          return json(
+            {
+              ...apiError("plan_limit_exceeded", `Flare Cloud plan saturated (${cloud.used}/${cloud.cap} concurrent jobs)`),
+              used: cloud.used,
+              cap: cloud.cap,
+            },
+            429,
+          );
+        }
         try {
           const out = await dispatchRun(env, valid, basinSink(env, ctx));
           await audit(env.DB, ident.actor, "run.dispatch", out.runId);
@@ -2514,6 +2578,7 @@ export default {
             })),
           );
           const verdict = await budgetVerdict(env, valid.repo);
+          const dryCloud = await cloudVerdict(env);
           const queued = jobs.filter((job) => job.status === "queued").length;
           const skipped = jobs.filter((job) => job.status === "skipped").length;
           const dryPausedAt = (await getPausedRepos(env.DB))[valid.repo] ?? null;
@@ -2533,6 +2598,7 @@ export default {
             budget: verdict
               ? { mode: verdict.mode, usedMinutes: verdict.usedMinutes, cap: verdict.cap, wouldBlock: verdict.mode === "block" }
               : null,
+            cloud: dryCloud ? { used: dryCloud.used, cap: dryCloud.cap, wouldBlock: true } : null,
           });
         } catch (err) {
           const message = String(err instanceof Error ? err.message : err);
@@ -2828,7 +2894,7 @@ export default {
           fairSharePerAgent: "cap" in agentShare ? agentShare.cap : 0,
         });
         if (!job) return json({ job: null }, 200);
-        await rollupRunStatus(env.DB, job.run_id, env.ANALYTICS, basinSink(env, ctx));
+        await rollupRunStatus(env.DB, job.run_id, env.ANALYTICS, basinSink(env, ctx), cloudMetering(env));
         // Secrets ride the authenticated claim only — never any read API.
         // Undecryptable rows fail open to empty (flagged) rather than
         // stranding the job in a claim loop.
@@ -2974,7 +3040,7 @@ export default {
         const run = await getRun(env.DB, runCancelMatch[1]);
         if (!run || !repoAllowed(ident, run.repo)) return json({ error: "run not found" }, 404);
         const cancelled = await cancelQueuedJobs(env.DB, run.id);
-        await rollupRunStatus(env.DB, run.id, env.ANALYTICS, basinSink(env, ctx));
+        await rollupRunStatus(env.DB, run.id, env.ANALYTICS, basinSink(env, ctx), cloudMetering(env));
         await audit(env.DB, ident.actor, "run.cancel", `${run.id} ${cancelled}`);
         log("info", "run cancelled", { runId: run.id, cancelled });
         return json({ ok: true, cancelled });
@@ -3647,6 +3713,49 @@ export default {
           // Deployment hardening detail: admins only, not the pre-login page.
           ...(ident?.scope === "admin" ? { breakGlass: !!env.ADMIN_TOKEN } : {}),
         });
+      }
+      // Flare Cloud scaffold: public capability probe. Self-hosted
+      // deploys answer hosted:false (everything below 501s there).
+      if (request.method === "GET" && url.pathname === "/v1/cloud/status") {
+        const hosted = hostedMode(env);
+        const entitlements = hosted
+          ? parseCloudEntitlements(await getSetting(env.DB, SETTING_KEYS.cloudEntitlements))
+          : { maxConcurrentJobs: null };
+        return json({
+          hosted,
+          metering: hosted && (await getSetting(env.DB, SETTING_KEYS.cloudMetering)) === "on",
+          maxConcurrentJobs: entitlements.maxConcurrentJobs,
+        });
+      }
+      // Prepaid top-up (Cloud ops only): idempotent on ref so a
+      // retried billing webhook grants once. Hosted-only 501 in OSS.
+      if (request.method === "POST" && url.pathname === "/v1/cloud/credits/grant") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        if (!hostedMode(env)) return json(apiError("hosted_only", "credit grants run on Flare Cloud only"), 501);
+        let body: { amountCents?: unknown; memo?: unknown; ref?: unknown };
+        try {
+          body = (await request.json()) as typeof body;
+        } catch {
+          return json({ error: "invalid JSON body" }, 400);
+        }
+        const out = await grantCredits(
+          env.DB,
+          body.amountCents as number,
+          typeof body.memo === "string" ? body.memo : "",
+          typeof body.ref === "string" && body.ref ? body.ref : crypto.randomUUID(),
+        );
+        if (!out.ok) return json({ error: out.error }, 400);
+        await audit(env.DB, ident.actor, "cloud.grant", `${body.amountCents}c`);
+        return json({ ok: true, balanceCents: await creditBalance(env.DB) });
+      }
+      // Ledger balance + recent rows for `cli credits`. Hosted-only.
+      if (request.method === "GET" && url.pathname === "/v1/cloud/credits/balance") {
+        const ident = await authIdentity(request, env);
+        if (!ident || ident.scope !== "admin") return json({ error: "unauthorized" }, 401);
+        if (!hostedMode(env)) return json(apiError("hosted_only", "the credit ledger runs on Flare Cloud only"), 501);
+        const limit = Number(url.searchParams.get("limit") ?? "20");
+        return json({ balanceCents: await creditBalance(env.DB), recent: await recentLedger(env.DB, limit) });
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/logout") {
         const sessionId = parseSessionCookie(request);
@@ -4341,6 +4450,13 @@ export default {
           await touchScheduleRun(env.DB, s.id);
           await audit(env.DB, "system", "budget.blocked", `${s.repo} ${scheduleBudget.usedMinutes}/${scheduleBudget.cap}`);
           log("warn", "scheduled run skipped: budget", { scheduleId: s.id, repo: s.repo });
+          continue;
+        }
+        const scheduleCloud = await cloudVerdict(env);
+        if (scheduleCloud) {
+          await touchScheduleRun(env.DB, s.id);
+          await audit(env.DB, "system", "cloud.plan_limited", `${s.repo} ${scheduleCloud.used}/${scheduleCloud.cap}`);
+          log("warn", "scheduled run skipped: plan saturated", { scheduleId: s.id, repo: s.repo });
           continue;
         }
         try {

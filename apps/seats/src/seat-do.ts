@@ -57,6 +57,9 @@ export interface SeatsEnv {
   S3_BUCKET?: string;
   S3_ACCESS_KEY_ID?: string;
   S3_SECRET_ACCESS_KEY?: string;
+  // "1" marks the hosted Flare Cloud control plane (env-only, like the
+  // main worker — self-hosted seats never meter). See cloud.ts.
+  FLARE_CLOUD?: string;
 }
 
 type BoundContainer = NonNullable<DurableObjectState["container"]>;
@@ -230,6 +233,7 @@ async function seatDeps(
     artifacts: env.ARTIFACTS ?? null,
     artifactsNamespace: env.ARTIFACTS_NAMESPACE,
     mail: { EMAIL: env.EMAIL, NOTIFY_FROM_EMAIL: env.NOTIFY_FROM_EMAIL, SECRETS_KEY: env.SECRETS_KEY },
+    hosted: env.FLARE_CLOUD === "1" ? true : undefined,
     secretsKey: env.SECRETS_KEY,
     gatewayId: env.AI_GATEWAY_ID,
     webSearch: env.TRIAGE_WEB_SEARCH === "1" ? true : undefined,

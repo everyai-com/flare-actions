@@ -37,6 +37,10 @@ export const SETTING_KEYS = {
   githubRunnerLabels: "github_runner_labels",
   // Internal: last hourly fleet check (anomaly alerts + flaky quarantine).
   fleetCheckedAt: "fleet_checked_at",
+  // Flare Cloud scaffold: plan entitlements JSON + metering switch.
+  // Read only in hosted mode (FLARE_CLOUD=1); inert otherwise.
+  cloudEntitlements: "cloud_entitlements",
+  cloudMetering: "cloud_metering",
 } as const;
 
 export function validateWebhookSecret(secret: unknown): string | null {
@@ -412,4 +416,31 @@ export function runnerGroupCacheSet(
   const trimmed: RunnerGroupCache = {};
   for (const k of keys.slice(keys.length - 50)) trimmed[k] = out[k];
   return trimmed;
+}
+
+// Flare Cloud entitlements provisioning (admin API): a JSON object
+// like {"maxConcurrentJobs": 4}. The range mirrors
+// parseCloudEntitlements in cloud.ts (settings cannot import it —
+// cloud.ts imports settings, so the check stays duplicated here).
+export function validateCloudEntitlements(value: unknown): string | null {
+  if (typeof value !== "string") return "cloud entitlements must be a JSON string like {\"maxConcurrentJobs\": 4}";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return "cloud entitlements must be a JSON string like {\"maxConcurrentJobs\": 4}";
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return "cloud entitlements must be a JSON object like {\"maxConcurrentJobs\": 4}";
+  }
+  const cap = (parsed as { maxConcurrentJobs?: unknown }).maxConcurrentJobs;
+  if (cap !== undefined && (typeof cap !== "number" || !Number.isInteger(cap) || cap < 1 || cap > 10000)) {
+    return "maxConcurrentJobs must be an integer 1..10000";
+  }
+  return null;
+}
+
+export function validateCloudMetering(value: unknown): string | null {
+  if (value !== "on" && value !== "off") return "cloud metering must be on or off";
+  return null;
 }

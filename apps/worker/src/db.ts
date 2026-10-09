@@ -7,6 +7,7 @@ import { ACTIONS_LIST_USD_PER_MIN } from "./cost";
 import { labelsMatch, splitLabels } from "./fairness";
 import { deleteJobLogIndex } from "./search";
 import { storeReceiptForRun } from "./attestation";
+import { recordRunSpend } from "./cloud";
 
 export interface RunRow {
   id: string;
@@ -336,6 +337,7 @@ export async function rollupRunStatus(
   runId: string,
   analytics?: AnalyticsEngineDataset,
   basin?: BasinSink,
+  cloud?: { hosted: boolean },
 ): Promise<string> {
   const jobs = await getJobsForRun(db, runId);
   let status: string;
@@ -359,6 +361,14 @@ export async function rollupRunStatus(
   // (success upgrades a stored failure, anything else is a no-op).
   if (status === "success" || status === "failure") {
     await storeReceiptForRun(db, runId, jobs, status).catch(() => undefined);
+  }
+  // Flare Cloud metering: exactly-once spend for a terminal run.
+  // The hosted bit is the only env input; OSS callers omit it and
+  // pay zero extra queries, and metering defaults off even when
+  // hosted. Best-effort — a ledger write must never fail a rollup.
+  if (cloud?.hosted && isTerminal(status)) {
+    const metered = await getSetting(db, SETTING_KEYS.cloudMetering).catch(() => null);
+    if (metered === "on") await recordRunSpend(db, runId, jobs);
   }
   // At-least-once run.terminal event (queries dedupe by run_id): only
   // terminal rollups pay the extra read, and only when bound. The
@@ -822,6 +832,7 @@ export async function cancelGroupJobs(
   excludeRunId: string,
   analytics?: AnalyticsEngineDataset,
   basin?: BasinSink,
+  cloud?: { hosted: boolean },
 ): Promise<string[]> {
   const res = await db
     .prepare(
@@ -834,7 +845,7 @@ export async function cancelGroupJobs(
   for (const job of res.results) {
     if (readJobSpec(job.definition, job.name).group !== group) continue;
     await setJobStatus(db, job.id, "cancelled");
-    await rollupRunStatus(db, job.run_id, analytics, basin);
+    await rollupRunStatus(db, job.run_id, analytics, basin, cloud);
     cancelled.push(job.id);
   }
   return cancelled;
@@ -850,6 +861,7 @@ export async function cancelSupersededBranchRuns(
   excludeRunId: string,
   analytics?: AnalyticsEngineDataset,
   basin?: BasinSink,
+  cloud?: { hosted: boolean },
 ): Promise<string[]> {
   if (!branch) return [];
   const res = await db
@@ -862,7 +874,7 @@ export async function cancelSupersededBranchRuns(
   const cancelled: string[] = [];
   for (const job of res.results) {
     await setJobStatus(db, job.id, "cancelled");
-    await rollupRunStatus(db, job.run_id, analytics, basin);
+    await rollupRunStatus(db, job.run_id, analytics, basin, cloud);
     cancelled.push(job.id);
   }
   return cancelled;
@@ -881,6 +893,16 @@ export async function monthlyComputeMinutes(db: Db, repo: string, sinceIso: stri
     .first<{ minutes: number }>();
   const minutes = Number(res?.minutes ?? 0);
   return Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 100) / 100 : 0;
+}
+
+// Jobs currently consuming concurrency (queued + running + blocked);
+// drives the Flare Cloud concurrent-runner entitlement check.
+export async function countActiveJobs(db: Db): Promise<number> {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS n FROM jobs WHERE status IN ('queued', 'running', 'blocked')")
+    .bind()
+    .first<{ n: number }>();
+  return row?.n ?? 0;
 }
 
 // Kill switch state: auto-paused repos (repo → pause timestamp).

@@ -212,6 +212,9 @@ export interface SeatDeps {
   spawn?: (jobId: string) => Promise<void>;
   // Run-email sender; absent in unit contexts that never notify.
   mail?: NotifyMailEnv;
+  // Flare Cloud hosted bit (env FLARE_CLOUD=1, threaded by seat-do);
+  // absent = self-hosted, and run-terminal metering stays off.
+  hosted?: boolean;
   // Raw SECRETS_KEY env passthrough; absent means D1-held data key.
   secretsKey?: string;
   // V2 start config (image/entrypoint/instance/snapshot), merged into
@@ -474,7 +477,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       status: "error",
       log: "[seat] refusing to execute: job definition could not be parsed (corrupt or from a newer version)",
     });
-    await rollupRunStatus(deps.db, job.run_id, deps.analytics, deps.basin);
+    await rollupRunStatus(deps.db, job.run_id, deps.analytics, deps.basin, { hosted: deps.hosted === true });
     emitJobTerminal(deps.analytics, {
       repo: run.repo,
       runId: job.run_id,
@@ -591,7 +594,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     await note(`[seat] released: ${detail}`);
     await annotateSpan({ "seat.released": detail.slice(0, 120) });
     await releaseJob(deps.db, jobId);
-    await rollupRunStatus(deps.db, job.run_id, deps.analytics, deps.basin);
+    await rollupRunStatus(deps.db, job.run_id, deps.analytics, deps.basin, { hosted: deps.hosted === true });
     return { status: "released", jobId, detail };
   };
 
@@ -1647,7 +1650,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       }
       return { status: "released", jobId, detail: "job was requeued before completion; result dropped" };
     }
-    await rollupRunStatus(deps.db, job.run_id, deps.analytics, deps.basin);
+    await rollupRunStatus(deps.db, job.run_id, deps.analytics, deps.basin, { hosted: deps.hosted === true });
     await annotateSpan({ "flare.job.status": effectiveStatus, "seat.snapshot.restored": restored });
     // FTS index slice for global log search (best-effort, like monitors).
     await indexJobLog(deps.db, {
@@ -1697,7 +1700,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         status: effectiveStatus,
         log: finalLog,
       });
-      const promoted = await promoteBlockedJobs(deps.db, deps.queue, run.repo, (p) => deps.spawn?.(p.jobId), deps.analytics, deps.basin);
+      const promoted = await promoteBlockedJobs(deps.db, deps.queue, run.repo, (p) => deps.spawn?.(p.jobId), deps.analytics, deps.basin, { hosted: deps.hosted === true });
       if (promoted.length > 0) await note(`[seat] promoted ${promoted.length} job(s)`);
       if (deps.mail) {
         const finalRun = await getRun(deps.db, job.run_id);

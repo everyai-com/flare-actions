@@ -33,6 +33,10 @@ export interface WorkerSecrets {
   // "1" forces Web Search grounding for triage on (D1 triage_web_search
   // decides otherwise; anything else = D1 decides).
   TRIAGE_WEB_SEARCH?: string;
+  // "1" marks the hosted Flare Cloud control plane (set only there).
+  // Env-only by design — never a D1 setting — so self-hosted deploys
+  // can never be paywalled by accident. See cloud.ts / docs/HOSTED.md.
+  FLARE_CLOUD?: string;
   // R2 bucket for cache + artifacts; absent on forks that skipped it.
   CACHE?: R2Bucket;
   // No seats binding here by design: wakes travel over the SEAT_QUEUE

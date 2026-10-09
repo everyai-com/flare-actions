@@ -2241,6 +2241,13 @@ paths:
                 runnerVersion:
                   type: string
                   description: Fleet runner version for BYO auto-update (blank = off)
+                cloudEntitlements:
+                  type: string
+                  description: 'Flare Cloud plan JSON like {"maxConcurrentJobs": 4} (blank = unlimited; inert unless hosted)'
+                cloudMetering:
+                  type: string
+                  enum: [on, off]
+                  description: Flare Cloud run-spend metering switch (default off)
       responses:
         '200':
           description: Settings saved
@@ -3430,6 +3437,120 @@ paths:
                   user:
                     type: object
                     nullable: true
+  /v1/cloud/status:
+    get:
+      tags: [cloud]
+      operationId: cloudStatus
+      summary: Flare Cloud capability probe (hosted flag, metering, plan cap)
+      responses:
+        '200':
+          description: Cloud status (hosted false on self-hosted deploys)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hosted, metering, maxConcurrentJobs]
+                properties:
+                  hosted:
+                    type: boolean
+                  metering:
+                    type: boolean
+                  maxConcurrentJobs:
+                    type: integer
+                    nullable: true
+  /v1/cloud/credits/grant:
+    post:
+      tags: [cloud]
+      operationId: cloudGrantCredits
+      summary: Grant prepaid credits (hosted Cloud ops; 501 in OSS)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amountCents]
+              properties:
+                amountCents:
+                  type: integer
+                  minimum: 1
+                  maximum: 1000000000
+                memo:
+                  type: string
+                  maxLength: 280
+                ref:
+                  type: string
+                  maxLength: 128
+                  description: Idempotency key (retried grants with the same ref credit once)
+      responses:
+        '200':
+          description: Granted (balance after the grant)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, balanceCents]
+                properties:
+                  ok:
+                    type: boolean
+                  balanceCents:
+                    type: integer
+        '501':
+          description: OSS deploy (hosted_only)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/cloud/credits/balance:
+    get:
+      tags: [cloud]
+      operationId: cloudCreditBalance
+      summary: Credit balance + recent ledger rows (hosted; 501 in OSS)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Balance and ledger page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [balanceCents, recent]
+                properties:
+                  balanceCents:
+                    type: integer
+                  recent:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, kind, amountCents, memo, ref, createdAt]
+                      properties:
+                        id:
+                          type: integer
+                        kind:
+                          type: string
+                        amountCents:
+                          type: integer
+                        memo:
+                          type: string
+                        ref:
+                          type: string
+                        createdAt:
+                          type: string
+        '501':
+          description: OSS deploy (hosted_only)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/admin/github/connect:
     post:
       tags: [admin]

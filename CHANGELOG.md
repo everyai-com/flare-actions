@@ -8,6 +8,15 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Flare Cloud scaffold (hosted seam, inert on OSS): env-only
+  `FLARE_CLOUD=1` flag, concurrent-runner plan entitlements enforced
+  at every dispatch entry (429 `plan_limit_exceeded` on API/MCP,
+  skip on webhook/schedule, `cloud.wouldBlock` on dry-run), an
+  exactly-once prepaid credit ledger
+  (`POST /v1/cloud/credits/grant`, `GET /v1/cloud/credits/balance`,
+  501 `hosted_only` in OSS), run-terminal metering at 1¢/min wired
+  through worker + seat executors, and a public
+  `GET /v1/cloud/status` probe. See docs/HOSTED.md.
 - Org-level runner groups for the flare lane: a dashboard group name
   pins JIT registration to that org group (resolved per org, cached
   1 hour, re-save busts); unknown groups fail the claim with
