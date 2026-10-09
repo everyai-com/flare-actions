@@ -27,6 +27,7 @@ import {
   getMonitor,
   getRun,
   getRunEgress,
+  getRunSelections,
   getRunTestJobs,
   getSession,
   getSetting,
@@ -58,6 +59,7 @@ import {
   quarantineDowngrade,
   quarantineTest,
   recentTestStatuses,
+  recentlyFailedTests,
   releaseAdminMarker,
   releaseQuarantinedTest,
   repoUsageByDay,
@@ -65,6 +67,7 @@ import {
   revokeToken,
   rollupRunStatus,
   saveTestReport,
+  saveTestSelection,
   setMonitorEnabled,
   setMonitorMutedUntil,
   setRepoSecret,
@@ -213,6 +216,7 @@ import { apiError, dispatchErrorCode } from "./errors";
 import { billableWindow, fetchBillableUsage, summarizeBillableUsage } from "./billing";
 import { TRIAGE_MODEL } from "./triage";
 import { upsertPrComment } from "./prcomment";
+import { decideSelectionMode, DEFAULT_HISTORY_DAYS, parseSelectionReport, readTestSelectionConfig } from "./testselect";
 import { deleteSource, handleSourceGet, handleSourcePut, pruneOldSources, SOURCE_ID_RE } from "./sources";
 import { buildRunDigest } from "./digest";
 import { annotateSpan, recordSpanException } from "./trace";
@@ -1006,7 +1010,7 @@ async function handleStatusCallback(
   try {
     const ident = await requireScope(request, env, "run");
     if (!ident) return json({ error: "unauthorized" }, 401);
-    let body: { status?: string; jobId?: string; log?: string; result?: unknown };
+    let body: { status?: string; jobId?: string; log?: string; result?: unknown; selection?: unknown };
     try {
       body = (await request.json()) as typeof body;
     } catch {
@@ -1044,6 +1048,19 @@ async function handleStatusCallback(
       // to a superseded execution, so drop it instead of clobbering.
       log("warn", "status report dropped: job not running", { runId, jobId, status: body.status });
       return json({ ok: true, dropped: true });
+    }
+    // Smart test selection skip report: best-effort, never blocks the
+    // status update (invalid shapes are dropped, not 400s).
+    const selectionReport = parseSelectionReport(body.selection);
+    if (selectionReport) {
+      await saveTestSelection(env.DB, {
+        jobId,
+        runId,
+        mode: selectionReport.mode,
+        reason: selectionReport.reason,
+        selected: selectionReport.selected,
+        skipped: selectionReport.skipped,
+      }).catch((err: unknown) => log("warn", "selection report save failed", { runId, jobId, error: String(err) }));
     }
     await rollupRunStatus(env.DB, runId, env.ANALYTICS, basinSink(env, ctx));
     // Same post-response maintenance as webhooks: dispatch-driven
@@ -1128,6 +1145,7 @@ async function handleStatusCallback(
               const jobs = await getJobsForRun(env.DB, runId);
               const failing = await listFailingTests(env.DB, runId, 15).catch(() => []);
               const quarantined = await listQuarantinedFailingTests(env.DB, runId, run.repo, 15).catch(() => []);
+              const selections = await getRunSelections(env.DB, runId).catch(() => []);
               const id = await upsertPrComment(
                 {
                   appId: creds?.appId,
@@ -1142,6 +1160,13 @@ async function handleStatusCallback(
                 jobs,
                 failing.map((f) => ({ jobName: f.job_name, suite: f.suite, name: f.name, message: f.message })),
                 quarantined.map((f) => ({ jobName: f.job_name, suite: f.suite, name: f.name, message: f.message })),
+                selections.map((s) => ({
+                  jobName: jobs.find((j) => j.id === s.job_id)?.name ?? s.job_id.slice(0, 8),
+                  mode: s.mode,
+                  reason: s.reason,
+                  selectedCount: s.selected_count,
+                  skippedCount: s.skipped_count,
+                })),
               );
               if (id && !run.pr_comment_id) await setRunPrComment(env.DB, runId, id).catch(() => undefined);
             })(),
@@ -2286,7 +2311,30 @@ export default {
           log("warn", "repo secrets undecryptable", { repo: job.repo, error: String(err) });
           await audit(env.DB, "system", "secrets.decrypt_failed", job.repo).catch(() => undefined);
         }
-        return json({ job, secrets, secretsError });
+        // Smart test selection decision: the server owns the full-suite
+        // safety net (event/profile/branch) and the failure history; the
+        // executor owns the import-graph walk over its checkout.
+        let selection: { mode: string; reason: string; recentFailures: { suite: string; name: string; classname: string }[] } | null = null;
+        const selectionConfig = readTestSelectionConfig(job.definition);
+        if (selectionConfig) {
+          const claimedRun = await getRun(env.DB, job.run_id);
+          const decision = decideSelectionMode(selectionConfig, {
+            event: claimedRun?.event ?? "",
+            branch: claimedRun?.branch ?? "",
+            profile: claimedRun?.profile ?? null,
+            changedFiles: parseChangedFiles(claimedRun?.changed_files ?? ""),
+          });
+          let recentFailures: { suite: string; name: string; classname: string }[] = [];
+          if (decision.mode === "select") {
+            recentFailures = await recentlyFailedTests(
+              env.DB,
+              job.repo,
+              selectionConfig.historyDays ?? DEFAULT_HISTORY_DAYS,
+            ).catch(() => []);
+          }
+          selection = { mode: decision.mode, reason: decision.reason, recentFailures };
+        }
+        return json({ job, secrets, secretsError, selection });
       }
       // Runner mode (`runs-on: flare`) claim lane: mints an ephemeral
       // JIT config at claim time (1h TTL, single job). The JIT blob is
@@ -2549,6 +2597,56 @@ export default {
             host: r.host,
             reqBytes: r.req_bytes,
             respBytes: r.resp_bytes,
+          })),
+        });
+      }
+      // Smart test selection skip reports: what ran, what was skipped and
+      // why, per job. Jobs without the opt-in config have no rows.
+      const runSelectionMatch = /^\/v1\/runs\/([^/]+)\/selection$/.exec(url.pathname);
+      if (runSelectionMatch && request.method === "GET") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const selectionRun = await getRun(env.DB, runSelectionMatch[1]);
+        if (!selectionRun || !repoAllowed(ident, selectionRun.repo)) return json({ error: "run not found" }, 404);
+        const selections = await getRunSelections(env.DB, runSelectionMatch[1]);
+        const selectionJobs = await getJobsForRun(env.DB, runSelectionMatch[1]);
+        const names = new Map(selectionJobs.map((j) => [j.id, j.name]));
+        const parseList = (raw: string): string[] => {
+          try {
+            const parsed: unknown = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === "string") : [];
+          } catch {
+            return [];
+          }
+        };
+        const parseSkipped = (raw: string): { file: string; reason: string }[] => {
+          try {
+            const parsed: unknown = JSON.parse(raw);
+            if (!Array.isArray(parsed)) return [];
+            return parsed
+              .filter(
+                (s): s is { file: string; reason: string } =>
+                  typeof s === "object" &&
+                  s !== null &&
+                  typeof (s as { file?: unknown }).file === "string" &&
+                  typeof (s as { reason?: unknown }).reason === "string",
+              )
+              .map((s) => ({ file: s.file, reason: s.reason }));
+          } catch {
+            return [];
+          }
+        };
+        return json({
+          runId: runSelectionMatch[1],
+          jobs: selections.map((s) => ({
+            jobId: s.job_id,
+            jobName: names.get(s.job_id) ?? "",
+            mode: s.mode,
+            reason: s.reason,
+            selectedCount: s.selected_count,
+            skippedCount: s.skipped_count,
+            selected: parseList(s.selected_json),
+            skipped: parseSkipped(s.skipped_json),
           })),
         });
       }

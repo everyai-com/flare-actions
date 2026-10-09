@@ -6,7 +6,23 @@ export type { ExecStep, ExecuteOptions, StepResult, StepsOutcome } from "./execu
 export { checkoutRepo, gitAvailable } from "./checkout.ts";
 export type { CheckoutOptions } from "./checkout.ts";
 export { parseJobSpec, matrixEnv } from "./spec.ts";
-export type { JobArtifactsSpec, JobCacheSpec, JobServiceSpec, JobSpec } from "./spec.ts";
+export type { JobArtifactsSpec, JobCacheSpec, JobServiceSpec, JobSpec, JobTestSelectionSpec } from "./spec.ts";
+export {
+  buildImporters,
+  canParsePath,
+  DEFAULT_TEST_PATTERNS,
+  extractTypeScriptImports,
+  failureTouchesFile,
+  groupGrepLines,
+  IMPORT_PARSERS,
+  isTestFile,
+  matchGlob,
+  resolveImport,
+  SELECTED_TESTS_ENV,
+  SELECTION_MODE_ENV,
+  selectTests,
+} from "./testselect.ts";
+export type { ImportParser, RecentFailure, SelectTestsInput, SkippedTest, TestSelection } from "./testselect.ts";
 export { createTar, extractTar, assertSafeTar, restoreCache, safeCachePaths, saveCache } from "./cache.ts";
 export type { CacheClient } from "./cache.ts";
 export { dockerArgsForService, dockerArgsForStep, dockerAvailable, dockerServicesCtl } from "./services.ts";
@@ -297,6 +313,13 @@ export interface FlareDigestStep {
   outputTail: string;
 }
 
+export interface FlareDigestSelection {
+  mode: string;
+  reason: string;
+  selected: number;
+  skipped: number;
+}
+
 export interface FlareDigestJob {
   id: string;
   name: string;
@@ -305,6 +328,7 @@ export interface FlareDigestJob {
   stepCount: number;
   failing?: FlareDigestStep;
   triage?: string;
+  selection?: FlareDigestSelection;
 }
 
 export interface FlareRunDigest {
@@ -318,6 +342,38 @@ export interface FlareRunDigest {
   totalJobs: number;
   failedJobs: number;
   jobs: FlareDigestJob[];
+  testSelection?: { jobs: number; selected: number; skipped: number };
+}
+// Smart test selection claim decision: the server owns the full-suite
+// safety net and the failure history; the executor walks its checkout.
+export interface FlareClaimSelection {
+  mode: string;
+  reason: string;
+  recentFailures: { suite: string; name: string; classname: string }[];
+}
+
+// Per-job skip report: what ran, what was skipped and why.
+export interface FlareSelectionJob {
+  jobId: string;
+  jobName: string;
+  mode: string;
+  reason: string;
+  selectedCount: number;
+  skippedCount: number;
+  selected: string[];
+  skipped: { file: string; reason: string }[];
+}
+
+export interface FlareRunSelection {
+  runId: string;
+  jobs: FlareSelectionJob[];
+}
+
+export interface FlareSelectionReport {
+  mode: "full" | "select";
+  reason: string;
+  selected: string[];
+  skipped: { file: string; reason: string }[];
 }
 
 export interface FlareRun {
@@ -353,6 +409,28 @@ export class FlareApiError extends Error {
     this.code = typeof body.code === "string" ? body.code : null;
     this.hint = typeof body.hint === "string" ? body.hint : null;
   }
+}
+
+// Tolerant claim-decision reader: unknown shapes read as null (no
+// selection) so old runners keep working against newer servers.
+function parseClaimSelection(raw: unknown): FlareClaimSelection | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const rec = raw as Record<string, unknown>;
+  if (typeof rec.mode !== "string" || typeof rec.reason !== "string") return null;
+  if (rec.mode !== "full" && rec.mode !== "select") return null;
+  const failures: FlareClaimSelection["recentFailures"] = [];
+  if (Array.isArray(rec.recentFailures)) {
+    for (const f of rec.recentFailures.slice(0, 200)) {
+      if (typeof f !== "object" || f === null || Array.isArray(f)) continue;
+      const row = f as Record<string, unknown>;
+      failures.push({
+        suite: typeof row.suite === "string" ? row.suite : "",
+        name: typeof row.name === "string" ? row.name : "",
+        classname: typeof row.classname === "string" ? row.classname : "",
+      });
+    }
+  }
+  return { mode: rec.mode, reason: rec.reason, recentFailures: failures };
 }
 
 export class FlareClient {
@@ -393,12 +471,14 @@ export class FlareClient {
   }
 
   // Full claim: the job plus its repo secrets (decrypted server-side for
-  // this authenticated claim only) and a flag when stored secrets could
-  // not be decrypted.
+  // this authenticated claim only), a flag when stored secrets could
+  // not be decrypted, and the smart test selection decision (null when
+  // the job didn't opt in).
   async nextClaim(labels: string[] = []): Promise<{
     job: FlareJob | null;
     secrets: Record<string, string>;
     secretsError: boolean;
+    selection: FlareClaimSelection | null;
   }> {
     const qs = labels.length > 0 ? `?labels=${encodeURIComponent(labels.join(","))}` : "";
     const res = await this.call(`/v1/jobs/next${qs}`);
@@ -407,6 +487,7 @@ export class FlareClient {
       job: FlareJob | null;
       secrets?: Record<string, string>;
       secretsError?: boolean;
+      selection?: unknown;
     };
     const secrets: Record<string, string> = {};
     if (data.secrets && typeof data.secrets === "object") {
@@ -414,7 +495,7 @@ export class FlareClient {
         if (typeof v === "string") secrets[k] = v;
       }
     }
-    return { job: data.job, secrets, secretsError: data.secretsError === true };
+    return { job: data.job, secrets, secretsError: data.secretsError === true, selection: parseClaimSelection(data.selection) };
   }
 
   private static encodeKey(key: string): string {
@@ -650,13 +731,21 @@ export class FlareClient {
     status: string,
     log?: string,
     result?: string,
+    opts?: { selection?: FlareSelectionReport },
   ): Promise<void> {
     const res = await this.call(`/v1/runs/${runId}/status`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jobId, status, log, result }),
+      body: JSON.stringify({ jobId, status, log, result, selection: opts?.selection }),
     });
     if (!res.ok) await this.throwApiError("reportStatus", res);
+  }
+
+  // Smart test selection skip reports for a run (jobs that opted in).
+  async getRunSelection(runId: string): Promise<FlareRunSelection> {
+    const res = await this.call(`/v1/runs/${encodeURIComponent(runId)}/selection`);
+    if (!res.ok) await this.throwApiError("getRunSelection", res);
+    return (await res.json()) as FlareRunSelection;
   }
 
   // Liveness proof while a job runs: servers requeue running jobs that

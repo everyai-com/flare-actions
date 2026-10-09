@@ -28,12 +28,21 @@ export interface FailingTestSnippet {
   message: string;
 }
 
+export interface SelectionSnippet {
+  jobName: string;
+  mode: string;
+  reason: string;
+  selectedCount: number;
+  skippedCount: number;
+}
+
 export function buildPrComment(
   run: RunRow,
   jobs: JobRow[],
   origin: string,
   failingTests: FailingTestSnippet[] = [],
   quarantinedTests: FailingTestSnippet[] = [],
+  selections: SelectionSnippet[] = [],
 ): string {
   const summary = summarizeRunCost(jobs);
   const duration = runDurationMs(run);
@@ -84,6 +93,16 @@ export function buildPrComment(
     }
     lines.push("", "> These failed but are quarantined as flaky, so the check stayed green. Reinstate from the dashboard Flaky tab or `cli quarantine remove`.");
   }
+  if (selections.length > 0) {
+    lines.push("", "#### Test selection", "");
+    for (const s of selections.slice(0, 10)) {
+      if (s.mode === "select") {
+        lines.push(`- \`${s.jobName.slice(0, 80)}\`: ran ${s.selectedCount} affected test(s), skipped ${s.skippedCount} — ${s.reason.slice(0, 160)}`);
+      } else {
+        lines.push(`- \`${s.jobName.slice(0, 80)}\`: full suite — ${s.reason.slice(0, 160)}`);
+      }
+    }
+  }
   if (origin) {
     lines.push("", `[Open the run in the dashboard](${origin.replace(/\/$/, "")}/dashboard)`);
   }
@@ -109,13 +128,14 @@ export async function upsertPrComment(
   jobs: JobRow[],
   failingTests: FailingTestSnippet[] = [],
   quarantinedTests: FailingTestSnippet[] = [],
+  selections: SelectionSnippet[] = [],
 ): Promise<number | null> {
   try {
     if (!env.appId || !env.privateKey || !env.installationId || !env.prNumber) return null;
     const jwt = await mintAppJwt(env.appId, env.privateKey);
     const token = await getInstallationToken(jwt, env.installationId);
     if (!token) return null;
-    const body = JSON.stringify({ body: buildPrComment(run, jobs, env.origin, failingTests, quarantinedTests) });
+    const body = JSON.stringify({ body: buildPrComment(run, jobs, env.origin, failingTests, quarantinedTests, selections) });
     const headers = {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",

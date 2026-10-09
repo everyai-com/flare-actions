@@ -1,4 +1,4 @@
-import { getJobsForRun, getRun, getRunEgress, type Db } from "./db";
+import { getJobsForRun, getRun, getRunEgress, getRunSelections, type Db } from "./db";
 import { jobDurationMs } from "./cost";
 
 // Token-efficient run digest for agents: failures first-class, bounded
@@ -23,6 +23,15 @@ export interface DigestJob {
   // Retain-on-failure: the failed seat container is still alive for
   // debugging until this deadline (absent when not retained).
   retainedUntil?: string;
+  // Smart test selection outcome (absent when the job didn't opt in).
+  selection?: DigestSelection;
+}
+
+export interface DigestSelection {
+  mode: string;
+  reason: string;
+  selected: number;
+  skipped: number;
 }
 
 export interface DigestEgress {
@@ -48,6 +57,8 @@ export interface RunDigest {
   // Self-heal outcome (absent when no heal ran): the fix branch and
   // its draft PR, opened on a failed run when heal_on_failure is on.
   heal?: { branch: string; prUrl: string };
+  // Smart test selection rollup (absent when no job reported one).
+  testSelection?: { jobs: number; selected: number; skipped: number };
 }
 
 const FAILED_STATUSES = ["failure", "error", "cancelled"];
@@ -78,6 +89,8 @@ export async function buildRunDigest(db: Db, runId: string): Promise<RunDigest |
   const run = await getRun(db, runId);
   if (!run) return null;
   const jobs = await getJobsForRun(db, runId);
+  const selections = await getRunSelections(db, runId).catch(() => []);
+  const selectionByJob = new Map(selections.map((s) => [s.job_id, s]));
   const digestJobs: DigestJob[] = jobs.map((j) => {
     const steps = parseDigestSteps(j.result);
     const failing = steps.find((s) => s.exitCode !== 0);
@@ -91,6 +104,15 @@ export async function buildRunDigest(db: Db, runId: string): Promise<RunDigest |
     if (failing) job.failing = failing;
     if (j.triage) job.triage = j.triage.slice(0, 800);
     if (j.retained_until) job.retainedUntil = j.retained_until;
+    const selection = selectionByJob.get(j.id);
+    if (selection) {
+      job.selection = {
+        mode: selection.mode,
+        reason: selection.reason.slice(0, 200),
+        selected: selection.selected_count,
+        skipped: selection.skipped_count,
+      };
+    }
     return job;
   });
   const egressRows = await getRunEgress(db, runId);
@@ -105,6 +127,14 @@ export async function buildRunDigest(db: Db, runId: string): Promise<RunDigest |
   const a = Date.parse(run.created_at);
   const b = Date.parse(run.updated_at);
   const durationMs = Number.isFinite(a) && Number.isFinite(b) && b >= a ? b - a : null;
+  const testSelection =
+    selections.length > 0
+      ? {
+          jobs: selections.length,
+          selected: selections.reduce((n, s) => n + s.selected_count, 0),
+          skipped: selections.reduce((n, s) => n + s.skipped_count, 0),
+        }
+      : undefined;
   return {
     runId: run.id,
     repo: run.repo,
@@ -118,5 +148,6 @@ export async function buildRunDigest(db: Db, runId: string): Promise<RunDigest |
     jobs: digestJobs,
     ...(egress ? { egress } : {}),
     ...(run.heal_branch && run.heal_pr_url ? { heal: { branch: run.heal_branch, prUrl: run.heal_pr_url } } : {}),
+    ...(testSelection ? { testSelection } : {}),
   };
 }

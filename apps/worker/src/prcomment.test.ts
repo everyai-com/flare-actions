@@ -106,6 +106,18 @@ describe("buildPrComment", () => {
     const text = buildPrComment(runRow(), [jobRow()], "");
     expect(text).not.toContain("Quarantined");
   });
+
+  it("reports test selection subsets and full-suite fallbacks", () => {
+    const text = buildPrComment(runRow(), [jobRow()], "", [], [], [
+      { jobName: "test", mode: "select", reason: "2/10 tests affected", selectedCount: 2, skippedCount: 8 },
+      { jobName: "e2e", mode: "full", reason: "scheduled run (nightly safety net)", selectedCount: 0, skippedCount: 0 },
+    ]);
+    expect(text).toContain("#### Test selection");
+    expect(text).toContain("`test`: ran 2 affected test(s), skipped 8");
+    expect(text).toContain("`e2e`: full suite — scheduled run");
+    const plain = buildPrComment(runRow(), [jobRow()], "");
+    expect(plain).not.toContain("Test selection");
+  });
 });
 
 describe("upsertPrComment", () => {

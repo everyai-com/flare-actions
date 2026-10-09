@@ -1,15 +1,18 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   hasSecretPlaceholders,
   runJob,
+  selectTests,
   type JobClient,
   type JobSpec,
   type RunJobResult,
 } from "flare-actions-runner-sdk";
 import { parsePipeline, type PipelineJob } from "../../worker/src/pipeline.ts";
+import { collectWorkspaceFiles } from "../../../packages/runner-sdk/src/testselect-fs.ts";
 import { buildCompatJobs, type WorkflowFile } from "../../worker/src/actionsCompat.ts";
 
 // `cli local`: run flare.yml in the current working tree, on this
@@ -74,7 +77,25 @@ function toSpec(job: PipelineJob): JobSpec {
   }
   if (job.testReports) spec.testReports = { paths: job.testReports.paths };
   if (job.timeoutMinutes !== undefined) spec.timeoutMinutes = job.timeoutMinutes;
+  if (job.testSelection) spec.testSelection = { ...job.testSelection };
   return spec;
+}
+
+// Local diff: uncommitted + staged changes against HEAD. Best-effort —
+// outside a git tree (or when git is missing) this is empty, and
+// selection falls back to the full suite.
+function localChangedFiles(cwd: string): string[] {
+  try {
+    const out = execFileSync("git", ["diff", "--name-only", "HEAD"], {
+      cwd,
+      encoding: "utf8",
+      timeout: 15000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out.split("\n").map((s) => s.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 // Warm, persistent cache across local runs; artifacts land in the tree
@@ -188,6 +209,10 @@ export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
   const quiet = opts.quiet === true;
   const cacheDir = opts.cacheDir ?? join(homedir(), ".flare", "cache", hashKey(opts.cwd).slice(0, 12));
   const artifactsDir = join(opts.cwd, ".flare", "artifacts");
+  // Working-tree facts the cloud would derive from the run row: the
+  // diff feeds FLARE_CHANGED_FILES (like the cloud's changed_files)
+  // and test selection, and the branch feeds FLARE_REF.
+  const changed = localChangedFiles(opts.cwd);
 
   const done = new Map<string, boolean>();
   const results: LocalJobResult[] = [];
@@ -205,7 +230,35 @@ export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
     }
     if (!quiet) console.log(`--- ${job.name} ---`);
     const started = Date.now();
-    const outcome = await runJob(toSpec(job), {
+    // Local test selection: same walker as the runners, over the working
+    // tree, with the git diff as the change set (no failure history —
+    // there is no server). Falls back to the full suite on any doubt.
+    const spec = toSpec(job);
+    let selectionMode = "off";
+    let selectedTests = "";
+    if (spec.testSelection) {
+      try {
+        const harvest = collectWorkspaceFiles(opts.cwd);
+        const result = selectTests({
+          allFiles: harvest.files,
+          contents: harvest.contents,
+          changed,
+          failures: [],
+          ...(spec.testSelection.tests ? { testPatterns: spec.testSelection.tests } : {}),
+        });
+        selectionMode = result.mode;
+        if (result.mode === "select") {
+          selectedTests = result.selected.join("\n");
+          if (!quiet) console.log(`[select] ${result.reason}`);
+        } else if (!quiet) {
+          console.log(`[select] full suite — ${result.reason}`);
+        }
+      } catch {
+        selectionMode = "full";
+        if (!quiet) console.log("[select] selection failed, ran everything");
+      }
+    }
+    const outcome = await runJob(spec, {
       cwd: opts.cwd,
       env: {
         ...env,
@@ -214,6 +267,8 @@ export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
         FLARE_RUN_ID: "local",
         FLARE_JOB_ID: slugify(job.name),
         FLARE_REF: "local",
+        FLARE_TEST_SELECTION: selectionMode,
+        FLARE_SELECTED_TESTS: selectedTests,
       },
       client: localClient(cacheDir, artifactsDir, slugify(job.name)),
       jobId: slugify(job.name),

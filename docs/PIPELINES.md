@@ -51,6 +51,11 @@ jobs:
         screenshot: true           # PNG artifact, default true
     egress:                        # seats-only: outbound domain allowlist
       allow: [example.com]         # exact + subdomains pass; loopback always passes
+    test-selection:                # opt-in: run only tests the diff can affect
+      tests: ["tests/**/*.test.ts"] # which files count as tests (default: **/*.test.* + tests/**)
+      full-on-profiles: [full]     # these profiles always run everything (default [full])
+      full-on-branches: [main]     # these branches always run everything (default [])
+      history-days: 7              # boost tests that failed in the last N days (1-30, default 7)
 ```
 
 ## Semantics
@@ -129,6 +134,24 @@ jobs:
   bypass the shim (as with attribution), and connectionless UDP is
   unenforced. BYO runners and `cli local` fail closed on the key.
   Absent the key, seats observe without enforcing.
+- **`test-selection`** (opt-in smart test selection) maps the run's
+  changed files to affected tests: the executor walks the import
+  graph (TypeScript/JavaScript; more languages later) from each
+  changed file to the test files that import it, boosts tests with
+  recent JUnit failures, sets `FLARE_SELECTED_TESTS`
+  (newline-separated; empty means run everything) and
+  `FLARE_TEST_SELECTION` (`off`/`full`/`select`), and records a
+  per-run skip report (what was skipped and why) surfaced in the run
+  digest, the PR comment, `GET /v1/runs/:id/selection`, and `cli
+  selection`. The safety net always runs the full suite on scheduled
+  (nightly) runs, on `full-on-profiles` (default `[full]`, the merge
+  candidate), on `full-on-branches`, when the diff is unknown, and
+  whenever a change cannot be mapped (other languages, deleted
+  files, non-code files) or maps to zero tests. `true` selects with
+  defaults; `false`/absent disables. Recipes consume the list, e.g.
+  `vitest run $(echo "$FLARE_SELECTED_TESTS")` guarded on
+  `FLARE_TEST_SELECTION = select`.
+
 ## CI profiles (smoke per push / full suite nightly)
 
 An optional `profiles` block maps a profile name to a job selection.
@@ -160,7 +183,15 @@ Selection precedence is explicit override → schedule pin → event default:
 never silent widening); webhooks with a broken selection run everything
 so pushes never fail to dispatch. Dry-run plans report the selected
 
+`FLARE_CHANGED_FILES`, `CI=true`, and the test-selection contract.
+Locally the identity values are working-tree readings (`local`, the
+git branch for `FLARE_REF`, the `git diff --name-only` for
+`FLARE_CHANGED_FILES`); job `env` may still override any of them,
+including `CI`. A host `CI=false` export no longer leaks into local
+steps — the cloud never sees it either.
+
 Two splits remain by design:
+
 - **Images**: `container:` jobs pull the same ref through docker on
   both sides (seats hand such jobs to BYO). Without `container:`,
   steps run natively — on your kernel locally, on the seat's Linux or

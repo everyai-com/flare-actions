@@ -111,6 +111,20 @@ describe("parseJobSpec", () => {
     expect(bad({ allow: ["a.com", "a.com"] })).toBeNull();
     expect(bad("nope")).toBeNull();
   });
+
+  it("keeps test-selection configs and rejects malformed shapes", () => {
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], testSelection: true }))?.testSelection).toEqual({});
+    expect(
+      parseJobSpec(
+        JSON.stringify({ steps: [{ run: "x" }], testSelection: { tests: ["t/**"], fullOnBranches: ["main"], historyDays: 3 } }),
+      )?.testSelection,
+    ).toEqual({ tests: ["t/**"], fullOnBranches: ["main"], historyDays: 3 });
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }] }))?.testSelection).toBeUndefined();
+    const bad = (testSelection: unknown) => parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], testSelection }));
+    expect(bad({ tests: [] })).toBeNull();
+    expect(bad({ historyDays: 31 })).toBeNull();
+    expect(bad("yes")).toBeNull();
+  });
 });
 
 describe("stepRuns", () => {

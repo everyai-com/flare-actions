@@ -8,6 +8,16 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Smart test selection: a job-level `test-selection` opt-in maps the
+  diff to affected tests — a TypeScript/JavaScript import-graph walk
+  (designed for more languages) plus a recent-JUnit-failure boost.
+  Executors set `FLARE_SELECTED_TESTS` (newline-joined, empty = run
+  everything) and `FLARE_TEST_SELECTION` (`off`/`full`/`select`) and
+  record a per-run skip report surfaced in the run digest, the PR
+  comment, `GET /v1/runs/:id/selection`, and `cli selection`. The
+  safety net always runs the full suite on scheduled runs,
+  merge-candidate profiles (`full-on-profiles`, default `[full]`) and
+  branches, unknown diffs, and unmapped changes.
 - CI profiles: an optional `profiles` block in `flare.yml` maps a profile
   name to a job selection (include/exclude by job name or `tags`), with a
   per-event `defaults` map for the smoke-per-push / full-suite-nightly

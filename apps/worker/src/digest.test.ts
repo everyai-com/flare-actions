@@ -53,6 +53,7 @@ class DigestDb implements Db {
     public run: RunRow | null,
     public jobs: JobRow[] = [],
     public egress: { job_id: string; run_id: string; host: string; req_bytes: number; resp_bytes: number }[] = [],
+    public selections: { job_id: string; run_id: string; mode: string; reason: string; selected_count: number; skipped_count: number }[] = [],
   ) {}
 
   prepare(sql: string) {
@@ -65,6 +66,9 @@ class DigestDb implements Db {
           }
           if (norm.startsWith("SELECT * FROM job_egress WHERE run_id")) {
             return { results: this.egress.filter((e) => e.run_id === values[0]) as T[] };
+          }
+          if (norm.startsWith("SELECT * FROM test_selections WHERE run_id")) {
+            return { results: this.selections.filter((s) => s.run_id === values[0]) as T[] };
           }
           throw new Error(`unrouted all: ${norm}`);
         },
@@ -160,4 +164,19 @@ describe("buildRunDigest", () => {
     const plain = await buildRunDigest(new DigestDb(runRow(), [jobRow()]), "run-1");
     expect(plain?.heal).toBeUndefined();
   });
+
+  it("carries per-job selection outcomes and a run rollup", async () => {
+    const digest = await buildRunDigest(
+      new DigestDb(runRow(), [jobRow()], [], [
+        { job_id: "job-1", run_id: "run-1", mode: "select", reason: "2/10 tests affected", selected_count: 2, skipped_count: 8 },
+      ]),
+      "run-1",
+    );
+    expect(digest?.jobs[0].selection).toEqual({ mode: "select", reason: "2/10 tests affected", selected: 2, skipped: 8 });
+    expect(digest?.testSelection).toEqual({ jobs: 1, selected: 2, skipped: 8 });
+    const plain = await buildRunDigest(new DigestDb(runRow(), [jobRow()]), "run-1");
+    expect(plain?.testSelection).toBeUndefined();
+    expect(plain?.jobs[0].selection).toBeUndefined();
+  });
+
 });

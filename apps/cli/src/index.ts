@@ -54,6 +54,7 @@ function usage(): never {
       "  cli init [--force]                          scaffold flare.yml + AGENTS.md snippet + next steps",
       "  cli connect [repo] [--wire] [--dry-run]     probe, wire, and verify this repo in one command",
       "  cli tests <runId>                           per-test results and failing tests",
+      "  cli selection <runId>                       smart test selection: what was skipped and why",
       "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
       "  cli queue [labels]                        live queue + projected claim order (admin)",
       "  cli cache list [prefix]                     list cache entries (admin)",
@@ -416,6 +417,25 @@ try {
       for (const f of t.failing) {
         console.log(`  FAIL ${f.name}${f.suite ? ` (${f.suite})` : ""} [${f.jobName}]`);
         if (f.message) console.log(`       ${f.message.split("\n")[0]?.slice(0, 200)}`);
+      }
+    }
+  } else if (cmd === "selection" && rest[0]) {
+    const s = await client().getRunSelection(rest[0]);
+    if (JSON_MODE) {
+      printJson("selection", s);
+    } else if (s.jobs.length === 0) {
+      console.log("no test selection ran for this run (jobs did not opt in)");
+    } else {
+      for (const j of s.jobs) {
+        if (j.mode === "select") {
+          console.log(`${j.jobName}: selected ${j.selectedCount}, skipped ${j.skippedCount} — ${j.reason}`);
+          for (const skip of j.skipped.slice(0, 20)) {
+            console.log(`  skip ${skip.file} (${skip.reason})`);
+          }
+          if (j.skipped.length > 20) console.log(`  …and ${j.skipped.length - 20} more skipped`);
+        } else {
+          console.log(`${j.jobName}: full suite — ${j.reason}`);
+        }
       }
     }
   } else if (cmd === "egress" && rest[0]) {

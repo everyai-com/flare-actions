@@ -1,4 +1,5 @@
 import { parse as parseYaml } from "yaml";
+import { parseTestSelectionConfig, type TestSelectionConfig } from "./testselect.ts";
 
 export interface PipelineStep {
   run: string;
@@ -74,6 +75,12 @@ export interface PipelineEgress {
   allow: string[];
 }
 
+// Smart test selection (job-level opt-in). The executor walks the
+// import graph from the run's changed files, boosts recently failed
+// tests, sets FLARE_SELECTED_TESTS, and records a skip report.
+// YAML key: `test-selection` (`true` or a mapping).
+export type PipelineTestSelection = TestSelectionConfig;
+
 // Extended keys are optional and only set when the document defines
 // them, so minimal pipelines still parse to exactly { name, steps }.
 export interface PipelineJob {
@@ -108,6 +115,7 @@ export interface PipelineJob {
   retainOnFailure?: boolean;
   browserChecks?: PipelineBrowserCheck[];
   egress?: PipelineEgress;
+  testSelection?: PipelineTestSelection;
 }
 
 export const MAX_JOBS = 32;
@@ -229,6 +237,7 @@ interface RawJob {
   retainOnFailure?: boolean;
   browserChecks?: PipelineBrowserCheck[];
   egress?: PipelineEgress;
+  testSelection?: PipelineTestSelection;
 }
 
 function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<string, string[]> }) | null {
@@ -439,6 +448,14 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     }
     job.egress = { allow: domains };
   }
+  if (def["test-selection"] !== undefined) {
+    // Explicit `false` disables; anything else must parse strictly.
+    if (def["test-selection"] !== false) {
+      const selection = parseTestSelectionConfig(def["test-selection"]);
+      if (!selection) return null;
+      job.testSelection = selection;
+    }
+  }
   if (def.strategy !== undefined) {
     if (!isRecord(def.strategy) || def.strategy.matrix === undefined) return null;
     const axes = parseMatrix(def.strategy.matrix);
@@ -613,6 +630,7 @@ export function parsePipelineWithProfiles(text: string): ParsedPipeline | null {
         if (r.retainOnFailure !== undefined) job.retainOnFailure = r.retainOnFailure;
         if (r.browserChecks) job.browserChecks = r.browserChecks;
         if (r.egress) job.egress = r.egress;
+        if (r.testSelection) job.testSelection = r.testSelection;
         out.push(job);
       }
     }
@@ -709,6 +727,7 @@ export function serializeDefinition(job: PipelineJob, baseName: string): string 
     retainOnFailure: job.retainOnFailure,
     browserChecks: job.browserChecks,
     egress: job.egress,
+    testSelection: job.testSelection,
   });
 }
 

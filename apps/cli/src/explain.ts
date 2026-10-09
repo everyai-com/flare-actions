@@ -78,6 +78,11 @@ export function explainDigest(digest: FlareRunDigest): RunExplanation {
     }
     if (failing.length > 5) lines.push("", `…and ${failing.length - 5} more failing jobs (see: cli logs ${digest.runId})`);
   }
+  if (digest.testSelection && digest.testSelection.jobs > 0) {
+    const sel = digest.testSelection;
+    const noun = sel.jobs === 1 ? "job" : "jobs";
+    lines.push("", `Smart test selection ran in ${sel.jobs} ${noun}: ${sel.selected} test(s) selected, ${sel.skipped} skipped (see: cli selection ${digest.runId}).`);
+  }
 
   return {
     runId: digest.runId,

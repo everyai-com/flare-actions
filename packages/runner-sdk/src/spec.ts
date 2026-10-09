@@ -44,10 +44,21 @@ export interface JobSpec {
   // Managed seats only: outbound allowlist enforced by the LD_PRELOAD
   // shim (BYO runners fail closed).
   egress?: JobEgressSpec;
+  testSelection?: JobTestSelectionSpec;
 }
 
 export interface JobEgressSpec {
   allow: string[];
+}
+
+// Smart test selection (mirrors worker pipeline.ts `test-selection`):
+// presence opts the job in; executors walk the import graph, set
+// FLARE_SELECTED_TESTS, and record a skip report.
+export interface JobTestSelectionSpec {
+  tests?: string[];
+  fullOnProfiles?: string[];
+  fullOnBranches?: string[];
+  historyDays?: number;
 }
 
 export interface JobBrowserCheckSpec {
@@ -294,6 +305,52 @@ export function parseJobSpec(definition: string): JobSpec | null {
       domains.push(dom);
     }
     spec.egress = { allow: domains };
+  }
+  if (parsed.testSelection !== undefined) {
+    const sel = parseTestSelection(parsed.testSelection);
+    if (!sel) return null;
+    spec.testSelection = sel;
+  }
+  return spec;
+}
+
+function selectionStrList(v: unknown, max: number, itemMax: number): string[] | null {
+  if (!Array.isArray(v) || v.length === 0 || v.length > max) return null;
+  const out: string[] = [];
+  for (const item of v) {
+    if (typeof item !== "string" || !item.trim() || item.length > itemMax) return null;
+    out.push(item.trim());
+  }
+  return [...new Set(out)];
+}
+
+// Stored definitions carry camelCase (serializeDefinition); the YAML
+// kebab-case is tolerated so hand-built definitions behave.
+function parseTestSelection(v: unknown): JobTestSelectionSpec | null {
+  if (v === true) return {};
+  if (!isRecord(v)) return null;
+  const spec: JobTestSelectionSpec = {};
+  if (v.tests !== undefined) {
+    const tests = selectionStrList(v.tests, 16, 256);
+    if (!tests) return null;
+    spec.tests = tests;
+  }
+  const profiles = v.fullOnProfiles ?? v["full-on-profiles"];
+  if (profiles !== undefined) {
+    const list = selectionStrList(profiles, 16, 64);
+    if (!list) return null;
+    spec.fullOnProfiles = list;
+  }
+  const branches = v.fullOnBranches ?? v["full-on-branches"];
+  if (branches !== undefined) {
+    const list = selectionStrList(branches, 16, 128);
+    if (!list) return null;
+    spec.fullOnBranches = list;
+  }
+  const days = v.historyDays ?? v["history-days"];
+  if (days !== undefined) {
+    if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 30) return null;
+    spec.historyDays = days;
   }
   return spec;
 }

@@ -34,6 +34,8 @@ class MemDb implements Db {
   monitors: Row[] = [];
   testReports = new Map<string, Row>();
   testCases: Row[] = [];
+  selections = new Map<string, Row>();
+  recentFailures: Row[] = [];
   snapshots = new Map<string, Row>();
   egress: Row[] = [];
   settings = new Map<string, { value: string }>();
@@ -72,6 +74,7 @@ class MemDb implements Db {
     if (norm.startsWith("SELECT * FROM jobs WHERE run_id")) {
       return [...this.jobs.values()].filter((j) => j.run_id === values[0]);
     }
+    if (norm.startsWith("SELECT DISTINCT t.suite AS suite")) return this.recentFailures;
     if (norm.startsWith("SELECT * FROM monitors ORDER BY")) return this.monitors;
     if (norm.includes("status = 'blocked'")) return [];
     if (norm.startsWith("SELECT j.definition, j.name")) return [];
@@ -190,6 +193,13 @@ class MemDb implements Db {
       this.cacheStats.set(key, row);
       return {};
     }
+    if (norm.startsWith("INSERT INTO test_selections")) {
+      this.selections.set(values[0] as string, {
+        job_id: values[0], run_id: values[1], mode: values[2], reason: values[3],
+        selected_count: values[4], skipped_count: values[5], selected_json: values[6], skipped_json: values[7],
+      });
+      return {};
+    }
     throw new Error(`unrouted run: ${norm}`);
   }
 }
@@ -240,6 +250,10 @@ class FakeContainer implements ContainerCtl {
   // served for cat calls that hit those paths.
   testScan = "";
   testXml = new Map<string, string>();
+  // Smart test selection harvest answers: the `find` listing and the
+  // import-line `grep` output the seat feeds the shared walker.
+  selectionFind = "";
+  selectionGrep = "";
   netDevSamples: string[] = [];
   tailBytes = "step-output";
   // Egress-shim probe answer: false keeps every existing test on the
@@ -323,6 +337,12 @@ class FakeContainer implements ContainerCtl {
     }
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("for p in ")) {
       return { exitCode: 0, stdout: bytes(this.testScan) };
+    }
+    if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("find . -type f")) {
+      return { exitCode: 0, stdout: bytes(this.selectionFind) };
+    }
+    if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("grep -rE --exclude-dir")) {
+      return { exitCode: 0, stdout: bytes(this.selectionGrep) };
     }
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("rm -rf")) return { exitCode: 0 };
     if (cmd[0] === "rm") return { exitCode: 0 };
@@ -482,6 +502,38 @@ describe("runSeatJob", () => {
     // FETCH_HEAD (not the raw ref) so branch names and HEAD resolve.
     const checkoutCall = container.calls.find((c) => c.cmd[0] === "sh" && c.cmd[1] === "-s");
     expect(checkoutCall?.opts?.stdin as string).toContain("git checkout -q FETCH_HEAD");
+  });
+
+  it("selects affected tests from the container harvest and records the skip report", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ testSelection: {} }));
+    (db.runs.get("r1") as Row).changed_files = "src/util.ts";
+    const container = new FakeContainer();
+    container.selectionFind = "./src/util.ts\n./src/app.ts\n./tests/app.test.ts\n./tests/other.test.ts\n";
+    container.selectionGrep =
+      './src/app.ts:import { add } from "./util";\n./tests/app.test.ts:import { app } from "../src/app";\n';
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("completed");
+    const stepCall = container.calls.find((c) => c.cmd[2]?.startsWith("sh -s >"));
+    expect(stepCall?.opts?.env).toMatchObject({ FLARE_TEST_SELECTION: "select", FLARE_SELECTED_TESTS: "tests/app.test.ts" });
+    expect(db.selections.get("j1")).toMatchObject({ run_id: "r1", mode: "select", selected_count: 1, skipped_count: 1 });
+    expect(JSON.parse(db.selections.get("j1")?.skipped_json as string)).toEqual([
+      { file: "tests/other.test.ts", reason: "unaffected by this diff" },
+    ]);
+    expect(db.jobs.get("j1")?.log as string).toContain("[seat] test selection: 1/2 tests affected");
+  });
+
+  it("runs the full suite when the diff is unknown", async () => {
+    const db = new MemDb();
+    seed(db, DEF({ testSelection: {} }));
+    const container = new FakeContainer();
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("completed");
+    const stepCall = container.calls.find((c) => c.cmd[2]?.startsWith("sh -s >"));
+    expect(stepCall?.opts?.env).toMatchObject({ FLARE_TEST_SELECTION: "full", FLARE_SELECTED_TESTS: "" });
+    expect(db.selections.get("j1")).toMatchObject({ mode: "full", reason: "changed files unknown" });
+    // No harvest execs: the safety-net call happens before any find/grep.
+    expect(container.calls.some((c) => c.cmd[2]?.startsWith("find . -type f"))).toBe(false);
   });
 
   it("collects and stores JUnit reports from the container", async () => {

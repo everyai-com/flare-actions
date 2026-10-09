@@ -1052,6 +1052,7 @@ export async function pruneOldRuns(
     if (row.source) sources.push(row.source);
     await db.prepare("DELETE FROM test_results WHERE run_id = ?").bind(row.id).run();
     await db.prepare("DELETE FROM test_reports WHERE run_id = ?").bind(row.id).run();
+    await db.prepare("DELETE FROM test_selections WHERE run_id = ?").bind(row.id).run();
     await db.prepare("DELETE FROM job_egress WHERE run_id = ?").bind(row.id).run();
     await db.prepare("DELETE FROM log_fts WHERE run_id = ?").bind(row.id).run();
     await db.prepare("DELETE FROM jobs WHERE run_id = ?").bind(row.id).run();
@@ -1744,6 +1745,87 @@ export async function listQuarantinedFailingTests(db: Db, runId: string, repo: s
 export async function deleteJobTestData(db: Db, jobId: string): Promise<void> {
   await db.prepare("DELETE FROM test_results WHERE job_id = ?").bind(jobId).run();
   await db.prepare("DELETE FROM test_reports WHERE job_id = ?").bind(jobId).run();
+}
+
+export interface RecentFailureRow {
+  suite: string;
+  name: string;
+  classname: string;
+}
+
+// Distinct recently failed tests for a repo (smart test selection
+// history boost): newest failures first, bounded. Empty when the repo
+// has no JUnit history — selection still works from the graph alone.
+export async function recentlyFailedTests(db: Db, repo: string, days: number, limit = 200): Promise<RecentFailureRow[]> {
+  const clamped = Math.min(30, Math.max(1, Math.floor(days) || 7));
+  const cutoff = new Date(Date.now() - clamped * 86400000).toISOString();
+  const res = await db
+    .prepare(
+      `SELECT DISTINCT t.suite AS suite, t.name AS name, t.classname AS classname
+       FROM test_results t JOIN runs r ON r.id = t.run_id
+       WHERE r.repo = ? AND r.created_at >= ? AND t.status IN ('failed', 'error')
+       ORDER BY r.created_at DESC LIMIT ?`,
+    )
+    .bind(repo, cutoff, Math.max(1, Math.min(limit, 500)))
+    .all<RecentFailureRow>();
+  return res.results;
+}
+
+export interface TestSelectionRow {
+  job_id: string;
+  run_id: string;
+  mode: string;
+  reason: string;
+  selected_count: number;
+  skipped_count: number;
+  selected_json: string;
+  skipped_json: string;
+  created_at: string;
+}
+
+// One skip report per job (upsert: reruns overwrite). File lists ride
+// as JSON — counts are first-class so rollups never parse blobs.
+export async function saveTestSelection(
+  db: Db,
+  input: {
+    jobId: string;
+    runId: string;
+    mode: string;
+    reason: string;
+    selected: string[];
+    skipped: { file: string; reason: string }[];
+  },
+): Promise<void> {
+  const selected = input.selected.slice(0, 500);
+  const skipped = input.skipped.slice(0, 200);
+  await db
+    .prepare(
+      `INSERT INTO test_selections (job_id, run_id, mode, reason, selected_count, skipped_count, selected_json, skipped_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(job_id) DO UPDATE SET mode = excluded.mode, reason = excluded.reason,
+       selected_count = excluded.selected_count, skipped_count = excluded.skipped_count,
+       selected_json = excluded.selected_json, skipped_json = excluded.skipped_json, created_at = excluded.created_at`,
+    )
+    .bind(
+      input.jobId,
+      input.runId,
+      input.mode.slice(0, 16),
+      input.reason.slice(0, 500),
+      input.selected.length,
+      input.skipped.length,
+      JSON.stringify(selected).slice(0, 60000),
+      JSON.stringify(skipped).slice(0, 60000),
+      nowIso(),
+    )
+    .run();
+}
+
+export async function getRunSelections(db: Db, runId: string): Promise<TestSelectionRow[]> {
+  const res = await db
+    .prepare("SELECT * FROM test_selections WHERE run_id = ? ORDER BY created_at ASC")
+    .bind(runId)
+    .all<TestSelectionRow>();
+  return res.results;
 }
 
 export interface UsageStats {

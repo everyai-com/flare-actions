@@ -115,10 +115,16 @@ The recurring pains, in practitioners' own terms:
 
 ### Next (weeks)
 
-- [ ] Smart test selection — diff → affected tests (import graph +
+- [x] Smart test selection — diff → affected tests (import graph +
       history), with a full-suite safety net on the merge candidate and
       nightly, and a per-run report of what was skipped and why
       (`FLARE_CHANGED_FILES` is the groundwork)
+      (shipped Oct 8: job-level `test-selection` opt-in, TS/JS
+      import-graph walker + JUnit history boost, `FLARE_SELECTED_TESTS`
+      / `FLARE_TEST_SELECTION` on both executors, full suite on
+      schedule/merge-candidate profiles and branches and unmapped
+      diffs, skip reports in digest + PR comment +
+      `GET /v1/runs/:id/selection` + `cli selection`)
 - [x] Budget kill switches — per-identity attribution, auto-pause on
       runaway loops, alert (PR comment/webhook), resume in one click
       (per-repo caps + warn/block shipped)

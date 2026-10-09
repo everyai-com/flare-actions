@@ -59,6 +59,32 @@ describe("defaultPipeline", () => {
 });
 
 describe("parsePipeline v2 keys", () => {
+  it("parses test-selection opt-in and rejects malformed shapes", () => {
+    const jobs = parsePipeline(
+      "jobs:\n  a:\n    test-selection: true\n    steps:\n      - run: echo\n  b:\n    test-selection:\n      tests: [tests/**/*.test.ts]\n      full-on-profiles: [full]\n      full-on-branches: [main]\n      history-days: 14\n    steps:\n      - run: echo\n",
+    );
+    expect(jobs?.[0].testSelection).toEqual({});
+    expect(jobs?.[1].testSelection).toEqual({
+      tests: ["tests/**/*.test.ts"],
+      fullOnProfiles: ["full"],
+      fullOnBranches: ["main"],
+      historyDays: 14,
+    });
+    expect(parsePipeline("jobs:\n  a:\n    test-selection: false\n    steps:\n      - run: echo\n")?.[0].testSelection).toBeUndefined();
+    expect(parsePipeline("jobs:\n  a:\n    test-selection: sometimes\n    steps:\n      - run: echo\n")).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    test-selection:\n      history-days: 99\n    steps:\n      - run: echo\n")).toBeNull();
+  });
+
+  it("serializes test-selection into job definitions", () => {
+    const jobs = parsePipeline("jobs:\n  a:\n    test-selection: true\n    steps:\n      - run: echo\n");
+    expect(jobs).not.toBeNull();
+    if (!jobs) throw new Error("parse failed");
+    expect(JSON.parse(serializeDefinition(jobs[0], "a")).testSelection).toEqual({});
+    const plain = parsePipeline("jobs:\n  a:\n    steps:\n      - run: echo\n");
+    if (!plain) throw new Error("parse failed");
+    expect("testSelection" in JSON.parse(serializeDefinition(plain[0], "a"))).toBe(false);
+  });
+
   it("parses runs-on labels", () => {
     const jobs = parsePipeline("jobs:\n  a:\n    runs-on: macos\n    steps:\n      - run: echo\n  b:\n    runs-on: [linux, docker]\n    steps:\n      - run: echo\n");
     expect(jobs?.[0].labels).toEqual(["macos"]);

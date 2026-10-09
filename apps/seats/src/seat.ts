@@ -9,11 +9,13 @@ import {
   isTerminal,
   markJobRetained,
   quarantineDowngrade,
+  recentlyFailedTests,
   releaseJob,
   rollupRunStatus,
   saveJobEgress,
   saveSeatSnapshot,
   saveTestReport,
+  saveTestSelection,
   touchSeatSnapshot,
   updateRunningJob,
   type Db,
@@ -38,6 +40,7 @@ import { recordRuntimePrior } from "../../worker/src/priors";
 import { jobDurationMs } from "../../worker/src/cost";
 import { MAX_JUNIT_BYTES, parseJUnit } from "../../worker/src/junit";
 import { seatEligible } from "../../worker/src/pipeline";
+import { decideSelectionMode, DEFAULT_HISTORY_DAYS } from "../../worker/src/testselect";
 import { recordCacheOutcome } from "../../worker/src/cache";
 import { ARTIFACTS_EVENT } from "../../worker/src/artifacts-push";
 import { annotateSpan } from "../../worker/src/trace";
@@ -45,6 +48,10 @@ import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
 import type { AiBinding } from "../../worker/src/triage";
 import { interpolateSecrets, maskSecrets } from "../../../packages/runner-sdk/src/secrets";
 import { matrixEnv, parseJobSpec, stepRuns, unsafeTarMember } from "../../../packages/runner-sdk/src/spec";
+import {
+  groupGrepLines,
+  selectTests,
+} from "../../../packages/runner-sdk/src/testselect";
 
 // Managed-seat job execution: the seat Durable Object drives a Linux
 // container purely through exec calls while writing D1/R2 directly.
@@ -226,6 +233,16 @@ const SNAPSHOT_MAX_AGE_MS = 25 * 86400000;
 // container at this deadline (grace while a session is active is a
 // documented Phase 2 follow-up, not this change).
 const RETAIN_TTL_MS = 30 * 60000;
+// Smart test selection harvest: seat files live in the container, so the
+// import graph is harvested through two bounded execs (a listing plus a
+// candidate-line grep — the SDK parser does the real extraction). Vendor
+// and build dirs are excluded on both sides of the pipe.
+const SELECTION_FIND =
+  "find . -type f -not -path './node_modules/*' -not -path './.git/*' -not -path './dist/*' -not -path './build/*' -not -path './.flare/*' -not -path './coverage/*' | head -n 6000";
+const SELECTION_INCLUDES =
+  "--include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.mjs' --include='*.cjs' --include='*.mts' --include='*.cts'";
+const SELECTION_GREP =
+  `grep -rE --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=build --exclude-dir=.flare --exclude-dir=coverage ${SELECTION_INCLUDES} -e 'import|require\\(' . | head -c 1000000`;
 
 // Per-job egress accounting. Three namespaces, all measured (never
 // estimated): `r2:<area>` rows for the transfers the seat performs on
@@ -873,6 +890,95 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       }
     }
 
+    // Smart test selection: same contract as BYO runners — the seat
+    // owns the safety-net call and the failure history (worker modules),
+    // harvests the import graph through container execs, sets
+    // FLARE_SELECTED_TESTS for the steps, and saves the skip report.
+    // Every failure mode runs the full suite, never a partial guess.
+    let selectionMode = "off";
+    let selectedTests = "";
+    if (spec.testSelection) {
+      const changedFiles = (run.changed_files ?? "")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const decision = decideSelectionMode(
+        spec.testSelection,
+        { event: run.event, branch: run.branch ?? "", profile: run.profile ?? null, changedFiles },
+      );
+      if (decision.mode !== "select") {
+        selectionMode = "full";
+        await saveTestSelection(deps.db, {
+          jobId,
+          runId: run.id,
+          mode: "full",
+          reason: decision.reason,
+          selected: [],
+          skipped: [],
+        }).catch(() => undefined);
+        await note(`[seat] test selection: full suite — ${decision.reason}`.slice(0, 500));
+      } else {
+        try {
+          const listing = await execBounded(["sh", "-c", SELECTION_FIND], { cwd: WORKDIR }, 30000);
+          const allFiles = listing.timedOut
+            ? []
+            : decode(listing.stdout)
+              .split("\n")
+              .map((n) => n.trim().replace(/^\.\//, ""))
+              .filter(Boolean)
+              .slice(0, 5000);
+          const grepped = await execBounded(["sh", "-c", SELECTION_GREP], { cwd: WORKDIR }, 60000);
+          const contents = grepped.timedOut ? new Map<string, string>() : groupGrepLines(decode(grepped.stdout));
+          const failures = await recentlyFailedTests(
+            deps.db,
+            run.repo,
+            spec.testSelection.historyDays ?? DEFAULT_HISTORY_DAYS,
+          ).catch(() => []);
+          const result = selectTests({
+            allFiles,
+            contents,
+            changed: changedFiles,
+            failures,
+            ...(spec.testSelection.tests ? { testPatterns: spec.testSelection.tests } : {}),
+          });
+          selectionMode = result.mode;
+          if (result.mode === "select") {
+            selectedTests = result.selected.join("\n");
+            await saveTestSelection(deps.db, {
+              jobId,
+              runId: run.id,
+              mode: "select",
+              reason: result.reason,
+              selected: result.selected,
+              skipped: result.skipped,
+            }).catch(() => undefined);
+            await note(`[seat] test selection: ${result.reason}`.slice(0, 500));
+          } else {
+            await saveTestSelection(deps.db, {
+              jobId,
+              runId: run.id,
+              mode: "full",
+              reason: result.reason,
+              selected: [],
+              skipped: [],
+            }).catch(() => undefined);
+            await note(`[seat] test selection: full suite — ${result.reason}`.slice(0, 500));
+          }
+        } catch {
+          selectionMode = "full";
+          await saveTestSelection(deps.db, {
+            jobId,
+            runId: run.id,
+            mode: "full",
+            reason: "selection failed, ran everything",
+            selected: [],
+            skipped: [],
+          }).catch(() => undefined);
+          await note("[seat] test selection failed, ran everything");
+        }
+      }
+    }
+
     // Cache restore.
     let cacheHit = false;
     if (spec.cache) {
@@ -905,6 +1011,8 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       FLARE_CHANGED_FILES: run.changed_files ?? "",
       // GitHub parity (see runner-sdk job.ts); job env may override.
       CI: "true",
+      FLARE_TEST_SELECTION: selectionMode,
+      FLARE_SELECTED_TESTS: selectedTests,
       ...jobEnv,
       ...matrixEnv(spec.matrix),
     };

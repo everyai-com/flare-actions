@@ -299,6 +299,18 @@ export const SCHEMA_STATEMENTS = [
     PRIMARY KEY (day, scope)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_cache_stats_day ON cache_stats(day)`,
+  `CREATE TABLE IF NOT EXISTS test_selections (
+    job_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    selected_count INTEGER NOT NULL DEFAULT 0,
+    skipped_count INTEGER NOT NULL DEFAULT 0,
+    selected_json TEXT NOT NULL DEFAULT '[]',
+    skipped_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_test_selections_run ON test_selections(run_id)`,
 ];
 
 // Additive columns for databases created before the matching migration.

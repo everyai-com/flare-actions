@@ -9,7 +9,10 @@ import {
   loadEnv,
   parseJobSpec,
   runJob,
+  selectTests,
+  type FlareSelectionReport,
 } from "flare-actions-runner-sdk";
+import { collectWorkspaceFiles } from "../../../packages/runner-sdk/src/testselect-fs.ts";
 import { runGithubLoop } from "./github.ts";
 import { pairRunner } from "./pair.ts";
 
@@ -61,7 +64,7 @@ if (!process.argv.includes("--github")) {
 const client = new FlareClient(baseUrl, token);
 
 async function pollOnce(): Promise<boolean> {
-  const { job, secrets, secretsError } = await client.nextClaim(LABELS);
+  const { job, secrets, secretsError, selection } = await client.nextClaim(LABELS);
   if (!job) return false;
   console.log(JSON.stringify({ msg: "picked up job", jobId: job.id, name: job.name, repo: job.repo, sha: job.sha }));
   // Fail closed on corrupt or newer-format definitions: substituting an
@@ -105,6 +108,53 @@ async function pollOnce(): Promise<boolean> {
         token: process.env["GITHUB_TOKEN"],
       });
     }
+    // Smart test selection: the claim carries the server's safety-net
+    // decision; `select` walks the checkout's import graph here (the
+    // server never sees the source). FLARE_SELECTED_TESTS is the
+    // newline-joined selection, or "" for the full suite.
+    let selectionMode = "off";
+    let selectedTests = "";
+    let selectionReport: FlareSelectionReport | undefined;
+    const selectionLines: string[] = [];
+    if (spec.testSelection && selection && (selection.mode === "select" || selection.mode === "full")) {
+      if (selection.mode === "full") {
+        selectionMode = "full";
+        selectionReport = { mode: "full", reason: selection.reason, selected: [], skipped: [] };
+        selectionLines.push(`[select] full suite — ${selection.reason}`.slice(0, 500));
+      } else {
+        try {
+          const harvest = collectWorkspaceFiles(srcdir);
+          const result = selectTests({
+            allFiles: harvest.files,
+            contents: harvest.contents,
+            changed: (job.changed_files ?? "").split("\n").map((s) => s.trim()).filter(Boolean),
+            failures: selection.recentFailures,
+            ...(spec.testSelection.tests ? { testPatterns: spec.testSelection.tests } : {}),
+          });
+          selectionMode = result.mode;
+          if (result.mode === "select") {
+            selectedTests = result.selected.join("\n");
+            selectionReport = {
+              mode: "select",
+              reason: result.reason,
+              selected: result.selected,
+              skipped: result.skipped,
+            };
+            const preview = result.selected.slice(0, 5).join(", ");
+            selectionLines.push(
+              `[select] ${result.reason}${result.selected.length > 5 ? ` (e.g. ${preview}…)` : `: ${preview}`}`.slice(0, 500),
+            );
+          } else {
+            selectionReport = { mode: "full", reason: result.reason, selected: [], skipped: [] };
+            selectionLines.push(`[select] full suite — ${result.reason}`.slice(0, 500));
+          }
+        } catch (err) {
+          selectionMode = "full";
+          selectionReport = { mode: "full", reason: "selection failed, ran everything", selected: [], skipped: [] };
+          selectionLines.push(`[select] selection failed, ran everything (${String(err).slice(0, 200)})`);
+        }
+      }
+    }
     const outcome = await runJob(spec, {
       cwd: srcdir,
       env: {
@@ -115,18 +165,22 @@ async function pollOnce(): Promise<boolean> {
         FLARE_JOB_ID: job.id,
         FLARE_REF: job.branch ?? "",
         FLARE_CHANGED_FILES: job.changed_files ?? "",
+        FLARE_TEST_SELECTION: selectionMode,
+        FLARE_SELECTED_TESTS: selectedTests,
       },
       client,
       jobId: job.id,
       secrets,
       secretsError,
     });
+    const logWithSelection = selectionLines.length > 0 ? `${selectionLines.join("\n")}\n${outcome.log}` : outcome.log;
     await client.reportStatus(
       job.run_id,
       job.id,
       outcome.success ? "success" : "failure",
-      outcome.log,
+      logWithSelection,
       outcome.resultJson,
+      selectionReport ? { selection: selectionReport } : undefined,
     );
     console.log(JSON.stringify({ msg: "job done", jobId: job.id, ms: Date.now() - started, success: outcome.success }));
   } catch (err) {

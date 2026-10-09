@@ -695,6 +695,26 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/runs/{runId}/selection:
+    get:
+      tags: [tests]
+      operationId: getRunSelection
+      summary: Per-job smart test selection skip reports
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: What ran, what was skipped and why, per opted-in job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunSelection'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/runs/{runId}/jobs/{jobId}/heartbeat:
     post:
       tags: [jobs]
@@ -3434,6 +3454,27 @@ components:
               type: string
             prUrl:
               type: string
+        testSelection:
+          type: object
+          properties:
+            jobs:
+              type: integer
+            selected:
+              type: integer
+            skipped:
+              type: integer
+    DigestSelection:
+      type: object
+      required: [mode, reason, selected, skipped]
+      properties:
+        mode:
+          type: string
+        reason:
+          type: string
+        selected:
+          type: integer
+        skipped:
+          type: integer
     DigestJob:
       type: object
       required: [id, name, status, stepCount]
@@ -3455,6 +3496,8 @@ components:
           type: string
         retainedUntil:
           type: string
+        selection:
+          $ref: '#/components/schemas/DigestSelection'
     DigestStep:
       type: object
       required: [command, exitCode, durationMs, outputTail]
@@ -3559,6 +3602,47 @@ components:
           type: number
         respBytes:
           type: number
+    RunSelection:
+      type: object
+      required: [runId, jobs]
+      properties:
+        runId:
+          type: string
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/SelectionJob'
+    SelectionJob:
+      type: object
+      required: [jobId, jobName, mode, reason, selectedCount, skippedCount, selected, skipped]
+      properties:
+        jobId:
+          type: string
+        jobName:
+          type: string
+        mode:
+          type: string
+          description: select (ran a subset) or full (ran everything)
+        reason:
+          type: string
+        selectedCount:
+          type: integer
+        skippedCount:
+          type: integer
+        selected:
+          type: array
+          items:
+            type: string
+        skipped:
+          type: array
+          items:
+            type: object
+            required: [file, reason]
+            properties:
+              file:
+                type: string
+              reason:
+                type: string
     RunTests:
       type: object
       required: [runId, totals, jobs, failing]
