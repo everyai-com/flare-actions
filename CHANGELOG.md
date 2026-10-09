@@ -8,6 +8,10 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Oxlint is the lint gate: `npm run lint` now runs `oxlint .` (~50ms vs
+  ~4s for eslint) with a parity `.oxlintrc.json` mirroring the old
+  eslint rule set (the config never used type-aware rules, so the flip
+  is lossless); `npm run lint:full` keeps eslint for slow passes.
 - Mobile-friendly dashboard + attention-respecting notifications: a full
   ≤640px responsive pass (wrapping tabs, stacked card tables with
   full-width actions, stacked forms with 16px inputs, wrapped logs, no

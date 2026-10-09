@@ -66,6 +66,8 @@ The recurring pains, in practitioners' own terms:
 - [x] `FLARE_CHANGED_FILES` + `paths:` filters (test-selection groundwork)
 - [x] Budgets (per-repo monthly compute-minute caps, warn/block) and
       per-run cost + time attribution vs Actions list price
+- [x] Sub-second lint gate (Oxlint in CI since Oct 9, ~50ms vs ~4s
+      ESLint, parity rule set — the config was never type-aware)
 
 ### Visibility
 

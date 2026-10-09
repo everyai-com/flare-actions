@@ -15,7 +15,7 @@ Local (warm, M-series laptop):
 
 | Step | Before | Now | Notes |
 | --- | --- | --- | --- |
-| Lint (full repo) | `eslint .` — 3.9s | `oxlint .` — 0.11s | oxlint is the fast local pass; type-aware eslint remains the CI gate |
+| Lint (full repo) | `eslint .` — 3.9s | `oxlint .` — ~0.05s | oxlint is the lint gate since Oct 9 (parity config; the eslint rule set was never type-aware, so nothing was lost) |
 | Type check | `tsc --noEmit` — 3.5s, 475 MB peak RSS | `tsgo --noEmit` — 1.9s, 252 MB peak RSS | ~2x faster, half the memory (same ratio as the playbook's 9.5 GB → 16 GB story) |
 | Tests (full suite) | 6.0s | ~5.1s warm | vitest `fsModuleCache` persists transforms between runs |
 | Agent check loop | lint + full typecheck + full tests (~13s, unbounded concurrency) | `npm run check` — ~2-5s scoped | lint only changed files, `vitest --changed HEAD`, one type check |
@@ -28,7 +28,7 @@ CI (GitHub-hosted runner, `verify` job, 50s total):
 | `npm ci` | 6s |
 | `npm run types` | 2s |
 | `npm run typecheck` (tsc) | 2s |
-| `npm run lint` (eslint) | 3s |
+| `npm run lint` (oxlint) | <1s |
 | `npm test` (661 tests) | 5s |
 | deploy dry-runs + OpenAPI checks | ~25s (seats dry-run is the long pole at 22s) |
 
@@ -61,12 +61,16 @@ FLARE_CHECK_TSC=tsc npm run check
   minutes) are stolen automatically. `--no-slots` / `FLARE_CHECK_NO_SLOTS=1`
   bypass for scripts.
 
-## What is the CI gate (unchanged)
+## What is the CI gate
 
-Local speed must not weaken CI. The `verify` job still runs the canonical
-`tsc --noEmit`, type-aware `eslint .`, the full vitest suite, both Workers
-dry-runs, and the OpenAPI checks. oxlint and tsgo are **local** speed
-tools; nothing ships that only they checked.
+Local speed must not weaken CI. The `verify` job runs the canonical
+`tsc --noEmit`, `oxlint .`, the full vitest suite, both Workers dry-runs,
+and the OpenAPI checks. The Oct 9 lint flip was lossless: the old
+`eslint.config.js` used the non-type-checked recommended set plus only
+`no-unused-vars` / `no-explicit-any` / `eqeqeq`, all mirrored in
+`.oxlintrc.json` (verified by probe: each rule fires, exit 1 on errors).
+tsgo stays a **local** speed tool; `npm run lint:full` (eslint) remains
+for the occasional slow pass.
 
 ## Deliberately not adopted
 

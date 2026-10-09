@@ -22,8 +22,9 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `npm run typecheck` — `tsc --noEmit`, must be clean (the CI gate)
 - `npm run typecheck:fast` — `tsgo --noEmit` (TypeScript native: ~2x faster,
   half the memory; local speed only — CI keeps tsc)
-- `npm run lint` — eslint, must be clean (type-aware; the CI gate)
-- `npm run lint:fast` — oxlint (milliseconds; local speed pass)
+- `npm run lint` — oxlint, must be clean (milliseconds; the CI gate,
+  parity with the old eslint rule set via `.oxlintrc.json`)
+- `npm run lint:full` — eslint (slow full pass; optional, not a gate)
 - `npm run check` — the agent loop: oxlint on changed files + one type
   check + `vitest --changed HEAD`, serialized across worktrees via slot
   locks (`FLARE_CHECK_SLOTS`, default 3). `-- --full` for everything.

@@ -6,8 +6,8 @@
 // steps from stacking up and thrashing memory.
 //
 // Usage: node scripts/check.mjs [--full] [--no-slots]
-//   --full      run the whole suite (eslint stays a CI gate; oxlint is
-//               the local fast lint and always runs scoped/full)
+//   --full      run the whole suite (oxlint is the lint gate and always
+//               runs scoped/full)
 //   --no-slots  bypass the cross-worktree slot semaphore
 // Env: FLARE_CHECK_SLOTS (default 3), FLARE_CHECK_NO_SLOTS=1, FLARE_CHECK_TSC=tsc|tsgo
 import { spawnSync } from "node:child_process";
@@ -90,8 +90,7 @@ async function main() {
   const lintTargets = changed.filter((f) => /\.(ts|tsx|mjs|cjs|js|jsx)$/.test(f));
   const timings = [];
   try {
-    // 1. Fast lint. oxlint is a correctness-speed pass, not the CI gate:
-    // type-aware eslint still runs in CI.
+    // 1. Lint (oxlint is the CI gate; parity config in .oxlintrc.json).
     if (full) {
       console.log("--- oxlint (full) ---");
       timings.push(["lint", run(bin("oxlint"), ["."])]);
