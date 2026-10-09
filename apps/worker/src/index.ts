@@ -87,6 +87,7 @@ import {
   setSetting,
   setUserPassword,
   shouldReinstate,
+  suggestQuarantine,
   summarizeUsageAnomalies,
   testTally,
   topAgentForRepo,
@@ -3372,7 +3373,12 @@ export default {
         if (!repoAllowed(ident, repo)) return json({ error: "token is not scoped to that repo" }, 403);
         const days = Number(url.searchParams.get("days") ?? "30");
         if (!Number.isFinite(days) || days < 1 || days > 365) return json({ error: "days must be 1-365" }, 400);
-        return json({ stats: await flakyStats(env.DB, repo, Math.floor(days)) });
+        const floored = Math.floor(days);
+        const sinceIso = new Date(Date.now() - floored * 86400 * 1000).toISOString();
+        return json({
+          stats: await flakyStats(env.DB, repo, floored),
+          candidates: await suggestQuarantine(env.DB, repo, sinceIso, `${floored}d`),
+        });
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/tokens") {
         if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);

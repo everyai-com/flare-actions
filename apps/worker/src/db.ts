@@ -1481,11 +1481,12 @@ export function shouldDowngradeFailure(failing: string[], active: Set<string>): 
 export function flakyCandidates(
   rows: { name: string; passes: number; failures: number }[],
   active: Set<string>,
+  windowLabel = "7d",
 ): { name: string; reason: string }[] {
   const out: { name: string; reason: string }[] = [];
   for (const row of rows) {
     if (row.failures < 2 || row.passes < 1 || active.has(row.name)) continue;
-    out.push({ name: row.name, reason: `auto: flaky (${row.failures} failed / ${row.passes} passed in 7d)` });
+    out.push({ name: row.name, reason: `auto: flaky (${row.failures} failed / ${row.passes} passed in ${windowLabel})` });
   }
   return out.slice(0, 10);
 }
@@ -1494,6 +1495,34 @@ export function flakyCandidates(
 export function shouldReinstate(recentStatuses: string[], needed = 3): boolean {
   if (recentStatuses.length < needed) return false;
   return recentStatuses.slice(0, needed).every((s) => s === "passed");
+}
+
+// Pure: per-test history sparkline from newest-first statuses, rendered
+// oldest → newest so the right edge is now: ● pass, ○ fail/error,
+// · anything else (skipped/unknown). Empty input renders empty.
+export function testSparkline(newestFirst: string[]): string {
+  return newestFirst
+    .slice()
+    .reverse()
+    .map((s) => (s === "passed" ? "●" : s === "failed" || s === "error" ? "○" : "·"))
+    .join("");
+}
+
+// Quarantine auto-suggest: flaky candidates (same rule as the fleet
+// tick) with a 14-run history sparkline each. Bounded: ≤10 candidates,
+// one statuses query per candidate.
+export async function suggestQuarantine(
+  db: Db,
+  repo: string,
+  sinceIso: string,
+  windowLabel = "7d",
+): Promise<{ name: string; reason: string; sparkline: string }[]> {
+  const candidates = flakyCandidates(await testTally(db, repo, sinceIso), await activeQuarantineNames(db, repo), windowLabel);
+  const out: { name: string; reason: string; sparkline: string }[] = [];
+  for (const c of candidates) {
+    out.push({ ...c, sparkline: testSparkline(await recentTestStatuses(db, repo, c.name, 14)) });
+  }
+  return out;
 }
 
 // Gate hook both executors call before writing a terminal status: a

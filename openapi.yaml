@@ -1779,12 +1779,16 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [stats]
+                required: [stats, candidates]
                 properties:
                   stats:
                     type: array
                     items:
                       $ref: '#/components/schemas/FlakyStat'
+                  candidates:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/QuarantineCandidate'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -4338,6 +4342,18 @@ components:
     FlakyStat:
       type: object
       description: Per-job failure rate row (job, runs, failures, rate)
+    QuarantineCandidate:
+      type: object
+      description: Suggested quarantine (name, reason, 14-run history sparkline)
+      required: [name, reason, sparkline]
+      properties:
+        name:
+          type: string
+        reason:
+          type: string
+        sparkline:
+          type: string
+          description: Oldest-to-newest statuses (● pass, ○ fail, · other)
     UsageStats:
       type: object
       description: Compute minutes and cost attribution rollup

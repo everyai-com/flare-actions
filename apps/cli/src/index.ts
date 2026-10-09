@@ -353,11 +353,14 @@ try {
       console.error("days must be an integer 1-365");
       process.exit(2);
     }
-    const stats = await client().getFlaky(rest[0], days);
-    if (JSON_MODE) printJson("flaky", { repo: rest[0], days, stats });
+    const { stats, candidates } = await client().getFlaky(rest[0], days);
+    if (JSON_MODE) printJson("flaky", { repo: rest[0], days, stats, candidates });
     else {
       for (const s of stats) {
         console.log(`${(s.rate * 100).toFixed(1)}%\t${s.failures}/${s.runs}\t${s.job}`);
+      }
+      for (const c of candidates) {
+        console.log(`suggest\t${c.sparkline || "-"}\t${c.name}\t${c.reason}`);
       }
     }
   } else if (cmd === "bottlenecks" && rest[0]) {

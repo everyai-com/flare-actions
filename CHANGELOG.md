@@ -8,6 +8,11 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Quarantine auto-suggest + history sparklines: `GET /v1/flaky` returns
+  `candidates` (same flaky rule as the fleet tick, window-labeled
+  reasons, 14-run ●/○/· sparklines), surfaced in the dashboard Flaky
+  tab with one-click admin quarantine and in `cli flaky` as `suggest`
+  rows (also in `--json`).
 - Per-agent attribution on usage-anomaly alerts: the hourly fleet tick
   names the busiest agent tag behind a spike (untagged human/webhook
   runs excluded) in the alert and the `anomaly.usage` audit row, next

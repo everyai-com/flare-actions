@@ -19,8 +19,10 @@ import {
   repoAllowSql,
   shouldDowngradeFailure,
   shouldReinstate,
+  suggestQuarantine,
   summarizeBottlenecks,
   summarizeUsageAnomalies,
+  testSparkline,
   topAgentForRepo,
   updateRunningJob,
   usageStats,
@@ -747,6 +749,46 @@ describe("quarantine decisions", () => {
     expect(shouldReinstate(["passed", "passed", "passed"])).toBe(true);
     expect(shouldReinstate(["passed", "failed", "passed"])).toBe(false);
     expect(shouldReinstate(["passed", "passed"])).toBe(false);
+  });
+
+  it("renders history sparklines oldest-first with the edge at now", () => {
+    // Newest-first in, oldest → newest out.
+    expect(testSparkline(["passed", "failed", "passed"])).toBe("●○●");
+    expect(testSparkline(["error", "skipped", "passed"])).toBe("●·○");
+    expect(testSparkline([])).toBe("");
+  });
+
+  it("suggests flaky non-quarantined tests with sparklines", async () => {
+    const db = {
+      prepare(sql: string) {
+        const norm = sql.replace(/\s+/g, " ").trim();
+        return {
+          bind: (...values: unknown[]) => ({
+            all: async <T,>() => {
+              if (norm.startsWith("SELECT t.name AS name")) {
+                return {
+                  results: [
+                    { name: "flaky", passes: 2, failures: 3 },
+                    { name: "solid", passes: 9, failures: 0 },
+                    { name: "broken", passes: 0, failures: 5 },
+                    { name: "already", passes: 2, failures: 3 },
+                  ] as T[],
+                };
+              }
+              if (norm.startsWith("SELECT name FROM quarantined_tests")) return { results: [{ name: "already" }] as T[] };
+              if (norm.startsWith("SELECT t.status AS status")) {
+                expect(values[1]).toBe("flaky");
+                expect(values[2]).toBe(14);
+                return { results: [{ status: "passed" }, { status: "failed" }] as T[] };
+              }
+              throw new Error(`unrouted: ${norm}`);
+            },
+          }),
+        };
+      },
+    } as unknown as Db;
+    const out = await suggestQuarantine(db, "o/r", "2026-09-01T00:00:00.000Z");
+    expect(out).toEqual([{ name: "flaky", reason: "auto: flaky (3 failed / 2 passed in 7d)", sparkline: "○●" }]);
   });
 });
 

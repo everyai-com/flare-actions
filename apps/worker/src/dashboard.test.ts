@@ -36,6 +36,13 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("healOnFailure");
   });
 
+  it("suggests quarantine candidates with sparklines and one-click add", () => {
+    expect(DASHBOARD_HTML).toContain("candidateBody");
+    expect(DASHBOARD_HTML).toContain("Suggested for quarantine");
+    expect(DASHBOARD_HTML).toContain("res.candidates");
+    expect(DASHBOARD_HTML).toContain("c.sparkline");
+  });
+
   it("surfaces the Actions drop-in card and per-run pipeline source tags", () => {
     expect(DASHBOARD_HTML).toContain("Coming from GitHub Actions?");
     expect(DASHBOARD_HTML).toContain("pipelineSourceLabel");

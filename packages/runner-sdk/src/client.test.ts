@@ -107,10 +107,22 @@ describe("FlareClient", () => {
   });
 
   it("builds encoded flaky queries", async () => {
-    const calls = stubFetch(() => jsonResponse({ stats: [{ job: "test", runs: 2, failures: 1, rate: 0.5 }] }));
-    const stats = await new FlareClient("https://x", "t").getFlaky("o/r", 7);
-    expect(stats).toHaveLength(1);
+    const calls = stubFetch(() =>
+      jsonResponse({
+        stats: [{ job: "test", runs: 2, failures: 1, rate: 0.5 }],
+        candidates: [{ name: "t", reason: "auto: flaky", sparkline: "●○" }],
+      }),
+    );
+    const out = await new FlareClient("https://x", "t").getFlaky("o/r", 7);
+    expect(out.stats).toHaveLength(1);
+    expect(out.candidates).toEqual([{ name: "t", reason: "auto: flaky", sparkline: "●○" }]);
     expect(calls[0].url).toBe("https://x/v1/flaky?repo=o%2Fr&days=7");
+  });
+
+  it("tolerates servers without candidates", async () => {
+    stubFetch(() => jsonResponse({ stats: [] }));
+    const out = await new FlareClient("https://x", "t").getFlaky("o/r", 7);
+    expect(out).toEqual({ stats: [], candidates: [] });
   });
 
   it("cancels runs and returns the cancelled count", async () => {

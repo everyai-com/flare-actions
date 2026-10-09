@@ -98,7 +98,9 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   `shouldReinstate`, and both executors run `quarantineDowngrade` before
   the terminal write so an all-quarantined failure lands as success
   (log note, checks/notify see green). Surface: `GET|POST /v1/quarantine`
-  + `cli quarantine` + the dashboard Flaky tab (admin writes).
+  + `cli quarantine` + the dashboard Flaky tab (admin writes);
+  `GET /v1/flaky` also suggests candidates (`suggestQuarantine` +
+  14-run `testSparkline`) rendered in the tab and `cli flaky`.
 - `apps/worker/src/ratelimit.ts` — auth endpoint throttling (failure
   windows per email + hashed client IP in D1 `auth_attempts`).
 - `apps/worker/src/cron.ts` — 5-field UTC cron parser for scheduled

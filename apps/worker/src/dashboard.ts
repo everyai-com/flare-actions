@@ -558,6 +558,9 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <p id="flakyErr" class="err"></p>
 <h3>Failure rates (30 days)</h3>
 <div class="table-scroll"><table><thead><tr><th>Job</th><th>Runs</th><th>Failures</th><th>Rate</th></tr></thead><tbody id="flakyBody"></tbody></table></div>
+<h3>Suggested for quarantine</h3>
+<p class="muted">Flaky in 2+ runs with at least one pass — oldest run left, newest right (&#9679; pass, &#9675; fail).</p>
+<div class="table-scroll"><table><thead><tr><th>Test</th><th>History</th><th>Reason</th><th></th></tr></thead><tbody id="candidateBody"></tbody></table></div>
 <h3>Quarantined</h3>
 <div class="table-scroll"><table><thead><tr><th>Test</th><th>Status</th><th>Reason</th><th>Green streak</th><th>Updated</th><th></th></tr></thead><tbody id="quarantineBody"></tbody></table></div>
 <form id="quarantineForm" class="inline" hidden>
@@ -1353,9 +1356,11 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
     var repo = document.getElementById("flakyRepo").value.trim();
     var err = document.getElementById("flakyErr");
     var flakyBody = document.getElementById("flakyBody");
+    var candidateBody = document.getElementById("candidateBody");
     var quarantineBody = document.getElementById("quarantineBody");
     err.textContent = "";
     flakyBody.textContent = "";
+    candidateBody.textContent = "";
     quarantineBody.textContent = "";
     document.getElementById("quarantineForm").hidden = !isAdmin;
     if (!repo) return;
@@ -1372,6 +1377,29 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
         var pct = typeof s.rate === "number" ? Math.round(s.rate * 100) + "%" : "-";
         tr.appendChild(el("td", pct));
         flakyBody.appendChild(tr);
+      });
+      var candidates = (res && res.candidates) || [];
+      if (candidates.length === 0) {
+        var cempty = el("tr"); var ctd = el("td", "No flaky candidates — nothing to quarantine."); ctd.colSpan = 4; cempty.appendChild(ctd); candidateBody.appendChild(cempty);
+      }
+      candidates.forEach(function (c) {
+        var tr = el("tr");
+        var name = el("td", c.name); name.className = "mono"; tr.appendChild(name);
+        var hist = el("td", c.sparkline || "-"); hist.className = "mono"; tr.appendChild(hist);
+        tr.appendChild(el("td", c.reason || "-"));
+        var act = el("td");
+        if (isAdmin) {
+          var btn = el("button", "Quarantine");
+          btn.className = "ghost";
+          btn.addEventListener("click", function () {
+            api("/v1/quarantine", { method: "POST", body: JSON.stringify({ repo: repo, name: c.name, action: "add" }) }).then(loadFlaky, function (e) {
+              err.textContent = (e && e.message) || "Quarantine failed";
+            });
+          });
+          act.appendChild(btn);
+        }
+        tr.appendChild(act);
+        candidateBody.appendChild(tr);
       });
     }, function (e) {
       err.textContent = (e && e.message) || "Flaky stats failed";

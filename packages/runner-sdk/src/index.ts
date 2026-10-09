@@ -156,6 +156,12 @@ export interface FlareFlakyStat {
   rate: number;
 }
 
+export interface FlareQuarantineCandidate {
+  name: string;
+  reason: string;
+  sparkline: string;
+}
+
 // "What's blocking the merge": per-check run-time percentiles (ms) and
 // median queue wait for a repo over the trailing window.
 export interface FlareBottleneck {
@@ -858,11 +864,11 @@ export class FlareClient {
     return typeof body.cancelled === "number" ? body.cancelled : 0;
   }
 
-  async getFlaky(repo: string, days = 30): Promise<FlareFlakyStat[]> {
+  async getFlaky(repo: string, days = 30): Promise<{ stats: FlareFlakyStat[]; candidates: FlareQuarantineCandidate[] }> {
     const res = await this.call(`/v1/flaky?repo=${encodeURIComponent(repo)}&days=${days}`);
     if (!res.ok) await this.throwApiError("getFlaky", res);
-    const data = (await res.json()) as { stats: FlareFlakyStat[] };
-    return data.stats;
+    const data = (await res.json()) as { stats: FlareFlakyStat[]; candidates?: FlareQuarantineCandidate[] };
+    return { stats: data.stats, candidates: data.candidates ?? [] };
   }
 
   async getBottlenecks(repo: string, days = 14): Promise<FlareBottleneck[]> {
