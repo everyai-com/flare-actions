@@ -146,10 +146,16 @@ The recurring pains, in practitioners' own terms:
 
 ### Later (months)
 
-- [ ] Attestation — content-addressed verdict reuse: identical tree +
+- [x] Attestation — content-addressed verdict reuse: identical tree +
       suite + environment → "this exact state already passed, here's the
       receipt" (extends the tournament ledger; starts as verifiable
       records, not a full supply-chain system)
+      (shipped Oct 8: SHA-256 over repo + sha + profile + job set at
+      dispatch, receipts filed on terminal runs (success upgrades a
+      stored failure, never the reverse), hash-match short-circuits to
+      the recorded verdict with receipt id + audit row + digest note,
+      `GET /v1/attestations/:id` re-verifies from the witness run,
+      `cli attestation`; never reuses across repos)
 - [ ] Agent merge queue — serialize agent PRs against a moving main:
       rebase, verify, land, with collision detection across concurrent
       agents (generalizes the tournament collision radar)

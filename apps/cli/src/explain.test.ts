@@ -73,6 +73,20 @@ describe("explainDigest", () => {
     expect(out.narrative).toContain("cli watch run-1");
   });
 
+  it("notes a reused attested verdict", () => {
+    const out = explainDigest(
+      digest({
+        status: "success",
+        failedJobs: 0,
+        jobs: [{ id: "a", name: "test", status: "success", durationMs: 5, stepCount: 0 }],
+        totalJobs: 1,
+        attestation: { reused: true, receiptId: "receipt-1", verdict: "success" },
+      }),
+    );
+    expect(out.narrative).toContain("Reused verdict success");
+    expect(out.narrative).toContain("cli attestation receipt-1");
+  });
+
   it("caps failing jobs and handles missing steps", () => {
     const jobs = Array.from({ length: 7 }, (_, i) => ({
       id: `j${i}`,

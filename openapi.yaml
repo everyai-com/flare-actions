@@ -121,7 +121,7 @@ paths:
                   description: CI profile from flare.yml (job selection override; 1-64 slug chars)
       responses:
         '202':
-          description: Run accepted
+          description: Run accepted (or short-circuited to a recorded verdict)
           content:
             application/json:
               schema:
@@ -134,6 +134,15 @@ paths:
                     type: array
                     items:
                       type: string
+                  reused:
+                    type: boolean
+                    description: True when the dispatch short-circuited to an attested verdict (no jobs ran)
+                  receiptId:
+                    type: string
+                    description: Verdict receipt id (present when reused; see GET /v1/attestations/{receiptId})
+                  verdict:
+                    type: string
+                    description: Recorded verdict replayed onto the run (present when reused)
   /v1/runs/dispatch/dry-run:
     post:
       tags: [runs]
@@ -753,6 +762,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/attestations/{receiptId}:
+    get:
+      tags: [runs]
+      operationId: getAttestation
+      summary: Verdict receipt for a reused run, with independent verification
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReceiptId'
+      responses:
+        '200':
+          description: Receipt plus hash verification against the recorded run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Attestation'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -3166,6 +3195,11 @@ components:
       required: true
       schema:
         type: string
+    ReceiptId:
+      name: receiptId
+      in: path
+      required: true
+      schema:
     Limit50:
       name: limit
       in: query
@@ -3463,6 +3497,65 @@ components:
               type: integer
             skipped:
               type: integer
+        attestation:
+          type: object
+          description: Present when dispatch short-circuited to a recorded verdict (no jobs ran)
+          properties:
+            reused:
+              type: boolean
+            receiptId:
+              type: string
+            verdict:
+              type: string
+    Attestation:
+      type: object
+      required: [id, repo, sha, profile, hash, verdict, runId, jobCount, jobs, createdAt, verified, verifyReason, runStatus]
+      properties:
+        id:
+          type: string
+          description: Receipt id (stable handle for cli attestation)
+        repo:
+          type: string
+          description: owner/name — receipts never replay across repos
+        sha:
+          type: string
+          description: Attested tree
+        profile:
+          type: string
+          description: CI profile the verdict ran under (empty = all jobs)
+        hash:
+          type: string
+          description: SHA-256 over repo + sha + profile + job set (names, definitions, labels)
+        verdict:
+          type: string
+          description: Recorded run verdict (success or failure)
+        runId:
+          type: string
+          description: Witness run the verdict was recorded from
+        jobCount:
+          type: integer
+        jobs:
+          type: array
+          items:
+            type: object
+            required: [name, status]
+            properties:
+              name:
+                type: string
+              status:
+                type: string
+        createdAt:
+          type: string
+        verified:
+          type: boolean
+          nullable: true
+          description: Hash recomputed from the recorded run's live rows (null when the run was pruned)
+        verifyReason:
+          type: string
+        runStatus:
+          type: string
+          nullable: true
+          description: Current status of the witness run (null when pruned)
     DigestSelection:
       type: object
       required: [mode, reason, selected, skipped]

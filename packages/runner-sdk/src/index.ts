@@ -343,7 +343,29 @@ export interface FlareRunDigest {
   failedJobs: number;
   jobs: FlareDigestJob[];
   testSelection?: { jobs: number; selected: number; skipped: number };
+  attestation?: { reused: boolean; receiptId: string; verdict: string };
 }
+
+// Content-addressed verdict receipt: this exact tree + suite +
+// environment already ran, so dispatch short-circuited to the
+// recorded verdict. `verified` re-derives the state hash from the
+// recorded run's live rows (null when the run was pruned).
+export interface FlareAttestation {
+  id: string;
+  repo: string;
+  sha: string;
+  profile: string;
+  hash: string;
+  verdict: string;
+  runId: string;
+  jobCount: number;
+  jobs: { name: string; status: string }[];
+  createdAt: string;
+  verified: boolean | null;
+  verifyReason: string;
+  runStatus: string | null;
+}
+
 // Smart test selection claim decision: the server owns the full-suite
 // safety net and the failure history; the executor walks its checkout.
 export interface FlareClaimSelection {
@@ -746,6 +768,12 @@ export class FlareClient {
     const res = await this.call(`/v1/runs/${encodeURIComponent(runId)}/selection`);
     if (!res.ok) await this.throwApiError("getRunSelection", res);
     return (await res.json()) as FlareRunSelection;
+  }
+
+  async getAttestation(receiptId: string): Promise<FlareAttestation> {
+    const res = await this.call(`/v1/attestations/${encodeURIComponent(receiptId)}`);
+    if (!res.ok) await this.throwApiError("getAttestation", res);
+    return (await res.json()) as FlareAttestation;
   }
 
   // Liveness proof while a job runs: servers requeue running jobs that

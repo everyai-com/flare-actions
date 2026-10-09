@@ -1,4 +1,5 @@
 import { getJobsForRun, getRun, getRunEgress, getRunSelections, type Db } from "./db";
+import { getAttestationReceipt } from "./attestation";
 import { jobDurationMs } from "./cost";
 
 // Token-efficient run digest for agents: failures first-class, bounded
@@ -57,6 +58,10 @@ export interface RunDigest {
   // Self-heal outcome (absent when no heal ran): the fix branch and
   // its draft PR, opened on a failed run when heal_on_failure is on.
   heal?: { branch: string; prUrl: string };
+  // Attestation (absent when the run executed for real): this exact
+  // tree + suite + environment already ran, so dispatch short-
+  // circuited to the recorded verdict — zero compute spent.
+  attestation?: { reused: boolean; receiptId: string; verdict: string };
   // Smart test selection rollup (absent when no job reported one).
   testSelection?: { jobs: number; selected: number; skipped: number };
 }
@@ -135,6 +140,7 @@ export async function buildRunDigest(db: Db, runId: string): Promise<RunDigest |
           skipped: selections.reduce((n, s) => n + s.skipped_count, 0),
         }
       : undefined;
+  const receipt = run.attested_by ? await getAttestationReceipt(db, run.attested_by).catch(() => null) : null;
   return {
     runId: run.id,
     repo: run.repo,
@@ -149,5 +155,6 @@ export async function buildRunDigest(db: Db, runId: string): Promise<RunDigest |
     ...(egress ? { egress } : {}),
     ...(run.heal_branch && run.heal_pr_url ? { heal: { branch: run.heal_branch, prUrl: run.heal_pr_url } } : {}),
     ...(testSelection ? { testSelection } : {}),
+    ...(receipt ? { attestation: { reused: true, receiptId: receipt.id, verdict: receipt.verdict } } : {}),
   };
 }

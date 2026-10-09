@@ -22,6 +22,7 @@ function runRow(over: Partial<RunRow> = {}): RunRow {
     pipeline_source: over.pipeline_source ?? "",
     changed_files: over.changed_files ?? "",
     profile: over.profile ?? null,
+    attested_by: over.attested_by ?? null,
   };
 }
 
@@ -54,6 +55,7 @@ class DigestDb implements Db {
     public jobs: JobRow[] = [],
     public egress: { job_id: string; run_id: string; host: string; req_bytes: number; resp_bytes: number }[] = [],
     public selections: { job_id: string; run_id: string; mode: string; reason: string; selected_count: number; skipped_count: number }[] = [],
+    public receipts: { id: string; verdict: string }[] = [],
   ) {}
 
   prepare(sql: string) {
@@ -74,6 +76,9 @@ class DigestDb implements Db {
         },
         first: async <T,>() => {
           if (norm.startsWith("SELECT * FROM runs WHERE id")) return this.run as T | null;
+          if (norm.startsWith("SELECT * FROM attestation_receipts WHERE id")) {
+            return (this.receipts.find((r) => r.id === values[0]) ?? null) as T | null;
+          }
           throw new Error(`unrouted first: ${norm}`);
         },
         run: async () => ({}),
@@ -179,4 +184,14 @@ describe("buildRunDigest", () => {
     expect(plain?.jobs[0].selection).toBeUndefined();
   });
 
+  it("notes a reused verdict on attested runs", async () => {
+    const attested = runRow({ attested_by: "receipt-1" });
+    const digest = await buildRunDigest(
+      new DigestDb(attested, [jobRow({ status: "success" })], [], [], [{ id: "receipt-1", verdict: "success" }]),
+      "run-1",
+    );
+    expect(digest?.attestation).toEqual({ reused: true, receiptId: "receipt-1", verdict: "success" });
+    const plain = await buildRunDigest(new DigestDb(runRow(), [jobRow()]), "run-1");
+    expect(plain?.attestation).toBeUndefined();
+  });
 });

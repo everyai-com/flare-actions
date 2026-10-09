@@ -8,6 +8,18 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Attestation (content-addressed verdict reuse): dispatch computes a
+  stable SHA-256 over repo + sha + CI profile + job set (names,
+  definitions, labels), terminal runs file verdict receipts in D1, and
+  a hash match short-circuits dispatch to the recorded verdict — the
+  run lands terminal with zero queue sends, a receipt id in the
+  response, an `attestation.reused` audit row, and a digest note
+  (`cli explain` narrates it). Success upgrades a stored failure so a
+  flaky red run never shadows the green rerun; reuse never crosses
+  repos. Receipts verify independently via
+  `GET /v1/attestations/:id` (the hash is recomputed from the witness
+  run's live rows) and `cli attestation <receipt-id>`; reruns always
+  execute, so a recorded failure is escapable in one command.
 - Smart test selection: a job-level `test-selection` opt-in maps the
   diff to affected tests — a TypeScript/JavaScript import-graph walk
   (designed for more languages) plus a recent-JUnit-failure boost.

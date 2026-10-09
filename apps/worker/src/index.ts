@@ -1,6 +1,7 @@
 import {
   audit,
   activeQuarantineNames,
+  appendJobLog,
   bottleneckStats,
   cancelGroupJobs,
   cancelQueuedJobs,
@@ -222,6 +223,15 @@ import { buildRunDigest } from "./digest";
 import { annotateSpan, recordSpanException } from "./trace";
 import { checkTurnstile, getTurnstileSiteKey } from "./turnstile";
 import { waitForRunTerminal } from "./wait";
+import {
+  findAttestationForDispatch,
+  getAttestationReceipt,
+  parseReceiptJobs,
+  planAttestedJobs,
+  setRunAttestation,
+  verifyAttestationReceipt,
+  type AttestationReceiptRow,
+} from "./attestation";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import type { OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
 import { buildMcpServer, mcpDiscovery } from "./mcp";
@@ -715,6 +725,65 @@ async function loadPipelineJobs(
 
 // Shared fan-out for webhooks, API dispatch, and MCP: create the run,
 // cancel superseded groups, park needs/group-blocked jobs, queue the rest.
+// Short-circuited dispatch: the run lands terminal with the recorded
+// per-job verdicts, zero queue sends, and an audit row. attested_by
+// points the digest at the receipt; the terminal rollup emits the
+// usual analytics but files no new receipt (already attested).
+async function createAttestedRun(
+  env: WorkerEnv,
+  input: {
+    repo: string;
+    sha: string;
+    branch: string;
+    event: string;
+    installationId: number | null;
+    jobs: PipelineJob[];
+    priority?: number;
+    source?: string | null;
+    pipelineSource?: PipelineSource;
+    changedFiles?: string;
+    prNumber?: number | null;
+    agent?: string;
+    profile?: string | null;
+  },
+  receipt: AttestationReceiptRow,
+  basin?: BasinSink,
+): Promise<{ runId: string; jobIds: string[]; queuedIds: string[]; blocked: number; reused: { receiptId: string; verdict: string } | null }> {
+  const runId = crypto.randomUUID();
+  await createRun(env.DB, {
+    id: runId,
+    repo: input.repo,
+    sha: input.sha,
+    event: input.event,
+    installationId: input.installationId,
+    profile: input.profile ?? null,
+    branch: input.branch,
+    source: input.source ?? null,
+    pipelineSource: input.pipelineSource,
+    changedFiles: input.changedFiles,
+    prNumber: input.prNumber ?? null,
+    agent: input.agent ?? "",
+  });
+  await setRunAttestation(env.DB, runId, receipt.id);
+  const jobIds: string[] = [];
+  for (const planned of planAttestedJobs(receipt, input.jobs)) {
+    const jobId = crypto.randomUUID();
+    await createJob(env.DB, jobId, runId, {
+      name: planned.name,
+      definition: planned.definition,
+      labels: planned.labels,
+      status: planned.status,
+      priority: input.priority ?? 0,
+    });
+    await appendJobLog(env.DB, jobId, `[flare] reused verdict ${planned.status} from attestation ${receipt.id} (identical tree + suite + environment)\n`);
+    jobIds.push(jobId);
+  }
+  await rollupRunStatus(env.DB, runId, env.ANALYTICS, basin);
+  await audit(env.DB, "system", "attestation.reused", `${input.repo} ${receipt.id} -> ${runId}`);
+  log("info", "run attested: reused recorded verdict", { runId, repo: input.repo, sha: input.sha, receiptId: receipt.id, verdict: receipt.verdict });
+  return { runId, jobIds, queuedIds: [], blocked: 0, reused: { receiptId: receipt.id, verdict: receipt.verdict } };
+}
+
 async function createRunAndFanOut(
   env: WorkerEnv,
   input: {
@@ -733,7 +802,14 @@ async function createRunAndFanOut(
     profile?: string | null;
   },
   basin?: BasinSink,
-): Promise<{ runId: string; jobIds: string[]; queuedIds: string[]; blocked: number }> {
+): Promise<{ runId: string; jobIds: string[]; queuedIds: string[]; blocked: number; reused: { receiptId: string; verdict: string } | null }> {
+  // Attestation: this exact tree + suite + environment already ran —
+  // short-circuit to the recorded verdict instead of fanning out. The
+  // lookup is best-effort: on any error the dispatch runs for real.
+  const receipt = await findAttestationForDispatch(env.DB, input.repo, input.sha, input.profile ?? null, input.jobs).catch(() => null);
+  if (receipt) {
+    return createAttestedRun(env, input, receipt, basin);
+  }
   const runId = crypto.randomUUID();
   await createRun(env.DB, {
     id: runId,
@@ -780,7 +856,7 @@ async function createRunAndFanOut(
     }
   }
   await rollupRunStatus(env.DB, runId, env.ANALYTICS, basin);
-  return { runId, jobIds, queuedIds, blocked };
+  return { runId, jobIds, queuedIds, blocked, reused: null };
 }
 
 // Best-effort wake of a managed seat for a queued job: drop a message on
@@ -918,7 +994,7 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     }
     const webhookJobs = "error" in webhookSelection ? loaded.jobs : webhookSelection.jobs;
     const webhookProfile = "error" in webhookSelection ? null : webhookSelection.profile;
-    const { runId, jobIds, queuedIds, blocked } = await createRunAndFanOut(env, {
+    const { runId, jobIds, queuedIds, blocked, reused } = await createRunAndFanOut(env, {
       repo,
       sha,
       branch,
@@ -987,14 +1063,20 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
         }
       })(),
     );
-    log("info", "run queued", { runId, jobCount: jobIds.length, blocked, repo, sha, event });
+    log("info", "run queued", { runId, jobCount: jobIds.length, blocked, repo, sha, event, profile: webhookProfile, reused: reused?.receiptId ?? null });
     ctx.waitUntil(annotateSpan({ "run.id": runId, repo, "event": event }));
     for (const jobId of queuedIds) await wakeSeat(env, jobId);
     const creds = await getAppCreds(env);
+    // Attested runs never go pending: the recorded verdict is the
+    // commit status (no job callbacks will follow to update it).
+    const ghState = !reused ? "pending" : reused.verdict === "success" ? "success" : "failure";
     ctx.waitUntil(
-      reportGitHubStatus({ appId: creds?.appId, privateKey: creds?.privateKey, installationId, repo, sha, state: "pending" }),
+      reportGitHubStatus({ appId: creds?.appId, privateKey: creds?.privateKey, installationId, repo, sha, state: ghState }),
     );
-    return json({ runId, jobId: jobIds[0], jobIds }, 202);
+    return json(
+      { runId, jobId: jobIds[0], jobIds, ...(reused ? { reused: true, receiptId: reused.receiptId, verdict: reused.verdict } : {}) },
+      202,
+    );
   } catch (err) {
     log("error", "webhook failed", { error: String(err) });
     return json({ error: "webhook failed" }, 500);
@@ -1468,9 +1550,9 @@ async function dispatchRun(
   env: WorkerEnv,
   input: DispatchInput,
   basin?: BasinSink,
-): Promise<{ runId: string; jobIds: string[]; queuedIds: string[] }> {
+): Promise<{ runId: string; jobIds: string[]; queuedIds: string[]; profile: string | null; reused: { receiptId: string; verdict: string } | null }> {
   const { sha, branch, installationId, jobs, pipelineSource, profile } = await loadDispatchJobs(env, input);
-  const { runId, jobIds, queuedIds } = await createRunAndFanOut(env, {
+  const { runId, jobIds, queuedIds, reused } = await createRunAndFanOut(env, {
     repo: input.repo,
     sha,
     branch,
@@ -1483,12 +1565,12 @@ async function dispatchRun(
     agent: input.agent ?? "",
     profile,
   }, basin);
-  log("info", "run dispatched", { runId, repo: input.repo, sha, event: input.event ?? "dispatch", source: input.source ?? null });
+  log("info", "run dispatched", { runId, repo: input.repo, sha, event: input.event ?? "dispatch", source: input.source ?? null, profile, reused: reused?.receiptId ?? null });
   emitRunDispatched(env.ANALYTICS, { repo: input.repo, runId, event: input.event ?? "dispatch", jobCount: jobIds.length });
   if (basin) {
     sendBasin(basin, basinRunDispatched({ repo: input.repo, runId, event: input.event ?? "dispatch", jobCount: jobIds.length }));
   }
-  return { runId, jobIds, queuedIds };
+  return { runId, jobIds, queuedIds, profile, reused };
 }
 
 async function rerunJobAndQueue(
@@ -2072,7 +2154,10 @@ export default {
           await audit(env.DB, ident.actor, "run.dispatch", out.runId);
           for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
           ctx.waitUntil(annotateSpan({ "run.id": out.runId, "repo": valid.repo, "actor": ident.actor }));
-          return json({ runId: out.runId, jobIds: out.jobIds }, 202);
+          return json(
+            { runId: out.runId, jobIds: out.jobIds, ...(out.reused ? { reused: true, receiptId: out.reused.receiptId, verdict: out.reused.verdict } : {}) },
+            202,
+          );
         } catch (err) {
           const message = String(err instanceof Error ? err.message : err);
           return json(apiError(dispatchErrorCode(message), message), 400);
@@ -2208,6 +2293,36 @@ export default {
         const tick = await runTournamentTick(env);
         await audit(env.DB, ident.actor, "tournament.tick", JSON.stringify(tick));
         return json(tick);
+      }
+      // Attestation lookup: a verdict receipt plus independent
+      // verification (the state hash recomputed from the recorded
+      // run's live rows). Token-scoped to the receipt's repo.
+      const attestationMatch = /^\/v1\/attestations\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "GET" && attestationMatch) {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const receipt = await getAttestationReceipt(env.DB, attestationMatch[1]);
+        if (!receipt || !repoAllowed(ident, receipt.repo)) return json({ error: "attestation not found" }, 404);
+        const verification = await verifyAttestationReceipt(env.DB, receipt).catch(() => ({
+          verified: null as boolean | null,
+          reason: "verification failed",
+          runStatus: null as string | null,
+        }));
+        return json({
+          id: receipt.id,
+          repo: receipt.repo,
+          sha: receipt.sha,
+          profile: receipt.profile,
+          hash: receipt.hash,
+          verdict: receipt.verdict,
+          runId: receipt.run_id,
+          jobCount: receipt.job_count,
+          jobs: parseReceiptJobs(receipt.jobs_json, receipt.verdict),
+          createdAt: receipt.created_at,
+          verified: verification.verified,
+          verifyReason: verification.reason,
+          runStatus: verification.runStatus,
+        });
       }
       const runMatch = /^\/v1\/runs\/([^/]+)$/.exec(url.pathname);
       if (request.method === "GET" && runMatch) {

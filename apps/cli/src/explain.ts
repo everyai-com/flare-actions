@@ -83,6 +83,9 @@ export function explainDigest(digest: FlareRunDigest): RunExplanation {
     const noun = sel.jobs === 1 ? "job" : "jobs";
     lines.push("", `Smart test selection ran in ${sel.jobs} ${noun}: ${sel.selected} test(s) selected, ${sel.skipped} skipped (see: cli selection ${digest.runId}).`);
   }
+  if (digest.attestation?.reused) {
+    lines.push("", `Reused verdict ${digest.attestation.verdict}: this exact tree + suite + environment already ran — zero compute spent (receipt: cli attestation ${digest.attestation.receiptId}).`);
+  }
 
   return {
     runId: digest.runId,

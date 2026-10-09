@@ -5,6 +5,7 @@ import { parsePausedRepos, SETTING_KEYS } from "./settings";
 import { ACTIONS_LIST_USD_PER_MIN } from "./cost";
 import { labelsMatch, splitLabels } from "./fairness";
 import { deleteJobLogIndex } from "./search";
+import { storeReceiptForRun } from "./attestation";
 
 export interface RunRow {
   id: string;
@@ -21,6 +22,7 @@ export interface RunRow {
   pr_comment_id: number | null;
   heal_branch: string | null;
   heal_pr_url: string | null;
+  attested_by: string | null;
   agent: string;
   status: string;
   created_at: string;
@@ -319,6 +321,13 @@ export async function rollupRunStatus(
     status = "success";
   }
   await updateRunStatus(db, runId, status);
+  // Attestation: a terminal success/failure files a verdict receipt so
+  // an identical later dispatch short-circuits. Best-effort — a
+  // receipt write must never fail a status update — and idempotent
+  // (success upgrades a stored failure, anything else is a no-op).
+  if (status === "success" || status === "failure") {
+    await storeReceiptForRun(db, runId, jobs, status).catch(() => undefined);
+  }
   // At-least-once run.terminal event (queries dedupe by run_id): only
   // terminal rollups pay the extra read, and only when bound. The
   // Basin copy rides the same read so the hot and cold paths agree.

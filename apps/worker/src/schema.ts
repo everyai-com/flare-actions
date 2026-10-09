@@ -20,6 +20,7 @@ export const SCHEMA_STATEMENTS = [
     pr_comment_id INTEGER,
     heal_branch TEXT,
     heal_pr_url TEXT,
+    attested_by TEXT,
     status TEXT NOT NULL DEFAULT 'queued',
     agent TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
@@ -311,6 +312,20 @@ export const SCHEMA_STATEMENTS = [
     created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_test_selections_run ON test_selections(run_id)`,
+  `CREATE TABLE IF NOT EXISTS attestation_receipts (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    sha TEXT NOT NULL DEFAULT '',
+    profile TEXT NOT NULL DEFAULT '',
+    hash TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    job_count INTEGER NOT NULL DEFAULT 0,
+    jobs_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    UNIQUE (repo, hash)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_attestation_receipts_repo ON attestation_receipts(repo)`,
 ];
 
 // Additive columns for databases created before the matching migration.
@@ -337,6 +352,7 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE runs ADD COLUMN agent TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE schedules ADD COLUMN profile TEXT`,
   `ALTER TABLE runs ADD COLUMN profile TEXT`,
+  `ALTER TABLE runs ADD COLUMN attested_by TEXT`,
 ];
 
 let schemaPromise: Promise<void> | null = null;

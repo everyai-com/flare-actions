@@ -55,6 +55,7 @@ function usage(): never {
       "  cli connect [repo] [--wire] [--dry-run]     probe, wire, and verify this repo in one command",
       "  cli tests <runId>                           per-test results and failing tests",
       "  cli selection <runId>                       smart test selection: what was skipped and why",
+      "  cli attestation <receiptId>                 verify a reused-verdict receipt",
       "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
       "  cli queue [labels]                        live queue + projected claim order (admin)",
       "  cli cache list [prefix]                     list cache entries (admin)",
@@ -436,6 +437,19 @@ try {
         } else {
           console.log(`${j.jobName}: full suite — ${j.reason}`);
         }
+      }
+    }
+  } else if (cmd === "attestation" && rest[0]) {
+    const a = await client().getAttestation(rest[0]);
+    if (JSON_MODE) {
+      printJson("attestation", a);
+    } else {
+      const stamp = a.verified === true ? "verified" : a.verified === false ? "MISMATCH" : "unverifiable";
+      console.log(`${a.id} ${a.verdict} (${stamp}: ${a.verifyReason})`);
+      console.log(`  ${a.repo}@${a.sha.slice(0, 12)}${a.profile ? ` profile ${a.profile}` : ""} — ${a.jobCount} jobs from run ${a.runId}`);
+      console.log(`  hash ${a.hash}`);
+      for (const j of a.jobs) {
+        console.log(`  ${j.status} ${j.name}`);
       }
     }
   } else if (cmd === "egress" && rest[0]) {
