@@ -157,7 +157,17 @@ export interface DryRunPlan {
   queued: number;
   blocked: number;
   totalPriorMs: number;
+  paused: boolean;
+  pausedAt: string | null;
   budget: { mode: string; usedMinutes: number; cap: number; wouldBlock: boolean } | null;
+}
+
+export interface PausedRepo {
+  repo: string;
+  pausedAt: string;
+  cap: number | null;
+  usedMinutes: number;
+  topActors: { actor: string; dispatches: number }[];
 }
 
 export interface FlareRunTests {
@@ -511,6 +521,19 @@ export class FlareClient {
     });
     if (!res.ok) await this.throwApiError("dispatch", res);
     return (await res.json()) as { runId: string; jobIds: string[] };
+  }
+
+  // Kill switch state: paused repos + the one-click resume.
+  async listPaused(): Promise<PausedRepo[]> {
+    const res = await this.call("/v1/admin/paused");
+    if (!res.ok) await this.throwApiError("listPaused", res);
+    return ((await res.json()) as { paused: PausedRepo[] }).paused;
+  }
+
+  async resumeRepo(repo: string): Promise<boolean> {
+    const res = await this.call(`/v1/admin/paused?repo=${encodeURIComponent(repo)}`, { method: "DELETE" });
+    if (!res.ok) await this.throwApiError("resumeRepo", res);
+    return ((await res.json()) as { resumed?: unknown }).resumed === true;
   }
 
   // Dry-run dispatch: resolved pipeline plan with zero writes.

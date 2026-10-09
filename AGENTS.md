@@ -82,7 +82,11 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   compute-minute caps (`budget_minutes` JSON map, `budget_mode`
   warn|block) are checked on webhook/dispatch/schedule — block skips the
   webhook (200), 429s the API, and skips schedules; warn audits and
-  dispatches. `supersede_branch_runs=push` cancels still-active jobs of
+  dispatches. The kill switch (`budget_kill_multiplier` N, off by
+  default) auto-pauses a repo past N× its cap at every enforcement
+  point incl. MCP (`maybeAutoPause` + notify alert); paused repos
+  refuse everywhere until `DELETE /v1/admin/paused` / `cli resume`
+  (`GET` carries per-actor attribution). `supersede_branch_runs=push` cancels still-active jobs of
   earlier same-branch runs on push. `/v1/bottlenecks` (dashboard "Slowest
   checks", `cli bottlenecks`) percentiles per-check run time + queue wait
   from `summarizeBottlenecks`. `shards: N` (2-8) expands a job into

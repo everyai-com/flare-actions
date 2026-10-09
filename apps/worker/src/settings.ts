@@ -26,6 +26,8 @@ export const SETTING_KEYS = {
   openRegistration: "open_registration",
   budgetMinutes: "budget_minutes",
   budgetMode: "budget_mode",
+  budgetKillMultiplier: "budget_kill_multiplier",
+  pausedRepos: "paused_repos",
   supersedeBranchRuns: "supersede_branch_runs",
   githubRunnerMode: "github_runner_mode",
   githubRunnerLabels: "github_runner_labels",
@@ -217,6 +219,36 @@ export function parseBudgetMode(value: unknown): { mode: "warn" | "block" } | { 
   if (value === "warn" || value === "block") return { mode: value };
   if (value === null || value === undefined || value === "") return { mode: "warn" };
   return { error: "budgetMode must be warn or block" };
+}
+
+// Kill switch: when set to N (≥1), a repo burning past N× its monthly
+// cap is auto-paused (dispatch/webhook/schedule all refuse until an
+// admin resumes). 0/"" disables. Stored as a plain number string.
+export function parseBudgetKillMultiplier(value: unknown): { multiplier: number } | { error: string } {
+  if (value === null || value === undefined || value === "" || value === 0 || value === "0" || value === "off") {
+    return { multiplier: 0 };
+  }
+  const n = typeof value === "number" ? value : typeof value === "string" ? Number(value.trim()) : NaN;
+  if (!Number.isFinite(n) || n < 1 || n > 100) return { error: "budgetKillMultiplier must be off or 1-100" };
+  return { multiplier: n };
+}
+
+// Paused repos: repo → ISO timestamp of the pause. Written by the
+// auto-pause trigger and cleared by resume; hand-edited rows degrade
+// to {} (fail-open: nothing stays paused by a corrupt row).
+export function parsePausedRepos(raw: string | null): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [repo, at] of Object.entries(parsed as Record<string, unknown>)) {
+      if (/^[\w.-]+\/[\w.-]+$/.test(repo) && typeof at === "string" && at) out[repo] = at;
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 // Auto-supersede: "push" cancels still-active jobs of earlier runs on the

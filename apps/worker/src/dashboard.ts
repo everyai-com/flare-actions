@@ -373,6 +373,8 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <input id="fairShareInput" placeholder="fair share per repo (0 = off)" maxlength="3" size="8">
 <input id="budgetInput" placeholder="monthly budget: owner/name=1200, other=600" maxlength="512" size="40" aria-label="Monthly compute budgets">
 <select id="budgetModeSelect" aria-label="Budget mode"><option value="warn">warn over budget</option><option value="block">block over budget</option></select>
+<input id="killMultiplierInput" placeholder="kill at Nx cap (0 = off)" maxlength="3" size="8" aria-label="Kill switch multiplier">
+<div id="pausedBox" class="muted"></div>
 <label class="muted"><input id="supersedeCheck" type="checkbox"> one run per branch head (cancel superseded pushes)</label>
 <input id="gatewayInput" placeholder="AI gateway id (blank = direct)" maxlength="64">
 <input id="triageModelInput" placeholder="triage model (blank = default)" maxlength="128" size="30">
@@ -1901,6 +1903,8 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       } catch (e) { /* leave empty on malformed stored value */ }
       document.getElementById("budgetInput").value = budgetPairs.join(", ");
       document.getElementById("budgetModeSelect").value = s.budgetMode || "warn";
+      document.getElementById("killMultiplierInput").value = (s.budgetKillMultiplier && s.budgetKillMultiplier !== "0") ? s.budgetKillMultiplier : "";
+      loadPaused();
       document.getElementById("supersedeCheck").checked = s.supersedeBranchRuns === "push";
       document.getElementById("gatewayInput").value = s.aiGatewayId || "";
       document.getElementById("gatewayInput").disabled = s.aiGatewaySource === "env";
@@ -2059,10 +2063,18 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       err.textContent = "Fair share must be an integer 0-100.";
       return;
     }
+      return;
+    var killRaw = document.getElementById("killMultiplierInput").value.trim();
+    var kill = killRaw === "" ? 0 : parseInt(killRaw, 10);
+    if (isNaN(kill) || kill < 0 || kill > 100 || (killRaw !== "" && kill < 1)) {
+      err.textContent = "Kill multiplier must be blank/0 (off) or 1-100.";
+      return;
+    }
     var payload = {
       fairSharePerRepo: cap,
       budgetMinutes: document.getElementById("budgetInput").value.trim(),
       budgetMode: document.getElementById("budgetModeSelect").value,
+      budgetKillMultiplier: kill,
       supersedeBranchRuns: document.getElementById("supersedeCheck").checked ? "push" : "off",
       mcpWriteConfirm: document.getElementById("writeConfirmCheck").checked,
       triageWebSearch: document.getElementById("webSearchCheck").checked,
@@ -2082,6 +2094,37 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       })
       .catch(function () { err.textContent = "Could not save (budgets: owner/name=minutes; gateway id a 1-64 char slug; model a Workers AI id)."; });
   });
+
+  function loadPaused() {
+    var box = document.getElementById("pausedBox");
+    box.textContent = "";
+    api("/v1/admin/paused").then(function (res) {
+      var paused = (res && res.paused) || [];
+      if (paused.length === 0) {
+        box.textContent = "Kill switch: no repos paused.";
+        return;
+      }
+      box.appendChild(el("strong", "Paused for runaway spend: "));
+      paused.forEach(function (p) {
+        var line = el("div");
+        var actors = (p.topActors || []).map(function (a) { return a.actor + " (" + a.dispatches + ")"; }).join(", ");
+        line.appendChild(el("span", p.repo + " — " + p.usedMinutes + "/" + (p.cap === null ? "?" : p.cap) + " compute-min since " + fmtAgo(p.pausedAt) + (actors ? ", top: " + actors : "") + " "));
+        var btn = el("button", "Resume");
+        btn.className = "ghost";
+        btn.addEventListener("click", function () {
+          api("/v1/admin/paused?repo=" + encodeURIComponent(p.repo), { method: "DELETE" }).then(function () {
+            loadPaused();
+          }, function (e) {
+            document.getElementById("schedErr").textContent = (e && e.message) || "Resume failed";
+          });
+        });
+        line.appendChild(btn);
+        box.appendChild(line);
+      });
+    }, function () {
+      box.textContent = "Kill switch: could not load paused repos.";
+    });
+  }
 
   document.getElementById("ghRunnerForm").addEventListener("submit", function (ev) {
     ev.preventDefault();

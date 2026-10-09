@@ -7,6 +7,7 @@ export function formatPlan(plan: DryRunPlan): string {
     `dry run: ${plan.repo}@${plan.sha.slice(0, 12)} (${plan.branch || "-"}, pipeline: ${plan.pipelineSource})`,
     `would queue ${plan.queued}, block ${plan.blocked}${plan.totalPriorMs > 0 ? `, est prior ${Math.round(plan.totalPriorMs / 1000)}s` : ""}`,
   ];
+  if (plan.paused) lines[1] += `, PAUSED since ${plan.pausedAt ?? "?"}`;
   if (plan.budget) {
     lines[1] += plan.budget.wouldBlock
       ? `, BUDGET WOULD BLOCK (${plan.budget.usedMinutes}/${plan.budget.cap} compute-minutes)`

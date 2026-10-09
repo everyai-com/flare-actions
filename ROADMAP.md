@@ -16,8 +16,10 @@ JIT runners: `workflow_job` ingest, JIT claim lane, `runner -- --github`,
 `cli github-jobs`, dashboard card, `docs/GITHUB-RUNNERS.md`), plus a
 dashboard refresh (first-run onboarding checklist, auth divider,
 small-screen responsive pass), plus `--json` everywhere, `cli explain`,
-Tailscale-style runner pairing, and dry-run dispatch (`--dry-run` on
-`cli run` / `cli dispatch`). OpenAPI is at 75 paths (was 68).
+Tailscale-style runner pairing, dry-run dispatch (`--dry-run` on
+`cli run` / `cli dispatch`), machine-actionable errors (21 codes +
+hints, `docs/ERRORS.md`), and the quarantine surface (dashboard Flaky
+tab + PR-comment section). OpenAPI is at 75 paths (was 68).
 
 - **Phase 0**: V2 seats on the `durable_object` policy — `ContainerSeatV2`
   + `SEATS_V2` binding (additive; V1 keeps serving in-flight jobs, rollback

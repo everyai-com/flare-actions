@@ -21,6 +21,7 @@ lane by lane.
 | `invalid_pipeline` | 400 | inline `pipeline` did not parse | validate with `cli local`; read `docs/PIPELINES.md` |
 | `unresolvable_ref` | 400 | branch/tag resolved to nothing | paste a full commit SHA |
 | `budget_exceeded` | 429 | monthly compute-minute cap hit (block mode) | raise `budgetMinutes` or wait for reset |
+| `repo_paused` | 429 | repo auto-paused for runaway spend | resume in Settings → Budgets or `cli resume` |
 | `rate_limited` | 429 | too many auth/pairing attempts | wait a minute and retry |
 | `webhook_not_configured` | 500 | no webhook secret set | set it in dashboard Settings |
 | `bad_signature` | 401 | HMAC mismatch | check `GITHUB_WEBHOOK_SECRET` matches the App |

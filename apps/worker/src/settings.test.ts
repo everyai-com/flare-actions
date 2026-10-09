@@ -5,6 +5,8 @@ import {
   parseBadgeHiddenRepos,
   parseBudgetMinutes,
   parseBudgetMode,
+  parseBudgetKillMultiplier,
+  parsePausedRepos,
   parseFairSharePerRepo,
   parseGithubRunnerLabels,
   parseGithubRunnerMode,
@@ -212,6 +214,24 @@ describe("budget guardrail settings", () => {
     expect(parseSupersedeBranchRuns(null)).toEqual({ mode: "off" });
     expect("error" in parseSupersedeBranchRuns("always")).toBe(true);
   });
+
+  it("parses the kill multiplier, off by default", () => {
+    expect(parseBudgetKillMultiplier(null)).toEqual({ multiplier: 0 });
+    expect(parseBudgetKillMultiplier("")).toEqual({ multiplier: 0 });
+    expect(parseBudgetKillMultiplier("off")).toEqual({ multiplier: 0 });
+    expect(parseBudgetKillMultiplier(2)).toEqual({ multiplier: 2 });
+    expect(parseBudgetKillMultiplier("3")).toEqual({ multiplier: 3 });
+    expect("error" in parseBudgetKillMultiplier("0.5")).toBe(true);
+    expect("error" in parseBudgetKillMultiplier("101")).toBe(true);
+    expect("error" in parseBudgetKillMultiplier("nope")).toBe(true);
+  });
+
+  it("reads paused repos tolerantly and fails open", () => {
+    expect(parsePausedRepos(null)).toEqual({});
+    expect(parsePausedRepos("junk")).toEqual({});
+    expect(parsePausedRepos('{"o/r":"2026-10-08T00:00:00.000Z","bad":1}')).toEqual({ "o/r": "2026-10-08T00:00:00.000Z" });
+  });
+
 });
 
 describe("github runner mode settings", () => {

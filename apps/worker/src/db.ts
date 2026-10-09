@@ -1,6 +1,7 @@
 import { emitRunTerminal, runDurationMs } from "./analytics";
 import { basinRunTerminal, sendBasin, type BasinSink } from "./basin";
 import { readJobSpec } from "./pipeline";
+import { parsePausedRepos, SETTING_KEYS } from "./settings";
 import { ACTIONS_LIST_USD_PER_MIN } from "./cost";
 import { labelsMatch, splitLabels } from "./fairness";
 import { deleteJobLogIndex } from "./search";
@@ -729,6 +730,48 @@ export async function monthlyComputeMinutes(db: Db, repo: string, sinceIso: stri
     .first<{ minutes: number }>();
   const minutes = Number(res?.minutes ?? 0);
   return Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 100) / 100 : 0;
+}
+
+// Kill switch state: auto-paused repos (repo → pause timestamp).
+// Pausing is idempotent and returns whether this call paused.
+export async function getPausedRepos(db: Db): Promise<Record<string, string>> {
+  return parsePausedRepos(await getSetting(db, SETTING_KEYS.pausedRepos));
+}
+
+export async function isRepoPaused(db: Db, repo: string): Promise<boolean> {
+  return (await getPausedRepos(db))[repo] !== undefined;
+}
+
+export async function pauseRepo(db: Db, repo: string): Promise<boolean> {
+  const paused = await getPausedRepos(db);
+  if (paused[repo] !== undefined) return false;
+  paused[repo] = nowIso();
+  await setSetting(db, SETTING_KEYS.pausedRepos, JSON.stringify(paused));
+  return true;
+}
+
+export async function resumeRepo(db: Db, repo: string): Promise<boolean> {
+  const paused = await getPausedRepos(db);
+  if (paused[repo] === undefined) return false;
+  delete paused[repo];
+  await setSetting(db, SETTING_KEYS.pausedRepos, JSON.stringify(paused));
+  return true;
+}
+
+// Per-identity attribution for a paused repo: who dispatched recently,
+// most active first (bounded). Audit targets are run ids, joined back
+// to runs for the repo filter.
+export async function topDispatchActors(db: Db, repo: string, limit = 5): Promise<{ actor: string; dispatches: number }[]> {
+  const res = await db
+    .prepare(
+      `SELECT a.actor AS actor, COUNT(*) AS dispatches FROM audit_log a
+       JOIN runs r ON r.id = a.target
+       WHERE a.action = 'run.dispatch' AND r.repo = ?
+       GROUP BY a.actor ORDER BY dispatches DESC LIMIT ?`,
+    )
+    .bind(repo, Math.max(1, Math.min(limit, 20)))
+    .all<{ actor: string; dispatches: number }>();
+  return res.results;
 }
 
 export async function hasActiveGroupJob(db: Db, repo: string, group: string): Promise<boolean> {

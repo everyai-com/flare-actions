@@ -12,6 +12,8 @@ function plan(over: Partial<DryRunPlan> = {}): DryRunPlan {
     queued: 0,
     blocked: 0,
     totalPriorMs: 0,
+    paused: false,
+    pausedAt: null,
     budget: null,
     ...over,
   };
@@ -49,6 +51,11 @@ describe("formatPlan", () => {
     expect(out).toContain("needs build");
     expect(out).toContain("[blocked:group] deploy");
     expect(out).toContain("group prod");
+  });
+
+  it("flags paused repos", () => {
+    const out = formatPlan(plan({ queued: 1, paused: true, pausedAt: "2026-10-08T00:00:00.000Z" }));
+    expect(out).toContain("PAUSED since 2026-10-08T00:00:00.000Z");
   });
 
   it("flags cancel-in-progress and blocking budgets", () => {

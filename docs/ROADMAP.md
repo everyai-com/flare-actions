@@ -119,9 +119,14 @@ The recurring pains, in practitioners' own terms:
       history), with a full-suite safety net on the merge candidate and
       nightly, and a per-run report of what was skipped and why
       (`FLARE_CHANGED_FILES` is the groundwork)
-- [ ] Budget kill switches — per-identity attribution, auto-pause on
+- [x] Budget kill switches — per-identity attribution, auto-pause on
       runaway loops, alert (PR comment/webhook), resume in one click
       (per-repo caps + warn/block shipped)
+      (shipped Oct 8: `budgetKillMultiplier` trips at N× cap across
+      dispatch/webhook/schedule/MCP, alerts via notify (email+webhook),
+      `GET|DELETE /v1/admin/paused` with top-dispatcher attribution,
+      `cli paused` / `cli resume`, dashboard resume button, dry-run
+      `paused` flag)
 - [ ] CI profiles — first-class "smoke per push / full suite nightly + on
       the landing candidate" config block (the $0-bill pattern)
 - [ ] Shared-warm-cache stats — hit-rate over a week, published as the

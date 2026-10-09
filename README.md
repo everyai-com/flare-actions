@@ -508,6 +508,8 @@ npm run cli -- egress <runId>          # per-job egress by host
 npm run cli -- queue [labels]          # live queue + projected claim order (admin)
 npm run cli -- cache list|purge [prefix]  # cache entries (admin)
 npm run cli -- usage [days] [repo]     # runs, jobs, compute-minutes for billing
+npm run cli -- paused                # repos auto-paused for runaway spend (admin)
+npm run cli -- resume <repo>         # resume a paused repo (admin)
 npm run cli -- search <query...>       # search all job logs (branch:main level:error ...)
 npm run cli -- artifacts <runId>       # list artifacts
 npm run cli -- badge <repo> [branch]   # badge snippet
@@ -538,6 +540,7 @@ the error line.
 - `GET|POST /v1/quarantine` — list / add / remove quarantined tests (read scope; admin writes)
 - `GET /v1/runs/:id/tests`, `GET /v1/runs/:id/egress` — per-test results, per-job egress (read scope)
 - `GET /v1/admin/queue`, `GET /v1/usage?days=` — live queue, billing usage (admin / read scope)
+- `GET|DELETE /v1/admin/paused` — kill-switch state: paused repos with attribution + one-click resume (admin only)
 - `GET /v1/search/logs?q=` — full-text log search (read scope)
 - `GET /v1/runs/:id/wait?timeout=` — block until terminal (1–90s), returns the run + `timedOut`
 - `GET|POST|DELETE /v1/admin/secrets` — repo secrets, names listed, values write-only (admin only)

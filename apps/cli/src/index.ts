@@ -56,6 +56,8 @@ function usage(): never {
       "  cli cache list [prefix]                     list cache entries (admin)",
       "  cli cache purge [prefix]                    delete cache entries (admin)",
       "  cli usage [days] [repo]                     runs, jobs, compute-minutes for billing",
+      "  cli paused                                  repos auto-paused for runaway spend (admin)",
+      "  cli resume <repo>                           resume a paused repo (admin)",
       "  cli github-jobs [repo]                    ephemeral runner-mode jobs (status, duration, list price)",
       "  cli search <query...>                       search all job logs (branch:main level:error ...)",
       "  cli artifacts <runId>                       list a run's artifacts",
@@ -426,6 +428,19 @@ try {
     const out = await client().purgeCache(rest[1] ?? "");
     if (JSON_MODE) printJson("cache", { action: "purge", prefix: rest[1] ?? "", ...out });
     else console.log(JSON.stringify(out));
+    const paused = await client().listPaused();
+    if (JSON_MODE) printJson("paused", { paused });
+    else if (paused.length === 0) console.log("no paused repos");
+    else {
+      for (const p of paused) {
+        const actors = p.topActors.map((a) => `${a.actor} (${a.dispatches})`).join(", ");
+        console.log(`${p.repo} paused ${p.pausedAt} — ${p.usedMinutes}/${p.cap ?? "?"} compute-min${actors ? ` — top: ${actors}` : ""}`);
+      }
+    }
+  } else if (cmd === "resume" && rest[0]) {
+    const resumed = await client().resumeRepo(rest[0]);
+    if (JSON_MODE) printJson("resume", { repo: rest[0], resumed });
+    else console.log(resumed ? `${rest[0]} resumed` : `${rest[0]} was not paused`);
   } else if (cmd === "usage") {
     let days = 30;
     let repo: string | undefined;

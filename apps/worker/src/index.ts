@@ -48,8 +48,13 @@ import {
   listTokens,
   listUsers,
   monthlyComputeMinutes,
+  pauseRepo,
   pruneOldRuns,
   pruneWebhookDeliveries,
+  getPausedRepos,
+  isRepoPaused,
+  resumeRepo,
+  topDispatchActors,
   quarantineDowngrade,
   quarantineTest,
   recentTestStatuses,
@@ -92,7 +97,7 @@ import {
   validateSecretName,
   validateSecretValue,
 } from "./secrets";
-import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseBudgetMinutes, parseBudgetMode, parseFairSharePerRepo, parseGithubRunnerLabels, parseGithubRunnerMode, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseStoredBudgets, parseSupersedeBranchRuns, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
+import { SETTING_KEYS, isBadgeHiddenRepo, parseAiGatewayId, parseBadgeHiddenRepos, parseBudgetMinutes, parseBudgetMode, parseBudgetKillMultiplier, parseFairSharePerRepo, parseGithubRunnerLabels, parseGithubRunnerMode, parseHealOnFailure, parseMcpWriteConfirm, parseOpenRegistration, parseStoredBudgets, parseSupersedeBranchRuns, parseTriageWebSearch, validateBillingApiToken, validateCloudflareAccountId, validateNotifyFromEmail, validateNotifyMode, validateNotifyWebhookUrl, validateTriageModel, validateTurnstileSecretKey, validateTurnstileSiteKey, validateWebhookSecret } from "./settings";
 import {
   addAllowedUser,
   beginOAuth,
@@ -380,6 +385,7 @@ async function serveMcpRequest(
   props: McpPrincipalProps,
   canWrite: boolean,
   basin?: BasinSink,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   const handler = createMcpHandler(() =>
     buildMcpServer({
@@ -390,7 +396,9 @@ async function serveMcpRequest(
       agent: request.headers.get("X-Flare-Agent") ?? request.headers.get("User-Agent") ?? undefined,
       dispatchRun: async (input) => {
         if (!repoAllowed({ repos: props.repos }, input.repo)) throw new Error("token is not scoped to that repo");
+        if (await isRepoPaused(env.DB, input.repo)) throw new Error(`${input.repo} is paused for runaway spend — resume it in dashboard Settings → Budgets`);
         const verdict = await budgetVerdict(env, input.repo);
+        if (ctx) await maybeAutoPause(env, ctx, input.repo, props.actor, verdict);
         if (verdict?.mode === "block") {
           await audit(env.DB, props.actor, "budget.blocked", `${input.repo} ${verdict.usedMinutes}/${verdict.cap}`);
           throw new Error(`monthly budget exceeded for ${input.repo} (${verdict.usedMinutes}/${verdict.cap} compute-minutes)`);
@@ -424,7 +432,7 @@ async function serveMcpRequest(
 const mcpApiHandler = {
   async fetch(request: Request, env: OAuthEnv, ctx: OAuthResourceContext<McpPrincipalProps>): Promise<Response> {
     const { props, canWrite } = principalFromCtx(ctx);
-    return serveMcpRequest(request, env, props, canWrite, basinSink(env, ctx));
+    return serveMcpRequest(request, env, props, canWrite, basinSink(env, ctx), ctx);
   },
 };
 
@@ -593,6 +601,37 @@ async function budgetVerdict(
   if (usedMinutes < cap) return null;
   const parsed = parseBudgetMode(await getSetting(env.DB, SETTING_KEYS.budgetMode));
   return { mode: "mode" in parsed ? parsed.mode : "warn", cap, usedMinutes };
+}
+
+// Kill switch: when the multiplier is set and a repo burns past
+// cap × multiplier, pause it (dispatch/webhook/schedule refuse until
+// resume) and alert. Idempotent — only the first trip audits + alerts.
+// Runs after the verdict read at every enforcement point, in warn and
+// block mode alike: even a blocked loop deserves a visible pause.
+async function maybeAutoPause(
+  env: WorkerEnv,
+  ctx: ExecutionContext,
+  repo: string,
+  actor: string,
+  verdict: { cap: number; usedMinutes: number } | null,
+): Promise<void> {
+  if (!verdict) return;
+  const parsed = parseBudgetKillMultiplier(await getSetting(env.DB, SETTING_KEYS.budgetKillMultiplier));
+  const multiplier = "multiplier" in parsed ? parsed.multiplier : 0;
+  if (multiplier <= 0 || verdict.usedMinutes < verdict.cap * multiplier) return;
+  if (!(await pauseRepo(env.DB, repo))) return;
+  const detail = `${repo} ${verdict.usedMinutes}/${verdict.cap} (kill at ${multiplier}x)`;
+  await audit(env.DB, actor, "budget.autopause", detail);
+  log("warn", "repo auto-paused: runaway budget", { repo, usedMinutes: verdict.usedMinutes, cap: verdict.cap, multiplier });
+  ctx.waitUntil(
+    notifyMessage(env.DB, env, {
+      subject: `Flare auto-paused ${repo} (runaway budget)`,
+      text: `${repo} burned ${verdict.usedMinutes} compute-minutes against a ${verdict.cap}-minute cap (kill switch at ${multiplier}x) and is now paused: dispatches, webhooks, and schedules refuse until an admin resumes it in dashboard Settings → Budgets (or \`cli resume ${repo}\`).`,
+      html: `<p><strong>${repo}</strong> burned ${verdict.usedMinutes} compute-minutes against a ${verdict.cap}-minute cap (kill switch at ${multiplier}x) and is now paused.</p><p>Resume in dashboard Settings → Budgets, or <code>cli resume ${repo}</code>.</p>`,
+      auditTag: "budget.autopause",
+      auditTarget: repo,
+    }).catch(() => undefined),
+  );
 }
 
 // Resolve the run's jobs at repo@sha. Precedence: flare.yml (public
@@ -821,9 +860,15 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     const repo = payload.repository?.full_name;
     const sha = payload.after ?? payload.pull_request?.head?.sha;
     if (!repo || !sha) return json(apiError("missing_repo_or_sha", "missing repo or sha"), 400);
+    // Kill switch first: paused repos skip silently (200, like block).
+    if (await isRepoPaused(env.DB, repo)) {
+      log("info", "webhook skipped: repo paused", { repo });
+      return json({ skipped: "paused" }, 200);
+    }
     // Budget guard: block-mode repos over their monthly cap are skipped
     // (200 so GitHub stops retrying); warn-mode dispatches and audits.
     const verdict = await budgetVerdict(env, repo);
+    await maybeAutoPause(env, ctx, repo, "system", verdict);
     if (verdict?.mode === "block") {
       await audit(env.DB, "system", "budget.blocked", `${repo} ${verdict.usedMinutes}/${verdict.cap}`);
       log("warn", "run skipped: monthly budget exceeded", { repo, usedMinutes: verdict.usedMinutes, cap: verdict.cap });
@@ -1466,6 +1511,7 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       openRegistration?: unknown;
       budgetMinutes?: unknown;
       budgetMode?: unknown;
+      budgetKillMultiplier?: unknown;
       supersedeBranchRuns?: unknown;
       githubRunnerMode?: unknown;
       githubRunnerLabels?: unknown;
@@ -1493,6 +1539,7 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
     const hasOpenReg = body.openRegistration !== undefined;
     const hasBudget = body.budgetMinutes !== undefined;
     const hasBudgetMode = body.budgetMode !== undefined;
+    const hasKillMultiplier = body.budgetKillMultiplier !== undefined;
     const hasSupersede = body.supersedeBranchRuns !== undefined;
     const hasGhMode = body.githubRunnerMode !== undefined;
     const hasGhLabels = body.githubRunnerLabels !== undefined;
@@ -1501,8 +1548,7 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
     const hasTriageModel = body.triageModel !== undefined;
     if (
       !hasWebhook && !hasNotifyFrom && !hasNotifyMode && !hasNotifyWebhook && !hasBadgeHidden &&
-      !hasTurnstileSite && !hasTurnstileSecret && !hasFairShare && !hasGateway && !hasWriteConfirm && !hasWebSearch &&
-      !hasHeal && !hasOpenReg && !hasBudget && !hasBudgetMode && !hasSupersede && !hasGhMode && !hasGhLabels && !hasBillingToken && !hasAccountId && !hasTriageModel
+      !hasHeal && !hasOpenReg && !hasBudget && !hasBudgetMode && !hasKillMultiplier && !hasSupersede && !hasGhMode && !hasGhLabels && !hasBillingToken && !hasAccountId && !hasTriageModel
     ) {
       return json({ error: "no settings provided" }, 400);
     }
@@ -1647,6 +1693,12 @@ async function handleSettingsUpdate(request: Request, env: WorkerEnv): Promise<R
       if ("error" in parsed) return json({ error: parsed.error }, 400);
       await setSetting(env.DB, SETTING_KEYS.budgetMode, parsed.mode);
       await audit(env.DB, ident.actor, "settings.budget_mode", parsed.mode);
+    }
+    if (hasKillMultiplier) {
+      const parsed = parseBudgetKillMultiplier(body.budgetKillMultiplier);
+      if ("error" in parsed) return json({ error: parsed.error }, 400);
+      await setSetting(env.DB, SETTING_KEYS.budgetKillMultiplier, String(parsed.multiplier));
+      await audit(env.DB, ident.actor, "settings.budget_kill", String(parsed.multiplier));
     }
     if (hasSupersede) {
       const parsed = parseSupersedeBranchRuns(body.supersedeBranchRuns);
@@ -1876,7 +1928,7 @@ export default {
           const session = await oauthSession(request, env);
           if (session) {
             const { props, canWrite } = principalFromSession(session);
-            return serveMcpRequest(request, env, props, canWrite, basinSink(env, ctx));
+            return serveMcpRequest(request, env, props, canWrite, basinSink(env, ctx), ctx);
           }
         }
         // OAuth access tokens and legacy API tokens both validate here;
@@ -1893,7 +1945,15 @@ export default {
         const valid = validateDispatch(body);
         if ("error" in valid) return json(apiError("invalid_request", valid.error), 400);
         if (!repoAllowed(ident, valid.repo)) return json(apiError("repo_not_allowed", "token is not scoped to that repo"), 403);
+        const pausedAt = (await getPausedRepos(env.DB))[valid.repo];
+        if (pausedAt !== undefined) {
+          return json(
+            { ...apiError("repo_paused", `${valid.repo} is paused for runaway spend`), pausedAt },
+            429,
+          );
+        }
         const verdict = await budgetVerdict(env, valid.repo);
+        await maybeAutoPause(env, ctx, valid.repo, ident.actor, verdict);
         if (verdict) {
           const kind = verdict.mode === "block" ? "budget.blocked" : "budget.warn";
           await audit(env.DB, ident.actor, kind, `${valid.repo} ${verdict.usedMinutes}/${verdict.cap}`);
@@ -1957,6 +2017,7 @@ export default {
           );
           const verdict = await budgetVerdict(env, valid.repo);
           const queued = jobs.filter((job) => job.status === "queued").length;
+          const dryPausedAt = (await getPausedRepos(env.DB))[valid.repo] ?? null;
           return json({
             repo: valid.repo,
             sha: loaded.sha,
@@ -1966,6 +2027,8 @@ export default {
             queued,
             blocked: jobs.length - queued,
             totalPriorMs: jobs.reduce((sum, job) => sum + job.priorMs, 0),
+            paused: dryPausedAt !== null,
+            pausedAt: dryPausedAt,
             budget: verdict
               ? { mode: verdict.mode, usedMinutes: verdict.usedMinutes, cap: verdict.cap, wouldBlock: verdict.mode === "block" }
               : null,
@@ -2538,6 +2601,34 @@ export default {
         }
         return json({ error: "method not allowed" }, 405);
       }
+      // Kill switch state: paused repos with usage + per-identity
+      // attribution, and the one-click resume.
+      if (url.pathname === "/v1/admin/paused") {
+        if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
+        if (request.method === "GET") {
+          const paused = await getPausedRepos(env.DB);
+          const budgets = parseStoredBudgets(await getSetting(env.DB, SETTING_KEYS.budgetMinutes));
+          const repos = await Promise.all(
+            Object.entries(paused).map(async ([repo, pausedAt]) => ({
+              repo,
+              pausedAt,
+              cap: budgets[repo] ?? null,
+              usedMinutes: await monthlyComputeMinutes(env.DB, repo, monthStartIso()),
+              topActors: await topDispatchActors(env.DB, repo),
+            })),
+          );
+          return json({ paused: repos });
+        }
+        if (request.method === "DELETE") {
+          const repo = url.searchParams.get("repo") ?? "";
+          if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: "repo must be owner/name" }, 400);
+          const ident = await authIdentity(request, env);
+          const resumed = await resumeRepo(env.DB, repo);
+          if (resumed) await audit(env.DB, ident?.actor ?? "admin", "budget.resume", repo);
+          return json({ ok: true, resumed });
+        }
+        return json({ error: "method not allowed" }, 405);
+      }
       if (request.method === "GET" && url.pathname === "/v1/flaky") {
         const ident = await requireScope(request, env, "read");
         if (!ident) return json({ error: "unauthorized" }, 401);
@@ -3025,6 +3116,7 @@ export default {
           fairSharePerRepo: "cap" in fairShareParsed ? fairShareParsed.cap : 0,
           budgetMinutes: (await getSetting(env.DB, SETTING_KEYS.budgetMinutes)) ?? "",
           budgetMode: (await getSetting(env.DB, SETTING_KEYS.budgetMode)) ?? "warn",
+          budgetKillMultiplier: (await getSetting(env.DB, SETTING_KEYS.budgetKillMultiplier)) ?? "0",
           supersedeBranchRuns: (await getSetting(env.DB, SETTING_KEYS.supersedeBranchRuns)) ?? "off",
           githubRunnerMode: (await getSetting(env.DB, SETTING_KEYS.githubRunnerMode)) ?? "off",
           githubRunnerLabels: (await getSetting(env.DB, SETTING_KEYS.githubRunnerLabels)) ?? "flare",
@@ -3347,7 +3439,13 @@ export default {
       for (const s of schedules) {
         if (s.enabled !== 1 || !cronMatches(s.cron, now)) continue;
         if (s.last_run_at && Date.now() - Date.parse(s.last_run_at) < 60000) continue;
+        if (await isRepoPaused(env.DB, s.repo)) {
+          await touchScheduleRun(env.DB, s.id);
+          log("warn", "scheduled run skipped: repo paused", { scheduleId: s.id, repo: s.repo });
+          continue;
+        }
         const scheduleBudget = await budgetVerdict(env, s.repo);
+        await maybeAutoPause(env, ctx, s.repo, "system", scheduleBudget);
         if (scheduleBudget?.mode === "block") {
           await touchScheduleRun(env.DB, s.id);
           await audit(env.DB, "system", "budget.blocked", `${s.repo} ${scheduleBudget.usedMinutes}/${scheduleBudget.cap}`);

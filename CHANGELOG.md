@@ -30,6 +30,11 @@ tagged on `main` (`v0.1.0` is the first).
 - Quarantine surface: a dashboard Flaky tab (per-job failure rates +
   quarantine list with admin add/reinstate) and a "Quarantined — not
   blocking" section in the PR comment naming the skipped failures.
+- Budget kill switches: `budgetKillMultiplier` auto-pauses a repo past
+  N× its cap (dispatch/webhook/schedule/MCP refuse, alert via notify),
+  `GET|DELETE /v1/admin/paused` lists (with per-actor attribution) and
+  resumes, `cli paused` / `cli resume`, a dashboard Budgets resume
+  button, and dry-run `paused` reporting.
 - Tailscale-style runner pairing: dashboard Access mints a single-use
   10-minute code, `npm run runner -- --pair CODE` exchanges it for a
   runner token, writes `.env` (0600, merged), and starts polling —

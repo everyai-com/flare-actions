@@ -55,6 +55,14 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("supersedeCheck");
   });
 
+  it("wires the kill switch multiplier and paused resume", () => {
+    expect(DASHBOARD_HTML).toContain("killMultiplierInput");
+    expect(DASHBOARD_HTML).toContain("pausedBox");
+    expect(DASHBOARD_HTML).toContain("loadPaused");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/paused");
+    expect(DASHBOARD_HTML).toContain("Resume");
+  });
+
   it("renders the flaky tab with quarantine add and reinstate", () => {
     expect(DASHBOARD_HTML).toContain("tabFlaky");
     expect(DASHBOARD_HTML).toContain("flakyPane");
