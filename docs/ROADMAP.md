@@ -289,15 +289,21 @@ billing event per run.
 
 ## Known gaps (unscheduled)
 
-- Runner mode follow-ups (deliberate v1 limits, see
-  `docs/GITHUB-RUNNERS.md`): Windows executors, org-level runner
-  groups, log mirroring/digests for lane jobs, managed-seat JIT
-  runners (blocked: no docker-in-docker on Containers), PAT fallback.
-- Quarantine surface follow-ups: auto-suggest candidates in the Flaky
-  tab (flakyCandidates exists), per-test history sparklines.
-- Per-agent-identity attribution for anomaly alerts (repo + branch land
-  today).
-- Cost-per-merged-PR trend (the remaining slice of the budget story).
+- [x] Runner mode follow-ups, shippable slice (Oct 9): org-level
+  runner groups (dashboard pin, cached resolve, loud miss), log
+  digests for lane jobs (background fetch, `log_digest`, CLI +
+  dashboard). Still open: Windows executors (needs a Windows box to
+  verify — not shipped unverified), managed-seat JIT runners
+  (blocked: no docker-in-docker on Containers), PAT fallback
+  (deferred: classic-registration flow is large and App-less repos
+  already have full Flare orchestration).
+- [x] Quarantine surface follow-ups (shipped Oct 9: `candidates` on
+  `GET /v1/flaky` with 14-run sparklines, one-click dashboard
+  quarantine, `cli flaky` suggest rows).
+- [x] Per-agent-identity attribution for anomaly alerts (shipped Oct 9:
+  top agent tag in the alert + audit, untagged excluded).
+- [x] Cost-per-merged-PR trend (shipped Oct 9:
+  `GET /v1/usage/merged-pr-cost` + `cli usage --merged-pr`).
 - [x] Cache management: `restore-keys` semantics + a dashboard cache
   browser/eviction (shipped Oct 9: ≤10 prefixes, newest-wins,
   BYO/seats/local/importer, admin Cache browser + prefix purge).
@@ -309,4 +315,6 @@ billing event per run.
   repo-scoped artifact list/preview, admin-gated schedule CRUD).
 - [x] Org-level allowlists for API tokens (shipped Oct 9: `org/*`
   entries everywhere, one shared SQL builder, case-insensitive).
-- Runner auto-update for BYO fleets.
+- [x] Runner auto-update for BYO fleets (shipped Oct 9: fleet
+  `runner_version`, idle checks in both lanes, `--auto-update`
+  pull + reinstall + exit 42).
