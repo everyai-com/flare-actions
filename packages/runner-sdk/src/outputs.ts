@@ -93,3 +93,69 @@ export function formatOutputsLine(outputs: Record<string, string>): string {
     .map(([k, v]) => `${k}=${v.length > 120 ? `${v.slice(0, 120)}…` : v}`)
     .join(" ");
 }
+
+// Settled needs consumed by `if:` refs and step env. Results use the
+// fixed vocabulary (success/failure/cancelled/skipped); outputs are
+// the needs' resolved job-output mappings.
+export interface NeedsContext {
+  [base: string]: { result: string; outputs: Record<string, string> };
+}
+
+// Claim-payload budget for needs outputs (results always ride — they
+// are tiny and gating depends on them).
+export const MAX_NEEDS_BYTES = 64 * 1024;
+
+function utf8Length(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+// Deterministic cap: bases and keys sorted, results always kept,
+// outputs filled until the byte budget runs out.
+export function capNeedsContext(needs: NeedsContext): { needs: NeedsContext; truncated: boolean } {
+  const out: NeedsContext = {};
+  let bytes = 0;
+  let truncated = false;
+  for (const base of Object.keys(needs).sort()) {
+    const entry = needs[base] as { result: string; outputs: Record<string, string> };
+    const kept: Record<string, string> = {};
+    for (const key of Object.keys(entry.outputs).sort()) {
+      const value = entry.outputs[key] as string;
+      const size = utf8Length(base) + utf8Length(key) + utf8Length(value);
+      if (bytes + size > MAX_NEEDS_BYTES) {
+        truncated = true;
+        continue;
+      }
+      bytes += size;
+      kept[key] = value;
+    }
+    out[base] = { result: entry.result, outputs: kept };
+  }
+  return { needs: out, truncated };
+}
+
+function needsEnvName(prefix: string, base: string, key: string): string {
+  return `${prefix}${base}_${key}`.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+}
+
+// Needs as step env (`FLARE_NEEDS_<BASE>_<KEY>` + `..._RESULT`).
+// Mangling can collide (`a-b` vs `a.b`); first sorted name wins and
+// the losers come back skipped so the executor can warn.
+export function buildNeedsEnv(needs: NeedsContext): { env: Record<string, string>; skipped: string[] } {
+  const env: Record<string, string> = {};
+  const skipped: string[] = [];
+  const claim = (name: string, value: string, label: string): void => {
+    if (name in env) {
+      skipped.push(label);
+      return;
+    }
+    env[name] = value;
+  };
+  for (const base of Object.keys(needs).sort()) {
+    const entry = needs[base] as { result: string; outputs: Record<string, string> };
+    claim(needsEnvName("FLARE_NEEDS_", base, "RESULT"), entry.result, `needs.${base}.result`);
+    for (const key of Object.keys(entry.outputs).sort()) {
+      claim(needsEnvName("FLARE_NEEDS_", base, key), entry.outputs[key] as string, `needs.${base}.outputs.${key}`);
+    }
+  }
+  return { env, skipped };
+}

@@ -1,5 +1,5 @@
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { normalizeStepCondition } from "./spec.ts";
+import { normalizeJobCondition, normalizeStepCondition } from "./spec.ts";
 import { MAX_JOB_OUTPUTS, isValidOutputName } from "./outputs.ts";
 import { MAX_RESTORE_KEYS } from "./parity.ts";
 
@@ -326,7 +326,7 @@ export function convertActionsWorkflow(text: string): ImportResult {
     // treats `success()` (default) as skip-after-failed-need and
     // `always()`/`failure()` as run. Everything else is warned.
     if (jobDef.if !== undefined) {
-      const norm = normalizeStepCondition(jobDef.if);
+      const norm = normalizeJobCondition(jobDef.if);
       if (norm) out.if = norm;
       else warnings.push(`${jobId}: dropped unsupported job condition \`${String(jobDef.if)}\``);
     }

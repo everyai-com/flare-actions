@@ -4,7 +4,8 @@
 // (Seats-only keys like browserChecks stay strict: dropping them would
 // silently skip verification, so malformed means fail closed.)
 import { validatePreviewTemplate } from "./browser.ts";
-import { MAX_JOB_OUTPUTS, isValidOutputName, parseOutputRef } from "./outputs.ts";
+import { evaluateCondition, normalizeCondition, type ConditionContext } from "./conditions.ts";
+import { MAX_JOB_OUTPUTS, isValidOutputName, parseOutputRef, type NeedsContext } from "./outputs.ts";
 import { MAX_RESTORE_KEYS, isValidRestoreKey } from "./parity.ts";
 
 export interface JobServiceSpec {
@@ -91,11 +92,17 @@ export interface JobBrowserCheckSpec {
 // else (expression soup) is rejected at parse time, never guessed.
 export const STEP_CONDITIONS = ["always()", "success()", "failure()", "cancelled()"] as const;
 
+// Step-level conditions: status fns plus needs/steps comparisons,
+// `&&`/`||`/`!`, and parens. Literals keep their case (unlike the
+// legacy all-lowercase form — `== 'Prod'` must not become 'prod').
 export function normalizeStepCondition(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  const norm = raw.trim().toLowerCase();
-  const fn = norm.startsWith("!") ? norm.slice(1) : norm;
-  return (STEP_CONDITIONS as readonly string[]).includes(fn) ? norm : null;
+  return normalizeCondition(raw, { allowSteps: true });
+}
+
+// Job-level conditions: same grammar minus `steps.*` (no step of this
+// job has run yet when the scheduler evaluates it).
+export function normalizeJobCondition(raw: unknown): string | null {
+  return normalizeCondition(raw, { allowSteps: false });
 }
 
 export interface StepRunState {
@@ -114,30 +121,14 @@ export function unsafeTarMember(name: string): boolean {
   return name.startsWith("/") || name.split("/").includes("..");
 }
 
-export function stepRuns(condition: string | undefined, state: StepRunState): boolean {
+export function stepRuns(
+  condition: string | undefined,
+  state: StepRunState,
+  ctx?: { needs?: NeedsContext; steps?: Record<string, Record<string, string>> },
+): boolean {
   if (condition === undefined || condition === "") return !state.jobFailed; // default = success()
-  const norm = condition.trim().toLowerCase();
-  const neg = norm.startsWith("!");
-  const fn = neg ? norm.slice(1) : norm;
-  let value: boolean;
-  switch (fn) {
-    case "always()":
-      value = true;
-      break;
-    case "success()":
-      value = !state.jobFailed;
-      break;
-    case "failure()":
-      value = state.anyFailed;
-      break;
-    case "cancelled()":
-      value = false;
-      break;
-    default:
-      value = !state.jobFailed;
-      break;
-  }
-  return neg ? !value : value;
+  const full: ConditionContext = { needs: ctx?.needs ?? {}, steps: ctx?.steps ?? {} };
+  return evaluateCondition(condition, state, full);
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

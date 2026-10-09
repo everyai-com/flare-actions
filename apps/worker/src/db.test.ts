@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { Db, JobRow } from "./db";
 import {
+  buildNeedsContext,
   cancelQueuedJobs,
   claimAdminMarker,
   claimNextJob,
   claimWebhookDelivery,
+  readNeedsContext,
   deleteRepoEgressAllow,
   flakyCandidates,
   getRepoEgressAllow,
@@ -747,5 +749,64 @@ describe("summarizeUsageAnomalies", () => {
 
   it("ignores repos with a single day of data", () => {
     expect(summarizeUsageAnomalies([day("o/new", "2026-10-04", 500, 900)], { today: "2026-10-04" })).toEqual([]);
+  });
+});
+
+describe("buildNeedsContext", () => {
+  const sib = (base: string, status: string, result: string | null) => ({ base, status, result });
+
+  it("builds results and outputs per declared base", () => {
+    const out = buildNeedsContext(
+      [sib("build", "success", JSON.stringify({ outputs: { tag: "v1", n: 42 } })), sib("lint", "failure", null)],
+      ["build", "lint", "missing"],
+    );
+    expect(out.needs).toEqual({
+      build: { result: "success", outputs: { tag: "v1" } },
+      lint: { result: "failure", outputs: {} },
+    });
+    expect(out.truncated).toBe(false);
+    expect(out.warnings).toEqual([]);
+  });
+
+  it("maps statuses onto the fixed result vocabulary", () => {
+    const out = buildNeedsContext(
+      [
+        sib("a", "error", null),
+        sib("b", "cancelled", null),
+        sib("c", "skipped", null),
+        sib("d", "running", null),
+        sib("e", "not json", "{oops"),
+      ],
+      ["a", "b", "c", "d", "e"],
+    );
+    expect(out.needs.a?.result).toBe("failure");
+    expect(out.needs.b?.result).toBe("cancelled");
+    expect(out.needs.c?.result).toBe("skipped");
+    expect(out.needs.d?.result).toBe("failure");
+    expect(out.needs.e?.outputs).toEqual({});
+  });
+
+  it("drops outputs (with a warning) for multi-cell bases", () => {
+    const out = buildNeedsContext(
+      [
+        sib("m", "success", JSON.stringify({ outputs: { tag: "a" } })),
+        sib("m", "failure", JSON.stringify({ outputs: { tag: "b" } })),
+      ],
+      ["m"],
+    );
+    expect(out.needs.m).toEqual({ result: "failure", outputs: {} });
+    expect(out.warnings).toEqual(["needs.m has 2 cells; outputs need a single job (result failure only)"]);
+  });
+
+  it("caps outputs to the claim budget", () => {
+    const big = "x".repeat(70 * 1024);
+    const out = buildNeedsContext([sib("b", "success", JSON.stringify({ outputs: { huge: big, small: "s" } }))], ["b"]);
+    expect(out.truncated).toBe(true);
+    expect(out.needs.b?.outputs).toEqual({ small: "s" });
+  });
+
+  it("readNeedsContext short-circuits empty bases without a query", async () => {
+    const db = { prepare: () => { throw new Error("must not query"); } } as unknown as Db;
+    await expect(readNeedsContext(db, "r1", [])).resolves.toEqual({ needs: {}, truncated: false, warnings: [] });
   });
 });

@@ -2,6 +2,8 @@
 // static ref resolution, and log rendering.
 import { describe, expect, it } from "vitest";
 import {
+  buildNeedsEnv,
+  capNeedsContext,
   formatOutputsLine,
   isValidOutputName,
   parseOutputRef,
@@ -70,5 +72,50 @@ describe("output names", () => {
     expect(isValidOutputName("has space")).toBe(false);
     expect(isValidOutputName("a".repeat(65))).toBe(false);
     expect(formatOutputsLine({ url: "https://x", big: "y".repeat(200) })).toBe(`url=https://x big=${"y".repeat(120)}…`);
+  });
+});
+
+describe("capNeedsContext", () => {
+  it("keeps results and fills outputs deterministically until the budget", () => {
+    const big = "x".repeat(70 * 1024);
+    const { needs, truncated } = capNeedsContext({
+      b: { result: "success", outputs: { huge: big, small: "s" } },
+      a: { result: "failure", outputs: { keep: "v" } },
+    });
+    expect(truncated).toBe(true);
+    expect(needs.a).toEqual({ result: "failure", outputs: { keep: "v" } });
+    expect(needs.b?.result).toBe("success");
+    expect(needs.b?.outputs).toEqual({ small: "s" });
+  });
+
+  it("passes small contexts through untouched", () => {
+    const input = { build: { result: "success", outputs: { tag: "v1" } } };
+    expect(capNeedsContext(input)).toEqual({ needs: input, truncated: false });
+  });
+});
+
+describe("buildNeedsEnv", () => {
+  it("mangles bases and keys into FLARE_NEEDS_* names", () => {
+    const { env, skipped } = buildNeedsEnv({
+      build: { result: "success", outputs: { tag: "v1" } },
+      "my-job.2": { result: "failure", outputs: {} },
+    });
+    expect(env).toEqual({
+      FLARE_NEEDS_BUILD_RESULT: "success",
+      FLARE_NEEDS_BUILD_TAG: "v1",
+      FLARE_NEEDS_MY_JOB_2_RESULT: "failure",
+    });
+    expect(skipped).toEqual([]);
+  });
+
+  it("skips mangling collisions deterministically with labels", () => {
+    const { env, skipped } = buildNeedsEnv({
+      "a-b": { result: "success", outputs: {} },
+      "a.b": { result: "failure", outputs: {} },
+    });
+    // Both mangle to FLARE_NEEDS_A_B_RESULT; first sorted base wins
+    // ("a-b" sorts before "a.b").
+    expect(env).toEqual({ FLARE_NEEDS_A_B_RESULT: "success" });
+    expect(skipped).toEqual(["needs.a.b.result"]);
   });
 });

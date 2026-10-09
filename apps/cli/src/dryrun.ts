@@ -5,7 +5,7 @@ import type { DryRunPlan } from "flare-actions-runner-sdk";
 export function formatPlan(plan: DryRunPlan): string {
   const lines = [
     `dry run: ${plan.repo}@${plan.sha.slice(0, 12)} (${plan.branch || "-"}, pipeline: ${plan.pipelineSource}${plan.profile ? `, profile: ${plan.profile}` : ""})`,
-    `would queue ${plan.queued}, block ${plan.blocked}${plan.totalPriorMs > 0 ? `, est prior ${Math.round(plan.totalPriorMs / 1000)}s` : ""}`,
+    `would queue ${plan.queued}, block ${plan.blocked}${(plan.skipped ?? 0) > 0 ? `, skip ${plan.skipped}` : ""}${plan.totalPriorMs > 0 ? `, est prior ${Math.round(plan.totalPriorMs / 1000)}s` : ""}`,
   ];
   if (plan.paused) lines[1] += `, PAUSED since ${plan.pausedAt ?? "?"}`;
   if (plan.budget) {
@@ -15,7 +15,7 @@ export function formatPlan(plan: DryRunPlan): string {
   }
   for (const job of plan.jobs) {
     let status = job.status;
-    if (job.status === "blocked") status += `:${job.blockedReason ?? "?"}`;
+    if (job.status !== "queued") status += `:${job.blockedReason ?? "?"}`;
     const bits = [`[${status}] ${job.name}`];
     if (job.needs.length > 0) bits.push(`needs ${job.needs.join(",")}`);
     if (job.group) bits.push(`group ${job.group}${job.wouldCancelInProgress ? " (would cancel in-progress)" : ""}`);

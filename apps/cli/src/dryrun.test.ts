@@ -12,6 +12,7 @@ function plan(over: Partial<DryRunPlan> = {}): DryRunPlan {
     jobs: [],
     queued: 0,
     blocked: 0,
+    skipped: 0,
     totalPriorMs: 0,
     paused: false,
     pausedAt: null,
@@ -76,5 +77,18 @@ describe("formatPlan", () => {
     );
     expect(out).toContain("would cancel in-progress");
     expect(out).toContain("BUDGET WOULD BLOCK (61/60 compute-minutes)");
+  });
+
+  it("renders root-if skips with the if reason", () => {
+    const out = formatPlan(
+      plan({
+        jobs: [
+          { name: "notify", base: "notify", needs: [], group: null, labels: [], status: "skipped", blockedReason: "if", wouldCancelInProgress: false, priorMs: 0 },
+        ],
+        skipped: 1,
+      }),
+    );
+    expect(out).toContain("would queue 0, block 0, skip 1");
+    expect(out).toContain("[skipped:if] notify");
   });
 });

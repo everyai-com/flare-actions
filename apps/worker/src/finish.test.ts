@@ -163,6 +163,16 @@ describe("jobConditionSatisfied", () => {
     expect(jobConditionSatisfied("cancelled()", true)).toBe(false);
     expect(jobConditionSatisfied("!failure()", false)).toBe(true);
     expect(jobConditionSatisfied("!cancelled()", true)).toBe(true);
+    expect(jobConditionSatisfied("github.x == 'y'", false)).toBe(false);
+  });
+
+  it("evaluates needs refs against the settled context", () => {
+    const needs = { build: { result: "success", outputs: { tag: "v1" } } };
+    expect(jobConditionSatisfied("needs.build.outputs.tag == 'v1'", false, needs)).toBe(true);
+    expect(jobConditionSatisfied("needs.build.outputs.tag == 'zzz'", false, needs)).toBe(false);
+    expect(jobConditionSatisfied("needs.build.result == 'success'", false, needs)).toBe(true);
+    expect(jobConditionSatisfied("needs.missing.result == ''", false, needs)).toBe(true);
+    expect(jobConditionSatisfied("needs.build.outputs.tag == 'v1'", false)).toBe(false);
   });
 });
 
@@ -187,6 +197,23 @@ describe("promoteBlockedJobs", () => {
     expect(sent).toEqual([{ runId: "run-1", jobId: "job-2", repo: "o/r", sha: "abc123" }]);
   });
 
+  it("gates jobs on needs results and outputs", async () => {
+    const db = new MemDb();
+    db.jobs.set("job-1", jobRow({ id: "job-1", name: "test", status: "success", result: JSON.stringify({ outputs: { tag: "v1" } }) }));
+    const match = blocked(def({ if: "needs.test.outputs.tag == 'v1' && success()" }), "job-2");
+    const mismatch = blocked(def({ if: "needs.test.outputs.tag == 'zzz'" }), "job-3");
+    const noRef = blocked(def({ if: "needs.test.result == 'success'" }), "job-4");
+    db.jobs.set("job-2", match);
+    db.jobs.set("job-3", mismatch);
+    db.jobs.set("job-4", noRef);
+    db.blocked = [match, mismatch, noRef];
+    const promoted = await promoteBlockedJobs(db, { send: async () => undefined }, "o/r");
+    expect(promoted).toEqual(["job-2", "job-4"]);
+    expect(db.jobs.get("job-2")?.status).toBe("queued");
+    expect(db.jobs.get("job-3")?.status).toBe("skipped");
+    expect(db.jobs.get("job-4")?.status).toBe("queued");
+  });
+
   it("skips defaults after a failed need but runs failure()/always() jobs", async () => {
     const db = new MemDb();
     db.jobs.set("job-1", jobRow({ id: "job-1", name: "test", status: "failure" }));
@@ -204,6 +231,37 @@ describe("promoteBlockedJobs", () => {
     expect(db.jobs.get("job-3")?.status).toBe("queued");
     expect(db.jobs.get("job-4")?.status).toBe("queued");
     expect(sent).toHaveLength(2);
+  });
+
+  it("cascade-skips dependents of skipped needs without tripping failure()", async () => {
+    const db = new MemDb();
+    db.jobs.set("job-1", jobRow({ id: "job-1", name: "test", status: "skipped" }));
+    const plain = blocked(def(), "job-2");
+    const onFail = blocked(def({ if: "failure()" }), "job-3");
+    const always = blocked(def({ if: "always()" }), "job-4");
+    db.jobs.set("job-2", plain);
+    db.jobs.set("job-3", onFail);
+    db.jobs.set("job-4", always);
+    db.blocked = [plain, onFail, always];
+    const promoted = await promoteBlockedJobs(db, { send: async () => undefined }, "o/r");
+    expect(promoted).toEqual(["job-4"]);
+    expect(db.jobs.get("job-2")?.status).toBe("skipped");
+    expect(db.jobs.get("job-3")?.status).toBe("skipped");
+    expect(db.jobs.get("job-4")?.status).toBe("queued");
+  });
+
+  it("routes cancelled needs to cancelled(), not failure()", async () => {
+    const db = new MemDb();
+    db.jobs.set("job-1", jobRow({ id: "job-1", name: "test", status: "cancelled" }));
+    const onFail = blocked(def({ if: "failure()" }), "job-2");
+    const onCancel = blocked(def({ if: "cancelled()" }), "job-3");
+    db.jobs.set("job-2", onFail);
+    db.jobs.set("job-3", onCancel);
+    db.blocked = [onFail, onCancel];
+    const promoted = await promoteBlockedJobs(db, { send: async () => undefined }, "o/r");
+    expect(promoted).toEqual(["job-3"]);
+    expect(db.jobs.get("job-2")?.status).toBe("skipped");
+    expect(db.jobs.get("job-3")?.status).toBe("queued");
   });
 
   it("skips failure() jobs after success and waits for pending needs", async () => {

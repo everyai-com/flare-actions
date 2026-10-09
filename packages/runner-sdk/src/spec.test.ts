@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matrixEnv, parseJobSpec, stepRuns } from "./spec";
+import { matrixEnv, normalizeJobCondition, normalizeStepCondition, parseJobSpec, stepRuns } from "./spec";
 
 describe("parseJobSpec", () => {
   it("parses a full spec", () => {
@@ -203,6 +203,28 @@ describe("stepRuns", () => {
     expect(stepRuns("!cancelled()", failed)).toBe(true);
     expect(stepRuns("!always()", clean)).toBe(false);
     expect(stepRuns("!failure()", clean)).toBe(true);
+  });
+
+  it("evaluates needs/steps refs with missing-as-empty", () => {
+    const clean = { anyFailed: false, jobFailed: false };
+    const ctx = {
+      needs: { build: { result: "success", outputs: { tag: "v1" } } },
+      steps: { prep: { sha: "abc" } },
+    };
+    expect(stepRuns("needs.build.result == 'success'", clean, ctx)).toBe(true);
+    expect(stepRuns("needs.build.outputs.tag == 'v1' && success()", clean, ctx)).toBe(true);
+    expect(stepRuns("steps.prep.outputs.sha == 'abc'", clean, ctx)).toBe(true);
+    expect(stepRuns("needs.missing.result == ''", clean, ctx)).toBe(true);
+    expect(stepRuns("needs.build.result == 'success'", clean)).toBe(false);
+    expect(stepRuns("github.event == 'push'", clean, ctx)).toBe(false);
+  });
+
+  it("normalizes step vs job conditions (steps refs are step-only)", () => {
+    expect(normalizeStepCondition("steps.prep.outputs.sha == 'a'")).toBe("steps.prep.outputs.sha == 'a'");
+    expect(normalizeStepCondition("FAILURE()")).toBe("FAILURE()");
+    expect(normalizeStepCondition("github.x == 'y'")).toBe(null);
+    expect(normalizeJobCondition("needs.b.result == 'success' && failure()")).toBe("needs.b.result == 'success' && failure()");
+    expect(normalizeJobCondition("steps.prep.outputs.sha == 'a'")).toBe(null);
   });
 });
 

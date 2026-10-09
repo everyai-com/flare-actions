@@ -1,5 +1,6 @@
 import { emitRunTerminal, runDurationMs } from "./analytics";
 import { basinRunTerminal, sendBasin, type BasinSink } from "./basin";
+import { capNeedsContext, type NeedsContext } from "../../../packages/runner-sdk/src/outputs";
 import { readJobSpec } from "./pipeline";
 import { parsePausedRepos, SETTING_KEYS } from "./settings";
 import { ACTIONS_LIST_USD_PER_MIN } from "./cost";
@@ -419,6 +420,83 @@ export async function getJobsForRun(db: Db, runId: string): Promise<JobRow[]> {
     .bind(runId)
     .all<JobRow>();
   return res.results;
+}
+
+function needResultForStatus(status: string): string {
+  if (status === "success") return "success";
+  if (status === "cancelled") return "cancelled";
+  if (status === "skipped") return "skipped";
+  // failure, error, and anything unsettled (a rerun racing the claim):
+  // fail closed so success-gated consumers skip.
+  return "failure";
+}
+
+function needOutputsForResult(result: string | null): Record<string, string> {
+  if (!result) return {};
+  try {
+    const parsed = JSON.parse(result) as { outputs?: unknown };
+    if (typeof parsed !== "object" || parsed === null || !isRecordOutputs(parsed.outputs)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed.outputs)) {
+      if (typeof v === "string") out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function isRecordOutputs(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function worstNeedResult(results: string[]): string {
+  if (results.includes("failure")) return "failure";
+  if (results.includes("cancelled")) return "cancelled";
+  if (results.includes("skipped")) return "skipped";
+  return "success";
+}
+
+// Settled needs for one consumer: results + resolved outputs per
+// declared base, capped for claim payloads. Matrix/shard bases (many
+// cells, one name) report a worst-of result with NO outputs —
+// cell outputs are ambiguous under one name, so they stay absent
+// with a warning instead of picking a silent winner.
+export function buildNeedsContext(
+  siblings: { base: string; status: string; result: string | null }[],
+  bases: string[],
+): { needs: NeedsContext; truncated: boolean; warnings: string[] } {
+  const warnings: string[] = [];
+  const raw: NeedsContext = {};
+  for (const base of bases) {
+    const cells = siblings.filter((s) => s.base === base);
+    if (cells.length === 0) continue;
+    const result = worstNeedResult(cells.map((c) => needResultForStatus(c.status)));
+    if (cells.length > 1) {
+      warnings.push(`needs.${base} has ${cells.length} cells; outputs need a single job (result ${result} only)`);
+      raw[base] = { result, outputs: {} };
+      continue;
+    }
+    const only = cells[0] as { base: string; status: string; result: string | null };
+    raw[base] = { result, outputs: needOutputsForResult(only.result) };
+  }
+  const capped = capNeedsContext(raw);
+  return { needs: capped.needs, truncated: capped.truncated, warnings };
+}
+
+// Claim/lane helper: read the run's jobs and build the consumer's
+// needs context. One query, shared by the BYO claim, seats, and tests.
+export async function readNeedsContext(
+  db: Db,
+  runId: string,
+  bases: string[],
+): Promise<{ needs: NeedsContext; truncated: boolean; warnings: string[] }> {
+  if (bases.length === 0) return { needs: {}, truncated: false, warnings: [] };
+  const rows = await getJobsForRun(db, runId);
+  return buildNeedsContext(
+    rows.map((r) => ({ base: readJobSpec(r.definition, r.name).base, status: r.status, result: r.result ?? null })),
+    bases,
+  );
 }
 
 // Atomic claim: exactly one executor (runner or seat) wins a job. The

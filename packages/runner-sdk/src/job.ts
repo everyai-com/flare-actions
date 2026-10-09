@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
 import { createTar, restoreCache, safeCachePaths, saveCache, type CacheClient } from "./cache.ts";
 import { executeSteps } from "./execute.ts";
-import { formatOutputsLine, resolveJobOutputs } from "./outputs.ts";
+import { buildNeedsEnv, formatOutputsLine, resolveJobOutputs, type NeedsContext } from "./outputs.ts";
 import { formatBytes, JobResourceMonitor, type ResourceMonitor, type ResourcePeaks } from "./resources.ts";
 import { interpolateSecrets, maskSecrets } from "./secrets.ts";
 import { dockerServicesCtl, type ServiceHandle, type ServicesCtl } from "./services.ts";
@@ -42,6 +42,11 @@ export interface RunJobOptions {
   // Test hook; production samples the runner's process subtree for
   // peak RSS/CPU (best-effort, never fails the job).
   resources?: ResourceMonitor;
+  // Settled needs (results + outputs) from the claim; becomes
+  // FLARE_NEEDS_* step env plus `if:` context.
+  needs?: NeedsContext;
+  needsTruncated?: boolean;
+  needsWarnings?: string[];
 }
 
 export interface RunJobResult {
@@ -293,11 +298,17 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
       const matrix = matrixEnv(spec.matrix);
       const jobEnv: Record<string, string> = {};
       for (const [k, v] of Object.entries(spec.env ?? {})) jobEnv[k] = interpolateSecrets(v, secrets);
+      // Settled needs become step env (FLARE_NEEDS_<BASE>_<KEY>,
+      // curated like the other FLARE_* vars — job env may override).
+      const builtNeeds = buildNeedsEnv(opts.needs ?? {});
+      for (const w of opts.needsWarnings ?? []) logParts.push(`[needs] ${w}`);
+      if (opts.needsTruncated) logParts.push("[needs] outputs truncated to 64KB");
+      for (const s of builtNeeds.skipped) logParts.push(`[needs] env skipped (name collision): ${s}`);
       // GitHub parity: CI=true for every step (enables tool retries and
       // non-interactive modes); runner env or job env may override it.
-      const stepEnv = { CI: "true", ...opts.env, ...jobEnv, ...matrix };
+      const stepEnv = { CI: "true", ...opts.env, ...builtNeeds.env, ...jobEnv, ...matrix };
       const forwardKeys = spec.container
-        ? [...new Set([...Object.keys(jobEnv), ...Object.keys(matrix), ...Object.keys(opts.env).filter((k) => k.startsWith("FLARE_"))])]
+        ? [...new Set([...Object.keys(jobEnv), ...Object.keys(matrix), ...Object.keys(opts.env).filter((k) => k.startsWith("FLARE_")), ...Object.keys(builtNeeds.env)])]
         : undefined;
       // Preserve per-step flags (continue-on-error, if) — dropping them
       // here would silently disable both on every executor that runs
@@ -308,6 +319,7 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
         env: stepEnv,
         container: spec.container,
         containerEnv: forwardKeys,
+        needs: opts.needs ?? {},
       });
       logParts.push(outcome.log);
       // Job outputs resolve from collected step outputs (missing refs

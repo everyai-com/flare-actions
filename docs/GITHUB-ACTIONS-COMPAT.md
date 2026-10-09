@@ -86,15 +86,18 @@ the common cases working in shell:
 
 `FLARE_REF` is empty for tag and source runs.
 
-**Job guards.** A job-level `if:` that is not in the bounded subset is
-still evaluated when it compares `github.event_name`, `github.ref`,
-`github.ref_name`, or `github.repository` (with `==` / `!=` and optional
-`!`) — the run's event, branch, and repo are known at translation time.
-A guard that evaluates false **skips the job entirely**, exactly like
-Actions would, so `if: github.event_name == 'pull_request'` cannot leak a
-preview deploy into a push run. Undecidable guards (anything else) keep
-the job and warn. Step-level conditions outside the subset still run
-with a warning — keep an eye on the log for those.
+**Job guards.** Job-level `if:` keeps the bounded subset (status
+functions plus `needs.*` comparisons with `&&` / `||` / `!` / parens —
+no `steps.*`, unknowable before steps run) and still evaluates
+`github.event_name`, `github.ref`, `github.ref_name`, and
+`github.repository` comparisons at translation time, since the run's
+event, branch, and repo are already known. A guard that evaluates false
+**skips the job entirely**, exactly like Actions would, so
+`if: github.event_name == 'pull_request'` cannot leak a preview deploy
+into a push run — and a root `if: failure()` now skips at fan-out
+instead of queueing. Undecidable guards (anything else) keep the job
+and warn. Step-level conditions outside the subset still run with a
+warning — keep an eye on the log for those.
 
 ## Merging and limits
 

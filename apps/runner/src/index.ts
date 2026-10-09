@@ -65,7 +65,7 @@ if (!process.argv.includes("--github")) {
 const client = new FlareClient(baseUrl, token);
 
 async function pollOnce(): Promise<boolean> {
-  const { job, secrets, secretsError, selection } = await client.nextClaim(LABELS);
+  const { job, secrets, secretsError, selection, needs, needsTruncated, needsWarnings } = await client.nextClaim(LABELS);
   if (!job) return false;
   console.log(JSON.stringify({ msg: "picked up job", jobId: job.id, name: job.name, repo: job.repo, sha: job.sha }));
   // Fail closed on corrupt or newer-format definitions: substituting an
@@ -175,6 +175,9 @@ async function pollOnce(): Promise<boolean> {
       jobId: job.id,
       secrets,
       secretsError,
+      needs,
+      needsTruncated,
+      needsWarnings,
     });
     const logWithSelection = selectionLines.length > 0 ? `${selectionLines.join("\n")}\n${outcome.log}` : outcome.log;
     await client.reportStatus(

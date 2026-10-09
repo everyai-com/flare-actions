@@ -19,7 +19,7 @@ small-screen responsive pass), plus `--json` everywhere, `cli explain`,
 Tailscale-style runner pairing, dry-run dispatch (`--dry-run` on
 `cli run` / `cli dispatch`), machine-actionable errors (21 codes +
 hints, `docs/ERRORS.md`), and the quarantine surface (dashboard Flaky
-tab + PR-comment section). OpenAPI is at 75 paths (was 68).
+tab + PR-comment section). OpenAPI is at 88 paths (was 68).
 
 - **Phase 0**: V2 seats on the `durable_object` policy — `ContainerSeatV2`
   + `SEATS_V2` binding (additive; V1 keeps serving in-flight jobs, rollback
@@ -41,7 +41,14 @@ tab + PR-comment section). OpenAPI is at 75 paths (was 68).
   debug), Billable Usage API in `cli usage` (`/v1/usage/billable` +
   SDK + CLI + dashboard strip, R2-bandwidth pairing, truncation
   reporting past the 2000-row fetch cap). K2 spiked, no adoption
-  (`docs/SPIKES.md`).
+  (`docs/SPIKES.md`). Shipped after: cache `restore-keys` + dashboard
+  cache browser (≤10 prefix fallbacks, newest wins, R2/CLI/seats/
+  importer coverage), step/job outputs (`$FLARE_OUTPUT`, job
+  `outputs:` maps, `GET /v1/runs/:id` result), and richer `if:` +
+  needs (bounded `needs.*`/`steps.*` comparisons with `&&`/`||`/`!`,
+  needs context on claims + `FLARE_NEEDS_*` env, root-`if` fan-out
+  skip with `skipped` dry-run plans, GitHub skipped/cancelled truth
+  table in promote).
 - **Phase 2**: snapshot-backed caches (image-lineage keyed, fail-fast
   degraded handling), retain-on-failure (`retain-on-failure` YAML key,
   30-min TTL alarm, SSH), per-job egress report (measured R2 transfers

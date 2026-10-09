@@ -130,6 +130,31 @@ describe("executeSteps", () => {
     }
   });
 
+  it("gates steps on needs and earlier-step outputs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-exec-if-"));
+    try {
+      const out = await executeSteps(
+        [
+          { run: 'echo "sha=abc" >> "$FLARE_OUTPUT"', id: "prep" },
+          { run: "echo gated-by-steps", if: "steps.prep.outputs.sha == 'abc'" },
+          { run: "echo gated-by-needs", if: "needs.build.result == 'success'" },
+          { run: "echo skipped-step", if: "needs.build.outputs.tag == 'zzz'" },
+        ],
+        { cwd: dir, env: { ...process.env }, needs: { build: { result: "success", outputs: { tag: "v1" } } } },
+      );
+      expect(out.success).toBe(true);
+      expect(out.results.map((r) => r.command)).toEqual([
+        'echo "sha=abc" >> "$FLARE_OUTPUT"',
+        "echo gated-by-steps",
+        "echo gated-by-needs",
+      ]);
+      expect(out.log).toContain("skipped (needs.build.outputs.tag == 'zzz')");
+      expect(out.log).not.toContain("echo skipped-step");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("notes truncated values and ignored lines", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flare-exec-out-"));
     try {

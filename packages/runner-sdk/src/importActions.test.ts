@@ -170,6 +170,20 @@ describe("import helpers", () => {
     expect(res.warnings.join("\n")).toContain("unsupported step condition");
   });
 
+  it("translates richer conditions; steps refs are step-only", () => {
+    const res = convertActionsWorkflow(
+      "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: x\n        if: needs.build.result == 'success' && failure()\n      - run: y\n        id: prep\n      - run: z\n        if: steps.prep.outputs.sha == 'abc'\n",
+    );
+    if (!isImportSuccess(res)) throw new Error(res.error);
+    expect(res.yaml).toContain("needs.build.result == 'success' && failure()");
+    expect(res.yaml).toContain("steps.prep.outputs.sha == 'abc'");
+    const job = convertActionsWorkflow(
+      "jobs:\n  a:\n    if: steps.prep.outputs.sha == 'abc'\n    runs-on: ubuntu-latest\n    steps:\n      - run: x\n",
+    );
+    if (!isImportSuccess(job)) throw new Error(job.error);
+    expect(job.warnings.join("\n")).toContain("unsupported job condition");
+  });
+
   it("translates supported job conditions and warns on expression soup", () => {
     const ok = convertActionsWorkflow("jobs:\n  a:\n    if: always()\n    runs-on: ubuntu-latest\n    steps:\n      - run: x\n");
     if (!isImportSuccess(ok)) throw new Error(ok.error);

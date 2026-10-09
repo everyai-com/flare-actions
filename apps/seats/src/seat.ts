@@ -9,6 +9,7 @@ import {
   isTerminal,
   markJobRetained,
   quarantineDowngrade,
+  readNeedsContext,
   recentlyFailedTests,
   releaseJob,
   rollupRunStatus,
@@ -41,7 +42,7 @@ import { indexJobLog } from "../../worker/src/search";
 import { recordRuntimePrior } from "../../worker/src/priors";
 import { jobDurationMs } from "../../worker/src/cost";
 import { MAX_JUNIT_BYTES, parseJUnit } from "../../worker/src/junit";
-import { seatEligible } from "../../worker/src/pipeline";
+import { readJobSpec, seatEligible } from "../../worker/src/pipeline";
 import { decideSelectionMode, DEFAULT_HISTORY_DAYS } from "../../worker/src/testselect";
 import { pickNewestCacheHit, recordCacheOutcome } from "../../worker/src/cache";
 import { ARTIFACTS_EVENT } from "../../worker/src/artifacts-push";
@@ -49,7 +50,7 @@ import { annotateSpan } from "../../worker/src/trace";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
 import type { AiBinding } from "../../worker/src/triage";
 import { interpolateSecrets, maskSecrets } from "../../../packages/runner-sdk/src/secrets";
-import { formatOutputsLine, parseStepOutputs, resolveJobOutputs } from "../../../packages/runner-sdk/src/outputs";
+import { buildNeedsEnv, formatOutputsLine, parseStepOutputs, resolveJobOutputs } from "../../../packages/runner-sdk/src/outputs";
 import { resolveCheckUrl } from "../../../packages/runner-sdk/src/browser";
 import { matrixEnv, parseJobSpec, stepRuns, unsafeTarMember } from "../../../packages/runner-sdk/src/spec";
 import type { JobBrowserActionSpec } from "../../../packages/runner-sdk/src/spec";
@@ -1158,6 +1159,18 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     // Steps (each writes to a file; only a bounded tail crosses).
     const jobEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(spec.env ?? {})) jobEnv[k] = interpolateSecrets(v, secrets);
+    // Settled needs: same builder the BYO claim uses (one D1 read),
+    // curated into step env plus `if:` context. A failed read fails
+    // open to empty (refs resolve "" — same as missing needs).
+    const needsCtx = await readNeedsContext(deps.db, job.run_id, readJobSpec(job.definition, job.name).needs).catch(() => ({
+      needs: {},
+      truncated: false,
+      warnings: [] as string[],
+    }));
+    const builtNeeds = buildNeedsEnv(needsCtx.needs);
+    for (const w of needsCtx.warnings) logParts.push(`[needs] ${w}`);
+    if (needsCtx.truncated) logParts.push("[needs] outputs truncated to 64KB");
+    for (const s of builtNeeds.skipped) logParts.push(`[needs] env skipped (name collision): ${s}`);
     const stepEnv: Record<string, string> = {
       // Same curated keys as BYO runners and `cli local` (runner-sdk
       // parity.ts); job env may still override (notably CI).
@@ -1171,6 +1184,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         selectionMode,
         selectedTests,
       }),
+      ...builtNeeds.env,
       ...jobEnv,
       ...matrixEnv(spec.matrix),
     };
@@ -1248,7 +1262,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         break;
       }
       const step = spec.steps[i];
-      if (!stepRuns(step.if, { anyFailed, jobFailed })) {
+      if (!stepRuns(step.if, { anyFailed, jobFailed }, { needs: needsCtx.needs, steps: stepOutputs })) {
         logParts.push(`--- step ${i + 1}: skipped (${step.if}) ---`);
         continue;
       }

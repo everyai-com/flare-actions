@@ -1861,6 +1861,45 @@ describe("runSeatJob", () => {
     expect([...db.cacheStats.values()]).toEqual([{ hits: 1, misses: 0 }]);
   });
 
+  it("sees settled needs in step env and `if:` refs", async () => {
+    const db = new MemDb();
+    seed(
+      db,
+      JSON.stringify({
+        steps: [
+          { run: "echo $FLARE_NEEDS_BUILD_TAG", if: "needs.build.outputs.tag == 'v1'" },
+          { run: "echo never", if: "needs.build.result == 'failure'" },
+        ],
+        base: "deploy",
+        needs: ["build"],
+      }),
+    );
+    db.jobs.set("j0", {
+      id: "j0",
+      run_id: "r1",
+      status: "success",
+      log: "",
+      name: "build",
+      definition: JSON.stringify({ steps: [{ run: "x" }] }),
+      result: JSON.stringify({ outputs: { tag: "v1" } }),
+      triage: "",
+      labels: "",
+      priority: 0,
+      attempts: 0,
+      started_at: null,
+      finished_at: null,
+      retained_until: null,
+      prior_ms: 0,
+      created_at: new Date().toISOString(),
+    });
+    const container = new FakeContainer();
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.log as string).toContain("skipped (needs.build.result == 'failure')");
+    const stepCall = container.calls.find((c) => c.cmd[0] === "sh" && c.cmd[1] === "-c");
+    expect(stepCall?.opts?.env).toMatchObject({ FLARE_NEEDS_BUILD_TAG: "v1", FLARE_NEEDS_BUILD_RESULT: "success" });
+  });
+
   it("collects step outputs and resolves the job mapping", async () => {
     const db = new MemDb();
     seed(

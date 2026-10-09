@@ -66,6 +66,7 @@ import {
   topDispatchActors,
   quarantineDowngrade,
   quarantineTest,
+  readNeedsContext,
   recentTestStatuses,
   recentlyFailedTests,
   releaseAdminMarker,
@@ -149,6 +150,7 @@ import {
   parseEgressAllow,
   parsePipelineWithProfiles,
   parseProfileName,
+  readJobSpec,
   readRetryPolicy,
   seatEligible,
   selectProfileJobs,
@@ -183,6 +185,7 @@ import {
   type AuthScope,
 } from "./tokens";
 import { convertActionsWorkflow, isImportSuccess } from "../../../packages/runner-sdk/src/importActions.ts";
+import { initialJobStatus } from "../../../packages/runner-sdk/src/conditions.ts";
 import { getTemplate, listTemplateMeta } from "../../../packages/runner-sdk/src/templates.ts";
 import { badgeSvg } from "./badge";
 import { createPairingCode, exchangePairingCode } from "./pairing";
@@ -908,18 +911,21 @@ async function createRunAndFanOut(
   const jobIds: string[] = [];
   const queuedIds: string[] = [];
   let blocked = 0;
+  let skipped = 0;
   for (const job of jobs) {
     const jobId = crypto.randomUUID();
     const base = job.base ?? job.name;
-    if (job.group && job.cancelInProgress) {
+    const groupBlocked =
+      !!job.group && !job.cancelInProgress && (await hasActiveGroupJob(env.DB, input.repo, job.group));
+    const verdict = initialJobStatus(job, groupBlocked);
+    // A job that will never run must not supersede its group.
+    if (job.group && job.cancelInProgress && verdict.status !== "skipped") {
       const cancelled = await cancelGroupJobs(env.DB, input.repo, job.group, runId, env.ANALYTICS, basin);
       if (cancelled.length > 0) log("info", "concurrency cancelled superseded jobs", { group: job.group, cancelled });
     }
-    const needsBlocked = (job.needs?.length ?? 0) > 0;
-    const groupBlocked =
-      !!job.group && !job.cancelInProgress && (await hasActiveGroupJob(env.DB, input.repo, job.group));
-    const status = needsBlocked || groupBlocked ? "blocked" : "queued";
+    const status = verdict.status;
     if (status === "blocked") blocked += 1;
+    if (status === "skipped") skipped += 1;
     const priorMs = await lookupPriorMs(env.DB, input.repo, job.name).catch(() => 0);
     await createJob(env.DB, jobId, runId, {
       name: job.name,
@@ -936,6 +942,13 @@ async function createRunAndFanOut(
     }
   }
   await rollupRunStatus(env.DB, runId, env.ANALYTICS, basin);
+  // Skipped-at-fan-out roots never transition, so without this their
+  // dependents would park forever — promote once when any root skipped
+  // (promoted jobs queue and wake exactly like fanned-out ones).
+  if (skipped > 0 && blocked > 0) {
+    const promoted = await promoteBlockedJobs(env.DB, env.RUN_QUEUE, input.repo, undefined, env.ANALYTICS, basin);
+    queuedIds.push(...promoted);
+  }
   return { runId, jobIds, queuedIds, blocked, reused: null };
 }
 
@@ -1653,8 +1666,10 @@ export interface PlannedJob {
   needs: string[];
   group: string | null;
   labels: string[];
-  status: "queued" | "blocked";
-  blockedReason: "needs" | "group" | null;
+  status: "queued" | "blocked" | "skipped";
+  // Why the job is not queued: parked on needs/group, or skipped by a
+  // root `if:` that is already false.
+  blockedReason: "needs" | "group" | "if" | null;
   wouldCancelInProgress: boolean;
   // Effective outbound allowlist after the repo floor policy (null =
   // observe-only), plus the violation detail when the job declares
@@ -1665,9 +1680,9 @@ export interface PlannedJob {
 
 // Pure mirror of createRunAndFanOut's per-job status call: needs park
 // the job, otherwise an active same-group job parks it unless the job
-// cancels in progress (which instead supersedes the group). The dry-run
-// route feeds live group state and the repo egress policy; unit tests
-// feed fakes.
+// cancels in progress (which instead supersedes the group), otherwise a
+// root `if:` that is already false skips it. The dry-run route feeds
+// live group state and the repo egress policy; unit tests feed fakes.
 export function planFanOut(
   jobs: PipelineJob[],
   groupActive: (group: string) => boolean,
@@ -1677,9 +1692,8 @@ export function planFanOut(
   const violated = new Map(policed.violations.map((v) => [v.job, v.outside]));
   return policed.jobs.map((job) => {
     const base = job.base ?? job.name;
-    const needsBlocked = (job.needs?.length ?? 0) > 0;
     const groupBlocked = !!job.group && !job.cancelInProgress && groupActive(job.group);
-    const status = needsBlocked || groupBlocked ? "blocked" : "queued";
+    const verdict = initialJobStatus(job, groupBlocked);
     const outside = violated.get(job.name) ?? null;
     return {
       name: job.name,
@@ -1687,8 +1701,8 @@ export function planFanOut(
       needs: job.needs ?? [],
       group: job.group ?? null,
       labels: job.labels ?? [],
-      status,
-      blockedReason: needsBlocked ? "needs" : groupBlocked ? "group" : null,
+      status: verdict.status,
+      blockedReason: verdict.blockedReason,
       wouldCancelInProgress: !!job.group && !!job.cancelInProgress,
       egressAllow: job.egress && job.egress.allow.length > 0 ? job.egress.allow : null,
       policyViolation: outside ? `allows [${outside.join(", ")}] outside the repo allowlist` : null,
@@ -2433,6 +2447,7 @@ export default {
           );
           const verdict = await budgetVerdict(env, valid.repo);
           const queued = jobs.filter((job) => job.status === "queued").length;
+          const skipped = jobs.filter((job) => job.status === "skipped").length;
           const dryPausedAt = (await getPausedRepos(env.DB))[valid.repo] ?? null;
           return json({
             repo: valid.repo,
@@ -2442,7 +2457,8 @@ export default {
             profile: loaded.profile,
             jobs,
             queued,
-            blocked: jobs.length - queued,
+            blocked: jobs.length - queued - skipped,
+            skipped,
             totalPriorMs: jobs.reduce((sum, job) => sum + job.priorMs, 0),
             paused: dryPausedAt !== null,
             pausedAt: dryPausedAt,
@@ -2772,7 +2788,20 @@ export default {
           }
           selection = { mode: decision.mode, reason: decision.reason, recentFailures };
         }
-        return json({ job, secrets, secretsError, selection });
+        // Settled needs ride the claim (results + outputs for the
+        // declared bases, capped); the executor turns them into step
+        // env and `if:` context. Empty + untruncated without needs.
+        const needsBases = readJobSpec(job.definition, job.name).needs;
+        const needsCtx = await readNeedsContext(env.DB, job.run_id, needsBases);
+        return json({
+          job,
+          secrets,
+          secretsError,
+          selection,
+          needs: needsCtx.needs,
+          needsTruncated: needsCtx.truncated,
+          needsWarnings: needsCtx.warnings,
+        });
       }
       // Runner mode (`runs-on: flare`) claim lane: mints an ephemeral
       // JIT config at claim time (1h TTL, single job). The JIT blob is

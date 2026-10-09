@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { formatOutputsLine, isValidOutputName, parseStepOutputs } from "./outputs.ts";
+import { formatOutputsLine, isValidOutputName, parseStepOutputs, type NeedsContext } from "./outputs.ts";
 import { dockerArgsForStep } from "./services.ts";
 import { normalizeStepCondition, stepRuns } from "./spec.ts";
 
@@ -43,6 +43,8 @@ export interface ExecuteOptions {
   // Run every step inside this image; only containerEnv keys cross over.
   container?: string;
   containerEnv?: string[];
+  // Settled needs for `if:` refs (results + outputs).
+  needs?: NeedsContext;
 }
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -106,7 +108,9 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
   let jobFailed = false;
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
-    if (!stepRuns(step.if, { anyFailed, jobFailed })) {
+    // `if:` sees the settled needs plus this job's earlier steps (a
+    // step can only ref outputs published before it runs).
+    if (!stepRuns(step.if, { anyFailed, jobFailed }, { needs: opts.needs ?? {}, steps: stepOutputs })) {
       logParts.push(`--- step ${i + 1}: skipped (${step.if}) ---`);
       continue;
     }

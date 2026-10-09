@@ -5,10 +5,12 @@ import { arch, homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
 import {
   buildFlareEnv,
+  capNeedsContext,
   checkJobParity,
   envParityRows,
   FLARE_ENV_KEYS,
   hasSecretPlaceholders,
+  jobConditionSatisfied,
   matrixEnv,
   runJob,
   selectTests,
@@ -16,6 +18,7 @@ import {
   type EnvParityRow,
   type JobClient,
   type JobSpec,
+  type NeedsContext,
   type ParityCacheSummary,
   type ParityFinding,
   type ParityImageSummary,
@@ -339,6 +342,23 @@ export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
   delete baseEnv.CI;
 
   const done = new Map<string, boolean>();
+  // Settled needs per base (result + resolved outputs), mirroring the
+  // cloud's buildNeedsContext: multi-cell bases keep a worst-of result
+  // with no outputs (ambiguous under one name).
+  const needResults = new Map<string, { result: string; outputs: Record<string, string> }>();
+  const needCounts = new Map<string, number>();
+  const recordNeed = (needBase: string, result: string, outputs: Record<string, string>): void => {
+    const seen = (needCounts.get(needBase) ?? 0) + 1;
+    needCounts.set(needBase, seen);
+    if (seen > 1) {
+      const prev = needResults.get(needBase);
+      const rank = (r: string): number => (r === "failure" ? 0 : r === "cancelled" ? 1 : r === "skipped" ? 2 : 3);
+      const worst = rank(result) < rank(prev?.result ?? "success") ? result : (prev?.result ?? "success");
+      needResults.set(needBase, { result: worst, outputs: {} });
+      return;
+    }
+    needResults.set(needBase, { result, outputs });
+  };
   const results: LocalJobResult[] = [];
   const pending = [...selected];
   while (pending.length > 0) {
@@ -346,10 +366,20 @@ export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
     const job = index === -1 ? pending.shift() : pending.splice(index, 1)[0];
     if (!job) break;
     const base = job.base ?? job.name;
-    if ((job.needs ?? []).some((n) => done.get(n) === false)) {
-      if (!quiet) console.log(`[--] ${job.name} (skipped: needs failed)`);
+    const needsCtx: NeedsContext = {};
+    for (const n of job.needs ?? []) {
+      const settled = needResults.get(n);
+      if (settled) needsCtx[n] = settled;
+    }
+    // Job-level `if:` — the same gate as the cloud fan-out (roots) and
+    // promote (needs jobs): settled need results discriminate
+    // skipped/cancelled from failed.
+    const needsFailed = (job.needs ?? []).some((n) => done.get(n) === false);
+    if (!jobConditionSatisfied(job.if, needsFailed, needsCtx)) {
+      if (!quiet) console.log(`[--] ${job.name} (skipped: condition ${job.if ?? "success()"} is false)`);
       results.push({ name: job.name, status: "skipped", durationMs: 0, artifacts: [] });
       done.set(base, false);
+      recordNeed(base, "skipped", {});
       continue;
     }
     if (!quiet) console.log(`--- ${job.name} ---`);
@@ -382,6 +412,10 @@ export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
         if (!quiet) console.log("[select] selection failed, ran everything");
       }
     }
+    const capped = capNeedsContext(needsCtx);
+    const needsWarnings = (job.needs ?? [])
+      .filter((n) => (needCounts.get(n) ?? 0) > 1)
+      .map((n) => `needs.${n} has ${needCounts.get(n)} cells; outputs need a single job`);
     const outcome = await runJob(spec, {
       cwd: opts.cwd,
       env: {
@@ -400,6 +434,9 @@ export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
       client: localClient(cacheDir, artifactsDir, slugify(job.name)),
       jobId: slugify(job.name),
       secrets,
+      needs: capped.needs,
+      needsTruncated: capped.truncated,
+      needsWarnings,
     });
     if (!quiet) printOutcome(job.name, outcome, artifactsDir);
     results.push({
@@ -409,6 +446,7 @@ export async function runLocal(opts: LocalOptions): Promise<LocalResult> {
       artifacts: outcome.artifacts,
     });
     done.set(base, outcome.success);
+    recordNeed(base, outcome.success ? "success" : "failure", outcome.outputs);
   }
   return { ok: results.every((r) => r.status === "success"), jobs: results };
 }

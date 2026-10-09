@@ -153,11 +153,15 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   pipeline parser — single source of truth for flare.yml validation —
   keep the `.ts` extension on that import; it runs jobs via `runJob` in
   the working tree with a warm `~/.flare/cache`.
-- Step conditions: bounded subset (`always()`/`success()`/`failure()`/
-  `cancelled()` plus `!fn()` negations), validated in both `pipeline.ts`
-  and runner-sdk `spec.ts`, evaluated by `stepRuns` in both engines —
-  after a failure, default steps skip while failure()/always() steps run.
-  Unsupported expressions invalidate the file; never guess.
+- Step/job conditions: bounded subset (status fns plus `needs.*`/
+  `steps.*` comparisons with `&&`/`||`/`!`/parens, hard budgets, no
+  expression engine) in `runner-sdk/conditions.ts`, validated in both
+  `pipeline.ts` and `spec.ts`, evaluated by `stepRuns` (steps) and
+  `jobConditionSatisfied` (jobs) — settled need results discriminate
+  skipped/cancelled from failed (GitHub truth table). Roots gate at
+  fan-out via `initialJobStatus` (shared with the dry-run mirror);
+  needs jobs gate in promote. Unsupported expressions invalidate the
+  file; never guess.
 - Failure triage (`triage.ts`): on job failure/failure-callback, a
   `waitUntil` (never blocking) calls Workers AI (`ai` binding) and stores
   ≤4KB text in `jobs.triage`, surfaced in dashboard + CLI. Missing AI

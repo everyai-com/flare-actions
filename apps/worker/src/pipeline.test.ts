@@ -164,6 +164,11 @@ describe("parsePipeline v2 keys", () => {
     expect(jobs?.[0].if).toBe("always()");
     expect(jobs?.[0].steps[0]).toEqual({ run: "x", timeoutMinutes: 5, shell: "bash" });
     expect(parsePipeline("jobs:\n  a:\n    if: github.ref == 'x'\n    steps:\n      - run: x\n")).toBeNull();
+    const rich = parsePipeline("jobs:\n  a:\n    if: failure() && needs.build.result == 'success'\n    steps:\n      - run: x\n");
+    expect(rich?.[0].if).toBe("failure() && needs.build.result == 'success'");
+    expect(parsePipeline("jobs:\n  a:\n    if: steps.prep.outputs.sha == 'a'\n    steps:\n      - run: x\n")).toBeNull();
+    const stepRef = parsePipeline("jobs:\n  a:\n    steps:\n      - run: x\n        if: steps.prep.outputs.sha == 'a'\n");
+    expect(stepRef?.[0].steps[0].if).toBe("steps.prep.outputs.sha == 'a'");
     expect(parsePipeline("jobs:\n  a:\n    steps:\n      - run: x\n        timeout-minutes: 0\n")).toBeNull();
     expect(parsePipeline("jobs:\n  a:\n    steps:\n      - run: x\n        shell: 'sh -c evil'\n")).toBeNull();
     const def = serializeDefinition({ name: "a", steps: [{ run: "x" }], if: "failure()" }, "a");
@@ -180,7 +185,7 @@ describe("parsePipeline v2 keys", () => {
     const matrix = parsePipeline(
       "jobs:\n  a:\n    strategy:\n      matrix:\n        n: [1]\n    steps:\n      - run: clean-${{ matrix.n }}\n        if: ALWAYS()\n",
     );
-    expect(matrix?.[0].steps[0]).toEqual({ run: "clean-1", if: "always()" });
+    expect(matrix?.[0].steps[0]).toEqual({ run: "clean-1", if: "ALWAYS()" });
     expect(
       parsePipeline("jobs:\n  a:\n    steps:\n      - run: x\n        if: github.event_name == 'push'\n"),
     ).toBeNull();

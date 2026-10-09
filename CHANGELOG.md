@@ -8,6 +8,21 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Richer `if:` + needs context: step/job conditions take comparisons
+  over settled needs and earlier steps (`needs.build.result`,
+  `needs.build.outputs.tag`, `steps.prep.outputs.sha`) with `&&`/`||`/
+  `!`/parens under hard budgets (512 chars, depth 10, 100 nodes;
+  missing refs read `""`, unparseable fails closed) — no expression
+  engine, one hand-rolled parser shared by worker, SDK, seats, and
+  `cli local`. Claims carry the consumer's needs context (results +
+  outputs, ≤64 KB deterministic fill, results always survive) as
+  `FLARE_NEEDS_*` env; matrix/shard bases report worst-of with no
+  outputs. Root jobs gate their `if:` at fan-out (a root `failure()`
+  skips instead of queueing; the dry-run plan shows `skipped`, and a
+  promote pass after fan-out keeps dependents of skipped roots from
+  parking forever). Promote follows the GitHub skipped/cancelled truth
+  table: skipped needs cascade-skip default dependents without tripping
+  `failure()` handlers, cancelled needs route to `cancelled()`.
 - Step/job outputs: steps publish `KEY=VALUE` lines to `$FLARE_OUTPUT`
   (`$GITHUB_OUTPUT` aliases it; ≤16 pairs/step, ≤1 KiB values,
   truncated/ignored counts logged), addressable by step `id:` (unique,
@@ -15,8 +30,8 @@ tagged on `main` (`v0.1.0` is the first).
   `stepid.key` refs (missing refs stay absent with a log note) and
   lands in `resultJson` (readable via `GET /v1/runs/:id`). Works on
   BYO, seats, and `cli local`; the Actions importer keeps `id:` and
-  maps static `steps.<id>.outputs.<key>` refs. Consuming outputs in
-  `needs` contexts and `if:` conditions follows next.
+  maps static `steps.<id>.outputs.<key>` refs; needs contexts and
+  `if:` conditions consume them (see above).
 - Cache `restore-keys` + dashboard cache browser: jobs take ≤10
   prefix fallbacks tried in order on an exact-key miss (newest
   entry wins, logged with the matching prefix; saves still land

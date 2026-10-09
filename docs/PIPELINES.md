@@ -80,11 +80,15 @@ jobs:
   interpreter, `sh` default), 32 KB captured output each. A step with
   `continue-on-error: true` is recorded as failed but does not stop the
   job or fail it (GitHub parity).
-  Steps accept a bounded `if:` subset — `always()`, `success()`,
-  `failure()`, `cancelled()`, and `!fn()` negations. After a failure,
-  default (`success()`) steps are skipped while `failure()`/`always()`
-  steps still run; anything outside the subset invalidates the file
-  rather than guessing at expression soup.
+  Steps accept a bounded `if:` subset — the status functions
+  `always()`, `success()`, `failure()`, `cancelled()`, comparisons over
+  settled needs and earlier steps (`needs.build.result == 'success'`,
+  `needs.build.outputs.tag == 'v2'`, `steps.prep.outputs.sha != ''`),
+  combined with `&&`, `||`, `!`, and parentheses (512 chars, depth 10,
+  100 nodes max). After a failure, default (`success()`) steps are
+  skipped while `failure()`/`always()` steps still run; missing
+  references read as `""` (GitHub parity) and anything outside the
+  subset invalidates the file rather than guessing at expression soup.
   `FLARE_REPO`, `FLARE_SHA`, `FLARE_RUN_ID`,
   `FLARE_JOB_ID`, `FLARE_REF` (branch; empty for tags/source runs), and
   `FLARE_MATRIX_*` are always set. `FLARE_CHANGED_FILES` carries the
@@ -100,11 +104,19 @@ jobs:
   Schedules), not in `flare.yml` — see the README's scheduled runs section.
 - **`needs`** takes job names (pre-matrix). A job runs when all its needs
   succeed, skips when any need fails/errors/cancels/skips. Cycles and
-  unknown names invalidate the file.
-- **Job `if`** (same bounded subset as steps) is evaluated when the needs
-  settle: default/`success()` requires all-success, `failure()` runs only
-  after a failed need, `always()` runs either way — the notify/cleanup
-  pattern. With no `needs`, `failure()` never runs.
+  unknown names invalidate the file. Settled needs arrive as a results +
+  outputs context: `FLARE_NEEDS_<BASE>_<KEY>` and `..._RESULT` env vars
+  in every step (≤64 KB, deterministic fill, results always survive),
+  plus `needs.*` refs in `if:` — matrix/shard bases report a worst-of
+  result with no outputs rather than a silent winner.
+- **Job `if`** (same bounded subset as steps, minus `steps.*` — unknowable
+  before steps run) is evaluated when the needs settle: default/
+  `success()` requires all-success, `failure()` runs only after a real
+  failure, `cancelled()` only after a cancellation, `always()` either
+  way — the notify/cleanup pattern. A skipped need cascade-skips default
+  dependents without tripping `failure()` handlers. Root jobs are gated
+  at fan-out, so with no `needs`, `failure()` never runs (and shows as
+  `skipped` in the dry-run plan).
 - **`retry`** (0–5) requeues a failed job for another attempt instead of
   going terminal; attempts are stamped, so the budget is exact and a
   failing job can never loop forever. The run only reports failure once

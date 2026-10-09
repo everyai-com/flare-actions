@@ -310,7 +310,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [repo, sha, branch, pipelineSource, profile, jobs, queued, blocked, totalPriorMs, paused, pausedAt, budget]
+                required: [repo, sha, branch, pipelineSource, profile, jobs, queued, blocked, skipped, totalPriorMs, paused, pausedAt, budget]
                 properties:
                   repo:
                     type: string
@@ -347,11 +347,11 @@ paths:
                             type: string
                         status:
                           type: string
-                          enum: [queued, blocked]
+                          enum: [queued, blocked, skipped]
                         blockedReason:
                           type: string
                           nullable: true
-                          enum: [needs, group, null]
+                          enum: [needs, group, if, null]
                         wouldCancelInProgress:
                           type: boolean
                         egressAllow:
@@ -370,6 +370,9 @@ paths:
                     type: integer
                   blocked:
                     type: integer
+                  skipped:
+                    type: integer
+                    description: Jobs skipped by a root `if:` that is already false
                   totalPriorMs:
                     type: integer
                   paused:
@@ -1077,6 +1080,29 @@ paths:
                   secretsError:
                     type: boolean
                     description: True when secret rows were undecryptable
+                  needs:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      required: [result, outputs]
+                      properties:
+                        result:
+                          type: string
+                          description: Settled result (success, failure, cancelled, skipped)
+                        outputs:
+                          type: object
+                          additionalProperties:
+                            type: string
+                          description: Resolved job outputs of the need
+                    description: Settled needs context for the declared bases (empty without needs)
+                  needsTruncated:
+                    type: boolean
+                    description: True when needs outputs exceeded the 64KB claim budget
+                  needsWarnings:
+                    type: array
+                    items:
+                      type: string
+                    description: Multi-cell needs bases whose outputs stayed home
         '401':
           $ref: '#/components/responses/Unauthorized'
   /v1/github/jobs:

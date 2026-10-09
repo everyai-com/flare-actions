@@ -227,6 +227,15 @@ describe("planFanOut", () => {
     expect(planned[0]).toMatchObject({ status: "queued", wouldCancelInProgress: true });
   });
 
+  it("skips roots whose if is already false and defers needs jobs to promote", () => {
+    const planned = planFanOut(
+      [job({ name: "notify", if: "failure()" }), job({ name: "cleanup", needs: ["test"], if: "failure()" })],
+      () => false,
+    );
+    expect(planned[0]).toMatchObject({ status: "skipped", blockedReason: "if" });
+    expect(planned[1]).toMatchObject({ status: "blocked", blockedReason: "needs" });
+  });
+
   it("reports observe-only with no repo policy", () => {
     const planned = planFanOut([job({ name: "build" })], () => false);
     expect(planned[0]).toMatchObject({ egressAllow: null, policyViolation: null });

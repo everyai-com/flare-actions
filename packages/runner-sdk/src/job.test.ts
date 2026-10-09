@@ -90,6 +90,30 @@ describe("runJob", () => {
     }
   });
 
+  it("exposes needs as FLARE_NEEDS_* env and logs warnings", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-needs-"));
+    try {
+      const res = await runJob(
+        { steps: [{ run: "echo $FLARE_NEEDS_BUILD_TAG/$FLARE_NEEDS_BUILD_RESULT" }] },
+        {
+          cwd: dir,
+          env: { ...process.env },
+          client: fakeClient(),
+          jobId: "j1",
+          needs: { build: { result: "success", outputs: { tag: "v1" } } },
+          needsTruncated: true,
+          needsWarnings: ["needs.old has 2 cells; outputs need a single job"],
+        },
+      );
+      expect(res.success).toBe(true);
+      expect(res.log).toContain("v1/success");
+      expect(res.log).toContain("[needs] needs.old has 2 cells; outputs need a single job");
+      expect(res.log).toContain("[needs] outputs truncated to 64KB");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("runs steps with env and matrix propagation", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flare-job-"));
     try {

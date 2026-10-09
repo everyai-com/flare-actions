@@ -1,6 +1,6 @@
 import { parse as parseYaml } from "yaml";
 import { convertActionsWorkflow, isImportSuccess } from "../../../packages/runner-sdk/src/importActions.ts";
-import { MAX_JOBS, normalizeStepCondition, parsePipeline, type PipelineJob } from "./pipeline.ts";
+import { MAX_JOBS, normalizeJobCondition, parsePipeline, type PipelineJob } from "./pipeline.ts";
 
 // Native `.github/workflows` compatibility: when a repo has no flare.yml
 // at the commit, matching GitHub Actions workflow files are fetched,
@@ -299,7 +299,7 @@ export function translateWorkflow(
   if (ctx && isRecord(doc) && isRecord(doc.jobs)) {
     for (const [jobId, def] of Object.entries(doc.jobs)) {
       if (!isRecord(def) || def.if === undefined) continue;
-      if (normalizeStepCondition(def.if)) continue;
+      if (normalizeJobCondition(def.if)) continue;
       if (evaluateCommonCondition(def.if, ctx) === false) {
         skipped.add(jobId);
         warnings.push(`${name}: job ${jobId} skipped (condition \`${String(def.if)}\` is false for this event)`);

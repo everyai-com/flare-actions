@@ -1,5 +1,6 @@
 import {
   appendJobLog,
+  buildNeedsContext,
   bumpJobAttempt,
   FAILED_STATUSES,
   getJobsForRun,
@@ -17,6 +18,7 @@ import {
 } from "./db";
 import { getInstallationToken, mintAppJwt, postCommitStatus } from "./github";
 import { readJobSpec, readRetryPolicy } from "./pipeline";
+import { jobConditionSatisfied } from "../../../packages/runner-sdk/src/conditions";
 import { runTriage, type AiBinding, type TriageStep } from "./triage";
 import { SETTING_KEYS } from "./settings";
 import type { BasinSink } from "./basin";
@@ -127,32 +129,9 @@ export async function triageAndStore(
   }
 }
 
-// Job-level condition, evaluated when its needs settle. The subset maps
-// onto the only scheduling context that exists here: whether any need
-// failed. `success()` (default) requires all-success, `failure()` runs
-// only after a failed need, `always()` either way.
-export function jobConditionSatisfied(condition: string | undefined, needsFailed: boolean): boolean {
-  const c = (condition ?? "success()").trim().toLowerCase();
-  const neg = c.startsWith("!");
-  const fn = neg ? c.slice(1) : c;
-  let value: boolean;
-  switch (fn) {
-    case "always()":
-      value = true;
-      break;
-    case "failure()":
-      value = needsFailed;
-      break;
-    case "cancelled()":
-      value = false;
-      break;
-    case "success()":
-    default:
-      value = !needsFailed;
-      break;
-  }
-  return neg ? !value : value;
-}
+// Job-level gate lives in the SDK conditions module (shared with the
+// local runner); re-exported here for existing importers.
+export { jobConditionSatisfied };
 
 // After any terminal transition: unblock needs-satisfied jobs (oldest
 // first so concurrency groups serialize), skip jobs whose needs failed
@@ -168,14 +147,14 @@ export async function promoteBlockedJobs(
 ): Promise<string[]> {
   const blocked = await listBlockedJobsInRepo(db, repo);
   const promoted: string[] = [];
-  const runJobsCache = new Map<string, { base: string; status: string }[]>();
+  const runJobsCache = new Map<string, { base: string; status: string; result: string | null }[]>();
   for (const job of blocked) {
     const spec = readJobSpec(job.definition, job.name);
     if (spec.needs.length > 0) {
       let siblings = runJobsCache.get(job.run_id);
       if (!siblings) {
         const rows = await getJobsForRun(db, job.run_id);
-        siblings = rows.map((r) => ({ base: readJobSpec(r.definition, r.name).base, status: r.status }));
+        siblings = rows.map((r) => ({ base: readJobSpec(r.definition, r.name).base, status: r.status, result: r.result ?? null }));
         runJobsCache.set(job.run_id, siblings);
       }
       const byBase = new Map<string, string[]>();
@@ -186,7 +165,15 @@ export async function promoteBlockedJobs(
       });
       if (!needsSettled) continue;
       const anyFailed = spec.needs.some((n) => (byBase.get(n) ?? []).some((st) => FAILED_STATUSES.includes(st)));
-      if (!jobConditionSatisfied(spec.if, anyFailed)) {
+      // The same needs context the executor will see (results + outputs
+      // for the declared needs); warnings ride the worker log since the
+      // job has no log row yet.
+      const needsCtx = buildNeedsContext(
+        siblings.map((s) => ({ base: s.base, status: s.status, result: s.result })),
+        spec.needs,
+      );
+      for (const w of needsCtx.warnings) log("warn", "needs context", { runId: job.run_id, jobId: job.id, warning: w });
+      if (!jobConditionSatisfied(spec.if, anyFailed, needsCtx.needs)) {
         await setJobStatus(db, job.id, "skipped");
         await rollupRunStatus(db, job.run_id, analytics, basin);
         runJobsCache.delete(job.run_id);

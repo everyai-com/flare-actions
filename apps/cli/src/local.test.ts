@@ -54,6 +54,51 @@ describe("runLocal", () => {
     expect(readFileSync(join(dir, "store", "blob.txt"), "utf8").trim()).toBe("v1");
   });
 
+  it("passes needs outputs to dependents as env and gates on job if", async () => {
+    const dir = workspace({
+      "flare.yml":
+        "jobs:\n  build:\n    outputs:\n      tag: make.tag\n    steps:\n      - run: echo \"tag=v2\" >> \"$FLARE_OUTPUT\"\n        id: make\n  deploy:\n    needs: [build]\n    steps:\n      - run: echo $FLARE_NEEDS_BUILD_TAG > deployed.txt\n      - run: echo gated > gated.txt\n        if: needs.build.outputs.tag == 'v2'\n      - run: echo never > never.txt\n        if: needs.build.result == 'failure'\n  held:\n    needs: [build]\n    if: needs.build.outputs.tag == 'zzz'\n    steps:\n      - run: echo never-held > held.txt\n",
+    });
+    const res = await runLocal({ cwd: dir, cacheDir: cacheDir(), env: { ...process.env }, quiet: true });
+    expect(res.ok).toBe(false); // held:skipped is not success
+    expect(readFileSync(join(dir, "deployed.txt"), "utf8").trim()).toBe("v2");
+    expect(existsSync(join(dir, "gated.txt"))).toBe(true);
+    expect(existsSync(join(dir, "never.txt"))).toBe(false);
+    expect(existsSync(join(dir, "held.txt"))).toBe(false);
+    expect(res.jobs.map((j) => `${j.name}:${j.status}`)).toEqual(["build:success", "deploy:success", "held:skipped"]);
+  });
+
+  it("runs failure() jobs after failed needs", async () => {
+    const dir = workspace({
+      "flare.yml":
+        "jobs:\n  broken:\n    steps:\n      - run: exit 3\n  cleanup:\n    needs: [broken]\n    if: failure()\n    steps:\n      - run: echo cleaned > cleaned.txt\n  skipped:\n    needs: [broken]\n    steps:\n      - run: echo never > never.txt\n",
+    });
+    const res = await runLocal({ cwd: dir, cacheDir: cacheDir(), env: { ...process.env }, quiet: true });
+    expect(res.ok).toBe(false);
+    expect(existsSync(join(dir, "cleaned.txt"))).toBe(true);
+    expect(existsSync(join(dir, "never.txt"))).toBe(false);
+    expect(res.jobs.map((j) => `${j.name}:${j.status}`)).toEqual(["broken:failure", "cleanup:success", "skipped:skipped"]);
+  });
+
+  it("skips roots whose if is already false and cascade-skips their dependents", async () => {
+    const dir = workspace({
+      "flare.yml":
+        "jobs:\n  ghost:\n    if: failure()\n    steps:\n      - run: echo never > ghost.txt\n  dependent:\n    needs: ghost\n    steps:\n      - run: echo never > dependent.txt\n  handler:\n    needs: ghost\n    if: failure()\n    steps:\n      - run: echo never > handler.txt\n  keeper:\n    needs: ghost\n    if: always()\n    steps:\n      - run: echo kept > kept.txt\n",
+    });
+    const res = await runLocal({ cwd: dir, cacheDir: cacheDir(), env: { ...process.env }, quiet: true });
+    expect(res.ok).toBe(false); // ghost:skipped is not success
+    expect(res.jobs.map((j) => `${j.name}:${j.status}`)).toEqual([
+      "ghost:skipped",
+      "dependent:skipped",
+      "handler:skipped",
+      "keeper:success",
+    ]);
+    expect(existsSync(join(dir, "ghost.txt"))).toBe(false);
+    expect(existsSync(join(dir, "dependent.txt"))).toBe(false);
+    expect(existsSync(join(dir, "handler.txt"))).toBe(false);
+    expect(existsSync(join(dir, "kept.txt"))).toBe(true);
+  });
+
   it("skips dependents when a needed job fails", async () => {
     const dir = workspace({
       "flare.yml":

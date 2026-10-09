@@ -1,5 +1,6 @@
 import { parse as parseYaml } from "yaml";
 import { validatePreviewTemplate } from "../../../packages/runner-sdk/src/browser.ts";
+import { normalizeCondition } from "../../../packages/runner-sdk/src/conditions.ts";
 import { MAX_JOB_OUTPUTS, isValidOutputName, parseOutputRef } from "../../../packages/runner-sdk/src/outputs.ts";
 import { MAX_RESTORE_KEYS, isValidCacheKey, isValidRestoreKey } from "../../../packages/runner-sdk/src/parity.ts";
 import { parseTestSelectionConfig, type TestSelectionConfig } from "./testselect.ts";
@@ -20,7 +21,6 @@ export interface PipelineStep {
   shell?: string;
 }
 
-const STEP_CONDITION_FUNCTIONS = ["always()", "success()", "failure()", "cancelled()"];
 const SHELL_RE = /^[\w./-]{1,32}$/;
 
 // CI profiles: profile names, job tags, and include/exclude entries share
@@ -35,10 +35,11 @@ export function parseProfileName(value: unknown): { profile: string } | { error:
 }
 
 export function normalizeStepCondition(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  const norm = raw.trim().toLowerCase();
-  const fn = norm.startsWith("!") ? norm.slice(1) : norm;
-  return STEP_CONDITION_FUNCTIONS.includes(fn) ? norm : null;
+  return normalizeCondition(raw, { allowSteps: true });
+}
+
+export function normalizeJobCondition(raw: unknown): string | null {
+  return normalizeCondition(raw, { allowSteps: false });
 }
 
 export interface PipelineService {
@@ -438,7 +439,7 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     job.shards = n;
   }
   if (def.if !== undefined) {
-    const cond = normalizeStepCondition(def.if);
+    const cond = normalizeJobCondition(def.if);
     if (!cond) return null;
     job.if = cond;
   }
@@ -876,7 +877,7 @@ export function readJobSpec(definition: string, fallbackName: string): JobSpecSc
       : [];
     const group = typeof parsed.group === "string" && parsed.group ? parsed.group : undefined;
     const base = typeof parsed.base === "string" && parsed.base ? parsed.base : fallbackName;
-    const cond = normalizeStepCondition(parsed["if"]);
+    const cond = normalizeJobCondition(parsed["if"]);
     return cond ? { base, needs, group, if: cond } : { base, needs, group };
   } catch {
     return fallback;

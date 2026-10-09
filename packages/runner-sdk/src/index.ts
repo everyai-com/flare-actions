@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { NeedsContext } from "./outputs.ts";
 
 export { executeSteps, parseDefinition } from "./execute.ts";
 export type { ExecStep, ExecuteOptions, StepResult, StepsOutcome } from "./execute.ts";
@@ -7,6 +8,28 @@ export { checkoutRepo, gitAvailable } from "./checkout.ts";
 export type { CheckoutOptions } from "./checkout.ts";
 export { parseJobSpec, matrixEnv } from "./spec.ts";
 export type { JobArtifactsSpec, JobCacheSpec, JobServiceSpec, JobSpec, JobTestSelectionSpec } from "./spec.ts";
+export {
+  evaluateCondition,
+  initialJobStatus,
+  jobConditionSatisfied,
+  normalizeCondition,
+  parseCondition,
+} from "./conditions.ts";
+export type { ConditionContext, ConditionNode, ConditionOperand, ConditionState } from "./conditions.ts";
+export {
+  buildNeedsEnv,
+  capNeedsContext,
+  formatOutputsLine,
+  isValidOutputName,
+  MAX_JOB_OUTPUTS,
+  MAX_NEEDS_BYTES,
+  MAX_OUTPUT_VALUE_BYTES,
+  MAX_STEP_OUTPUTS,
+  parseOutputRef,
+  parseStepOutputs,
+  resolveJobOutputs,
+} from "./outputs.ts";
+export type { NeedsContext, ParsedStepOutputs, ResolvedJobOutputs } from "./outputs.ts";
 export {
   buildImporters,
   canParsePath,
@@ -186,8 +209,8 @@ export interface DryRunPlannedJob {
   needs: string[];
   group: string | null;
   labels: string[];
-  status: "queued" | "blocked";
-  blockedReason: "needs" | "group" | null;
+  status: "queued" | "blocked" | "skipped";
+  blockedReason: "needs" | "group" | "if" | null;
   wouldCancelInProgress: boolean;
   priorMs: number;
 }
@@ -201,6 +224,7 @@ export interface DryRunPlan {
   jobs: DryRunPlannedJob[];
   queued: number;
   blocked: number;
+  skipped: number;
   totalPriorMs: number;
   paused: boolean;
   pausedAt: string | null;
@@ -525,6 +549,26 @@ function parseClaimSelection(raw: unknown): FlareClaimSelection | null {
   return { mode: rec.mode, reason: rec.reason, recentFailures: failures };
 }
 
+// Tolerant needs-context reader: unknown shapes read as empty (no
+// needs) so old runners keep working against newer servers.
+function parseClaimNeeds(raw: unknown): NeedsContext {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: NeedsContext = {};
+  for (const [base, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+    const rec = entry as Record<string, unknown>;
+    if (typeof rec.result !== "string") continue;
+    const outputs: Record<string, string> = {};
+    if (rec.outputs && typeof rec.outputs === "object" && !Array.isArray(rec.outputs)) {
+      for (const [k, v] of Object.entries(rec.outputs as Record<string, unknown>)) {
+        if (typeof v === "string") outputs[k] = v;
+      }
+    }
+    out[base] = { result: rec.result, outputs };
+  }
+  return out;
+}
+
 export class FlareClient {
   private baseUrl: string;
   private token: string;
@@ -564,13 +608,17 @@ export class FlareClient {
 
   // Full claim: the job plus its repo secrets (decrypted server-side for
   // this authenticated claim only), a flag when stored secrets could
-  // not be decrypted, and the smart test selection decision (null when
-  // the job didn't opt in).
+  // not be decrypted, the smart test selection decision (null when
+  // the job didn't opt in), and the settled needs context (results +
+  // outputs for the declared bases).
   async nextClaim(labels: string[] = []): Promise<{
     job: FlareJob | null;
     secrets: Record<string, string>;
     secretsError: boolean;
     selection: FlareClaimSelection | null;
+    needs: NeedsContext;
+    needsTruncated: boolean;
+    needsWarnings: string[];
   }> {
     const qs = labels.length > 0 ? `?labels=${encodeURIComponent(labels.join(","))}` : "";
     const res = await this.call(`/v1/jobs/next${qs}`);
@@ -580,6 +628,9 @@ export class FlareClient {
       secrets?: Record<string, string>;
       secretsError?: boolean;
       selection?: unknown;
+      needs?: unknown;
+      needsTruncated?: unknown;
+      needsWarnings?: unknown;
     };
     const secrets: Record<string, string> = {};
     if (data.secrets && typeof data.secrets === "object") {
@@ -587,7 +638,15 @@ export class FlareClient {
         if (typeof v === "string") secrets[k] = v;
       }
     }
-    return { job: data.job, secrets, secretsError: data.secretsError === true, selection: parseClaimSelection(data.selection) };
+    return {
+      job: data.job,
+      secrets,
+      secretsError: data.secretsError === true,
+      selection: parseClaimSelection(data.selection),
+      needs: parseClaimNeeds(data.needs),
+      needsTruncated: data.needsTruncated === true,
+      needsWarnings: Array.isArray(data.needsWarnings) ? data.needsWarnings.filter((w): w is string => typeof w === "string") : [],
+    };
   }
 
   private static encodeKey(key: string): string {
