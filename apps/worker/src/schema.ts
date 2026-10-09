@@ -362,6 +362,14 @@ export const SCHEMA_STATEMENTS = [
     detail TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS devboxes (
+    name TEXT PRIMARY KEY,
+    image TEXT NOT NULL,
+    workdir TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT NOT NULL,
+    snapshots TEXT NOT NULL DEFAULT '[]'
+  )`,
 ];
 
 // Additive columns for databases created before the matching migration.

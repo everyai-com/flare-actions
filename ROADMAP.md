@@ -54,9 +54,10 @@ tab + PR-comment section). OpenAPI is at 75 paths (was 68).
   per-repo domain floor policy (`/v1/admin/egress-allowlist`, fan-out
   merge, dry-run preview, dashboard Settings UI),
   browser-checks (+ actions, preview-URL templates),
-  local named dev boxes (`cli devbox` + sync +
-  snapshots), new admin settings UI. Still open: remote
-  (seat-persisted) named warm boxes + Files-based sync,
+  local named dev boxes (`cli devbox` + sync + snapshots) +
+  remote warm boxes (`cli devbox --remote` + `cli mcp-serve --remote`
+  on `BoxSeat` DOs, `devboxes` registry, Files-based sync, snapshot
+  persist), new admin settings UI. Still open:
   Workers VPC (blocked on platform).
 - **Phase 3**: AI Gateway fronting for triage + generate (env `AI_GATEWAY_ID`
   or D1, off by default), Web Search grounding for triage (opt-in
@@ -209,10 +210,10 @@ Ship while Phase 0 bakes. Pure Worker + D1 + R2 + cron:
 
 Needs Phase 0 done:
 
-- **Warm remote dev boxes** (our Testbox answer): snapshot-persisted seat
-  container + incremental source sync over `Files` + a `cli` command and MCP
-  tools wired into `run_and_wait`. The best fit in the whole list for our
-  agent-first direction.
+- **Warm remote dev boxes** (our Testbox answer): SHIPPED —
+  snapshot-persisted seat container (`BoxSeat` DO per box, keep-alive
+  alarm) + file sync over `Files` + `cli devbox --remote` and
+  `cli mcp-serve --remote`. Wiring into `run_and_wait` stays open.
 - **Snapshot-backed caches**: Docker layers / pulled images and repo
   checkouts captured as snapshots per repo/branch and restored on the next
   job. Apply Blacksmith's measured rules: scope by image lineage (not by

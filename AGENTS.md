@@ -259,6 +259,11 @@ exhaustion) → runner polls `GET /v1/jobs/next?labels=` → executes →
   `LD_PRELOAD` shim in `apps/seats/egress.c`), peak-RSS sampling,
   Artifacts mirror checkouts (hands-free first-push import +
   lazy seat sync, mirror-first with GitHub fallback).
+  Remote warm dev boxes (`BoxSeat` + `BOXES` binding, same policy):
+  one DO per named box (`box-<name>`, `devboxes` registry), `GET
+  /v1/boxes` + `POST /v1/box/*` behind `SEATS_TOKEN`, Files-based
+  sync, keep-alive alarm; `cli devbox --remote` + `cli mcp-serve
+  --remote` drive it (`RemoteBoxManager`, same `DevboxOps` surface).
   Seat reports cap at 256KB log / 64KB result like BYO (D1 2MB rows).
 - Wakes travel the `flare-actions-seats` queue (main produces, seats
   consumes; DLQ `flare-actions-seats-dlq`). Never worker→workers.dev

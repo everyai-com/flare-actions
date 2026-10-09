@@ -6,7 +6,7 @@ function fakeOps(overrides: Partial<DevboxOps> = {}): DevboxOps & { calls: strin
   const calls: string[] = [];
   return {
     calls,
-    list: () => {
+    list: async () => {
       calls.push("list");
       return [];
     },

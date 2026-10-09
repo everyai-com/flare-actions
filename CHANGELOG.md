@@ -8,6 +8,16 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Remote named warm dev boxes: `cli devbox --remote` and
+  `cli mcp-serve --remote` run the same eight box operations against
+  the seats worker (one `BoxSeat` Durable Object per box, `devboxes`
+  D1 registry, `GET /v1/boxes` + `POST /v1/box/*`, operator-token
+  gated, `SEATS_URL` now written by setup). Sync walks the local
+  tree into Sandbox SDK Files writes (≤256 files / ≤16 MB per
+  call, symlinks skipped); exec caps at 10 minutes (exit 124);
+  snapshots are platform snapshots with a keep-alive alarm, kept
+  (no delete API) across destroy. Staging checklist:
+  `devbox-canary-01`.
 - Hands-free Artifacts mirrors + rotation automation: the first
   executed push imports the repo into the `ARTIFACTS` namespace
   server-side (tracked in `artifacts_mirrors`, listed at
@@ -197,6 +207,13 @@ tagged on `main` (`v0.1.0` is the first).
   trailing-7-day hit rate overall plus per cache scope, `cli cache
   stats` prints it (text + `--json`), and a dashboard strip shows the
   "one warm cache, every agent" proof.
+
+### Fixed
+
+- `cli devbox` crashed on startup under `--experimental-strip-types`
+  (`LocalFiles` used a parameter property and an extensionless
+  `./sandbox-fs` import); both fixed, so local and remote dev boxes
+  run. `DevboxOps.list` is now async (remote list is HTTP).
 
 ### Changed
 

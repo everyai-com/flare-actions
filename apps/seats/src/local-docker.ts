@@ -17,7 +17,7 @@ import {
   type SeatFileStat,
   type SeatFileType,
   type SeatMount,
-} from "./sandbox-fs";
+} from "./sandbox-fs.ts";
 
 export interface LocalRunResult {
   exitCode: number;
@@ -312,7 +312,12 @@ function statType(kind: string): SeatFileType {
 // the shim path (absolute paths, symlink-safe); names containing
 // newlines mangle listings (dev-only edge, documented).
 export class LocalFiles implements SeatFiles {
-  constructor(private readonly container: ContainerCtl) {}
+  // No parameter property: the CLI imports this file and runs under
+  // --experimental-strip-types, which rejects them.
+  private readonly container: ContainerCtl;
+  constructor(container: ContainerCtl) {
+    this.container = container;
+  }
 
   private async run(cmd: string[], stdin?: string | Uint8Array): Promise<ExecOutput> {
     try {

@@ -13,6 +13,7 @@ import { formatPlan } from "./dryrun.ts";
 import { runInit } from "./init.ts";
 import { runConnect } from "./connect.ts";
 import { BoxManager } from "./devbox.ts";
+import { RemoteBoxManager } from "./devbox-remote.ts";
 import { runDevboxMcpServer } from "./mcp-serve.ts";
 import { simulateDrain } from "../../worker/src/fairness.ts";
 import { ACTIONS_LIST_USD_PER_MIN } from "../../worker/src/cost.ts";
@@ -82,6 +83,7 @@ function usage(): never {
       "  cli devbox restore <name> <tag>             recreate the box from a snapshot tag",
       "  cli devbox list                             list dev boxes",
       "  cli devbox destroy <name>                   remove the box (snapshot images kept)",
+      "  append --remote to devbox/mcp-serve        run boxes on the seats worker (SEATS_URL + SEATS_TOKEN)",
       "  cli mcp-serve                               stdio MCP server for dev boxes (local agents)",
       "",
       "run/dispatch accept --priority N (0-10): higher jumps queued batch work.",
@@ -740,8 +742,16 @@ try {
       process.stdout.write(res.yaml);
     }
   } else if (cmd === "devbox") {
-    const boxes = new BoxManager();
-    const [sub, ...dargs] = rest;
+    // --remote before the subcommand (or before `--` for exec) runs the
+    // same ops against a warm box on the seats worker. Only the args
+    // before `--` are searched, so an inner command flag can never
+    // flip the mode or lose an argument.
+    const sepIdx = rest.indexOf("--");
+    const remoteIdx = (sepIdx === -1 ? rest : rest.slice(0, sepIdx)).indexOf("--remote");
+    const remote = remoteIdx !== -1;
+    const devRest = remote ? [...rest.slice(0, remoteIdx), ...rest.slice(remoteIdx + 1)] : rest;
+    const boxes = remote ? RemoteBoxManager.fromEnv() : new BoxManager();
+    const [sub, ...dargs] = devRest;
     const takeFlag = (flag: string): string | undefined => {
       const i = dargs.indexOf(flag);
       if (i === -1) return undefined;
@@ -791,7 +801,7 @@ try {
       if (JSON_MODE) printJson("devbox", { action: "restore", box: dargs[0], tag: dargs[1], ...restored });
       else console.log(`restored ${dargs[0]} from ${dargs[1]} (${restored.image})`);
     } else if (sub === "list") {
-      const list = boxes.list();
+      const list = await boxes.list();
       if (JSON_MODE) printJson("devbox", { action: "list", boxes: list });
       else {
         if (list.length === 0) console.log("no dev boxes");
@@ -804,14 +814,15 @@ try {
       if (JSON_MODE) printJson("devbox", { action: "destroy", ...destroyed });
       else {
         console.log(`destroyed ${destroyed.name}`);
-        for (const img of destroyed.imagesKept) console.log(`  kept image ${img}`);
+        for (const img of destroyed.imagesKept) console.log(remote ? `  kept snapshot ${img}` : `  kept image ${img}`);
       }
     } else {
       console.error("usage: cli devbox <create|exec|sync|fetch|snapshot|restore|list|destroy> ...");
       process.exit(2);
     }
   } else if (cmd === "mcp-serve") {
-    await runDevboxMcpServer(new BoxManager());
+    const remote = rest.includes("--remote");
+    await runDevboxMcpServer(remote ? RemoteBoxManager.fromEnv() : new BoxManager());
   } else if (cmd === "mcp-config") {
     const baseUrl = process.env["FLARE_ACTIONS_URL"];
     const token = process.env["RUNNER_TOKEN"];

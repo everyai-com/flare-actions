@@ -76,7 +76,9 @@ The recurring pains, in practitioners' own terms:
       (dashboard "Slowest checks", `GET /v1/bottlenecks`, `cli bottlenecks`)
 - [x] JUnit analytics, monitors, AI failure triage, NL pipeline generation,
       healing (draft PR + verification run)
-- [x] D1 full-text log search, warm dev boxes, per-domain egress
+- [x] D1 full-text log search, warm dev boxes (local + remote
+      `BoxSeat` boxes via `cli devbox --remote` / `mcp-serve --remote`),
+      per-domain egress
       report + per-job `egress.allow` enforcement + per-repo domain
       floor policy (fan-out merge, dry-run preview, dashboard UI),
       browser-test jobs (actions + preview-URL self-verification)

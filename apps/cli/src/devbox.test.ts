@@ -108,7 +108,7 @@ describe("BoxManager", () => {
       expect(run).toContain("img:1");
       const mkdir = deps.spawns.find((a) => a.includes("mkdir"));
       expect(mkdir).toBeDefined();
-      expect(boxes.list().map((b) => b.name)).toEqual(["api"]);
+      expect((await boxes.list()).map((b) => b.name)).toEqual(["api"]);
     } finally {
       reg.cleanup();
     }
@@ -130,7 +130,7 @@ describe("BoxManager", () => {
         // Start failed before a container existed: nothing to remove,
         // and the registry stays empty.
         expect(deps2.argv.some((a) => a[1] === "rm")).toBe(false);
-        expect(new BoxManager(deps2).list()).toEqual([]);
+        expect(await new BoxManager(deps2).list()).toEqual([]);
       } finally {
         reg2.cleanup();
       }
@@ -247,22 +247,22 @@ describe("BoxManager", () => {
       });
       const deps = fakeDeps({}, reg.path);
       const boxes = new BoxManager(deps);
-      expect(boxes.list().map((b) => b.name)).toEqual(["a", "b"]);
+      expect((await boxes.list()).map((b) => b.name)).toEqual(["a", "b"]);
       const destroyed = await boxes.destroy("b");
       expect(destroyed.imagesKept).toEqual(["flare-devbox-b:s1"]);
-      expect(boxes.list().map((b) => b.name)).toEqual(["a"]);
+      expect((await boxes.list()).map((b) => b.name)).toEqual(["a"]);
       await expect(boxes.destroy("b")).rejects.toThrow("unknown devbox");
     } finally {
       reg.cleanup();
     }
   });
 
-  it("missing registry reads empty; corrupt registry fails loudly", () => {
+  it("missing registry reads empty; corrupt registry fails loudly", async () => {
     const reg = tempRegistry();
     try {
-      expect(new BoxManager(fakeDeps({}, reg.path)).list()).toEqual([]);
+      expect(await new BoxManager(fakeDeps({}, reg.path)).list()).toEqual([]);
       writeFileSync(reg.path, "not json{");
-      expect(() => new BoxManager(fakeDeps({}, reg.path)).list()).toThrow("corrupt");
+      await expect(new BoxManager(fakeDeps({}, reg.path)).list()).rejects.toThrow("corrupt");
     } finally {
       reg.cleanup();
     }

@@ -224,6 +224,8 @@ if (!dryRun) {
     FLARE_ACTIONS_URL: workerUrl,
     RUNNER_TOKEN: runnerToken,
     ...(seatsToken ? { SEATS_TOKEN: seatsToken } : {}),
+    // Remote dev boxes (`cli devbox --remote`) talk to the seats worker.
+    ...(typeof seatsUrl === "string" && seatsUrl ? { SEATS_URL: seatsUrl } : {}),
   };
   const lines = existsSync(path) ? readFileSync(path, "utf8").split("\n") : [];
   const seen = new Set();

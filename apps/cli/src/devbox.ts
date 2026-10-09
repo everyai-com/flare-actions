@@ -102,7 +102,7 @@ function truncateExec(text: string): { text: string; cut: number } {
 // Narrow surface the MCP server drives; BoxManager implements it and
 // tests fake it, so no casts cross the boundary.
 export interface DevboxOps {
-  list(): BoxSummary[];
+  list(): Promise<BoxSummary[]>;
   create(name: string, opts?: { image?: string }): Promise<BoxSummary>;
   exec(name: string, cmd: string[], opts?: { cwd?: string; env?: Record<string, string> }): Promise<ExecResult>;
   sync(name: string, dir: string, paths: string[]): Promise<SyncResult>;
@@ -179,7 +179,9 @@ export class BoxManager implements DevboxOps {
     return c;
   }
 
-  list(): BoxSummary[] {
+  // Async for the shared DevboxOps surface (remote list is HTTP);
+  // the local registry read stays synchronous underneath.
+  async list(): Promise<BoxSummary[]> {
     const boxes = this.load();
     return Object.entries(boxes)
       .map(([name, record]) => ({ name, ...record }))

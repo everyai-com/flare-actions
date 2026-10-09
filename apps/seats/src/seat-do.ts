@@ -3,6 +3,17 @@ import type { BrowserWorker } from "@cloudflare/puppeteer";
 import { DirectoryBackup, Files, S3Mount } from "@cloudflare/sandbox";
 import type { DirectoryBackupGatewayBinding, S3GatewayBinding } from "@cloudflare/sandbox";
 import { runSeatJob, type ContainerCtl, type ContainerStartOptions, type SeatDeps } from "./seat";
+import {
+  BoxError,
+  createBox,
+  destroyBox,
+  execBox,
+  fetchBox,
+  restoreBox,
+  snapshotBox,
+  syncBox,
+  type BoxDeps,
+} from "./box";
 import { runBrowserCheck } from "./browsercheck";
 import { resolveAppCreds } from "../../worker/src/connect";
 import { markJobRetained } from "../../worker/src/db";
@@ -25,6 +36,7 @@ export interface SeatsEnv {
   EMAIL?: SendEmail;
   SEATS: DurableObjectNamespace;
   SEATS_V2: DurableObjectNamespace;
+  BOXES: DurableObjectNamespace;
   ENVIRONMENT: string;
   GITHUB_APP_ID?: string;
   GITHUB_PRIVATE_KEY?: string;
@@ -360,6 +372,159 @@ export class ContainerSeatV2 extends DurableObject<SeatsEnv> {
       await this.ctx.storage.deleteAlarm().catch(() => undefined);
       console.log(JSON.stringify({ msg: "seat crashed", jobId, error: String(err) }));
       return Response.json({ ok: false, jobId, error: String(err).slice(0, 300) }, { status: 500 });
+    }
+  }
+}
+
+const BOX_OPS = ["create", "exec", "sync", "fetch", "snapshot", "restore", "destroy"] as const;
+type BoxOp = (typeof BOX_OPS)[number];
+
+function boxStringRecord(value: unknown): Record<string, string> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v !== "string") return null;
+    out[k] = v;
+  }
+  return out;
+}
+
+// One warm dev box per name, addressed as `box-<name>` by the seats
+// index. The container sleeps between ops (inactivity timeout) and
+// wakes on demand; box.ts owns the registry + filesystem logic, this
+// class owns bindings, body validation, and the keep-alive alarm that
+// holds long execs/snapshots past the inactivity timeout.
+export class BoxSeat extends DurableObject<SeatsEnv> {
+  constructor(ctx: DurableObjectState, env: SeatsEnv) {
+    super(ctx, env);
+    if (ctx.container?.running) {
+      ctx.blockConcurrencyWhile(async () => {
+        await ctx.container?.setInactivityTimeout(SEAT_INACTIVITY_MS).catch(() => undefined);
+      });
+    }
+  }
+
+  async alarm(): Promise<void> {
+    if ((await this.ctx.storage.get("activeBoxOp")) && this.ctx.container) {
+      await this.ctx.container.setInactivityTimeout(SEAT_INACTIVITY_MS).catch(() => undefined);
+      await this.ctx.storage.setAlarm(Date.now() + SEAT_ALARM_MS).catch(() => undefined);
+    }
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method !== "POST" || !url.pathname.startsWith("/box/")) {
+      return Response.json({ error: "not found" }, { status: 404 });
+    }
+    const op = url.pathname.slice("/box/".length);
+    if (!(BOX_OPS as readonly string[]).includes(op)) {
+      return Response.json({ error: "not found" }, { status: 404 });
+    }
+    const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body || typeof body !== "object") {
+      return Response.json({ error: "JSON body required" }, { status: 400 });
+    }
+    const name = body.name;
+    if (typeof name !== "string" || !name) {
+      return Response.json({ error: "name required" }, { status: 400 });
+    }
+    const container = this.ctx.container;
+    if (!container) return Response.json({ error: "no container bound" }, { status: 500 });
+    const seatImage = container.images["seat"];
+    if (!seatImage) {
+      return Response.json({ error: "seat image not configured (durable_object policy)" }, { status: 500 });
+    }
+    const deps: BoxDeps = { db: this.env.DB, container: adaptV2(container), fs: adaptFiles(new Files(container)), seatImage };
+    // destroy is instant (no container I/O to protect); every other op
+    // holds the box awake until it answers.
+    const keepalive = op !== "destroy";
+    try {
+      if (keepalive) {
+        await this.ctx.storage.put("activeBoxOp", op);
+        await this.ctx.storage.setAlarm(Date.now() + SEAT_ALARM_MS).catch(() => undefined);
+      }
+      try {
+        return await this.dispatch(op as BoxOp, deps, name, body);
+      } finally {
+        if (keepalive) {
+          await this.ctx.storage.delete("activeBoxOp").catch(() => undefined);
+          await this.ctx.storage.deleteAlarm().catch(() => undefined);
+        }
+      }
+    } catch (err) {
+      if (err instanceof BoxError) {
+        return Response.json({ ok: false, error: err.message }, { status: err.status });
+      }
+      console.log(JSON.stringify({ msg: "box op crashed", op, error: String(err) }));
+      return Response.json({ ok: false, error: String(err).slice(0, 300) }, { status: 500 });
+    }
+  }
+
+  private async dispatch(op: BoxOp, deps: BoxDeps, name: string, body: Record<string, unknown>): Promise<Response> {
+    switch (op) {
+      case "create": {
+        if (body.image !== undefined && typeof body.image !== "string") {
+          return Response.json({ error: "image must be a string" }, { status: 400 });
+        }
+        const box = await createBox(deps, name, body.image as string | undefined);
+        return Response.json({ ok: true, box });
+      }
+      case "exec": {
+        if (!Array.isArray(body.command) || !body.command.every((a) => typeof a === "string")) {
+          return Response.json({ error: "command must be a string array" }, { status: 400 });
+        }
+        if (body.cwd !== undefined && typeof body.cwd !== "string") {
+          return Response.json({ error: "cwd must be a string" }, { status: 400 });
+        }
+        let env: Record<string, string> | undefined;
+        if (body.env !== undefined) {
+          env = boxStringRecord(body.env) ?? undefined;
+          if (!env) return Response.json({ error: "env must be a string map" }, { status: 400 });
+        }
+        const res = await execBox(deps, name, body.command as string[], {
+          ...(typeof body.cwd === "string" ? { cwd: body.cwd } : {}),
+          ...(env ? { env } : {}),
+        });
+        return Response.json({ ok: true, ...res });
+      }
+      case "sync": {
+        if (!Array.isArray(body.files)) {
+          return Response.json({ error: "files must be an array" }, { status: 400 });
+        }
+        for (const f of body.files) {
+          const rec = f as Record<string, unknown> | null;
+          if (typeof rec !== "object" || rec === null || typeof rec.path !== "string" || typeof rec.content_b64 !== "string") {
+            return Response.json({ error: "each file needs {path, content_b64} strings" }, { status: 400 });
+          }
+        }
+        const res = await syncBox(deps, name, body.files as { path: string; content_b64: string }[]);
+        return Response.json({ ok: true, ...res });
+      }
+      case "fetch": {
+        if (typeof body.path !== "string") {
+          return Response.json({ error: "path required" }, { status: 400 });
+        }
+        const res = await fetchBox(deps, name, body.path);
+        return Response.json({ ok: true, ...res });
+      }
+      case "snapshot": {
+        if (body.tag !== undefined && typeof body.tag !== "string") {
+          return Response.json({ error: "tag must be a string" }, { status: 400 });
+        }
+        const snap = await snapshotBox(deps, name, body.tag as string | undefined);
+        return Response.json({ ok: true, snapshot: snap });
+      }
+      case "restore": {
+        if (typeof body.tag !== "string") {
+          return Response.json({ error: "tag required" }, { status: 400 });
+        }
+        const box = await restoreBox(deps, name, body.tag);
+        return Response.json({ ok: true, box });
+      }
+      case "destroy": {
+        const res = await destroyBox(deps, name);
+        return Response.json({ ok: true, ...res });
+      }
     }
   }
 }

@@ -304,3 +304,35 @@ cli devbox destroy api                          # instance gone, images kept
   stdio for agents on this machine (protocol `2026-07-28`). It grants
   local code execution by design — register it only with clients you
   trust, like any shell-capable MCP server.
+
+## Remote warm dev boxes
+
+Append `--remote` to any `cli devbox` command (or `cli mcp-serve`) and
+the same eight operations run against a warm box on the seats worker
+instead of local docker — one `BoxSeat` Durable Object (`box-<name>`)
+per box, registered in the `devboxes` D1 table, syncing through the
+Sandbox SDK Files channel rather than tar-over-exec:
+
+```bash
+cli devbox --remote create api
+cli devbox --remote sync api --dir . src package.json  # ≤256 files, ≤16 MB per call
+cli devbox --remote exec api -- npm test               # 10-minute cap, exit 124 on timeout
+cli devbox --remote snapshot api deps-installed        # container snapshot, tag-kept
+cli devbox --remote restore api deps-installed         # restart from the snapshot id
+cli devbox --remote fetch api dist/app.js ./out        # files direct, dirs as tarballs
+cli devbox --remote destroy api                        # box gone, snapshot tags kept
+```
+
+- Needs `SEATS_URL` + `SEATS_TOKEN` (`setup` writes both when it
+  provisions the seats worker); every route is operator-token gated.
+- Boxes sleep between ops (inactivity timeout) and wake on demand; a
+  keep-alive alarm holds long execs/snapshots awake. Only the `seat`
+  image exists remotely — `--image` anything else fails loud.
+- Remote and local boxes share names, tags, and the `/work` dir, but
+  not storage: `sync` uploads regular files only (symlinks skipped),
+  and snapshots are platform snapshots, not docker images — there is
+  no snapshot delete, so `destroy` reports the tags that stay behind
+  per platform retention.
+- Staging checklist: `devbox-canary-01` (create → sync → exec →
+  snapshot → restore → fetch → destroy against a preview seats
+  worker; live validation only — no docker here).

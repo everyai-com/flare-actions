@@ -1106,6 +1106,49 @@ export async function listMirrorRows(db: Db): Promise<ArtifactsMirrorRow[]> {
   return res.results;
 }
 
+export interface DevBoxRow {
+  name: string;
+  image: string;
+  workdir: string;
+  created_at: string;
+  last_used_at: string;
+  snapshots: string;
+}
+
+export async function getDevBox(db: Db, name: string): Promise<DevBoxRow | null> {
+  return await db
+    .prepare("SELECT name, image, workdir, created_at, last_used_at, snapshots FROM devboxes WHERE name = ?")
+    .bind(name)
+    .first<DevBoxRow>();
+}
+
+export async function upsertDevBox(
+  db: Db,
+  row: { name: string; image: string; workdir: string; created_at: string; last_used_at: string; snapshots: string },
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO devboxes (name, image, workdir, created_at, last_used_at, snapshots) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET image = excluded.image, workdir = excluded.workdir, created_at = excluded.created_at, last_used_at = excluded.last_used_at, snapshots = excluded.snapshots",
+    )
+    .bind(row.name, row.image, row.workdir, row.created_at, row.last_used_at, row.snapshots)
+    .run();
+}
+
+export async function deleteDevBox(db: Db, name: string): Promise<boolean> {
+  const res = (await db.prepare("DELETE FROM devboxes WHERE name = ?").bind(name).run()) as {
+    meta?: { changes?: number };
+  };
+  return (res?.meta?.changes ?? 0) > 0;
+}
+
+export async function listDevBoxes(db: Db): Promise<DevBoxRow[]> {
+  const res = await db
+    .prepare("SELECT name, image, workdir, created_at, last_used_at, snapshots FROM devboxes ORDER BY name ASC")
+    .bind()
+    .all<DevBoxRow>();
+  return res.results;
+}
+
 // Most recent App installation seen for a repo (dispatch uses it to
 // resolve branches on private repos the App can read).
 export async function latestInstallationId(db: Db, repo: string): Promise<number | null> {
