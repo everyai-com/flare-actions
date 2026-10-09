@@ -346,6 +346,8 @@ gaps so one-click deploys need zero `wrangler secret` commands.
   `innerHTML`, for API data.
 - Tests colocated as `*.test.ts`; keep Worker unit tests runtime-free
   (`timingSafeEqual` doesn't exist in Node — `bytesEqual` has the fallback).
+- Provenance line on agent-drafted docs: sections written by agents open
+  with `> Provenance: agent-drafted` plus how each measured claim was
   verified (command + date), so readers can tell draft from record.
 
 ## Secrets

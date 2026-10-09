@@ -86,6 +86,40 @@ for the occasional slow pass.
 - **Formatter-on-edit hooks** — environment-side (editor/agent config),
   not repo config. `npm run check` is the portable version: run it after
   every change.
+- **tsc-rs (Rust port of TS7)** — assessed Oct 9. Real speedups over tsc 7
+  (1.6x geomean in their benches) with Effect diagnostics built in, but
+  this repo uses no Effect, gates on tsc 5.6 (tsc-rs enforces stricter
+  7.1-dev semantics — it flags `trace.ts`, see Upstream watch), and
+  typecheck is 2s of a 50s CI job. Revisit with the TS7 migration.
+- **Vitest under Bun (`bun --bun vitest run`)** — assessed Oct 9. Real
+  1.4 feature, community reports ~25-35% suite speedups, but our test
+  step is 5s of 50s CI (~1s saved), 8 test files depend on `node:sqlite`
+  (Bun compat uncertain), and the gate should run the real runtime
+  (Node/workerd), not a second one. Revisit if tests ever dominate CI.
+
+## Upstream watch (TypeScript)
+
+> Provenance: agent-drafted. Verified Oct 9 by running `npx tsc-rs
+> --noEmit` (1.7s, 1 error) and `npx -p
+> typescript@7.1.0-dev.20260929.1 tsc --noEmit` (same error) on this
+> repo; gate `tsc` 5.6 stays clean.
+
+- `trace.ts` trips TS5115 (infinitely circular instantiation via
+  `cloudflare:workers` types) under TS 7.1-dev semantics. Not a bug in
+  our code today — the 5.6 gate passes — but the eventual TS7 migration
+  must address or suppress it. Re-check with the commands above.
+
+## Benchmark reporting template
+
+> Provenance: agent-drafted. Format borrowed from the tsc-rs README,
+> which is the standard to match for credible perf claims.
+
+Every perf claim published from this repo (warm-cache proof, `bench.mjs`
+numbers, CI speedups) ships with: pinned revisions (commit SHAs + dep
+versions), exact machine (model, cores, RAM, OS), method (tool, runs,
+warmup, e.g. hyperfine median-of-5), the full table with baselines, and
+a caveats section naming every differing result and why — never a bare
+multiplier.
 
 ## For agents
 
