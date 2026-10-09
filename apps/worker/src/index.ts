@@ -46,6 +46,7 @@ import {
   listMonitors,
   listQuarantinedTests,
   listQueuedJobs,
+  listMirrorRows,
   listRepoEgressAllow,
   listRepoSecretNames,
   listRuns,
@@ -206,6 +207,7 @@ import { runGenerateWithStatus } from "./generate";
 import { getCacheStats, handleCacheGet, handleCachePut, listCacheEntries, pruneCacheStats, purgeCachePrefix, recordCacheOutcome } from "./cache";
 import { deleteJobArtifacts, handleArtifactGet, handleArtifactPut, listRunArtifacts, pruneOldCache } from "./artifacts";
 import { ARTIFACTS_EVENT, handleArtifactsPush } from "./artifacts-push";
+import { ensureRepoMirror } from "./artifacts-mirrors";
 import {
   claimAttempt,
   createTournament,
@@ -589,7 +591,7 @@ export interface GitHubWebhookPayload {
   ref?: string;
   before?: string;
   deleted?: boolean;
-  repository?: { full_name?: string };
+  repository?: { full_name?: string; private?: boolean };
   after?: string;
   installation?: { id?: number };
   pull_request?: {
@@ -1167,6 +1169,32 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     ctx.waitUntil(
       reportGitHubStatus({ appId: creds?.appId, privateKey: creds?.privateKey, installationId, repo, sha, state: ghState }),
     );
+    // Hands-free mirrors: the first executed push imports the repo
+    // into the ARTIFACTS namespace (server-side) so seats check out
+    // from it. Post-response and best-effort — dispatch never waits,
+    // attested runs check out nothing and skip, and any gap falls
+    // back to GitHub. (No binding configured = GitHub-only, silent.)
+    if (!reused && (event === "push" || event === "pull_request")) {
+      const mirrorPrivate = payload.repository?.private === true;
+      ctx.waitUntil(
+        (async () => {
+          try {
+            const token = mirrorPrivate ? await mintInstallationTokenFor(env, installationId) : null;
+            const out = await ensureRepoMirror({
+              db: env.DB,
+              artifacts: env.ARTIFACTS ?? null,
+              repo,
+              isPrivate: mirrorPrivate,
+              installationToken: token,
+            });
+            if (out.status === "failed") log("warn", "mirror provision failed", { repo, detail: out.detail ?? "" });
+            else if (out.status === "ready") log("info", "mirror ready", { repo, mirror: out.mirror });
+          } catch (err) {
+            log("warn", "mirror provision error", { repo, error: String(err) });
+          }
+        })(),
+      );
+    }
     return json(
       { runId, jobId: jobIds[0], jobIds, ...(reused ? { reused: true, receiptId: reused.receiptId, verdict: reused.verdict } : {}) },
       202,
@@ -3293,6 +3321,13 @@ export default {
           return json({ ok: true, resumed });
         }
         return json({ error: "method not allowed" }, 405);
+      }
+      if (request.method === "GET" && url.pathname === "/v1/admin/mirrors") {
+        if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
+        const rows = await listMirrorRows(env.DB);
+        return json({
+          mirrors: rows.map((r) => ({ repo: r.repo, mirror: r.mirror, status: r.status, detail: r.detail, updatedAt: r.updated_at })),
+        });
       }
       if (request.method === "GET" && url.pathname === "/v1/flaky") {
         const ident = await requireScope(request, env, "read");

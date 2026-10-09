@@ -1,0 +1,61 @@
+name: rotate-mirror-token
+
+# Twice-yearly rotation of the shared cross-namespace Artifacts mirror
+# read token (ARTIFACTS_MIRROR_TOKEN on the seats worker). The token
+# lives a year, so either run alone suffices; the old token expires on
+# its own TTL, making rotation zero-downtime. In-namespace mirrors
+# mint per-job tokens and need no rotation — configure this workflow
+# only for the cross-namespace (single-repo) mirror path.
+#
+# Required configuration (repo Settings → Secrets/Variables):
+#   vars.ARTIFACTS_MIRROR_REPO       mirror repo name (e.g. my-org-my-repo)
+#   vars.SEATS_WORKER_NAME            deployed seats worker name
+#   vars.ARTIFACTS_MIRROR_NAMESPACE   (optional, default flare-mirrors)
+#   secrets.CLOUDFLARE_API_TOKEN      Artifacts repos issue-token +
+#                                     Workers Scripts secrets write
+#                                     (see docs/TOKENS.md)
+#   secrets.CLOUDFLARE_ACCOUNT_ID     32-hex account id
+# Missing configuration skips the job (exit 0), like preview deploys.
+
+on:
+  schedule:
+    - cron: "17 3 1 */6 *"
+  workflow_dispatch: {}
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - id: gate
+        run: |
+          if [ -z "${{ vars.ARTIFACTS_MIRROR_REPO }}" ] || [ -z "${{ vars.SEATS_WORKER_NAME }}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "ARTIFACTS_MIRROR_REPO/SEATS_WORKER_NAME vars unset; skipping mirror token rotation."
+            exit 0
+          fi
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ] || [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Cloudflare secrets unset; skipping mirror token rotation."
+            exit 0
+          fi
+      - uses: actions/setup-node@v7
+        if: steps.gate.outputs.skip != 'true'
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --prefer-offline --no-audit --fund=false
+        if: steps.gate.outputs.skip != 'true'
+      - name: Rotate ARTIFACTS_MIRROR_TOKEN
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          node scripts/artifacts-mirror.mjs rotate "$MIRROR_REPO" \
+            --worker-name "$SEATS_WORKER" \
+            --namespace "${NAMESPACE:-flare-mirrors}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          MIRROR_REPO: ${{ vars.ARTIFACTS_MIRROR_REPO }}
+          SEATS_WORKER: ${{ vars.SEATS_WORKER_NAME }}
+          NAMESPACE: ${{ vars.ARTIFACTS_MIRROR_NAMESPACE }}

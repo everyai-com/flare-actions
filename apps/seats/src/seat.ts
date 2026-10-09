@@ -338,12 +338,17 @@ export function mirrorRepoFor(rendered: string): string | null {
   return m?.[1] ?? null;
 }
 
-// One-hour read token for a single checkout. Null on any failure.
-async function mintCheckoutToken(artifacts: SeatArtifactsNamespace, repo: string): Promise<string | null> {
+// One-hour token for a single checkout (read) or mirror sync (write).
+// Null on any failure.
+async function mintCheckoutToken(
+  artifacts: SeatArtifactsNamespace,
+  repo: string,
+  scope: "read" | "write" = "read",
+): Promise<string | null> {
   let handle: SeatArtifactsRepoHandle | null = null;
   try {
     handle = await artifacts.get(repo);
-    const out = await handle.createToken("read", 3600);
+    const out = await handle.createToken(scope, 3600);
     const plaintext = typeof out === "string" ? out : out.plaintext;
     return plaintext || null;
   } catch {
@@ -867,9 +872,10 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       if (isArtifactsRun && deps.artifacts) {
         artifactsToken = await mintCheckoutToken(deps.artifacts, run.repo.slice(run.repo.indexOf("/") + 1));
       }
-      // Per-job mirror token (assigned in the mirror branch below;
-      // declared here so the scrubber closes over it).
+      // Per-job mirror tokens (assigned in the mirror branch below;
+      // declared here so the scrubber closes over them).
       let mirrorMinted: string | null = null;
+      let mirrorWriteMinted: string | null = null;
       let appToken: string | null = null;
       if (run.installation_id && deps.appId && deps.appKey) {
         try {
@@ -886,6 +892,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         // the URL as embedded.
         const artSecret = artifactsToken ? tokenSecret(artifactsToken) : null;
         const mirrorSecret = mirrorMinted ? tokenSecret(mirrorMinted) : null;
+        const mirrorWriteSecret = mirrorWriteMinted ? tokenSecret(mirrorWriteMinted) : null;
         const forms = [
           appToken,
           deps.mirrorToken,
@@ -896,6 +903,9 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
           mirrorMinted,
           mirrorSecret,
           mirrorSecret ? encodeURIComponent(mirrorSecret) : null,
+          mirrorWriteMinted,
+          mirrorWriteSecret,
+          mirrorWriteSecret ? encodeURIComponent(mirrorWriteSecret) : null,
         ];
         for (const t of forms) {
           if (t) out = out.split(t).join("[redacted]");
@@ -937,29 +947,64 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         // namespace; otherwise the shared operator token. A failed
         // mint falls back to the shared token (or GitHub-only).
         let mirrorToken: string | null = deps.mirrorToken ?? null;
+        // Set when the mirror lives in the binding namespace: read AND
+        // write mints both need it.
+        let mirrorRepoName: string | null = null;
         if (mirror && mirrorTemplate && deps.artifacts && deps.artifactsNamespace) {
           if (mirrorNamespaceFor(mirrorTemplate) === deps.artifactsNamespace) {
-            const repoName = mirrorRepoFor(mirror);
-            if (repoName) {
-              mirrorMinted = await mintCheckoutToken(deps.artifacts, repoName);
+            mirrorRepoName = mirrorRepoFor(mirror);
+            if (mirrorRepoName) {
+              mirrorMinted = await mintCheckoutToken(deps.artifacts, mirrorRepoName);
               if (mirrorMinted) mirrorToken = tokenSecret(mirrorMinted);
             }
           }
         }
+        // Lazy mirror sync: the mirror is a cache and this sha missed
+        // it — fetch the sha from GitHub and push it to the mirror's
+        // rolling branch so the NEXT checkout hits. Same-namespace
+        // only (write mints need the binding), one attempt, and every
+        // failure falls through to GitHub: sync must never fail a
+        // checkout. The force-push is safe (Flare owns the mirror) and
+        // a lost push race just means the loser uses GitHub this time.
+        const syncMirrorSha = async (): Promise<string | null> => {
+          if (!mirror || !mirrorRepoName || !deps.artifacts) return "no same-namespace mirror";
+          mirrorWriteMinted = await mintCheckoutToken(deps.artifacts, mirrorRepoName, "write");
+          if (!mirrorWriteMinted) return "write token mint failed";
+          const ghRemote = appToken
+            ? `https://x-access-token:${appToken}@github.com/${run.repo}.git`
+            : `https://github.com/${run.repo}.git`;
+          const pushRemote = `https://x-access-token:${encodeURIComponent(tokenSecret(mirrorWriteMinted))}@${mirror.slice("https://".length)}`;
+          const script =
+            `set -e\ncd ${WORKDIR}\n` +
+            `git remote add github-sync ${ghRemote} 2>/dev/null || git remote set-url github-sync ${ghRemote}\n` +
+            `git fetch -q --depth 1 github-sync ${run.sha}\n` +
+            `git push -q ${pushRemote} +FETCH_HEAD:refs/heads/flare-mirror\n`;
+          const res = await execBounded(["sh", "-s"], { stdin: script }, timing.checkoutMs ?? 180000);
+          if (!res.timedOut && res.exitCode === 0) return null;
+          const raw = decode(res.timedOut ? res.stderr : new Uint8Array([...res.stdout, ...res.stderr])).slice(0, 200);
+          return scrubTokens(raw) || "unknown";
+        };
         if (mirror && mirrorToken) {
-          const mirrorErr = await checkoutVia(
-            `https://x-access-token:${encodeURIComponent(mirrorToken)}@${mirror.slice("https://".length)}`,
-          );
+          const mirrorRemoteUrl = `https://x-access-token:${encodeURIComponent(mirrorToken)}@${mirror.slice("https://".length)}`;
+          const mirrorErr = await checkoutVia(mirrorRemoteUrl);
           if (mirrorErr === null) {
             await note("[seat] checkout ok (mirror)");
           } else {
-            await note("[seat] mirror unavailable, trying github");
-            const remote = appToken
-              ? `https://x-access-token:${appToken}@github.com/${run.repo}.git`
-              : `https://github.com/${run.repo}.git`;
-            const err = await checkoutVia(remote);
-            if (err !== null) return release(`checkout failed (mirror: ${mirrorErr}; github: ${err})`.slice(0, 400));
-            await note("[seat] checkout ok");
+            const syncErr = await syncMirrorSha();
+            const retryErr = syncErr === null ? await checkoutVia(mirrorRemoteUrl) : null;
+            if (syncErr === null && retryErr === null) {
+              await note("[seat] checkout ok (mirror, synced)");
+            } else {
+              if (syncErr === null) await note("[seat] mirror sync pushed but checkout still missed, trying github");
+              else if (mirrorRepoName) await note(`[seat] mirror sync failed (${syncErr}), trying github`);
+              else await note("[seat] mirror unavailable, trying github");
+              const remote = appToken
+                ? `https://x-access-token:${appToken}@github.com/${run.repo}.git`
+                : `https://github.com/${run.repo}.git`;
+              const err = await checkoutVia(remote);
+              if (err !== null) return release(`checkout failed (mirror: ${mirrorErr}; github: ${err})`.slice(0, 400));
+              await note("[seat] checkout ok");
+            }
           }
         } else {
           const remote = appToken

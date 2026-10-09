@@ -1066,6 +1066,46 @@ export async function listRepoEgressAllow(db: Db): Promise<{ repo: string; domai
   }));
 }
 
+export type ArtifactsMirrorStatus = "importing" | "ready" | "failed";
+
+export interface ArtifactsMirrorRow {
+  repo: string;
+  mirror: string;
+  status: string;
+  detail: string;
+  updated_at: string;
+}
+
+export async function getMirrorRow(db: Db, repo: string): Promise<ArtifactsMirrorRow | null> {
+  return await db
+    .prepare("SELECT repo, mirror, status, detail, updated_at FROM artifacts_mirrors WHERE repo = ?")
+    .bind(repo)
+    .first<ArtifactsMirrorRow>();
+}
+
+export async function setMirrorRow(
+  db: Db,
+  repo: string,
+  mirror: string,
+  status: ArtifactsMirrorStatus,
+  detail: string,
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO artifacts_mirrors (repo, mirror, status, detail, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(repo) DO UPDATE SET mirror = excluded.mirror, status = excluded.status, detail = excluded.detail, updated_at = excluded.updated_at",
+    )
+    .bind(repo, mirror, status, detail.slice(0, 300), nowIso())
+    .run();
+}
+
+export async function listMirrorRows(db: Db): Promise<ArtifactsMirrorRow[]> {
+  const res = await db
+    .prepare("SELECT repo, mirror, status, detail, updated_at FROM artifacts_mirrors ORDER BY repo ASC")
+    .bind()
+    .all<ArtifactsMirrorRow>();
+  return res.results;
+}
+
 // Most recent App installation seen for a repo (dispatch uses it to
 // resolve branches on private repos the App can read).
 export async function latestInstallationId(db: Db, repo: string): Promise<number | null> {

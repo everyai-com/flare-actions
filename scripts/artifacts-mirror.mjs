@@ -8,7 +8,9 @@
 // Usage:
 //   node scripts/artifacts-mirror.mjs provision owner/repo [--namespace ns]
 //   node scripts/artifacts-mirror.mjs sync owner/repo <sha> [--namespace ns]
-//   node scripts/artifacts-mirror.mjs rotate <mirror-repo> --seats-config <path> [--namespace ns]
+//   node scripts/artifacts-mirror.mjs rotate <mirror-repo> (--seats-config <path> | --worker-name <name>) [--namespace ns]
+// (--worker-name addresses the seats worker without its generated
+// config file, for the scheduled rotation workflow.)
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -87,18 +89,21 @@ function sync(githubRepo, sha, namespace) {
   }
 }
 
-function rotate(mirrorRepo, namespace, seatsConfig) {
+function rotate(mirrorRepo, namespace, seatsConfig, workerName) {
   if (!/^[\w.-]{1,100}$/.test(mirrorRepo)) {
     console.error(`bad mirror repo: ${mirrorRepo}`);
     process.exit(1);
   }
-  if (!seatsConfig) {
-    console.error("rotate needs --seats-config <path to seats wrangler config>");
+  if (!seatsConfig && !workerName) {
+    console.error("rotate needs --seats-config <path to seats wrangler config> or --worker-name <seats worker name>");
     process.exit(1);
   }
   const token = issueToken(mirrorRepo, namespace, "read", YEAR_TTL);
   // Secret via stdin pipe, never argv (repo rule).
-  const r = spawnSync("npx", ["wrangler", "secret", "put", "ARTIFACTS_MIRROR_TOKEN", "--config", seatsConfig], {
+  const putArgs = seatsConfig
+    ? ["wrangler", "secret", "put", "ARTIFACTS_MIRROR_TOKEN", "--config", seatsConfig]
+    : ["wrangler", "secret", "put", "ARTIFACTS_MIRROR_TOKEN", "--name", workerName];
+  const r = spawnSync("npx", putArgs, {
     input: token,
     encoding: "utf8",
   });
@@ -113,8 +118,8 @@ const [cmd, a, b] = process.argv.slice(2);
 const namespace = flag("namespace", "flare-mirrors");
 if (cmd === "provision" && a) provision(a, namespace);
 else if (cmd === "sync" && a && b) sync(a, b, namespace);
-else if (cmd === "rotate" && a) rotate(a, namespace, flag("seats-config"));
+else if (cmd === "rotate" && a) rotate(a, namespace, flag("seats-config"), flag("worker-name"));
 else {
-  console.error("usage: artifacts-mirror.mjs (provision owner/repo | sync owner/repo <sha> | rotate <mirror-repo> --seats-config <path>) [--namespace ns]");
+  console.error("usage: artifacts-mirror.mjs (provision owner/repo | sync owner/repo <sha> | rotate <mirror-repo> (--seats-config <path> | --worker-name <name>)) [--namespace ns]");
   process.exit(1);
 }

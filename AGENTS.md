@@ -257,7 +257,8 @@ exhaustion) → runner polls `GET /v1/jobs/next?labels=` → executes →
   YAML key (30-min TTL alarm, SSH enabled), per-job egress
   (`job_egress`, `GET /v1/runs/:id/egress`, per-domain rows via the
   `LD_PRELOAD` shim in `apps/seats/egress.c`), peak-RSS sampling,
-  Artifacts mirror checkouts (mirror-first with GitHub fallback).
+  Artifacts mirror checkouts (hands-free first-push import +
+  lazy seat sync, mirror-first with GitHub fallback).
   Seat reports cap at 256KB log / 64KB result like BYO (D1 2MB rows).
 - Wakes travel the `flare-actions-seats` queue (main produces, seats
   consumes; DLQ `flare-actions-seats-dlq`). Never worker→workers.dev

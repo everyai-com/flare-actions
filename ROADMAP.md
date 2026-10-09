@@ -241,8 +241,8 @@ Needs Phase 0 done:
   (`ARTIFACTS_MIRROR_REMOTE` template + read-scoped token, mirror
   first with GitHub fallback, fail-closed template check,
   encoded-token scrubbing) — staging-validated
-  (`mirror-canary-job-02/04`). Still manual: per-repo provisioning +
-  yearly token rotation. The Oct 1 "next Git platform" post shipped
+  (`mirror-canary-job-02/04`). Provisioning + rotation shipped
+  hands-free since (see below). The Oct 1 "next Git platform" post shipped
   the primitives the open items ride on: the `ARTIFACTS` Workers
   binding (fork/inspect/read + repo-scoped Git tokens → worker-minted
   per-job tokens), event subscriptions (`cf.artifacts.repo.pushed` →
@@ -252,8 +252,14 @@ Needs Phase 0 done:
   dashboard/API metrics. Shipped since: per-job checkout tokens via
   the binding (1h read tokens for in-namespace mirrors) and
   push-event triggers (`artifacts-push.ts` + artifacts queue consumer
-  + setup opt-in). Still open: hands-free per-repo provisioning +
-  token-rotation automation. Entered the
+  + setup opt-in). Shipped next, hands-free: per-repo provisioning
+  (first executed push imports server-side via the binding,
+  `artifacts_mirrors` registry + `/v1/admin/mirrors` + dashboard
+  strip, failures retry next push) + lazy seat sync (missing shas
+  push to a rolling branch with 1h write tokens) + token-rotation
+  automation (twice-yearly `rotate-mirror-token` workflow for the
+  cross-namespace shared token; in-namespace mirrors store
+  nothing). Staging checklist: `mirror-canary-job-05`. Entered the
   "next Git platform" competition — deadline Oct 14, 5–10 min demo
   video + MIT/Apache/BSD source + run instructions, multi-agent
   concurrency required; top 3 fly to Connect SF, first prize $25k

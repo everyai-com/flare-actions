@@ -2733,6 +2733,42 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/admin/mirrors:
+    get:
+      tags: [admin]
+      operationId: listArtifactsMirrors
+      summary: List hands-free Artifacts mirror states per repo
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Mirror registry rows
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mirrors]
+                properties:
+                  mirrors:
+                    type: array
+                    items:
+                      type: object
+                      required: [repo, mirror, status, detail, updatedAt]
+                      properties:
+                        repo:
+                          type: string
+                        mirror:
+                          type: string
+                        status:
+                          type: string
+                          description: importing, ready, or failed (failed retries next push)
+                        detail:
+                          type: string
+                        updatedAt:
+                          type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/admin/secrets:
     get:
       tags: [admin]

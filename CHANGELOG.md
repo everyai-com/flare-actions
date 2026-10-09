@@ -8,6 +8,15 @@ tagged on `main` (`v0.1.0` is the first).
 
 ### Added
 
+- Hands-free Artifacts mirrors + rotation automation: the first
+  executed push imports the repo into the `ARTIFACTS` namespace
+  server-side (tracked in `artifacts_mirrors`, listed at
+  `/v1/admin/mirrors` + dashboard Settings, failures retry next
+  push); seats lazily sync missing shas with 1h binding write
+  tokens and retry before GitHub fallback; the twice-yearly
+  `rotate-mirror-token` workflow rotates the cross-namespace
+  shared token (in-namespace mirrors store nothing). Staging
+  checklist: `mirror-canary-job-05`.
 - Browser-check actions + preview self-verification: checks take
   ≤10 ordered actions (`click`/`type`/`wait`/`wait-text`, sharing
   the 30 s budget, selector-only failure reports) and URLs take

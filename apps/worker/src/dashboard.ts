@@ -493,6 +493,9 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
 <p id="egressErr" class="err"></p>
 <p id="egressOk"></p>
 <div id="egressList"></div>
+<h2>Artifacts mirrors</h2>
+<p class="muted">Hands-free GitHub mirrors: the first push imports the repo into the Artifacts namespace, seats sync missing shas lazily. Failures retry on the next push; checkouts always fall back to GitHub.</p>
+<div id="mirrorList"></div>
 <h2>GitHub App</h2>
 <p class="muted" id="githubInfo"></p>
 <form id="githubForm" class="inline">
@@ -2099,6 +2102,35 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       })
       .catch(function (e) { err.textContent = "Save failed: " + (e.message || "error"); });
   });
+  function loadMirrors() {
+    var box = document.getElementById("mirrorList");
+    box.textContent = "";
+    var loading = el("p", "Loading…"); loading.className = "muted"; box.appendChild(loading);
+    api("/v1/admin/mirrors").then(function (data) {
+      box.textContent = "";
+      var mirrors = data.mirrors || [];
+      if (!mirrors.length) {
+        var none = el("p", "No mirrors yet — the first push for a repo provisions one automatically.");
+        none.className = "muted";
+        box.appendChild(none);
+        return;
+      }
+      mirrors.forEach(function (m) {
+        var row = el("div");
+        row.className = "secret-row";
+        var code = el("code", m.repo + " → " + m.mirror); code.className = "mono"; row.appendChild(code);
+        var p = pill(m.status);
+        p.className = "pill " + (m.status === "ready" ? "success" : m.status === "failed" ? "failure" : "running");
+        row.appendChild(p);
+        if (m.detail) { var d = el("span", m.detail); d.className = "muted"; row.appendChild(d); }
+        var when = el("span", "updated " + fmtAgo(m.updatedAt)); when.className = "muted"; row.appendChild(when);
+        box.appendChild(row);
+      });
+    }).catch(function () {
+      box.textContent = "";
+      var err = el("p", "Could not load mirrors."); err.className = "err"; box.appendChild(err);
+    });
+  }
   function loadTokens() {
     var body = document.getElementById("tokensBody");
     stateRow(body, 6, "Loading tokens…", "muted");
@@ -2412,6 +2444,7 @@ ol.steps .step-body p strong { color: var(--ink); font-weight: 600; }
       document.getElementById("killMultiplierInput").value = (s.budgetKillMultiplier && s.budgetKillMultiplier !== "0") ? s.budgetKillMultiplier : "";
       loadPaused();
       loadEgress();
+      loadMirrors();
       document.getElementById("supersedeCheck").checked = s.supersedeBranchRuns === "push";
       document.getElementById("gatewayInput").value = s.aiGatewayId || "";
       document.getElementById("gatewayInput").disabled = s.aiGatewaySource === "env";

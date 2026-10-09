@@ -191,13 +191,25 @@ Seats try the mirror first and fall back to GitHub on any mirror
 failure, so a stale mirror, missing repo, or expired token never fails
 a checkout GitHub could serve.
 
+Provisioning is hands-free: the first executed push for a repo imports
+it into the `ARTIFACTS` namespace server-side (public repos by URL;
+private repos via an embedded short-lived installation token), tracked
+in the `artifacts_mirrors` registry (`importing` → `ready`, failures
+retry next push, day-old stuck imports reset) and listed at
+`GET /v1/admin/mirrors` + dashboard Settings. Seats lazily sync
+missing shas (fetch from GitHub, force-push to the mirror's rolling
+`flare-mirror` branch with a 1h binding write token) and retry the
+mirror once before falling back. No binding configured = GitHub-only,
+silent. Put mirrors in the binding namespace (one mirror repo per
+GitHub repo, named owner-name) and nothing is ever stored: per-job
+1h tokens, memory-only.
+
+The manual CLI stays for cross-namespace (single-repo) mirrors and
+one-off seeding:
+
 ```bash
-# One mirror repo per GitHub repo; name it owner-name (the seat
-# renders {repo} as owner/name with / -> -).
-node scripts/artifacts-mirror.mjs provision owner/repo
-# Seed it (repeat after upstream pushes; seats fetch by sha, so the
-# mirror only needs the shas jobs check out).
-node scripts/artifacts-mirror.mjs sync owner/repo <sha>
+node scripts/artifacts-mirror.mjs provision owner/repo [--namespace ns]
+node scripts/artifacts-mirror.mjs sync owner/repo <sha> [--namespace ns]
 # Wire the seats worker (staging shown; same vars on prod).
 printf '%s' \
   'https://<acct>.artifacts.cloudflare.net/git/flare-mirrors/{repo}.git' |
@@ -208,7 +220,9 @@ printf '%s' \
 Tokens: mirrors inside the seats `ARTIFACTS` binding namespace need no
 stored token — seats mint a per-job 1h read token via the binding
 (memory-only, scrubbed from errors). Cross-namespace mirrors use one
-shared yearly read token (single-repo: tokens are repo-scoped):
+shared yearly read token (single-repo: tokens are repo-scoped),
+rotated twice yearly by the `rotate-mirror-token` workflow (configure
+`ARTIFACTS_MIRROR_REPO` + `SEATS_WORKER_NAME` vars) or by hand:
 
 ```bash
 node scripts/artifacts-mirror.mjs rotate <mirror-repo> \
@@ -228,7 +242,10 @@ node scripts/artifacts-mirror.mjs rotate <mirror-repo> \
 - Staging-validated: mirror checkout (`mirror-canary-job-02`),
   GitHub fallback, bogus-sha release with zero token leakage
   (`mirror-canary-job-04`), scripted provision/sync/rotate, per-job
-  mint for same-namespace mirrors.
+  mint for same-namespace mirrors. Staging checklist for the
+  hands-free path: `mirror-canary-job-05` (first-push import +
+  lazy sync + registry row) — no Docker in this env, so live
+  namespace validation rides staging, not CI.
 
 ## Local-Docker dev mode
 

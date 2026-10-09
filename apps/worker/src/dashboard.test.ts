@@ -184,6 +184,13 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("/v1/admin/egress-allowlist");
   });
 
+  it("lists hands-free Artifacts mirrors in Settings", () => {
+    expect(DASHBOARD_HTML).toContain("Artifacts mirrors");
+    expect(DASHBOARD_HTML).toContain("mirrorList");
+    expect(DASHBOARD_HTML).toContain("loadMirrors");
+    expect(DASHBOARD_HTML).toContain("/v1/admin/mirrors");
+  });
+
   it("renders per-job peak-RSS bars with size-class hints", () => {
     expect(DASHBOARD_HTML).toContain("Resources (peak RSS per job)");
     expect(DASHBOARD_HTML).toContain("sizeClassForPeak");

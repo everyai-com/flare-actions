@@ -355,6 +355,13 @@ export const SCHEMA_STATEMENTS = [
     domains TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS artifacts_mirrors (
+    repo TEXT PRIMARY KEY,
+    mirror TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'importing',
+    detail TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+  )`,
 ];
 
 // Additive columns for databases created before the matching migration.

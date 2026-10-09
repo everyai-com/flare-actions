@@ -252,6 +252,10 @@ class FakeContainer implements ContainerCtl {
   // Mirror-checkout answer (stdin containing the artifacts host) and
   // the stderr served for checkout scripts (token-scrub tests).
   mirrorExit = 0;
+  // Lazy-sync answer (stdin pushing to refs/heads/flare-mirror). A
+  // successful sync heals later mirror checkouts, like the real thing.
+  syncExit = 0;
+  mirrorSynced = false;
   coStderr = "";
   // Test-report scan listing (one absolute path per line) and the bytes
   // served for cat calls that hit those paths.
@@ -324,8 +328,13 @@ class FakeContainer implements ContainerCtl {
     if (cmd[0] === "sh" && cmd[1] === "-s") {
       const stdin = opts?.stdin;
       const text = typeof stdin === "string" ? stdin : stdin ? new TextDecoder().decode(stdin) : "";
+      if (text.includes("refs/heads/flare-mirror")) {
+        if (this.syncExit === 0) this.mirrorSynced = true;
+        return { exitCode: this.syncExit, stderr: bytes(this.coStderr) };
+      }
       const mirror = text.includes("artifacts.cloudflare.net");
-      return { exitCode: mirror ? this.mirrorExit : this.checkoutExit, stderr: bytes(this.coStderr) };
+      const code = mirror ? (this.mirrorSynced ? 0 : this.mirrorExit) : this.checkoutExit;
+      return { exitCode: code, stderr: bytes(this.coStderr) };
     }
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("sh -s >")) {
       const code = this.stepExits.length > 0 ? (this.stepExits.shift() as number) : 0;
@@ -1259,6 +1268,138 @@ describe("runSeatJob", () => {
     expect(db.jobs.get("j1")?.log as string).toContain("[seat] checkout ok (mirror)");
   });
 
+  it("syncs a missing sha to the mirror and retries before github", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    container.mirrorExit = 128;
+    const scopes: string[] = [];
+    const artifacts: SeatArtifactsNamespace = {
+      get: async () => ({
+        createToken: async (scope: "read" | "write") => {
+          scopes.push(scope);
+          return { plaintext: `job-${scope}?expires=9999999999` };
+        },
+        [Symbol.dispose]: () => undefined,
+      }),
+    };
+    const template = MIRROR_TEMPLATE.replace("/git/mirrors/", "/git/flare-tournaments/");
+    const out = await runSeatJob(
+      deps(db, container, { mirrorRemote: template, artifacts, artifactsNamespace: "flare-tournaments" }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    expect(scopes).toEqual(["read", "write"]);
+    const checkouts = container.calls.filter((c) => c.cmd[0] === "sh" && c.cmd[1] === "-s");
+    expect(checkouts).toHaveLength(3);
+    expect(stdinText(checkouts[1])).toContain("github.com/o/r.git");
+    expect(stdinText(checkouts[1])).toContain("+FETCH_HEAD:refs/heads/flare-mirror");
+    expect(stdinText(checkouts[1])).toContain("x-access-token:job-write@");
+    expect(db.jobs.get("j1")?.log as string).toContain("[seat] checkout ok (mirror, synced)");
+  });
+
+  it("falls back to github when mirror sync fails", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    container.mirrorExit = 128;
+    container.syncExit = 1;
+    const artifacts: SeatArtifactsNamespace = {
+      get: async () => ({
+        createToken: async () => ({ plaintext: "job-token?expires=9999999999" }),
+        [Symbol.dispose]: () => undefined,
+      }),
+    };
+    const template = MIRROR_TEMPLATE.replace("/git/mirrors/", "/git/flare-tournaments/");
+    const out = await runSeatJob(
+      deps(db, container, { mirrorRemote: template, artifacts, artifactsNamespace: "flare-tournaments" }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    const log = db.jobs.get("j1")?.log as string;
+    expect(log).toContain("[seat] mirror sync failed");
+    expect(log).toContain("[seat] checkout ok");
+    expect(log).not.toContain("(mirror, synced)");
+  });
+
+  it("skips sync outside the binding namespace", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    container.mirrorExit = 128;
+    let mints = 0;
+    const artifacts: SeatArtifactsNamespace = {
+      get: async () => {
+        mints += 1;
+        return {
+          createToken: async () => ({ plaintext: "job-token?expires=9999999999" }),
+          [Symbol.dispose]: () => undefined,
+        };
+      },
+    };
+    const out = await runSeatJob(
+      deps(db, container, { mirrorRemote: MIRROR_TEMPLATE, mirrorToken: "mirror-secret", artifacts, artifactsNamespace: "flare-tournaments" }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    expect(mints).toBe(0);
+    const checkouts = container.calls.filter((c) => c.cmd[0] === "sh" && c.cmd[1] === "-s");
+    expect(checkouts).toHaveLength(2);
+    expect(checkouts.every((c) => !stdinText(c).includes("flare-mirror"))).toBe(true);
+    expect(db.jobs.get("j1")?.log as string).toContain("[seat] mirror unavailable, trying github");
+  });
+
+  it("falls back to github when the write mint fails", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    container.mirrorExit = 128;
+    container.syncExit = 1;
+    container.coStderr = "fatal: could not read from remote (token job-write?expires=9999999999?)";
+    const artifacts: SeatArtifactsNamespace = {
+      get: async () => ({
+        createToken: async (scope: "read" | "write") => {
+          if (scope === "write") throw new Error("mint denied");
+          return { plaintext: "job-read?expires=9999999999" };
+        },
+        [Symbol.dispose]: () => undefined,
+      }),
+    };
+    const template = MIRROR_TEMPLATE.replace("/git/mirrors/", "/git/flare-tournaments/");
+    const out = await runSeatJob(
+      deps(db, container, { mirrorRemote: template, artifacts, artifactsNamespace: "flare-tournaments" }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    const log = db.jobs.get("j1")?.log as string;
+    expect(log).toContain("[seat] mirror sync failed (write token mint failed), trying github");
+    expect(log).toContain("[seat] checkout ok");
+  });
+
+  it("scrubs the write token from sync failure output", async () => {
+    const db = new MemDb();
+    seed(db, DEF());
+    const container = new FakeContainer();
+    container.mirrorExit = 128;
+    container.syncExit = 1;
+    container.coStderr = "fatal: https://x-access-token:job-writepw@a54b12fe3ef06df16ff0041d79c18fc0.artifacts.cloudflare.net/git/flare-tournaments/o-r.git/: 500";
+    const artifacts: SeatArtifactsNamespace = {
+      get: async () => ({
+        createToken: async (scope: "read" | "write") => ({ plaintext: `job-${scope}pw?expires=9999999999` }),
+        [Symbol.dispose]: () => undefined,
+      }),
+    };
+    const template = MIRROR_TEMPLATE.replace("/git/mirrors/", "/git/flare-tournaments/");
+    const out = await runSeatJob(
+      deps(db, container, { mirrorRemote: template, artifacts, artifactsNamespace: "flare-tournaments" }),
+      "j1",
+    );
+    expect(out.status).toBe("completed");
+    const log = db.jobs.get("j1")?.log as string;
+    expect(log).not.toContain("job-writepw");
+    expect(log).toContain("[redacted]");
+  });
+
   it("falls back to the shared token outside the binding namespace", async () => {
     const db = new MemDb();
     seed(db, DEF());
@@ -1289,6 +1430,7 @@ describe("runSeatJob", () => {
     const container = new FakeContainer();
     container.mirrorExit = 128;
     container.checkoutExit = 128;
+    container.syncExit = 1;
     container.coStderr = "fatal: https://x-access-token:job-minted@host/git/ns/o-r.git: auth failed";
     const artifacts: SeatArtifactsNamespace = {
       get: async () => ({
