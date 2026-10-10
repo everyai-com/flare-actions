@@ -21,6 +21,7 @@ import { ACTIONS_LIST_USD_PER_MIN } from "../../worker/src/cost.ts";
 import { hasJsonFlag, printJson, splitPassthrough, stripJsonFlag } from "./json.ts";
 import { explainDigest } from "./explain.ts";
 import { formatCacheStats, parseCacheStats } from "./cache.ts";
+import { forgeCliDeps, runForge } from "./forge.ts";
 
 loadEnv();
 
@@ -65,6 +66,7 @@ function usage(): never {
       "  cli login [--url U] [--code C]              pair this machine (writes .env, 0600)",
       "  cli races [raceId]                          list agent races, or one race board",
       "  cli repos [name] [path] [--ref R]           list forge repos, or browse one",
+      "  cli forge <verb> ...                        Flare Forge: goal|declare|claim|push|ready|inbox|status|why|conflicts|trains|snapshot|connect-agent (cli forge --help)",
       "  cli claim <raceId> <agent>                  claim a race lane (forks a workspace)",
       "  cli verdict <raceId>                        winner ranking + why-it-won rationale",
       "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
@@ -1003,6 +1005,9 @@ try {
       console.error("usage: cli devbox <create|exec|sync|fetch|snapshot|restore|list|destroy> ...");
       process.exit(2);
     }
+  } else if (cmd === "forge") {
+    const code = await runForge(rest, forgeCliDeps(JSON_MODE));
+    if (code !== 0) process.exit(code);
   } else if (cmd === "mcp-serve") {
     const remote = rest.includes("--remote");
     await runDevboxMcpServer(remote ? RemoteBoxManager.fromEnv() : new BoxManager());

@@ -33,11 +33,9 @@ function harness(opts: { artifacts?: boolean; feed?: FeedPort } = {}): Harness {
     deps,
     async call(method, path, body, ident = RUNNER, headers = {}) {
       const url = new URL(`http://x${path}`);
-      const req = new Request(url, {
-        method,
-        headers: { "content-type": "application/json", ...headers },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
+      const init: RequestInit = { method, headers: { "content-type": "application/json", ...headers } };
+      if (body !== undefined) init.body = JSON.stringify(body);
+      const req = new Request(url, init);
       const res = await handleForgeRequest(req, url, deps, async () => ident);
       if (!res) throw new Error("route fell through");
       const text = await res.text();

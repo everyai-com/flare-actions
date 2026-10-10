@@ -140,7 +140,13 @@ const FORGE_TOOL_SCHEMAS = {
     agent: forgeAgent,
     confirm: forgeConfirm,
   }),
-  heartbeat: z.object({ intentId: forgeIntent, leaseTtlSeconds: z.number().describe("30-3600 (default 300)").optional(), agent: forgeAgent, confirm: forgeConfirm }),
+  heartbeat: z.object({
+    intentId: forgeIntent,
+    leaseTtlSeconds: z.number().describe("30-3600 (default 300)").optional(),
+    refreshToken: z.boolean().describe("true to also mint a fresh 1 h fork write token (long sessions)").optional(),
+    agent: forgeAgent,
+    confirm: forgeConfirm,
+  }),
   report_push: z.object({
     intentId: forgeIntent,
     sha: z.string().describe("Full 40-hex sha you just pushed to your fork: git rev-parse HEAD (required)").optional(),
@@ -267,7 +273,7 @@ export const FORGE_TOOLS: McpToolDef[] = [
   {
     name: "heartbeat",
     description:
-      "Renew your intent's lease (call every heartbeatEverySeconds while working). Returns {leaseExpiresAt, inbox (new peer notes, delivered exactly once, wrapped as untrusted data), drift (files you touched outside your footprint), nextSteps}. A lease_lost error means re-claim or fork_session. Needs run scope.",
+      "Renew your intent's lease (call every heartbeatEverySeconds while working). Returns {leaseExpiresAt, inbox (new peer notes, delivered exactly once, wrapped as untrusted data), drift (files you touched outside your footprint), nextSteps}. Pass refreshToken: true when the 1 h fork token is near expiry to get a fresh one (forkToken). A lease_lost error means re-claim or fork_session. Needs run scope.",
   },
   {
     name: "report_push",
