@@ -588,9 +588,23 @@ export function parsePolicy(text: string | null | undefined): Result<ForgePolicy
   });
 }
 
-// Protected policy entries the footprint overlaps (empty = unprotected).
+// Always-protected paths, merged into every policy and not removable by
+// it. They are the controls an agent could otherwise edit to lift its
+// own guardrails: the CI pipeline that produces the green evidence
+// (flare.yml, .github/workflows/**) and the Forge policy itself
+// (.flare/**). An intent touching any of them stops at awaiting_plan
+// and scores the protected_path term, whatever .flare/policy.yml says.
+export const BUILTIN_PROTECTED: readonly string[] = ["flare.yml", ".flare/**", ".github/workflows/**"];
+
+// The effective protected list: built-ins first, then policy entries.
+export function effectiveProtected(policy: ForgePolicy): string[] {
+  return [...new Set([...BUILTIN_PROTECTED, ...policy.protected])];
+}
+
+// Protected entries (built-in + policy) the footprint overlaps
+// (empty = unprotected).
 export function protectedMatches(footprint: Footprint, policy: ForgePolicy): string[] {
-  return policy.protected.filter((p) => footprint.paths.some((f) => pathsOverlap(p, f)));
+  return effectiveProtected(policy).filter((p) => footprint.paths.some((f) => pathsOverlap(p, f)));
 }
 
 // ---------------------------------------------------------------------------

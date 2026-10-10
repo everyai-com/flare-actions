@@ -26,6 +26,8 @@ import {
   pathRange,
   pathsOverlap,
   protectedMatches,
+  effectiveProtected,
+  BUILTIN_PROTECTED,
   routeLanding,
   scoreRisk,
   serializeWhyNote,
@@ -236,6 +238,24 @@ replay: { max_attempts: 2, race_k: 3 }
     expect(protectedMatches(fp("src/auth/session.ts"), policy)).toEqual(["src/auth/**"]);
     expect(protectedMatches(fp("src"), policy)).toEqual(["src/auth/**"]);
     expect(protectedMatches(fp("src/api.ts"), policy)).toEqual([]);
+  });
+  it("always protects the pipeline and the policy itself, whatever the policy says", () => {
+    // An agent must not be able to lift its own guardrails by editing
+    // flare.yml, .flare/policy.yml, or workflows (default policy: protected []).
+    expect(DEFAULT_POLICY.protected).toEqual([]);
+    expect(protectedMatches(fp("flare.yml"), DEFAULT_POLICY)).toEqual(["flare.yml"]);
+    expect(protectedMatches(fp(".flare/policy.yml"), DEFAULT_POLICY)).toEqual([".flare/**"]);
+    expect(protectedMatches(fp(".github/workflows/ci.yml"), DEFAULT_POLICY)).toEqual([".github/workflows/**"]);
+    expect(protectedMatches(fp("src/flare.yml"), DEFAULT_POLICY)).toEqual([]);
+    // A policy cannot remove them (parsed empty list still merges built-ins).
+    const parsed = parsePolicy("protected: []");
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(protectedMatches(fp(".flare/policy.yml"), parsed.value)).toEqual([".flare/**"]);
+    expect(effectiveProtected({ ...DEFAULT_POLICY, protected: ["flare.yml", "src/**"] })).toEqual([...BUILTIN_PROTECTED, "src/**"]);
+    // Undeclared drift into a built-in still scores protected_path.
+    const r = scoreRisk({ footprint: fp("src/a.ts"), actualFootprint: fp("src/a.ts", ".flare/policy.yml"), policy: DEFAULT_POLICY });
+    expect(r.terms.find((t) => t.term === "protected_path")?.detail).toContain(".flare/**");
+    expect(routeLanding(r.risk, DEFAULT_POLICY, 0.99)).toBe("human");
   });
 });
 

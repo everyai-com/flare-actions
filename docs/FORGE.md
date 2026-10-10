@@ -96,7 +96,9 @@ interface ForgePolicy { protected: string[]; autoLandMaxRisk: number; auditSampl
   lanes: { maxPerTrain: number; maxParallel: number }; replay: { maxAttempts: number; raceK: number } }
 POLICY_PATH = ".flare/policy.yml"; DEFAULT_POLICY  // risk 30, sample 0.05, lanes 50/8, replay 2/1
 parsePolicy(text: string | null | undefined): Result<ForgePolicy>
-protectedMatches(fp: Footprint, policy: ForgePolicy): string[]
+BUILTIN_PROTECTED = ["flare.yml", ".flare/**", ".github/workflows/**"]  // always protected
+effectiveProtected(policy): string[]               // built-ins + policy.protected (deduped)
+protectedMatches(fp: Footprint, policy: ForgePolicy): string[]  // over effectiveProtected
 
 // risk (§3.5)
 RISK_WEIGHTS, GLOBSTAR_WEIGHT (= 10 files)
