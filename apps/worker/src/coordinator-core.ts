@@ -370,6 +370,14 @@ function liveEdge(row: EdgeRow): LiveEdge {
   };
 }
 
+function footprintJson(intent: Intent): string {
+  return JSON.stringify({ paths: intent.footprint.paths });
+}
+
+function actualJson(intent: Intent): string | null {
+  return intent.actualFootprint ? JSON.stringify({ paths: intent.actualFootprint.paths }) : null;
+}
+
 export function getIndexed(sql: SqlStore, id: string): IndexRow | null {
   const rows = sql.exec<IndexRow>("SELECT * FROM fc_intents WHERE id = ?", id).toArray();
   return rows.length ? rows[0] : null;
@@ -1229,8 +1237,9 @@ export function snapshot(deps: CoordinatorDeps, maxIntents?: number): Coordinato
 
 // Rebuild the index from D1 (source of truth): page every non-terminal
 // intent of this repo (keyset on created_at, id), stamp a new
-// generation, drop rows D1 no longer has as active, then recompute all
-// edges. Intents indexed concurrently carry the new generation too.
+// generation, drop rows D1 no longer has as active, then recompute the
+// edges of new or changed intents. Concurrent upserts carry the new
+// generation too.
 export async function hydrate(deps: CoordinatorDeps): Promise<{ indexed: number; removed: number; edges: number; truncated: boolean }> {
   const { sql, db } = deps;
   const gen = genOf(sql) + 1;
@@ -1239,6 +1248,7 @@ export async function hydrate(deps: CoordinatorDeps): Promise<{ indexed: number;
   let indexed = 0;
   let cursor: { createdAt: string; id: string } | null = null;
   let truncated = false;
+  const dirty: string[] = [];
   for (;;) {
     const page: { results: IntentRow[] } = cursor
       ? await db
@@ -1253,7 +1263,10 @@ export async function hydrate(deps: CoordinatorDeps): Promise<{ indexed: number;
           .bind(deps.repo, COORDINATOR_LIMITS.hydratePage)
           .all<IntentRow>();
     for (const r of page.results) {
-      indexUpsert(sql, toIntent(r), gen, now);
+      const intent = toIntent(r);
+      const prev = getIndexed(sql, intent.id);
+      if (!prev || prev.footprint_json !== footprintJson(intent) || prev.actual_json !== actualJson(intent)) dirty.push(intent.id);
+      indexUpsert(sql, intent, gen, now);
       indexed++;
     }
     const last = page.results[page.results.length - 1];
@@ -1272,11 +1285,10 @@ export async function hydrate(deps: CoordinatorDeps): Promise<{ indexed: number;
       removed++;
     }
   }
-  // Edges: rebuild from scratch (pairs are recomputed per intent; the
-  // second endpoint's pass is an idempotent no-op).
-  sql.exec("DELETE FROM fc_edges");
-  const ids = sql.exec<{ id: string }>("SELECT id FROM fc_intents").toArray();
-  for (const { id } of ids) recomputeEdges(sql, id, now);
+  // Edges persist in DO storage, so only intents that are new or whose
+  // footprints changed are recomputed (symmetric: that also fixes the
+  // other endpoint). A wiped DO marks everything dirty = full rebuild.
+  for (const id of dirty) recomputeEdges(sql, id, now);
   const edges = sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM fc_edges").toArray()[0]?.n ?? 0;
   setMeta(sql, "hydrated_ms", String(deps.now()));
   deps.log("info", "coordinator hydrated", { repo: deps.repo, indexed, removed, edges, truncated });
@@ -1337,4 +1349,44 @@ export function nextAlarmAt(sql: SqlStore): number | null {
   if (lease === null) return rehydrate;
   if (rehydrate === null) return lease;
   return Math.min(lease, rehydrate);
+}
+
+// ---------------------------------------------------------------------------
+// LeaseShard (design stub; docs/FORGE.md "Scaling: LeaseShard")
+// ---------------------------------------------------------------------------
+//
+// When one repo's coordinator runs hot (sustained >~500 req/s or
+// >~1M path rows), path rows + leases split across `LeaseShard` DOs
+// named `${repo}#${bucket}`. The coordinator stays the router, mailbox
+// and feed owner. Not wired yet: the single-DO index is what ships.
+
+export const LEASE_SHARD_BUCKETS_MAX = 64;
+
+// The shard that owns an entry: FNV-1a of the first literal segment of
+// its glob base, so a whole top-level directory lands in one bucket and
+// subtree range queries never cross shards. Entries with no literal
+// base (leading wildcard) must be checked against every shard: "all".
+export function shardBucket(entry: string, buckets: number): number | "all" {
+  const n = Math.max(1, Math.min(LEASE_SHARD_BUCKETS_MAX, Math.floor(buckets)));
+  const base = globBase(entry);
+  if (!base) return "all";
+  const top = base.split("/")[0];
+  let h = 0x811c9dc5;
+  for (let i = 0; i < top.length; i++) {
+    h ^= top.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h % n;
+}
+
+// RPC surface a LeaseShard would expose to its coordinator.
+export interface LeaseShardApi {
+  index(
+    intent: { id: string; state: IntentState; leaseMs: number | null },
+    entries: { declared: string[]; actual: string[] },
+  ): Promise<void>;
+  remove(intentId: string): Promise<void>;
+  overlaps(entries: string[], excludeId: string | null): Promise<Array<{ intentId: string; pairs: PathPair[]; viaActual: boolean }>>;
+  heartbeat(intentId: string, leaseMs: number): Promise<boolean>;
+  dueLeases(nowMs: number, limit: number): Promise<string[]>;
 }

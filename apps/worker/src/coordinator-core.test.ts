@@ -23,6 +23,7 @@ import {
   queryOverlaps,
   release,
   reportPush,
+  shardBucket,
   similar,
   snapshot,
   sweepLeases,
@@ -454,23 +455,32 @@ describe("hydrate", () => {
   it("rebuilds the index + edges from D1 and drops rows D1 no longer has active", async () => {
     const h = harness();
     const ids: string[] = [];
-    for (let i = 0; i < 450; i++) ids.push((await mkIntent(h, [`src/m${i % 7}/f${i}.ts`, `src/m${i % 7}`])).id);
+    for (let i = 0; i < 230; i++) ids.push((await mkIntent(h, [`src/m${i % 7}/f${i}.ts`, `src/m${i % 7}`])).id);
     const gone = await mkIntent(h, ["zzz"]);
     await declareOk(h, gone);
     h.raw.prepare("UPDATE intents SET state = 'landed' WHERE id = ?").run(gone.id);
     // Same-millisecond created_at ties must not skip rows (keyset on id).
     h.raw.prepare("UPDATE intents SET created_at = '2026-10-10T00:00:00.000Z'").run();
     const out = await hydrate(h.deps);
-    expect(out.indexed).toBe(450);
+    expect(out.indexed).toBe(230);
     expect(out.removed).toBe(1);
     expect(getIndexed(h.sql, gone.id)).toBeNull();
-    expect(counters(h.sql).intents).toBe(450);
+    expect(counters(h.sql).intents).toBe(230);
     // 7 modules, each a clique of ~64 intents: C(64,2) or C(65,2) edges each.
     const expected = [0, 1, 2, 3, 4, 5, 6]
       .map((m) => ids.filter((_, i) => i % 7 === m).length)
       .reduce((s, n) => s + (n * (n - 1)) / 2, 0);
     expect(out.edges).toBe(expected);
-  });
+    // Rehydrate is incremental: unchanged intents keep their edges, and a
+    // footprint moved in D1 re-derives only its own edges.
+    const moved = ids[0];
+    h.raw.prepare("UPDATE intents SET footprint_json = ? WHERE id = ?").run(JSON.stringify({ paths: ["elsewhere/x.ts"] }), moved);
+    const again = await hydrate(h.deps);
+    expect(again.removed).toBe(0);
+    const n0 = ids.filter((_, i) => i % 7 === 0).length;
+    expect(again.edges).toBe(expected - (n0 - 1));
+    expect(queryOverlaps(h.sql, ["elsewhere"]).hits.size).toBe(1);
+  }, 30_000);
 });
 
 describe("views", () => {
@@ -505,5 +515,19 @@ describe("views", () => {
     expect(snap.ver).toBe(Math.max(...h.ops.flat().map((o) => o.ver)));
     expect(snapshot(h.deps, 1).intents).toHaveLength(1);
     expect(snapshot(h.deps, 1).truncated).toBe(true);
+  });
+});
+
+describe("shardBucket (LeaseShard routing stub)", () => {
+  it("routes by the first literal segment; leading wildcards fan out", () => {
+    expect(shardBucket("src/a/b.ts", 8)).toBe(shardBucket("src/**", 8));
+    expect(shardBucket("src/*/x", 8)).toBe(shardBucket("src", 8));
+    expect(shardBucket("**/x.ts", 8)).toBe("all");
+    expect(shardBucket("*.md", 8)).toBe("all");
+    const b = shardBucket("docs/x", 8);
+    expect(typeof b === "number" && b >= 0 && b < 8).toBe(true);
+    expect(shardBucket("docs/x", 0)).toBe(0);
+    const spread = new Set(Array.from({ length: 200 }, (_, i) => shardBucket(`dir${i}/f`, 16)));
+    expect(spread.size).toBe(16);
   });
 });

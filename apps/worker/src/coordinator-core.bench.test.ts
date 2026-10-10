@@ -14,7 +14,7 @@ import { ensureIndexSchema, indexUpsert, queryOverlaps, recomputeEdges, type Sql
 const { DatabaseSync } = process.getBuiltinModule("node:sqlite");
 
 const FULL = process.env.FORGE_BENCH === "1";
-const N = FULL ? 100_000 : 5_000;
+const N = Number(process.env.FORGE_BENCH_N ?? "") || (FULL ? 100_000 : 5_000);
 const QUERIES = FULL ? 2_000 : 300;
 
 function store(): SqlStore {
