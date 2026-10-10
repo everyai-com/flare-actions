@@ -87,15 +87,14 @@ tab + PR-comment section). OpenAPI is at 88 paths (was 68).
   The spec is served live (`/openapi.yaml` + `/docs`) with a Redocly
   validity gate in CI next to the coverage gate.
 - **Git competition entry** ("next Git platform", deadline Oct 14):
-  **Flare Tournaments** — race N agents in Artifacts forks, verify each
-  with real CI, collision radar, deterministic verdict + AI Why, winner
-  fast-forwarded from the Worker, append-only ledger
-  (`docs/TOURNAMENTS.md`, `npm run harness`). Shipped Oct 6:
-  Artifacts trigger + seats checkout, tournament API + board, verdict +
-  MCP `tournament_why`, isomorphic-git promote with blessed-pointer
-  fallback. Staging-green 3x in a row on the fast-forward path, run/try
-  guide verified cold from a fresh clone. Still open: record the video
-  (`docs/VIDEO-SCRIPT.md`) and submit.
+  **Flare Forge**, intent-native collaboration for many agents on one
+  repo, on Workers and Artifacts: intents with declare-time overlap,
+  per-intent forks, CI-verified trains, conflict replay, a risk-routed
+  review inbox and `why` per line. The Oct 6 "Tournaments" work (race N
+  agents in forks, real CI per attempt, verdict + ledger; staging-green
+  3x) is now Forge's resolution-race tool (`docs/TOURNAMENTS.md`). Plan
+  and status: `docs/COMPETITION-PLAN.md`; demo runbook: `docs/DEMO.md`;
+  video plan: COMPETITION-PLAN §9.
 
 ## Strategy note: @cloudflare/ci and where Flare wins
 
