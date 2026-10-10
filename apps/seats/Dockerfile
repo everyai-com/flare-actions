@@ -14,7 +14,7 @@ FROM node:26-slim
 COPY --from=docker.io/cloudflare/sandbox:1.0.0 /usr/local/bin/sandbox-shim /usr/local/bin/sandbox-shim
 COPY egress.c /tmp/egress.c
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  git python3 ca-certificates bash tar gcc libc6-dev fuse3 s3fs \
+  git python3 ca-certificates bash tar procps gcc libc6-dev fuse3 s3fs \
   && mkdir -p /opt/flare \
   && gcc -O2 -Wall -Wextra -shared -fPIC -o /opt/flare/egress.so /tmp/egress.c -ldl \
   && rm /tmp/egress.c \

@@ -1293,7 +1293,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       }
       const step = spec.steps[i];
       if (!stepRuns(step.if, { anyFailed, jobFailed }, { needs: needsCtx.needs, steps: stepOutputs })) {
-        logParts.push(`--- step ${i + 1}: skipped (${step.if}) ---`);
+        logParts.push(`--- step ${i + 1}: skipped (${step.if ?? "an earlier step failed"}) ---`);
         continue;
       }
       const command = interpolateSecrets(step.run, secrets);
