@@ -1262,7 +1262,7 @@ export async function storyInboxOp(deps: ForgeServiceDeps, p: ForgePrincipal, ar
       needs_you: needsYou,
       sample: { count: sample, of: sample + auto, rate: policy.auditSample },
       auto,
-      auto_landed: auto,
+      auto_landed: items.filter((x) => x.bucket === "auto" && x.intent.state === "landed").length,
       policy: { auto_land_max_risk: policy.autoLandMaxRisk, audit_sample: policy.auditSample },
     },
     policy: { autoLandMaxRisk: policy.autoLandMaxRisk, auditSample: policy.auditSample, protected: policy.protected },
