@@ -11,8 +11,8 @@ jobs:
     steps:
       - run: node --version && npm --version
       # Seats showed npm ci hanging to the step cap and OOM-killed (137):
-      # the V2 seat ran on the 1/16 vCPU / 256 MiB default until
-      # instance_type was set. Log HTTP progress so a stall is
+      # V2 seats started without an `instance` size, i.e. the 1/16 vCPU /
+      # 256 MiB lite default (fixed in seat-do.ts, now standard-2). Log HTTP progress so a stall is
       # diagnosable, skip audit/fund round trips, and allow a cold cache
       # more room.
       - run: npm ci --cache .npm-cache --prefer-offline --no-audit --no-fund --loglevel=http

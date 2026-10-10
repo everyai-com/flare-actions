@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_SEAT_INSTANCE,
   egressHostForKey,
   mirrorNamespaceFor,
   mirrorRepoFor,
@@ -7,6 +8,7 @@ import {
   renderArtifactsRemote,
   renderMirrorRemote,
   runSeatJob,
+  seatInstanceFrom,
   type SeatArtifactsNamespace,
   seatTokenAuthorized,
   type BrowserDriver,
@@ -2120,5 +2122,20 @@ describe("runSeatJob", () => {
     expect(db.jobs.get("j1")?.status).toBe("failure");
     expect(container.kills).toBe(1);
     expect((db.jobs.get("j1")?.log as string) ?? "").toContain("timed out");
+  });
+});
+
+describe("seatInstanceFrom", () => {
+  it("defaults to standard-2 so seats never boot the 256 MiB lite size", () => {
+    expect(DEFAULT_SEAT_INSTANCE).toBe("standard-2");
+    expect(seatInstanceFrom(undefined)).toBe("standard-2");
+    expect(seatInstanceFrom("")).toBe("standard-2");
+    expect(seatInstanceFrom("huge")).toBe("standard-2");
+    expect(seatInstanceFrom("basic")).toBe("standard-2");
+  });
+
+  it("accepts the runtime's named sizes", () => {
+    expect(seatInstanceFrom(" standard-4 ")).toBe("standard-4");
+    expect(seatInstanceFrom("lite")).toBe("lite");
   });
 });

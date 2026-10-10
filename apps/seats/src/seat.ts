@@ -92,6 +92,20 @@ export interface ExecOptions {
 // union; custom vcpu/memoryMib resources stay a Phase 2 addition).
 export type ContainerInstanceSize = "lite" | "standard-1" | "standard-2" | "standard-3" | "standard-4";
 
+const INSTANCE_SIZES: readonly ContainerInstanceSize[] = ["lite", "standard-1", "standard-2", "standard-3", "standard-4"];
+
+// V2 seats and boxes size every start explicitly: the durable_object
+// policy ignores wrangler's instance_type and an omitted `instance`
+// boots `lite` (1/16 vCPU, 256 MiB), which timed out or OOM-killed
+// `npm ci` for a real monorepo. standard-2 = 1 vCPU, 6 GiB. Env
+// SEAT_INSTANCE overrides; anything unrecognized keeps the default.
+export const DEFAULT_SEAT_INSTANCE: ContainerInstanceSize = "standard-2";
+
+export function seatInstanceFrom(raw: string | undefined): ContainerInstanceSize {
+  const v = raw?.trim();
+  return INSTANCE_SIZES.find((s) => s === v) ?? DEFAULT_SEAT_INSTANCE;
+}
+
 export interface ContainerStartOptions {
   enableInternet?: boolean;
   // Durable-object-policy start config (V2 seats only; the V1 adapter
