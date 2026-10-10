@@ -118,8 +118,30 @@ describe("#16 git commands never put the token in a URL, argv or .git/config", (
     }
     // The prefix evaluates to the right header in a real shell.
     const prefix = gitAuthEnv("FLARE_FORK_TOKEN");
-    const out = execFileSync("bash", ["-c", `${prefix} env | grep '^GIT_CONFIG_VALUE_0='`], { env: { PATH: process.env.PATH ?? "", FLARE_FORK_TOKEN: "tok123" } }).toString().trim();
+    const out = execFileSync("bash", ["-c", `${prefix} env | grep '^GIT_CONFIG_VALUE_0='`], { env: { ...process.env, FLARE_FORK_TOKEN: "tok123" } }).toString().trim();
     expect(out).toBe(`GIT_CONFIG_VALUE_0=Authorization: Basic ${Buffer.from("x:tok123").toString("base64")}`);
+  });
+});
+
+describe("#9 owner-only verbs require the claiming credential, not just the agent label", () => {
+  it("another run token naming the same agent cannot refresh the fork token, push, ready or abandon", async () => {
+    const h = reviewHarness();
+    const OTHER: ForgeIdentity = { scope: "runner", actor: "token:runner2", repos: [] };
+    const ADMIN: ForgeIdentity = { scope: "admin", actor: "token:admin", repos: [] };
+    const d = await h.call("POST", "/v1/forge/intents", { repo: "demo", title: "Owned", footprint: ["x.ts"], reasoning: "r", agent: "alpha" });
+    const id = rec(d.body.intent).id as string;
+    const c = await h.call("POST", `/v1/forge/intents/${id}/claim`, { agent: "alpha" });
+    h.fake.commit(c.body.forkRepo as string, sha("4"), { "x.ts": "4" });
+    const steal = await h.call("POST", `/v1/forge/intents/${id}/heartbeat`, { agent: "alpha", refreshToken: true }, OTHER);
+    expect(steal.body.code).toBe("not_owner");
+    expect(steal.body.forkToken).toBeUndefined();
+    expect((await h.call("POST", `/v1/forge/intents/${id}/push`, { agent: "alpha", sha: sha("4") }, OTHER)).body.code).toBe("not_owner");
+    expect((await h.call("POST", `/v1/forge/intents/${id}/ready`, { agent: "alpha" }, OTHER)).body.code).toBe("not_owner");
+    expect((await h.call("POST", `/v1/forge/intents/${id}/abandon`, { agent: "alpha" }, OTHER)).body.code).toBe("not_owner");
+    // The claiming credential still works; admins may abandon.
+    expect((await h.call("POST", `/v1/forge/intents/${id}/heartbeat`, { agent: "alpha", refreshToken: true })).status).toBe(200);
+    expect((await h.call("POST", `/v1/forge/intents/${id}/push`, { agent: "alpha", sha: sha("4") })).status).toBe(200);
+    expect((await h.call("POST", `/v1/forge/intents/${id}/abandon`, { agent: "alpha" }, ADMIN)).body.state).toBe("abandoned");
   });
 });
 

@@ -335,6 +335,18 @@ async function syncIndex(deps: ForgeServiceDeps, repo: string, intentId: string)
   else await job;
 }
 
+// Owner binding (review #9): `agent` is a caller-chosen label, so
+// owner-only verbs also require the credential that claimed the intent
+// (token:<id>, OAuth client, session actor). '' = claimed before the
+// binding existed: the agent check alone applies.
+async function ownerCheck(deps: ForgeServiceDeps, p: ForgePrincipal, intentId: string, adminOk = false): Promise<ForgeOutcome | null> {
+  if (adminOk && p.isAdmin) return null;
+  const row = await deps.db.prepare("SELECT owner_principal FROM intents WHERE id = ?").bind(intentId).first<{ owner_principal: string | null }>();
+  const owner = row?.owner_principal ?? "";
+  if (!owner || owner === p.actor) return null;
+  return forgeFail("not_owner", "intent was claimed with a different credential", "owner-only verbs need the token (or OAuth client) that claimed the intent; agent names are labels, not identity");
+}
+
 async function auditWrite(deps: ForgeServiceDeps, p: ForgePrincipal, action: string, target: string): Promise<void> {
   await audit(deps.db, p.actor, `forge.${action}`, target.slice(0, 300)).catch(() => undefined);
 }
@@ -800,6 +812,8 @@ export async function claimOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: F
       out.intent.baseSha = head;
     }
   }
+  // Bind the claiming credential (owner-only verbs check it).
+  await deps.db.prepare("UPDATE intents SET owner_principal = ? WHERE id = ?").bind(p.actor.slice(0, 200), current.id).run();
   await auditWrite(deps, p, "intent.claim", `${current.repo} ${current.id} ${who.agent} -> ${out.forkRepo}`);
   await syncIndex(deps, current.repo, current.id);
   const remote = forkRemote(deps, out.forkRepo, out.remote);
@@ -840,6 +854,8 @@ export async function heartbeatOp(deps: ForgeServiceDeps, p: ForgePrincipal, arg
   if (isOutcome(who)) return who;
   const intent = await loadIntent(deps, p, args.intentId);
   if (isOutcome(intent)) return intent;
+  const notOwner = await ownerCheck(deps, p, intent.id);
+  if (notOwner) return notOwner;
   const ttl = intArg(args.leaseTtlSeconds, DEFAULT_LEASE_TTL_SECONDS, 30, 3600);
   if (ttl === null) return forgeFail("invalid_request", "leaseTtlSeconds must be an integer 30-3600");
   const lease = await deps.coordinator.heartbeat(intent.repo, intent.id, who.agent, ttl);
@@ -885,6 +901,8 @@ export async function reportPushOp(deps: ForgeServiceDeps, p: ForgePrincipal, ar
   if (isOutcome(who)) return who;
   const intent = await loadIntent(deps, p, args.intentId);
   if (isOutcome(intent)) return intent;
+  const notOwner = await ownerCheck(deps, p, intent.id);
+  if (notOwner) return notOwner;
   if (intent.agent !== who.agent) return forgeFail("not_owner", "intent is owned by another agent");
   if (!intent.forkRepo) return forgeFail("not_pushable", `intent is ${intent.state}; claim it first`, "claim_intent returns the fork remote and token to push to");
   let reported: string[] | null = null;
@@ -958,6 +976,8 @@ export async function markReadyOp(deps: ForgeServiceDeps, p: ForgePrincipal, arg
   if (isOutcome(who)) return who;
   const intent = await loadIntent(deps, p, args.intentId);
   if (isOutcome(intent)) return intent;
+  const notOwner = await ownerCheck(deps, p, intent.id);
+  if (notOwner) return notOwner;
   const ready = await markReady(deps.db, intent.id, who.agent);
   if (isForgeError(ready)) return fromForgeError(ready);
   const { policy } = await deps.loadPolicy(intent.repo);
@@ -1029,6 +1049,8 @@ export async function abandonOp(deps: ForgeServiceDeps, p: ForgePrincipal, args:
   if (isOutcome(who)) return who;
   const intent = await loadIntent(deps, p, args.intentId);
   if (isOutcome(intent)) return intent;
+  const notOwner = await ownerCheck(deps, p, intent.id, true);
+  if (notOwner) return notOwner;
   if (intent.agent && intent.agent !== who.agent && !p.isAdmin) return forgeFail("not_owner", "intent is owned by another agent");
   const moved = await transitionIntent(deps.db, intent.id, intent.state, "abandoned", { leaseExpiresAt: null }, who.agent);
   if (!moved) return forgeFail("stale_state", `intent is ${intent.state}; cannot abandon`);

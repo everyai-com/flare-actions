@@ -426,7 +426,8 @@ export const SCHEMA_STATEMENTS = [
     plan_approved_by TEXT,
     lease_expires_at TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    owner_principal TEXT NOT NULL DEFAULT ''
   )`,
   `CREATE INDEX IF NOT EXISTS idx_intents_repo_state ON intents(repo, state)`,
   `CREATE INDEX IF NOT EXISTS idx_intents_goal ON intents(goal_id)`,
@@ -517,6 +518,7 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE gh_runner_jobs ADD COLUMN log_digest TEXT`,
   `ALTER TABLE jobs ADD COLUMN billed_ms INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE attempts ADD COLUMN polled_at TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE intents ADD COLUMN owner_principal TEXT NOT NULL DEFAULT ''`,
 ];
 
 let schemaPromise: Promise<void> | null = null;
