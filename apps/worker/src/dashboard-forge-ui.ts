@@ -249,6 +249,8 @@ a.fx-idchip { cursor: pointer; }
 .fx-sec li { margin: 2px 0; }
 .fx-terms-col { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 .fx-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+button kbd { margin-left: 6px; }
+.fx-terms-col .fx-term { white-space: normal; height: auto; min-height: 22px; padding-top: 2px; padding-bottom: 2px; }
 .fx-actions button, .fx-actions a.btn { padding: 7px 12px; font-size: 12.5px; }
 .fx-foot { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
 .fx-foot code { font-family: var(--mono); }
@@ -481,6 +483,8 @@ body.fx-stagemode .fx-live-grid { grid-template-columns: minmax(0, 1fr) 380px; }
   .fx-row { grid-template-columns: 20px 34px minmax(0, 1fr); }
   .fx-row .l2, .fx-row .acts, .fx-row .sendback { grid-column: 2 / -1; }
   .fx-row > .fx-mono-av { display: none; }
+  .fx-row .title { white-space: normal; }
+  .fx-term { white-space: normal; height: auto; min-height: 22px; }
   .fx-legend { font-size: 11.5px; gap: 4px 10px; }
   table.fx-fp tr { display: table-row; border: none; padding: 0; margin: 0; }
   table.fx-fp td { display: table-cell; padding: 5px 6px; }
