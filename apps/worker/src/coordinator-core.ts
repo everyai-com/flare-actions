@@ -865,6 +865,8 @@ export interface ReportPushResult {
   state: IntentState;
   drift: string[];
   newOverlaps: OverlapView[];
+  // Every overlap the intent holds after this push (new or not).
+  overlaps: OverlapView[];
   risk: number;
   riskTerms: RiskTerm[];
 }
@@ -880,6 +882,8 @@ export interface HappeningItem {
   headSha: string;
   leaseExpiresAt: string | null;
   risk: number;
+  goalId: string | null;
+  updatedAt: string | null;
   // mine = the query path (empty when no paths were given).
   matched: PathPair[];
   untrusted: true;
@@ -1123,6 +1127,7 @@ export async function reportPush(
       state: (row?.state ?? "working") as IntentState,
       drift: driftPaths({ paths: declared }, { paths: actual }),
       newOverlaps: [],
+      overlaps: [],
       risk: row?.risk ?? 0,
       riskTerms: [],
     };
@@ -1136,14 +1141,60 @@ export async function reportPush(
   const res = await recordPush(deps.db, { id, agent, headSha: sha, actualFootprint: input.actualFootprint, policy: input.policy });
   if (isForgeError(res)) return err(res.error, res.message);
   if (res.intent.repo !== deps.repo) return err("wrong-repo", `intent belongs to ${res.intent.repo}`);
+  return applyPush(deps, res.intent, sha, { drift: res.drift, risk: res.risk, riskTerms: res.riskTerms, source: input.source ?? "agent" });
+}
+
+// The agent path (forge-service report_push) records the push in D1
+// itself (it verified the sha against the fork first); this only
+// re-indexes the recorded intent and marks (intent, sha) seen, so a
+// later namespace push trigger for the same sha dedupes instead of
+// recording it twice.
+export async function indexPush(
+  deps: CoordinatorDeps,
+  intent: Intent,
+  input: { drift: string[]; risk: number; riskTerms: RiskTerm[] },
+): Promise<ReportPushResult | CoordinatorError> {
+  if (intent.repo !== deps.repo) return err("wrong-repo", `intent belongs to ${intent.repo}, not ${deps.repo}`);
+  const sha = intent.headSha.toLowerCase();
+  if (!sha) return err("invalid-sha", "intent has no recorded head");
+  if (pushSeen(deps.sql, intent.id, sha)) {
+    const row = getIndexed(deps.sql, intent.id);
+    return {
+      ok: true,
+      duplicate: true,
+      state: (row?.state ?? intent.state) as IntentState,
+      drift: input.drift,
+      newOverlaps: [],
+      overlaps: overlapViews(deps.sql, new Map(queryOverlaps(deps.sql, indexedEntriesAll(row), intent.id).hits)),
+      risk: input.risk,
+      riskTerms: input.riskTerms,
+    };
+  }
+  return applyPush(deps, intent, sha, { ...input, source: "agent" });
+}
+
+function indexedEntriesAll(row: IndexRow | null): string[] {
+  if (!row) return [];
+  const { declared, actual } = indexedEntries(row);
+  return [...new Set([...declared, ...actual])];
+}
+
+async function applyPush(
+  deps: CoordinatorDeps,
+  intent: Intent,
+  sha: string,
+  input: { drift: string[]; risk: number; riskTerms: RiskTerm[]; source: "agent" | "trigger" },
+): Promise<ReportPushResult> {
+  const { sql } = deps;
+  const id = intent.id;
   const now = deps.now();
   sql.exec("INSERT OR IGNORE INTO fc_pushes (intent_id, sha, seen_ms) VALUES (?, ?, ?)", id, sha, now);
   const batch = new OpBatch(sql);
-  indexUpsert(sql, res.intent, genOf(sql), now);
+  indexUpsert(sql, intent, genOf(sql), now);
   const delta = recomputeEdges(sql, id, now);
   bumpCounter(sql, "pushes");
   bumpCounter(sql, "push_overlaps", delta.added.length);
-  if (res.drift.length) bumpCounter(sql, "drift_alerts");
+  if (input.drift.length) bumpCounter(sql, "drift_alerts");
   const row = getIndexed(sql, id);
   batch.intent(row, id);
   batch.edges(delta);
@@ -1156,18 +1207,19 @@ export async function reportPush(
     repo: deps.repo,
     intent: id,
     sha,
-    source: input.source ?? "agent",
-    drift: res.drift.length,
+    source: input.source,
+    drift: input.drift.length,
     newOverlaps: delta.added.length,
   });
   return {
     ok: true,
     duplicate: false,
-    state: res.intent.state,
-    drift: res.drift,
+    state: intent.state,
+    drift: input.drift,
     newOverlaps,
-    risk: res.risk,
-    riskTerms: res.riskTerms,
+    overlaps: overlapViews(sql, delta.hits),
+    risk: input.risk,
+    riskTerms: input.riskTerms,
   };
 }
 
@@ -1201,6 +1253,8 @@ export function whatsHappening(deps: CoordinatorDeps, paths?: readonly unknown[]
       headSha: row.head_sha,
       leaseExpiresAt: live.leaseExpiresAt,
       risk: row.risk,
+      goalId: row.goal_id,
+      updatedAt: msToIso(row.updated_ms),
       matched,
       untrusted: true,
     };
