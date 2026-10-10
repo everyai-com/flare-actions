@@ -274,13 +274,19 @@ describe("trains: merger end-to-end (isomorphic-git + MemoryFS + git http-backen
     expect("error" in claimed).toBe(false);
     expect((await getIntent(h.db, y))?.state).toBe("replaying");
     h.fx.fork(REPO, "y-replay");
-    const replay = h.fx.commit("y-replay", { "src/a.ts": withLine(lines("a"), 3, "a3 by X and Y") }, "replay Y");
+    const replay = h.fx.commit("y-replay", { "src/a.ts": withLine(lines("a"), 3, "a3 by X and Y"), "docs/extra.md": "extra\n" }, "replay Y");
     const mainBefore = h.fx.head(REPO);
     const resolved = await resolveConflictFor(h.deps, conflict?.id ?? "", "agent-y", replay, { forkRepo: "y-replay" });
     expect("error" in resolved).toBe(false);
     expect(h.fx.head(REPO)).toBe(mainBefore); // resolve never touches main
     const after = await getIntent(h.db, y);
     expect(after).toMatchObject({ forkRepo: "y-replay", headSha: replay, baseSha: mainBefore });
+    // review #6: the replay's real footprint replaces the conflicted one
+    // (risk is rescored on it: docs/extra.md is drift outside src/a.ts)
+    expect(after?.actualFootprint?.paths).toEqual(["docs/extra.md", "src/a.ts"]);
+    const queued = (await listForgeLedger(h.db, "intent", y, 200)).filter((r) => r.kind === "queued").pop();
+    expect(queued?.body).toMatch(/risk=\d+/);
+    expect(after?.riskTerms.some((t) => t.term === "drift")).toBe(true);
     await settle();
     const landed = await getIntent(h.db, y);
     expect(landed?.state).toBe("landed");

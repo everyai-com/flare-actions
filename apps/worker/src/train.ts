@@ -62,6 +62,7 @@ import {
   type TrainRow,
 } from "./intents";
 import type { TournamentRepoHandle } from "./tournaments";
+import { changedFiles } from "./verdict";
 import { recordNotesTip, writeWhyNotes, type ProvenanceGit } from "./provenance";
 import {
   agentIdentity,
@@ -1528,12 +1529,29 @@ export async function resolveConflictFor(
   if (opts.forkRepo !== undefined && !/^[a-zA-Z0-9][\w.-]{0,99}$/.test(opts.forkRepo)) {
     return { error: "invalid-fork", message: "fork repo name is invalid" };
   }
+  const pre = await getIntent(deps.db, conflict.intentA);
+  if (!pre) return { error: "not-found", message: "intent not found" };
+  const base = (await trunkMainSha(deps, conflict.repo)) ?? pre.baseSha;
+  // The replay is a new diff: its footprint (what it really touches)
+  // replaces the old one, so risk is scored on the replay, not on the
+  // change that conflicted (review #6). Fail closed when it can't be read.
+  let replayFootprint: string[] | null = null;
+  if (deps.artifacts) {
+    const fork = opts.forkRepo ?? pre.forkRepo ?? "";
+    const diff = fork ? await changedFiles(deps.artifacts, fork, base, sha.toLowerCase()) : null;
+    if (!diff) return { error: "footprint-unavailable", message: "could not diff the replay against trunk; retry" };
+    replayFootprint = diff.changed.slice(0, 500);
+  }
   if (!(await resolveConflict(deps.db, conflictId, agent, sha))) {
     return { error: "not-resolvable", message: `conflict is ${conflict.state} or claimed by another agent` };
   }
-  const intent = await getIntent(deps.db, conflict.intentA);
-  if (!intent) return { error: "not-found", message: "intent not found" };
-  const base = (await trunkMainSha(deps, conflict.repo)) ?? intent.baseSha;
+  const intent = (await getIntent(deps.db, conflict.intentA)) ?? pre;
+  if (replayFootprint) {
+    await deps.db
+      .prepare("UPDATE intents SET actual_footprint_json = ? WHERE id = ? AND state = 'replaying'")
+      .bind(JSON.stringify({ paths: replayFootprint }), intent.id)
+      .run();
+  }
   if (opts.forkRepo) {
     await deps.db.prepare("UPDATE intents SET fork_repo = ?, updated_at = ? WHERE id = ? AND state = 'replaying'").bind(opts.forkRepo, nowIso(), intent.id).run();
   }
