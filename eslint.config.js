@@ -34,4 +34,10 @@ export default tseslint.config(
     files: ["scripts/**/*.mjs", "apps/cli/bin/*.mjs", "eslint.config.js"],
     languageOptions: { globals: globals.node },
   },
+  {
+    // Self-contained example repos: run under Node (tests, tooling) and
+    // Workers; both expose these globals.
+    files: ["examples/**/*.{ts,mjs}"],
+    languageOptions: { globals: globals.node },
+  },
 );
