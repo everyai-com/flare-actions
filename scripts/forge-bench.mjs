@@ -5,6 +5,8 @@
 //   node --experimental-strip-types scripts/forge-bench.mjs \
 //     --agents 1000,10000,100000 --seed 7 [--modes baseline,trains,forge] \
 //     [--json] [--out docs/bench] [--markdown] [--max-parallel N]
+//     [--speculation-depth N] [--trains-speculation-depth N]
+//     [--p-interaction X] [--p-flake X]
 //   Prints a table per agent count; --json also writes
 //   docs/bench/forge-sim-seed<seed>.json (the GET /v1/forge/bench shape).
 //
@@ -69,16 +71,40 @@ async function simulated(args) {
   const modes = args.modes ? String(args.modes).split(",") : [...MODES];
   for (const m of modes) if (!MODES.includes(m)) die(`unknown mode ${m} (${MODES.join(", ")})`);
 
-  // Sensitivity knob: train lanes in parallel (policy lanes.max_parallel).
+  // Sensitivity knobs: lanes per group (policy lanes.max_parallel), Forge
+  // speculation depth (policy lanes.speculation_depth), and the depth the
+  // trains-only mode runs at (default 1 = the pre-speculation executor).
   const constants = {};
-  if (args["max-parallel"] !== undefined) {
-    const mp = Number(args["max-parallel"]);
-    if (!Number.isInteger(mp) || mp < 1 || mp > 64) die("--max-parallel must be 1-64");
-    constants.policy = { ...DEFAULT_CONSTANTS.policy, lanes: { ...DEFAULT_CONSTANTS.policy.lanes, maxParallel: mp } };
-  }
+  const knobs = [];
+  const lanes = { ...DEFAULT_CONSTANTS.policy.lanes };
+  const intKnob = (flag, min, max) => {
+    if (args[flag] === undefined) return undefined;
+    const v = Number(args[flag]);
+    if (!Number.isInteger(v) || v < min || v > max) die(`--${flag} must be ${min}-${max}`);
+    knobs.push(`--${flag} ${v}`);
+    return v;
+  };
+  const mp = intKnob("max-parallel", 1, 64);
+  if (mp !== undefined) lanes.maxParallel = mp;
+  const depth = intKnob("speculation-depth", 1, 8);
+  if (depth !== undefined) lanes.speculationDepth = depth;
+  const tdepth = intKnob("trains-speculation-depth", 1, 8);
+  if (tdepth !== undefined) constants.trainsSpeculationDepth = tdepth;
+  if (mp !== undefined || depth !== undefined) constants.policy = { ...DEFAULT_CONSTANTS.policy, lanes };
+  const probKnob = (flag) => {
+    if (args[flag] === undefined) return undefined;
+    const v = Number(args[flag]);
+    if (!(v >= 0 && v <= 1)) die(`--${flag} must be 0-1`);
+    knobs.push(`--${flag} ${v}`);
+    return v;
+  };
+  const pi = probKnob("p-interaction");
+  if (pi !== undefined) constants.pInteraction = pi;
+  const pf = probKnob("p-flake");
+  if (pf !== undefined) constants.pFlake = pf;
   const sha = gitSha();
   const date = new Date().toISOString().slice(0, 10);
-  const command = `node --experimental-strip-types scripts/forge-bench.mjs --agents ${agentsList.join(",")} --seed ${seed}${args.modes ? ` --modes ${modes.join(",")}` : ""}${constants.policy ? ` --max-parallel ${constants.policy.lanes.maxParallel}` : ""}`;
+  const command = `node --experimental-strip-types scripts/forge-bench.mjs --agents ${agentsList.join(",")} --seed ${seed}${args.modes ? ` --modes ${modes.join(",")}` : ""}${knobs.length ? ` ${knobs.join(" ")}` : ""}`;
   const docs = [];
   process.stdout.write("SIMULATED results: outputs of a deterministic model, not measurements of a running system.\n\n");
   for (const n of agentsList) {
@@ -92,7 +118,7 @@ async function simulated(args) {
   if (args.json) {
     const outDir = resolve(ROOT, typeof args.out === "string" ? args.out : "docs/bench");
     mkdirSync(outDir, { recursive: true });
-    const suffix = constants.policy ? `-mp${constants.policy.lanes.maxParallel}` : "";
+    const suffix = [mp !== undefined ? `-mp${mp}` : "", depth !== undefined ? `-d${depth}` : "", tdepth !== undefined ? `-td${tdepth}` : "", pi !== undefined ? `-pi${pi}` : "", pf !== undefined ? `-pf${pf}` : ""].join("");
     const file = join(outDir, `forge-sim-seed${seed}${suffix}.json`);
     const body = {
       kind: "simulated",

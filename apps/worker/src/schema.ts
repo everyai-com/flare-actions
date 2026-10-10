@@ -461,6 +461,7 @@ export const SCHEMA_STATEMENTS = [
     state TEXT NOT NULL DEFAULT 'forming' CHECK (state IN (
       'forming', 'merging', 'verifying', 'landed', 'failed', 'bisected', 'aborted')),
     parent_train_id TEXT,
+    group_seq INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
@@ -521,6 +522,7 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE jobs ADD COLUMN billed_ms INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE attempts ADD COLUMN polled_at TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE intents ADD COLUMN owner_principal TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE trains ADD COLUMN group_seq INTEGER NOT NULL DEFAULT 0`,
 ];
 
 let schemaPromise: Promise<void> | null = null;

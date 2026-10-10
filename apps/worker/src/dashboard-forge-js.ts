@@ -2585,7 +2585,7 @@ export const FORGE_JS = String.raw`
       h("h1", { text: "Bench · run " + b.run + " · " + fxNum(b.agents) + " agents" }),
       h("div", { cls: "meta" }, [h("span", { cls: "mono muted", text: (b.demo || FX.demo ? "demo fixture, not measured" : "measured") + " " + new Date(b.measured_at).toLocaleString() + " @" }), fxSha(b.sha), h("span", { cls: "mono muted", text: "· italic rows are projected" })])
     ]));
-    var cols = [["changes_per_min", "Changes/min", function (v) { return fxNum(v); }], ["median_declare_to_land_s", "Median declare→land", function (v) { return fxSecs(v); }], ["conflicts_hit", "Conflicts hit", fxNum], ["conflicts_avoided", "Avoided", fxNum], ["red_main_min", "Red-main min", fxNum], ["human_min", "Human min", fxNum], ["usd_per_1k_agents", "$ / 1k agents", function (v) { return v === null || v === undefined ? "—" : "$" + Number(v).toFixed(2); }]];
+    var cols = [["changes_per_min", "Changes/min", function (v) { return fxNum(v); }], ["median_declare_to_land_s", "Median declare→land", function (v) { return fxSecs(v); }], ["conflicts_hit", "Conflicts hit", fxNum], ["conflicts_avoided", "Avoided", fxNum], ["escaped_defect_min", "Escaped-defect min", fxNum], ["main_red_integration_min", "Main red: integration min", fxNum], ["human_min", "Human min", fxNum], ["usd_per_1k_agents", "$ / 1k agents", function (v) { return v === null || v === undefined ? "—" : "$" + Number(v).toFixed(2); }]];
     var thead = h("tr", {}, [h("th", { scope: "col", text: "Mode" })].concat(cols.map(function (c) { return h("th", { scope: "col", cls: "num", text: c[1] }); })));
     var tb = h("tbody");
     b.modes.forEach(function (m) {
@@ -2593,7 +2593,7 @@ export const FORGE_JS = String.raw`
     });
     box.appendChild(fxPanel("Modes", [h("div", { cls: "table-scroll" }, [h("table", { cls: "fx-bench" }, [h("thead", {}, [thead]), tb])])]));
     var bars = h("div", { cls: "fx-bars" });
-    [["changes_per_min", "Changes per minute", false], ["red_main_min", "Red-main minutes", true], ["human_min", "Human minutes", true], ["conflicts_hit", "Conflicts hit", true]].forEach(function (mt) {
+    [["changes_per_min", "Changes per minute", false], ["main_red_integration_min", "Main red: integration minutes", true], ["escaped_defect_min", "Escaped-defect minutes", true], ["human_min", "Human minutes", true], ["conflicts_hit", "Conflicts hit", true]].forEach(function (mt) {
       var mx = 1; b.modes.forEach(function (m) { var v = Number(m.metrics[mt[0]]) || 0; if (v > mx) mx = v; });
       var box2 = h("div", { cls: "fx-bar-m" }, [h("h4", { text: mt[1] + (mt[2] ? " (lower is better)" : "") })]);
       b.modes.forEach(function (m) {

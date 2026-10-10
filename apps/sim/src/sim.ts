@@ -30,13 +30,8 @@
 // Everything here is SIMULATED. No number produced by this module is a
 // measurement of a real system.
 
-import {
-  bisect,
-  footprintsOverlap,
-  partitionLanes,
-  routeLanding,
-  scoreRisk,
-} from "../../worker/src/intents-core.ts";
+import { footprintsOverlap, routeLanding, scoreRisk, type ForgePolicy } from "../../worker/src/intents-core.ts";
+import { planTrain, SpeculativeChain, type ChainLane } from "../../worker/src/train-core.ts";
 import { DEFAULT_CONSTANTS, type DurationDist, type SimConstants } from "./constants.ts";
 import { bernoulli, lognormal, percentile, rngFor, type Rng } from "./prng.ts";
 import { generateWorkload, type SimIntent, type Workload } from "./workload.ts";
@@ -77,8 +72,21 @@ export interface ModeMetrics {
   restacks: number;
   replaysAttempted: number;
   replaysSucceeded: number;
-  brokenMainMin: number;
+  // Defects that escape ALL CI (no exact-SHA check can catch them): the
+  // union of [land, land + MTTR] per escaped defect. Formerly reported as
+  // "red-main minutes"; it measures escapes, not integration.
+  escapedDefectMin: number;
   escapedDefects: number;
+  // Main red because a landed trunk state was never CI-verified as that
+  // exact SHA and the combination carries an interaction defect. Zero by
+  // construction for trains/Forge (CAS on the verified lane head); it is
+  // computed, not assumed: every landing is checked.
+  mainRedIntegrationMin: number;
+  unverifiedLandings: number;
+  // Groups cut on top of an in-flight group (speculation), and lanes
+  // invalidated because a lane ahead of them went red.
+  speculativeGroups: number;
+  invalidatedLanes: number;
   humanReviewMin: number;
   human: HumanMinutes;
   routes: { auto: number; audit: number; human: number };
@@ -204,7 +212,6 @@ class Sim {
   readonly mode: Mode;
   readonly items: RunIntent[];
   private readonly fileLands: Array<LandEntry[] | undefined>;
-  private readonly inflight: Int32Array;
   private readonly liveByFile = new Map<number, RunIntent>();
   private readonly redIntervals: Array<[number, number]> = [];
   private readonly rng: Record<"ci" | "flake" | "conflict" | "rework" | "route" | "replay" | "cf", Rng>;
@@ -212,7 +219,14 @@ class Sim {
   private readyHead = 0;
   // Forge: intents re-derived by a replay keep their place in line.
   private priorityQ: Array<{ it: RunIntent; gen: number }> = [];
-  private freeSlots: number;
+  // The shipped speculative chain (train-core), and the policy it runs
+  // under for this mode (trains-only: speculation depth from constants).
+  private readonly chain: SpeculativeChain<RunIntent>;
+  private readonly chainPolicy: ForgePolicy;
+  private cutting = false;
+  // Landings whose resulting trunk is not the exact SHA CI verified. Each
+  // one carrying an interaction defect turns main red for mttrMin.
+  private readonly integrationRedIntervals: Array<[number, number]> = [];
   private serialQ: RunIntent[] = [];
   private serialHead = 0;
   private serialBusy = false;
@@ -223,8 +237,9 @@ class Sim {
     this.c = c;
     this.mode = mode;
     this.fileLands = Array.from({ length: workload.fileCount }, () => undefined);
-    this.inflight = new Int32Array(workload.fileCount);
-    this.freeSlots = c.policy.lanes.maxParallel;
+    const depth = mode === "forge" ? c.policy.lanes.speculationDepth : c.trainsSpeculationDepth;
+    this.chainPolicy = { ...c.policy, lanes: { ...c.policy.lanes, speculationDepth: depth } };
+    this.chain = new SpeculativeChain<RunIntent>(this.chainPolicy);
     const s = (label: string): Rng => rngFor(workload.seed, `${mode}:${label}`);
     this.rng = {
       ci: s("ci"),
@@ -276,8 +291,12 @@ class Sim {
       restacks: 0,
       replaysAttempted: 0,
       replaysSucceeded: 0,
-      brokenMainMin: 0,
+      escapedDefectMin: 0,
       escapedDefects: 0,
+      mainRedIntegrationMin: 0,
+      unverifiedLandings: 0,
+      speculativeGroups: 0,
+      invalidatedLanes: 0,
       humanReviewMin: 0,
       human: { review: 0, rereview: 0, planApproval: 0, audit: 0, escalation: 0 },
       routes: { auto: 0, audit: 0, human: 0 },
@@ -628,11 +647,18 @@ class Sim {
     it.base = t;
     it.status = "inflight";
     this.m.ciRuns++;
+    const verifiedAt = this.m.landed; // trunk state CI sees
     const d = this.dur(this.c.ci, this.rng.ci);
     const flake = bernoulli(this.rng.flake, this.c.pFlake);
     this.q.at(t + d, () => {
       if (!flake && !it.interaction) {
         this.q.at(this.q.now + this.c.mergeMin, () => {
+          // Exact-SHA check: nothing else may have landed since CI began
+          // (the queue is serial, so this holds by construction).
+          if (this.m.landed !== verifiedAt) {
+            this.m.unverifiedLandings++;
+            if (it.interaction) this.integrationRedIntervals.push([this.q.now, this.q.now + this.c.mttrMin]);
+          }
           this.land(it);
           this.serialServe();
         });
@@ -649,6 +675,15 @@ class Sim {
   }
 
   // --- trains (trains + forge) -------------------------------------------------
+  //
+  // The SHIPPED train executor, driven through train-core's
+  // SpeculativeChain: every in-flight lane is one link of a single chain
+  // (lanes stacked inside a group, groups stacked on the previous group's
+  // speculative head). A lane's CI verifies its exact head = main + every
+  // unlanded lane ahead of it. decideChain lands the contiguous green
+  // prefix, bisects the first red lane (bisectStep) and invalidates every
+  // lane behind it. Groups are cut with the shipped planTrain while
+  // cutCapacity allows (speculation depth x lane-ref pool).
 
   private toReady(it: RunIntent): void {
     it.status = "ready";
@@ -660,25 +695,36 @@ class Sim {
     this.tryCut();
   }
 
+  // Requeued without blame (an ancestor lane failed): back to the front
+  // of the line, as the shipped requeue restores the intent's queue time.
+  private requeue(it: RunIntent): void {
+    it.status = "ready";
+    it.readyGen++;
+    this.priorityQ.unshift({ it, gen: it.readyGen });
+  }
+
   private tryCut(): void {
-    while (this.freeSlots > 0) {
-      if (!this.cut(this.freeSlots)) return;
+    if (this.cutting) return;
+    this.cutting = true;
+    try {
+      for (let guard = 0; guard < 64; guard++) {
+        const cap = this.chain.capacity();
+        if (!cap.slots.length || !this.cut(cap.slots.length)) break;
+      }
+    } finally {
+      this.cutting = false;
     }
   }
 
   // A stacked intent can ride a train only behind its predecessor: the
-  // predecessor has landed, or was taken earlier in this same cut.
+  // predecessor has landed, is already in the chain (the new group is
+  // stacked on it: speculation), or was taken earlier in this same cut.
   private stackBlocker(it: RunIntent, taken: Set<RunIntent>): RunIntent | null {
     for (const s of it.stacks) {
-      if (s.p.status === "landed" || s.p.status === "abandoned") continue;
+      if (s.p.status === "landed" || s.p.status === "abandoned" || s.p.status === "inflight") continue;
       if (!taken.has(s.p)) return s.p;
     }
     return null;
-  }
-
-  private isBusy(it: RunIntent): boolean {
-    for (const f of it.allFiles) if (this.inflight[f] > 0) return true;
-    return false;
   }
 
   // Release intents parked behind `p` back to the ready queue.
@@ -688,16 +734,15 @@ class Sim {
     for (const b of parked) if (b.status === "parked") this.toReady(b);
   }
 
-  // Cut up to k lanes from the ready queue. Returns false when nothing
+  // Cut one group of at most `maxLanes` lanes. Returns false when nothing
   // could be cut.
-  private cut(k: number): boolean {
-    const maxPer = this.c.policy.lanes.maxPerTrain;
-    const cap = k * maxPer;
+  private cut(maxLanes: number): boolean {
+    const cap = this.c.policy.lanes.maxPerTrain;
     const taken = new Set<RunIntent>();
     const candidates: RunIntent[] = [];
     const fromParked = new Set<RunIntent>();
     // Take an intent, then the intents parked behind it (stacked on it),
-    // so a stack rides the same train in order.
+    // so a stack rides the same group in order.
     const take = (it: RunIntent): void => {
       taken.add(it);
       candidates.push(it);
@@ -705,7 +750,7 @@ class Sim {
       it.parked = [];
       for (const b of parked) {
         if (b.status !== "parked") continue;
-        if (candidates.length >= cap || this.isBusy(b)) {
+        if (candidates.length >= cap) {
           it.parked.push(b);
           continue;
         }
@@ -727,11 +772,8 @@ class Sim {
       const e = j < pn ? this.priorityQ[j] : this.readyQ[this.readyHead + j - pn];
       if (e.gen !== e.it.readyGen || e.it.status !== "ready" || taken.has(e.it)) continue;
       scanned++;
-      if (this.isBusy(e.it)) continue;
       const blocker = this.stackBlocker(e.it, taken);
       if (blocker) {
-        // Park behind the predecessor; it re-enters with it (or when the
-        // predecessor lands or is abandoned).
         e.it.status = "parked";
         blocker.parked.push(e.it);
         continue;
@@ -740,30 +782,19 @@ class Sim {
     }
     if (candidates.length === 0) return false;
 
-    // The shipped lane partitioner: connected components of the overlap
-    // graph (on the diff's real footprint), members in queue order.
-    const comps = partitionLanes(candidates.map((it) => ({ id: it.w.id, footprint: it.w.actualFootprint, it })));
-    const lanes: RunIntent[][] = Array.from({ length: Math.min(k, comps.length) }, () => []);
-    for (const comp of comps) {
-      // Overlapping intents share a lane (sequential merge); a component
-      // never splits across lanes. Oversized components ship their first
-      // maxPerTrain members; the rest stay ready.
-      const size = Math.min(comp.length, maxPer);
-      let best: RunIntent[] | null = null;
-      for (const lane of lanes) {
-        if (lane.length + size > maxPer) continue;
-        if (!best || lane.length < best.length) best = lane;
-      }
-      if (!best) continue;
-      for (const x of comp.slice(0, size)) best.push(x.it);
-    }
-    let started = 0;
-    for (const lane of lanes) {
-      if (lane.length === 0) continue;
-      this.startLane(lane);
-      started++;
-    }
-    // Un-shipped intents pulled from a parking spot need a queue entry.
+    // The shipped planner: queue order (scan order), max_per_train,
+    // overlap components on the DECLARED footprint, packed into lanes.
+    const plan = planTrain(
+      candidates.map((it, i) => ({ id: it.w.id, footprint: it.w.footprint, readyAt: String(i).padStart(7, "0"), it })),
+      this.chainPolicy,
+      { maxLanes },
+    );
+    const lanesIn = plan.lanes.map((l) => l.map((x) => x.it));
+    const ahead = this.chain.lanes.flatMap((l) => l.items);
+    if (this.chain.lanes.length) this.m.speculativeGroups++;
+    const added = this.chain.addGroup(lanesIn);
+    this.buildGroup(added, ahead);
+    // Deferred intents pulled from a parking spot need a queue entry.
     for (const it of fromParked) {
       if (it.status !== "ready") continue;
       it.readyGen++;
@@ -778,134 +809,144 @@ class Sim {
       this.readyQ = this.readyQ.slice(this.readyHead);
       this.readyHead = 0;
     }
-    return started > 0;
+    return added.length > 0;
   }
 
-  private markInflight(it: RunIntent, delta: number): void {
-    for (const f of it.allFiles) this.inflight[f] += delta;
-  }
-
-  private startLane(items: RunIntent[]): void {
-    this.freeSlots--;
-    this.m.trains++;
+  // Build step for a freshly cut group: merge each lane's items in order
+  // onto the chain head (`ahead` = every unlanded item already in the
+  // chain). A textual conflict (against trunk since the item's base, or
+  // anything ahead of it in the chain it is not stacked on) or a stale
+  // stack drops the item. Then each lane's CI runs on its exact head.
+  private buildGroup(lanes: ChainLane<RunIntent>[], ahead: RunIntent[]): void {
     const t = this.q.now;
-    for (const it of items) {
-      it.status = "inflight";
-      this.markInflight(it, 1);
-    }
-    // Merge step: sequential merge in lane order onto trunk. A textual
-    // conflict (against trunk since base, or an earlier item in this
-    // lane) drops the item; so does a stale stack.
-    const merged: RunIntent[] = [];
-    const mergedSet = new Set<RunIntent>();
+    const merged: RunIntent[] = [...ahead];
+    const mergedSet = new Set<RunIntent>(ahead);
     const bounced: Array<{ it: RunIntent; restack: boolean }> = [];
-    for (const it of items) {
-      this.ops(this.c.opsPerLaneItem);
-      let stale = false;
-      for (const s of it.stacks) {
-        if (s.p.status === "landed") {
-          if (s.p.version !== s.v) stale = true;
-        } else if (!mergedSet.has(s.p) || s.p.version !== s.v) stale = true;
+    let items = 0;
+    for (const lane of lanes) {
+      this.m.trains++;
+      const drop = new Set<RunIntent>();
+      for (const it of lane.items) {
+        items++;
+        it.status = "inflight";
+        this.ops(this.c.opsPerLaneItem);
+        let stale = false;
+        for (const s of it.stacks) {
+          if (s.p.status === "landed") {
+            if (s.p.version !== s.v) stale = true;
+          } else if (!mergedSet.has(s.p) || s.p.version !== s.v) stale = true;
+        }
+        if (stale) {
+          bounced.push({ it, restack: true });
+          drop.add(it);
+          continue;
+        }
+        let shared = this.landedSince(it);
+        for (const m of merged) if (!this.stackedOn(it, m, m.version)) shared += this.shared(it, m);
+        if (this.conflictDraw(shared)) {
+          bounced.push({ it, restack: false });
+          drop.add(it);
+          continue;
+        }
+        merged.push(it);
+        mergedSet.add(it);
       }
-      if (stale) {
-        bounced.push({ it, restack: true });
-        continue;
-      }
-      let shared = this.landedSince(it);
-      for (const m of merged) if (!this.stackedOn(it, m, m.version)) shared += this.shared(it, m);
-      if (this.conflictDraw(shared)) {
-        bounced.push({ it, restack: false });
-        continue;
-      }
-      merged.push(it);
-      mergedSet.add(it);
+      if (drop.size) this.chain.dropItems(lane.id, (x) => drop.has(x));
     }
-    const mergedAt = t + this.c.trainMergeBaseMin + this.c.trainMergePerItemMin * items.length;
+    // Bounced items leave the chain now (not "inflight" any more), and
+    // are handed back to their authors / replay when the merge step ends.
+    for (const b of bounced) b.it.status = "working";
+    const mergedAt = t + this.c.trainMergeBaseMin + this.c.trainMergePerItemMin * items;
+    const live = lanes.filter((l) => this.chain.get(l.id) !== null).map((l) => l.id);
     this.q.at(mergedAt, () => {
       for (const b of bounced) {
-        this.markInflight(b.it, -1);
         if (b.restack) this.onRestack(b.it);
         else this.onConflict(b.it);
       }
-      if (merged.length === 0) {
-        this.freeSlots++;
-        this.tryCut();
-        return;
-      }
-      const plan = this.planCi(merged, this.q.now);
-      // An item stacked on one that fails in this lane cannot land.
-      const failed = new Set(plan.fails.map((f) => f.it));
-      const dependentFails: Array<{ it: RunIntent; at: number }> = [];
-      for (const l of plan.lands) {
-        const keep: RunIntent[] = [];
-        for (const it of l.items) {
-          if (it.stacks.some((s) => failed.has(s.p))) {
-            failed.add(it);
-            dependentFails.push({ it, at: l.at });
-          } else keep.push(it);
-        }
-        l.items = keep;
-      }
-      for (const l of plan.lands) {
-        if (l.items.length === 0) continue;
-        this.q.at(l.at, () => {
-          this.ops(this.c.opsPerLaneLand);
-          for (const it of l.items) this.land(it);
-        });
-      }
-      for (const f of plan.fails) {
-        this.q.at(f.at, () => {
-          this.markInflight(f.it, -1);
-          if (f.it.interaction) this.fix(f.it, "interaction");
-          else {
-            this.m.flakeReruns++;
-            this.toReady(f.it);
-          }
-        });
-      }
-      for (const f of dependentFails) {
-        this.q.at(f.at, () => {
-          this.markInflight(f.it, -1);
-          this.onRestack(f.it);
-        });
-      }
-      this.q.at(plan.end, () => {
-        this.freeSlots++;
-        this.tryCut();
-      });
+      for (const id of live) this.startCi(id);
     });
   }
 
-  // CI on the lane's exact combined SHA; a red run is bisected with the
-  // shipped bisect() and both halves re-run in parallel. Outcomes are
-  // drawn up front (the lane is isolated: nothing else touching its
-  // files can enter a train while it is in flight). Right halves land
-  // only after the left half resolves, preserving lane order.
-  private planCi(
-    set: RunIntent[],
-    t: number,
-  ): { lands: Array<{ items: RunIntent[]; at: number }>; fails: Array<{ it: RunIntent; at: number }>; end: number } {
+  // CI on one lane's exact head. Red iff the run flakes or the head (main
+  // + every unlanded lane ahead + this lane) carries an interaction
+  // defect. Ignored if the lane was invalidated meanwhile.
+  private startCi(laneId: number): void {
+    if (!this.chain.get(laneId)) return;
     this.m.ciRuns++;
-    const done = t + this.dur(this.c.ci, this.rng.ci);
+    const d = this.dur(this.c.ci, this.rng.ci);
     const flake = bernoulli(this.rng.flake, this.c.pFlake);
-    const red = flake || set.some((it) => it.interaction);
-    if (!red) return { lands: [{ items: set, at: done }], fails: [], end: done };
-    if (set.length === 1) return { lands: [], fails: [{ it: set[0], at: done }], end: done };
-    this.m.bisections++;
-    const [left, right] = bisect(set);
-    const l = this.planCi(left, done);
-    const r = right.length ? this.planCi(right, done) : { lands: [], fails: [], end: done };
-    const rLands = r.lands.map((x) => ({ items: x.items, at: Math.max(x.at, l.end) }));
-    let end = Math.max(l.end, r.end);
-    for (const x of rLands) end = Math.max(end, x.at);
-    return { lands: [...l.lands, ...rLands], fails: [...l.fails, ...r.fails], end };
+    this.q.at(this.q.now + d, () => {
+      if (!this.chain.get(laneId)) return;
+      const red = flake || this.chain.prefixItems(laneId).some((it) => it.interaction);
+      this.chain.setOutcome(laneId, red ? "red" : "green");
+      this.decideChain();
+    });
+  }
+
+  private blameCulprit(it: RunIntent): void {
+    if (it.interaction) this.fix(it, "interaction");
+    else {
+      // Red by flake alone: the agent re-readies it.
+      this.m.flakeReruns++;
+      this.toReady(it);
+    }
+  }
+
+  private decideChain(): void {
+    const unverifiedBefore = this.chain.unverifiedLands;
+    const step = this.chain.decide();
+    for (const lane of step.landed) {
+      this.ops(this.c.opsPerLaneLand);
+      for (const it of lane.items) this.land(it);
+    }
+    if (this.chain.unverifiedLands > unverifiedBefore) {
+      // Never happens by construction (exact-SHA CAS); measured, not assumed.
+      this.m.unverifiedLandings += this.chain.unverifiedLands - unverifiedBefore;
+      if (step.landed.some((l) => l.items.some((it) => it.interaction))) {
+        this.integrationRedIntervals.push([this.q.now, this.q.now + this.c.mttrMin]);
+      }
+    }
+    this.m.invalidatedLanes += step.invalidated.length;
+    for (const lane of step.invalidated) for (const it of lane.items) this.requeue(it);
+    if (step.culprit) this.blameCulprit(step.culprit);
+    if (step.red && step.probes.length) {
+      // The red lane leaves the chain; its intents wait on the probes.
+      for (const it of step.red.items) it.status = "working";
+      this.m.bisections++;
+      this.startProbes();
+    }
+    this.tryCut();
+  }
+
+  // Off-chain bisect probes (train-core SpeculativeChain): each probe is
+  // built on main and verified as its own exact SHA, in parallel, in the
+  // reserved probe slots. Probes never land.
+  private startProbes(): void {
+    for (const p of this.chain.startProbes()) {
+      this.m.trains++;
+      this.m.ciRuns++;
+      const d = this.c.trainMergeBaseMin + this.c.trainMergePerItemMin * p.items.length + this.dur(this.c.ci, this.rng.ci);
+      const flake = bernoulli(this.rng.flake, this.c.pFlake);
+      const id = p.id;
+      this.q.at(this.q.now + d, () => {
+        const probe = this.chain.getProbe(id);
+        if (!probe) return;
+        const red = flake || probe.items.some((it) => it.interaction);
+        this.chain.setProbeOutcome(id, red ? "red" : "green");
+        const out = this.chain.decideProbe(id);
+        for (const it of out.cleared) this.requeue(it);
+        if (out.culprit) this.blameCulprit(out.culprit);
+        if (out.probes.length) this.m.bisections++;
+        this.startProbes();
+        this.tryCut();
+      });
+    }
   }
 
   // --- landing -------------------------------------------------------------------
 
   private land(it: RunIntent): void {
     const t = this.q.now;
-    if (it.status === "inflight" && this.mode !== "baseline") this.markInflight(it, -1);
     it.status = "landed";
     it.landedAt = t;
     this.m.landed++;
@@ -952,7 +993,8 @@ class Sim {
     const need = Math.ceil(0.8 * this.items.length);
     if (need > 0 && landTimes.length >= need) m.timeTo80PctMin = landTimes[need - 1] - first;
     m.landedPerMin = m.makespanMin > 0 ? m.landed / m.makespanMin : 0;
-    m.brokenMainMin = unionLength(this.redIntervals);
+    m.escapedDefectMin = unionLength(this.redIntervals);
+    m.mainRedIntegrationMin = unionLength(this.integrationRedIntervals);
     if (m.artifactsOps !== null) m.artifactsDollars = (m.artifactsOps / 1000) * this.c.dollarsPer1kOps;
     return m;
   }

@@ -190,6 +190,9 @@ export interface Train {
   runId: string | null;
   state: TrainState;
   parentTrainId: string | null;
+  // Speculation: the group this train was cut in. Active trains form one
+  // chain ordered by (groupSeq, lane); 0 = rows from before speculation.
+  groupSeq: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -506,7 +509,10 @@ export interface ForgePolicy {
   protected: string[];
   autoLandMaxRisk: number;
   auditSample: number;
-  lanes: { maxPerTrain: number; maxParallel: number };
+  // speculationDepth: train groups that may be in flight at once, each
+  // stacked on the speculative head of the group before it (1 = no
+  // speculation: one group at a time).
+  lanes: { maxPerTrain: number; maxParallel: number; speculationDepth: number };
   replay: { maxAttempts: number; raceK: number };
 }
 
@@ -516,7 +522,7 @@ export const DEFAULT_POLICY: ForgePolicy = {
   protected: [],
   autoLandMaxRisk: 30,
   auditSample: 0.05,
-  lanes: { maxPerTrain: 50, maxParallel: 8 },
+  lanes: { maxPerTrain: 50, maxParallel: 8, speculationDepth: 3 },
   replay: { maxAttempts: 2, raceK: 1 },
 };
 
@@ -567,12 +573,14 @@ export function parsePolicy(text: string | null | undefined): Result<ForgePolicy
     for (const k of Object.keys(v)) if (!keys.includes(k)) return fail(`unknown policy key: ${field}.${k}`);
     return ok(v as Record<string, unknown>);
   };
-  const lanes = sub(d.lanes, "lanes", ["max_per_train", "max_parallel"]);
+  const lanes = sub(d.lanes, "lanes", ["max_per_train", "max_parallel", "speculation_depth"]);
   if (!lanes.ok) return fail(lanes.error);
   const maxPerTrain = intIn(lanes.value.max_per_train, "lanes.max_per_train", 1, 500, DEFAULT_POLICY.lanes.maxPerTrain);
   if (!maxPerTrain.ok) return fail(maxPerTrain.error);
   const maxParallel = intIn(lanes.value.max_parallel, "lanes.max_parallel", 1, 64, DEFAULT_POLICY.lanes.maxParallel);
   if (!maxParallel.ok) return fail(maxParallel.error);
+  const speculationDepth = intIn(lanes.value.speculation_depth, "lanes.speculation_depth", 1, 8, DEFAULT_POLICY.lanes.speculationDepth);
+  if (!speculationDepth.ok) return fail(speculationDepth.error);
   const replay = sub(d.replay, "replay", ["max_attempts", "race_k"]);
   if (!replay.ok) return fail(replay.error);
   const maxAttempts = intIn(replay.value.max_attempts, "replay.max_attempts", 0, 10, DEFAULT_POLICY.replay.maxAttempts);
@@ -583,7 +591,7 @@ export function parsePolicy(text: string | null | undefined): Result<ForgePolicy
     protected: protectedPaths,
     autoLandMaxRisk: risk.value,
     auditSample,
-    lanes: { maxPerTrain: maxPerTrain.value, maxParallel: maxParallel.value },
+    lanes: { maxPerTrain: maxPerTrain.value, maxParallel: maxParallel.value, speculationDepth: speculationDepth.value },
     replay: { maxAttempts: maxAttempts.value, raceK: raceK.value },
   });
 }

@@ -108,6 +108,7 @@ export interface TrainRow {
   run_id: string | null;
   state: string;
   parent_train_id: string | null;
+  group_seq: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -221,6 +222,7 @@ export function toTrain(row: TrainRow): Train {
     runId: row.run_id,
     state: row.state as TrainState,
     parentTrainId: row.parent_train_id,
+    groupSeq: row.group_seq ?? 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -989,27 +991,29 @@ export async function transitionConflict(db: Db, id: string, from: ConflictState
 
 export async function createTrain(
   db: Db,
-  input: { repo: string; lane: number; baseSha: string; intentIds: string[]; parentTrainId?: string | null },
+  input: { repo: string; lane: number; baseSha: string; intentIds: string[]; parentTrainId?: string | null; groupSeq?: number },
 ): Promise<Train> {
   const now = nowIso();
   const row: TrainRow = {
     id: crypto.randomUUID(),
     repo: input.repo,
-    lane: Math.max(0, Math.floor(input.lane)),
+    // -1 = no lane-ref slot yet (a bisect probe waiting for one).
+    lane: Math.max(-1, Math.floor(input.lane)),
     base_sha: input.baseSha,
     head_sha: "",
     intents_json: JSON.stringify(input.intentIds.slice(0, 500)),
     run_id: null,
     state: "forming",
     parent_train_id: input.parentTrainId ?? null,
+    group_seq: Math.max(0, Math.floor(input.groupSeq ?? 0)),
     created_at: now,
     updated_at: now,
   };
   await db
     .prepare(
-      "INSERT INTO trains (id, repo, lane, base_sha, head_sha, intents_json, state, parent_train_id, created_at, updated_at) VALUES (?, ?, ?, ?, '', ?, 'forming', ?, ?, ?)",
+      "INSERT INTO trains (id, repo, lane, base_sha, head_sha, intents_json, state, parent_train_id, group_seq, created_at, updated_at) VALUES (?, ?, ?, ?, '', ?, 'forming', ?, ?, ?, ?)",
     )
-    .bind(row.id, row.repo, row.lane, row.base_sha, row.intents_json, row.parent_train_id, now, now)
+    .bind(row.id, row.repo, row.lane, row.base_sha, row.intents_json, row.parent_train_id, row.group_seq, now, now)
     .run();
   await appendForgeLedger(db, { repo: row.repo, subjectKind: "train", subjectId: row.id, kind: "forming", body: `${input.intentIds.length} intents, lane ${row.lane}` });
   return toTrain(row);
