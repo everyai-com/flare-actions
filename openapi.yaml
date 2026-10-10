@@ -3164,6 +3164,24 @@ paths:
                           type: string
                         updatedAt:
                           type: string
+                        trunk:
+                          type: object
+                          description: >-
+                            Trunk sync state. Seats fast-forward the mirror's default
+                            branch to each GitHub default-branch push (best effort, once
+                            per sha, never forced). Empty strings mean the sync has not run yet.
+                          properties:
+                            branch:
+                              type: string
+                              description: GitHub default branch recorded from webhooks
+                            sha:
+                              type: string
+                              description: Last pushed sha a seat claimed to sync
+                            detail:
+                              type: string
+                              description: syncing, pushed, up-to-date, diverged (not forced), or error text
+                            at:
+                              type: string
         '401':
           $ref: '#/components/responses/Unauthorized'
   /v1/admin/secrets:

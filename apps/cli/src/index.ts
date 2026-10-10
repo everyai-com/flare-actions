@@ -153,7 +153,7 @@ const COMMANDS: readonly string[] = [
   ]),
 ];
 // Forge verbs typed at top level (`cli status`) suggest `forge <verb>`.
-const FORGE_VERBS = ["goal", "declare", "push", "ready", "inbox", "status", "why", "conflicts", "trains", "snapshot", "connect-agent"];
+const FORGE_VERBS = ["goal", "declare", "push", "ready", "inbox", "status", "why", "conflicts", "trains", "snapshot", "connect-agent", "done", "heartbeat", "claim", "note", "fork", "init"];
 
 // Exit 0 (explicit help) prints to stdout; any non-zero exit prints to
 // stderr so a --json caller's stdout stays empty on failure.

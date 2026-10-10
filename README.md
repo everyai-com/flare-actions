@@ -75,6 +75,10 @@ npx flare-forge forge connect-agent --client claude   # or codex | cursor
 npx flare-forge forge init                            # AGENTS.md block + .mcp.json for this repo
 ```
 
+To make every repo and agent on a machine know Flare at once, run
+`npx flare-forge forge init --global`. For other GitHub orgs and
+Cloudflare accounts, see [docs/EVERYWHERE.md](docs/EVERYWHERE.md).
+
 `connect-agent` prints a one-line `claude mcp add ...` and the workflow
 prompt. `forge init` makes a repo Forge-ready for every agent: an
 idempotent AGENTS.md block ("declare before you edit", the loop,

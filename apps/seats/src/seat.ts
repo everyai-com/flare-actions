@@ -1,6 +1,7 @@
 import {
   appendJobLog,
   claimJob,
+  claimMirrorTrunkSync,
   cloudRunningCap,
   deleteSeatSnapshot,
   getJob,
@@ -12,6 +13,7 @@ import {
   quarantineDowngrade,
   readNeedsContext,
   recentlyFailedTests,
+  recordMirrorTrunkSync,
   releaseJob,
   rollupRunStatus,
   saveJobEgress,
@@ -170,6 +172,8 @@ export interface SeatTiming {
   blobMs: number;
   checkoutMs?: number;
   snapshotMs?: number;
+  // Mirror trunk fast-forward (post-terminal, best effort).
+  trunkSyncMs?: number;
 }
 
 export const DEFAULT_TIMING: SeatTiming = {
@@ -402,6 +406,50 @@ async function mintCheckoutToken(
 // `secret?expires=` form (git would misparse the URL).
 function tokenSecret(token: string): string {
   return token.split("?expires=")[0];
+}
+
+// Mirror trunk sync: fast-forward the mirror's default branch to a
+// GitHub default-branch push. The mirror holds full history from the
+// import, but a seat cannot afford a full clone, so: fetch the mirror
+// tip at depth 1, fetch the pushed sha from GitHub (depth 50, then one
+// deepen of 1000 — negotiation offers the mirror tip as a have, so only
+// new objects download), prove tip-is-ancestor locally, then push
+// WITHOUT force. Anything else (diverged trunk — e.g. Forge trains
+// landed in the mirror — or a gap past the deepen budget) prints
+// DIVERGED and pushes nothing; a racing writer makes the non-force
+// push fail. Works in its own dir (never the job workspace) and
+// cleans up on exit. Remotes carry tokens: callers pipe this over
+// stdin and scrub every error.
+export const TRUNK_SYNC_DIR = "/tmp/flare-trunk-sync";
+export const TRUNK_SYNC_MARKERS = {
+  upToDate: "FLARE_TRUNK_UPTODATE",
+  diverged: "FLARE_TRUNK_DIVERGED",
+  pushed: "FLARE_TRUNK_PUSHED",
+} as const;
+
+// Branch names interpolate into a shell script: plain ref segments only.
+export function trunkSyncBranchOk(branch: string): boolean {
+  return /^[\w.-]+(\/[\w.-]+)*$/.test(branch) && !branch.includes("..") && !branch.endsWith(".lock") && branch.length <= 200;
+}
+
+export function trunkSyncScript(opts: { mirrorRemote: string; githubRemote: string; branch: string; sha: string }): string {
+  const { mirrorRemote, githubRemote, branch, sha } = opts;
+  const m = TRUNK_SYNC_MARKERS;
+  return (
+    `set -e\n` +
+    `trap 'cd /; rm -rf ${TRUNK_SYNC_DIR}' EXIT\n` +
+    `rm -rf ${TRUNK_SYNC_DIR}\nmkdir -p ${TRUNK_SYNC_DIR}\ncd ${TRUNK_SYNC_DIR}\ngit init -q\n` +
+    `git fetch -q --depth 1 ${mirrorRemote} +refs/heads/${branch}:refs/flare/trunk\n` +
+    `T=$(git rev-parse refs/flare/trunk)\n` +
+    `if [ "$T" = "${sha}" ]; then echo ${m.upToDate}; exit 0; fi\n` +
+    `git fetch -q --depth 50 ${githubRemote} ${sha}\n` +
+    `if ! git merge-base --is-ancestor "$T" FETCH_HEAD 2>/dev/null; then\n` +
+    `  git fetch -q --deepen 1000 ${githubRemote} ${sha}\n` +
+    `  if ! git merge-base --is-ancestor "$T" FETCH_HEAD 2>/dev/null; then echo ${m.diverged}; exit 0; fi\n` +
+    `fi\n` +
+    `git push -q ${mirrorRemote} FETCH_HEAD:refs/heads/${branch}\n` +
+    `echo ${m.pushed}\n`
+  );
 }
 
 // /proc/net/dev: `iface: rxBytes ... txBytes ...` (tx is the 9th field).
@@ -890,6 +938,10 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     stopSignal = null;
   }
   const ifaceStart = await sampleIface();
+  // Mirror trunk fast-forward, armed by the checkout (it needs the
+  // checkout's mirror/token context) and run after the terminal write
+  // so it never delays the job's result. Best effort throughout.
+  let trunkSync: (() => Promise<void>) | null = null;
 
   try {
     if (run.source) {
@@ -1035,6 +1087,71 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
           const raw = decode(res.timedOut ? res.stderr : new Uint8Array([...res.stdout, ...res.stderr])).slice(0, 200);
           return scrubTokens(raw) || "unknown";
         };
+        // Trunk sync (see trunkSyncScript): push runs on the repo's
+        // default branch fast-forward the mirror's same-named branch so
+        // Forge (whats_happening, why, Live map) sees GitHub's trunk.
+        // The D1 claim (ready mirror + recorded default branch == this
+        // branch + sha not yet claimed) makes it once per push, not
+        // once per job/cell; every failure is logged and swallowed.
+        const trunkBranch = run.branch ?? "";
+        if (
+          mirror &&
+          mirrorRepoName &&
+          deps.artifacts &&
+          run.event === "push" &&
+          trunkBranch &&
+          trunkSyncBranchOk(trunkBranch)
+        ) {
+          const artifacts = deps.artifacts;
+          const repoName = mirrorRepoName;
+          const mirrorHost = mirror.slice("https://".length);
+          trunkSync = async (): Promise<void> => {
+            let claimed = false;
+            try {
+              claimed = await claimMirrorTrunkSync(deps.db, run.repo, trunkBranch, run.sha);
+            } catch {
+              claimed = false;
+            }
+            if (!claimed) return;
+            let detail: string;
+            try {
+              mirrorWriteMinted = await mintCheckoutToken(artifacts, repoName, "write");
+              if (!mirrorWriteMinted) {
+                detail = "error: write token mint failed";
+              } else {
+                const mirrorUrl = `https://x-access-token:${encodeURIComponent(tokenSecret(mirrorWriteMinted))}@${mirrorHost}`;
+                const ghUrl = appToken
+                  ? `https://x-access-token:${appToken}@github.com/${run.repo}.git`
+                  : `https://github.com/${run.repo}.git`;
+                const res = await execBounded(
+                  ["sh", "-s"],
+                  { stdin: trunkSyncScript({ mirrorRemote: mirrorUrl, githubRemote: ghUrl, branch: trunkBranch, sha: run.sha }) },
+                  timing.trunkSyncMs ?? 120000,
+                );
+                const out = decode(res.stdout);
+                if (res.timedOut) detail = "error: timed out";
+                else if (res.exitCode === 0 && out.includes(TRUNK_SYNC_MARKERS.pushed)) detail = "pushed";
+                else if (res.exitCode === 0 && out.includes(TRUNK_SYNC_MARKERS.upToDate)) detail = "up-to-date";
+                else if (res.exitCode === 0 && out.includes(TRUNK_SYNC_MARKERS.diverged)) {
+                  detail = "diverged: mirror trunk is not an ancestor of the push (not forced)";
+                } else {
+                  const raw = scrubTokens(decode(new Uint8Array([...res.stdout, ...res.stderr])).slice(0, 300));
+                  detail = /non-fast-forward|fetch first|\[rejected\]/.test(raw)
+                    ? "diverged: push rejected as non-fast-forward (not forced)"
+                    : `error: ${raw || `exit ${res.exitCode}`}`;
+                }
+              }
+            } catch (err) {
+              detail = `error: ${scrubTokens(String(err)).slice(0, 200)}`;
+            }
+            try {
+              await recordMirrorTrunkSync(deps.db, run.repo, run.sha, detail);
+            } catch {
+              // Best effort.
+            }
+            await note(`[seat] mirror trunk ${trunkBranch}@${run.sha.slice(0, 7)}: ${detail}`.slice(0, 400));
+          };
+        }
         if (mirror && mirrorToken) {
           const mirrorRemoteUrl = `https://x-access-token:${encodeURIComponent(mirrorToken)}@${mirror.slice("https://".length)}`;
           const mirrorErr = await checkoutVia(mirrorRemoteUrl);
@@ -1850,6 +1967,16 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         }
       } catch (err) {
         await note(`[seat] snapshot skipped: ${String(err).slice(0, 160)}`);
+      }
+    }
+
+    // Mirror trunk sync after the result is recorded (and after the
+    // snapshot, whose filesystem must not carry the sync dir).
+    if (trunkSync) {
+      try {
+        await trunkSync();
+      } catch {
+        // Never fails a finished job.
       }
     }
 

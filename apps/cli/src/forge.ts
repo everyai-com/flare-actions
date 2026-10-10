@@ -13,7 +13,7 @@ import {
   type ForgeNextStep,
 } from "flare-actions-runner-sdk";
 import { printJson } from "./json.ts";
-import { applyForgeInit, ForgeInitError, PLACEHOLDER_URL, planForgeInit } from "./forge-init.ts";
+import { applyForgeInit, ForgeInitError, PLACEHOLDER_URL, planForgeGlobal, planForgeInit } from "./forge-init.ts";
 import { missingConfigMessage, missingConfigVars, resolveToken, type EnvLocation } from "./hints.ts";
 
 export interface GitResult {
@@ -56,11 +56,13 @@ export const FORGE_USAGE = [
   "  forge conflicts <repo> [state] | claim <id> | resolve <id> <sha>",
   "  forge trains <repo> [trainId]                        trains (lanes verified as the exact SHA)",
   "  forge snapshot <repo>                                live map JSON (counters, cells, track)",
+  "  forge done <intentId>                                close an intent you finished elsewhere (alias: abandon)",
   "  forge fork <intentId>                                continue someone else's intent on a new one",
   "  forge approve <intentId>                             approve a protected-path plan (admin)",
   "  forge connect-agent --client claude|codex|cursor [--agent name] [--agents-md]",
   "                                                       ready-to-paste MCP config + agent workflow prompt",
   "  forge init [--client claude|codex|cursor] [--repo name] [--url U] [--skill] [--dry-run]",
+  "  forge init --global [--url U] [--dry-run]            every repo on this machine: ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, skills",
   "                                                       wire this repo: AGENTS.md block + MCP config (token via env ref)",
   "intentId defaults to `git config flare.intent` (set by `forge claim --clone`) or FLARE_INTENT.",
 ].join("\n");
@@ -440,6 +442,14 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       });
       return 0;
     }
+    if (verb === "done" || verb === "abandon") {
+      const f = parseFlags(args, { values: ["agent"] });
+      const id = f.pos[0];
+      if (!id) throw new UsageError("forge done <intentId>");
+      const out = await d.forge().abandon(id, { agent: agentOf(d, f.values) });
+      emit(d, verb, out, () => d.out(`intent ${id} closed: it no longer shows in whats_happening or on the Live map`));
+      return 0;
+    }
     if (verb === "approve") {
       const id = parseFlags(args, {}).pos[0];
       if (!id) throw new UsageError("forge approve <intentId>");
@@ -448,7 +458,28 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       return 0;
     }
     if (verb === "init") {
-      const f = parseFlags(args, { values: ["client", "repo", "url"], bools: ["skill", "dry-run"] });
+      const f = parseFlags(args, { values: ["client", "repo", "url"], bools: ["skill", "dry-run", "global"] });
+      if (f.bools.has("global")) {
+        const home = d.env["HOME"] ?? d.env["USERPROFILE"];
+        if (!home) throw new UsageError("--global needs HOME set");
+        const url = (f.values["url"] ?? d.env["FLARE_ACTIONS_URL"] ?? PLACEHOLDER_URL).replace(/\/+$/, "");
+        if (url !== PLACEHOLDER_URL && !/^https?:\/\/[^\s"'`$]+$/.test(url)) throw new UsageError("--url must be an http(s) URL");
+        const abs = (p: string): string => (p.startsWith("~/") ? join(home, p.slice(2)) : p);
+        let plan: ReturnType<typeof planForgeGlobal>;
+        try {
+          plan = planForgeGlobal({ url }, (p) => d.readText(abs(p)));
+        } catch (e) {
+          if (!(e instanceof ForgeInitError)) throw e;
+          d.err(`error: ${e.message}`);
+          return 1;
+        }
+        const report = applyForgeInit(plan, { client: "claude", repo: "*", url, skill: true, dryRun: f.bools.has("dry-run"), quiet: d.json }, {
+          write: (p, text) => d.writeFile(abs(p), text),
+          out: d.out,
+        });
+        if (d.json) printJson("forge init", report);
+        return 0;
+      }
       const client = (f.values["client"] ?? "claude") as ForgeAgentClient;
       if (!["claude", "codex", "cursor"].includes(client)) throw new UsageError("--client must be claude, codex or cursor");
       const repo = f.values["repo"] ?? defaultForgeRepo(d);

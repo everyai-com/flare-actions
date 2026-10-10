@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { describe, expect, it } from "vitest";
 import {
   ensureRepoMirror,
@@ -7,7 +8,15 @@ import {
   type EnsureMirrorDeps,
   type MirrorArtifactsNamespace,
 } from "./artifacts-mirrors";
-import type { Db } from "./db";
+import {
+  claimMirrorTrunkSync,
+  isMirrorRepo,
+  recordMirrorTrunkSync,
+  setMirrorDefaultBranch,
+  setMirrorRow,
+  type Db,
+} from "./db";
+import { SCHEMA_STATEMENTS } from "./schema";
 
 interface Row {
   [k: string]: unknown;
@@ -22,7 +31,7 @@ class MirrorDb implements Db {
     return {
       bind: (...values: unknown[]) => ({
         all: async <T,>() => {
-          if (norm.startsWith("SELECT repo, mirror, status, detail, updated_at FROM artifacts_mirrors ORDER BY")) {
+          if (norm.startsWith("SELECT repo, mirror, status, detail, updated_at, default_branch, trunk_sha, trunk_detail, trunk_at FROM artifacts_mirrors ORDER BY")) {
             return { results: [...this.mirrors.values()].sort((a, b) => ((a.repo as string) < (b.repo as string) ? -1 : 1)) as T[] };
           }
           throw new Error(`unrouted all: ${norm}`);
@@ -237,5 +246,59 @@ describe("ensureRepoMirror", () => {
     const artifacts2 = fakeBinding();
     expect(await ensureRepoMirror(deps(aged, artifacts2))).toEqual({ status: "ready", mirror: "o-r" });
     expect(artifacts2.imports).toHaveLength(1);
+  });
+});
+
+// Trunk-sync bookkeeping against real SQLite (the claim's conditional
+// UPDATE is the once-per-push guarantee, so test the actual SQL).
+describe("mirror trunk sync rows", () => {
+  const { DatabaseSync } = process.getBuiltinModule("node:sqlite");
+  function sqlite(): Db {
+    const raw = new DatabaseSync(":memory:");
+    for (const stmt of SCHEMA_STATEMENTS) {
+      if (/TABLE IF NOT EXISTS artifacts_mirrors\b/.test(stmt)) raw.exec(stmt);
+    }
+    return {
+      prepare(query: string) {
+        return {
+          bind(...values: unknown[]) {
+            const params = values as (string | number | null)[];
+            return {
+              all: async <T,>() => ({ results: raw.prepare(query).all(...params) as T[] }),
+              first: async <T,>() => (raw.prepare(query).get(...params) as T | undefined) ?? null,
+              run: async () => ({ meta: { changes: Number((raw.prepare(query).run(...params) as { changes?: unknown }).changes ?? 0) } }),
+            };
+          },
+        };
+      },
+    } as unknown as Db;
+  }
+
+  it("claims once per sha, only for a ready mirror on its default branch", async () => {
+    const db = sqlite();
+    // No row yet: stamping the default branch and claiming are no-ops.
+    await setMirrorDefaultBranch(db, "o/r", "main");
+    expect(await claimMirrorTrunkSync(db, "o/r", "main", "s1")).toBe(false);
+    await setMirrorRow(db, "o/r", "o-r", "ready", "");
+    // Ready but no recorded default branch: no claim.
+    expect(await claimMirrorTrunkSync(db, "o/r", "main", "s1")).toBe(false);
+    await setMirrorDefaultBranch(db, "o/r", "main");
+    expect(await claimMirrorTrunkSync(db, "o/r", "feat", "s1")).toBe(false);
+    expect(await claimMirrorTrunkSync(db, "o/r", "main", "s1")).toBe(true);
+    // Concurrent jobs/cells of the same push lose.
+    expect(await claimMirrorTrunkSync(db, "o/r", "main", "s1")).toBe(false);
+    await recordMirrorTrunkSync(db, "o/r", "s1", "pushed");
+    const row = await db.prepare("SELECT trunk_sha, trunk_detail FROM artifacts_mirrors WHERE repo = ?").bind("o/r").first<Row>();
+    expect(row).toEqual({ trunk_sha: "s1", trunk_detail: "pushed" });
+    // A newer push claims; a stale outcome for s1 no longer overwrites.
+    expect(await claimMirrorTrunkSync(db, "o/r", "main", "s2")).toBe(true);
+    await recordMirrorTrunkSync(db, "o/r", "s1", "late");
+    const after = await db.prepare("SELECT trunk_sha, trunk_detail FROM artifacts_mirrors WHERE repo = ?").bind("o/r").first<Row>();
+    expect(after).toEqual({ trunk_sha: "s2", trunk_detail: "syncing" });
+    // Re-importing keeps the trunk columns (upsert touches status only).
+    await setMirrorRow(db, "o/r", "o-r", "failed", "x");
+    expect(await claimMirrorTrunkSync(db, "o/r", "main", "s3")).toBe(false);
+    expect(await isMirrorRepo(db, "o-r")).toBe(true);
+    expect(await isMirrorRepo(db, "i-abc")).toBe(false);
   });
 });
