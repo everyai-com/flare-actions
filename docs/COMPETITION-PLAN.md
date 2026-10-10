@@ -241,6 +241,13 @@ lanes: { max_per_train: 50, max_parallel: 8 }
 replay: { max_attempts: 2, race_k: 3 }            # race_k>1 = resolution tournament
 ```
 
+`flare.yml`, `.flare/**` and `.github/workflows/**` are **always**
+protected (`BUILTIN_PROTECTED` in `intents-core.ts`), merged into every
+policy and not removable by it: they are the pipeline that produces the
+green evidence and the policy itself, so an agent cannot lift its own
+guardrails by editing them. The built-ins also feed the risk score's
+protected-path term (declared or undeclared drift).
+
 ### 3.5 Risk score (deterministic and explainable; never a bare LLM number)
 
 Risk runs from 0 to 100. It is the **sum** of these contributions (the
@@ -254,6 +261,7 @@ weights are capped and tuned on the simulator):
 | Resolved by an LLM replay | +15 |
 | CI evidence weak: no tests touched the footprint, or a flaky test was quarantined | +10 |
 | The clean-context reviewer agent disagrees with the author | +15 |
+| Actual footprint truncated (fail closed: unseen files may be protected) | +40 |
 
 The inbox shows **which terms fired**. Explainability is the UX.
 

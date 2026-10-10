@@ -605,10 +605,39 @@ function dispose(handle: TournamentRepoHandle | null): void {
   }
 }
 
+// Revoke every active token on a fork (the Artifacts handle's token
+// API). Null = could not revoke (API missing or a call failed); the
+// caller fails closed. Revoked/expired entries are skipped.
+async function revokeForkTokens(handle: TournamentRepoHandle): Promise<number | null> {
+  const h = handle as TournamentRepoHandle & {
+    listTokens?: () => Promise<unknown>;
+    revokeToken?: (tokenOrId: string) => Promise<boolean>;
+  };
+  if (typeof h.listTokens !== "function" || typeof h.revokeToken !== "function") return null;
+  try {
+    const list = await h.listTokens();
+    const tokens: unknown[] = Array.isArray(list)
+      ? list
+      : typeof list === "object" && list !== null && Array.isArray((list as { tokens?: unknown }).tokens)
+        ? (list as { tokens: unknown[] }).tokens
+        : [];
+    let count = 0;
+    for (const t of tokens) {
+      if (typeof t !== "object" || t === null) continue;
+      const { id, state } = t as { id?: unknown; state?: unknown };
+      if (typeof id !== "string" || !id || state === "revoked" || state === "expired") continue;
+      if (await h.revokeToken(id)) count += 1;
+    }
+    return count;
+  } catch {
+    return null;
+  }
+}
+
 // Claim: draft|expired -> claimed (conditional; the row wins first so a
 // lost race never forks), then fork trunk to `i-<shortid>` (an existing
-// fork from a prior claim is reused) and mint a fork-scoped write token
-// (1 h). A fork/token failure releases the claim back to its prior
+// fork from a prior claim is reused, with every token on it revoked
+// first) and mint a fork-scoped write token (1 h). A fork/token failure releases the claim back to its prior
 // state. The agent never receives a trunk token (§3.2 invariant 1).
 export async function claimIntent(
   db: Db,
@@ -644,6 +673,7 @@ export async function claimIntent(
   };
 
   let remote = "";
+  let reused = from === "expired";
   let trunk: TournamentRepoHandle | null = null;
   try {
     trunk = await artifacts.get(current.repo);
@@ -652,6 +682,7 @@ export async function claimIntent(
       remote = forked.remote;
     } catch (err) {
       if (!isAlreadyExists(err)) throw err;
+      reused = true;
     }
   } catch {
     await release();
@@ -661,9 +692,22 @@ export async function claimIntent(
   }
 
   let token = "";
+  let revoked = 0;
   let fork: TournamentRepoHandle | null = null;
   try {
     fork = await artifacts.get(forkRepo);
+    if (reused) {
+      // Re-claim of a fork a previous holder wrote to: its token may
+      // still be live (1 h TTL outlives a lapsed lease). Revoke every
+      // token on the fork BEFORE minting the new holder's, so exactly
+      // one agent can push. Fails closed: no revoke, no claim.
+      const count = await revokeForkTokens(fork);
+      if (count === null) {
+        await release();
+        return { error: "token-failed", message: "could not revoke the previous holder's fork tokens" };
+      }
+      revoked = count;
+    }
     const out = await fork.createToken("write", FORK_TOKEN_TTL_SECONDS);
     const plaintext = typeof out === "string" ? out : out.plaintext;
     token = typeof plaintext === "string" ? plaintext : "";
@@ -686,7 +730,7 @@ export async function claimIntent(
     subjectKind: "intent",
     subjectId: current.id,
     kind: "claimed",
-    body: `${a.value} -> ${forkRepo}`,
+    body: `${a.value} -> ${forkRepo}${reused ? ` (re-claim; revoked ${revoked} prior token(s))` : ""}`,
     actor: a.value,
   });
   const intent = await getIntent(db, current.id);

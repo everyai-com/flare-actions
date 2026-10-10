@@ -695,6 +695,12 @@ paths:
                 baseSha:
                   type: string
                   description: Pinned base commit (optional)
+                promote:
+                  type: boolean
+                  description: >-
+                    Fast-forward the winner onto baseRef of the source repo
+                    (default true). Must be false when sourceRepo is a Forge
+                    trunk: only the train moves a trunk's main.
       responses:
         '201':
           description: Tournament id
@@ -712,6 +718,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 'forge_trunk_promote: sourceRepo is a Forge trunk and promote was not false'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
     get:
       tags: [tournaments]
       operationId: listTournaments
