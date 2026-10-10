@@ -1,15 +1,30 @@
 {
-  "name": "flare-actions",
+  "name": "flare-forge",
   "version": "0.1.0",
-  "description": "CLI for Flare Actions: run pipelines locally, verify on the server in one call, and inspect runs, logs, and flakes.",
+  "description": "CLI for Flare Forge (intent-native git for many agents on one repo) and Flare Actions (its CI engine): declare intents, connect agents over MCP, verify runs, read digests.",
+  "keywords": [
+    "agents",
+    "mcp",
+    "git",
+    "ci",
+    "cloudflare",
+    "artifacts",
+    "claude-code",
+    "codex",
+    "cursor",
+    "forge"
+  ],
   "license": "MIT",
   "type": "module",
   "bin": {
+    "flare-forge": "./bin/flare.mjs",
     "flare": "./bin/flare.mjs"
   },
   "files": [
     "bin",
-    "src"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=22.6"
@@ -20,10 +35,19 @@
     "directory": "apps/cli"
   },
   "homepage": "https://github.com/everyai-com/flare-actions#readme",
-  "scripts": {
-    "start": "node --experimental-strip-types src/index.ts"
+  "bugs": {
+    "url": "https://github.com/everyai-com/flare-actions/issues"
   },
-  "dependencies": {
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/index.ts",
+    "build": "node scripts/build.mjs",
+    "prepublishOnly": "node scripts/build.mjs && node dist/cli.mjs forge help >/dev/null"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
     "flare-actions-runner-sdk": "0.1.0"
   }
 }

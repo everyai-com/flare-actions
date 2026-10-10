@@ -66,7 +66,7 @@ function usage(): never {
       "  cli login [--url U] [--code C]              pair this machine (writes .env, 0600)",
       "  cli races [raceId]                          list agent races, or one race board",
       "  cli repos [name] [path] [--ref R]           list forge repos, or browse one",
-      "  cli forge <verb> ...                        Flare Forge: goal|declare|claim|push|ready|inbox|status|why|conflicts|trains|snapshot|connect-agent (cli forge --help)",
+      "  cli forge <verb> ...                        Flare Forge: goal|declare|claim|push|ready|inbox|status|why|conflicts|trains|snapshot|connect-agent|init (cli forge --help)",
       "  cli claim <raceId> <agent>                  claim a race lane (forks a workspace)",
       "  cli verdict <raceId>                        winner ranking + why-it-won rationale",
       "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
@@ -455,8 +455,8 @@ try {
       console.log(`updated ${result.agentsPath} (idempotent snippet; agents learn the verify loop)`);
       console.log("");
       console.log("next steps:");
-      console.log("  1. npx flare local                 # verify in this working tree, no server");
-      console.log("  2. npx flare mcp-config            # teach your agent the MCP verify loop");
+      console.log("  1. npx flare-forge local                 # verify in this working tree, no server");
+      console.log("  2. npx flare-forge mcp-config            # teach your agent the MCP verify loop");
       console.log("  3. deploy: https://deploy.workers.cloudflare.com/?url=https://github.com/everyai-com/flare-actions");
       console.log("  docs: docs/GITHUB-ACTIONS-COMPAT.md · docs/PIPELINES.md · skills/flare-verify");
     }

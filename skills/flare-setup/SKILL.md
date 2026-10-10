@@ -9,13 +9,13 @@ description: >-
 
 # Flare setup
 
-One-command adoption: `npx flare connect` does the probing, wiring, and
+One-command adoption: `npx flare-forge connect` does the probing, wiring, and
 verification. Drive it; don't hand-roll the steps below except to explain
 what needs a human click.
 
 ## The loop
 
-1. **Dry-run first**: `npx flare connect --dry-run` (needs
+1. **Dry-run first**: `npx flare-forge connect --dry-run` (needs
    `FLARE_ACTIONS_URL`). It prints the plan and changes nothing.
 2. **Human clicks** (you cannot do these — link them, don't stall on them):
    - Deploy, if there is no deployment yet: `npm run setup` is fully
@@ -24,7 +24,7 @@ what needs a human click.
    - Dashboard admin claim (first login) and **Connect GitHub**
      (GitHub App Create flow) — both are browser clicks at
      `https://<worker>/dashboard`.
-3. **Wire the repo**: `npx flare connect` prints the recipe for the
+3. **Wire the repo**: `npx flare-forge connect` prints the recipe for the
    situation (App install URL, or the no-App webhook recipe). With
    `GITHUB_TOKEN` and `FLARE_ADMIN_TOKEN` present you may pass `--wire`
    to create the repo webhook — ask the human before any GitHub-side
@@ -44,7 +44,7 @@ what needs a human click.
 - Never invent a deployment URL — ask for `FLARE_ACTIONS_URL` or deploy.
 - Never claim "CI passed" without a run digest (see flare-verify).
 - Workflows run unchanged: don't rewrite `.github/workflows` to adopt;
-  `npx flare init` is opt-in scaffolding, not a requirement.
+  `npx flare-forge init` is opt-in scaffolding, not a requirement.
 - Runner mode is a human decision (it asks the GitHub App for
   `administration:write`): propose it, link
   `docs/GITHUB-RUNNERS.md`, and let them enable it in Settings.

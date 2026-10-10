@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DASHBOARD_HTML, DASHBOARD_UI_ACTIONS, FORGE_MCP_TOOL_NAMES } from "./dashboard";
+import { DASHBOARD_HTML, DASHBOARD_UI_ACTIONS, FORGE_MCP_TOOL_NAMES, dashboardRedirectUrl } from "./dashboard";
 import { FORGE_FIXTURES, forgeFixturesJson } from "./forge-fixtures";
 import { FORGE_JS } from "./dashboard-forge-js";
 import { FORGE_CSS, FORGE_PANE_HTML, FORGE_OVERLAYS_HTML, FORGE_NAV_HTML } from "./dashboard-forge-ui";
@@ -48,10 +48,13 @@ describe("forge dashboard", () => {
     for (const m of FORGE_JS.matchAll(/^ {4}([a-z_]+): \{ m: "POST"/gm)) expect(FORGE_MCP_TOOL_NAMES).toContain(m[1]);
   });
 
-  it("puts the agent forge first under Home, which is the landing screen", () => {
+  it("puts the agent forge first, with Home (the signed-in landing screen) right under it", () => {
     const nav = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('id="sideNav"'), DASHBOARD_HTML.indexOf("</nav>"));
-    expect(nav.indexOf('id="tabHome"')).toBeLessThan(nav.indexOf("Agent forge"));
-    expect(nav.indexOf("Agent forge")).toBeLessThan(nav.indexOf("Code"));
+    expect(nav.indexOf("Agent forge")).toBeLessThan(nav.indexOf('id="tabHome"'));
+    expect(nav.indexOf('id="tabAgents"')).toBeLessThan(nav.indexOf('id="tabHome"'));
+    expect(nav.indexOf('id="tabHome"')).toBeLessThan(nav.indexOf("Code"));
+    // Home links into Forge
+    expect(DASHBOARD_HTML).toContain('id="homeCardForge" href="#/live"');
     expect(nav.indexOf('id="tabLive"')).toBeLessThan(nav.indexOf('id="tabRepos"'));
     for (const tab of ["tabLive", "tabInbox", "tabIntents", "tabTrains", "tabConflicts", "tabAgents", "tabBench"]) {
       expect(nav).toContain('id="' + tab + '"');
@@ -133,5 +136,91 @@ describe("forge dashboard", () => {
     for (const id of Object.values(f.why.blame)) if (id) expect(intents.has(id)).toBe(true);
     // the protected-path intent waits for a plan, as .flare/policy.yml says
     expect(intents.get("i-9a01")?.state).toBe("awaiting_plan");
+  });
+
+  it("models trains like docs/FORGE.md: fixed forge/lane-N refs, stacked lanes, culprit fails", () => {
+    const f = FORGE_FIXTURES;
+    const text = JSON.stringify(f) + FORGE_JS;
+    expect(text).not.toMatch(/train\/t?\d/); // never a per-train ref
+    for (const t of f.trains) {
+      t.lanes.forEach((l, i) => {
+        expect(l.n, t.id).toBe(i);
+        expect(l.ref, t.id).toBe("forge/lane-" + i);
+      });
+    }
+    const t142 = f.trains.find((t) => t.id === "t-142");
+    const culprit = t142?.bisect?.children.find((c) => "culprit" in c && c.culprit);
+    expect(culprit?.intents).toEqual(["i-c310"]);
+    expect(f.intents.find((i) => i.id === "i-c310")?.state).toBe("failed");
+    // lanes behind the first red lane never land; the red lane is last here
+    const red = t142?.lanes.findIndex((l) => l.stages.ci.status === "failure");
+    expect(red).toBe((t142?.lanes.length ?? 0) - 1);
+    // conflict a is the intent the train dropped; b covers the file and landed first
+    const c9 = f.conflicts[0];
+    expect(f.intents.find((i) => i.id === c9.a.intent)?.state).not.toBe("landed");
+    expect(c9.b.landed).toBe(true);
+    // the overlap feed uses the Feed DO's "edge" ops
+    expect(FORGE_JS).toContain('op.kind === "edge"');
+    expect(FORGE_JS).toContain('kind: "edge"');
+    expect(FORGE_JS).toContain('label: "Main red (integration)"');
+    expect(FORGE_JS).toContain('truncated_footprint: "footprint truncated — routed to a human"');
+    expect(FORGE_JS).toContain("main only moves to a SHA CI verified green as that exact SHA");
+  });
+
+  it("offers a demo path from the signed-out screens and teaches empty states", () => {
+    const auth = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('id="authPane"'), DASHBOARD_HTML.indexOf('id="invitePane"'));
+    expect(auth).toContain('href="/dashboard?demo=1#/live"');
+    expect(auth).toContain("Explore the live demo →");
+    for (const code of ["inbox_empty", "forge_demo_seed", "forge_connect_agent", "forge_demo_data"]) expect(FORGE_JS).toContain('"' + code + '"');
+    expect(FORGE_JS).toContain('"data-command": cmd');
+    expect(FORGE_JS).toContain('var cmd = "npm run forge:demo";');
+    // boot's one-shot param cleanup keeps demo/stage/tour and the hash route
+    expect(DASHBOARD_HTML).toContain('["demo", "stage", "tour"].forEach');
+    expect(DASHBOARD_HTML).toContain('(location.hash || "")');
+  });
+
+  it("ships master-detail lists with filter chips and j/k/Enter", () => {
+    for (const fn of ["function fxMasterDetail", "function fxMdSelect", "function fxMdMove", "FX_INTENT_FILTERS", "FX_TRAIN_FILTERS", "FX_CONFLICT_FILTERS"]) expect(FORGE_JS).toContain(fn);
+    expect(FORGE_JS).toContain('if (k === "j" || k === "ArrowDown") { e.preventDefault(); fxMdMove(1); return; }');
+    expect(FORGE_CSS).toContain(".fx-md {");
+    expect(FORGE_CSS).toMatch(/@media \(max-width: 1100px\) \{\s*\.fx-md \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+  });
+
+  it("names agents on the map and keeps hot treemap cells readable", () => {
+    expect(FORGE_PANE_HTML).toContain('id="fxAgentsRail" aria-label="Agents on map"');
+    expect(FORGE_JS).toContain("function fxRenderAgentsRail");
+    expect(FORGE_JS).toContain("function fxHighlightAgent");
+    expect(FORGE_JS).toContain("var hotFloor");
+    expect(FORGE_JS).toContain("function fxFitPath");
+    for (const a of FORGE_FIXTURES.agents) expect(a.name.length, a.id).toBeGreaterThan(2);
+  });
+
+  it("runs a skippable four-step tour built only from UI-only verbs", () => {
+    const tourActions = [...(FORGE_OVERLAYS_HTML + FORGE_PANE_HTML).matchAll(/data-action="(tour_[a-z]+)"/g)].map((m) => m[1]);
+    expect(new Set(tourActions)).toEqual(new Set(["tour_start", "tour_next", "tour_back", "tour_skip"]));
+    for (const a of tourActions) {
+      expect(DASHBOARD_UI_ACTIONS as readonly string[]).toContain(a);
+      expect(FORGE_MCP_TOOL_NAMES as readonly string[]).not.toContain(a);
+    }
+    const steps = FORGE_JS.slice(FORGE_JS.indexOf("var FX_TOUR = ["), FORGE_JS.indexOf("var FX_TOUR_KEY"));
+    expect(steps.match(/\{ hash: "/g)).toHaveLength(4);
+    for (const q of ["Who's doing what?", "What do humans review?", "What happens when they collide?", "Why does this line exist?"]) expect(steps).toContain(q);
+    // the tour never calls the API, persists via guarded storage, and honors ?tour
+    const tourJs = FORGE_JS.slice(FORGE_JS.indexOf("// ---------- first-run tour"), FORGE_JS.indexOf("// ---------- palette, keys"));
+    expect(tourJs).not.toContain("fxFetch");
+    expect(tourJs).not.toContain("fxCall");
+    expect(tourJs).toContain('try { localStorage.setItem(FX_TOUR_KEY, "done"); } catch (e) {}');
+    expect(tourJs).toContain('if (t === "0") return false;');
+    expect(tourJs).toContain('if (t === "1") return true;');
+    const rm = FORGE_CSS.slice(FORGE_CSS.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(rm.slice(0, rm.indexOf("\n}"))).toContain(".fx-tour-ring { transition: none; }");
+  });
+});
+
+describe("dashboard redirect", () => {
+  it("keeps the query string on GET / -> /dashboard", () => {
+    expect(dashboardRedirectUrl(new URL("https://x.dev/?demo=1"))).toBe("https://x.dev/dashboard?demo=1");
+    expect(dashboardRedirectUrl(new URL("https://x.dev/?demo=1&stage=1&tour=1#/live"))).toBe("https://x.dev/dashboard?demo=1&stage=1&tour=1");
+    expect(dashboardRedirectUrl(new URL("https://x.dev/"))).toBe("https://x.dev/dashboard");
   });
 });

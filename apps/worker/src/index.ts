@@ -105,7 +105,7 @@ import {
 import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, getDefaultBranch, getInstallationToken, getPullRequestHead, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, resolveRunnerGroupId, updatePullRequestBranch, verifyGitHubSignature } from "./github";
 import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
-import { DASHBOARD_HTML } from "./dashboard";
+import { DASHBOARD_HTML, dashboardRedirectUrl } from "./dashboard";
 import { apiDocsPage } from "./apidocs";
 import { OPENAPI_YAML } from "./openapi-spec";
 import { ensureSchema } from "./schema";
@@ -226,7 +226,7 @@ import { ARTIFACTS_EVENT, handleArtifactsPush } from "./artifacts-push";
 import { ensureRepoMirror } from "./artifacts-mirrors";
 import {
   claimAttempt,
-  createTournament,
+  createTournamentChecked,
   getAttemptRace,
   getTournament,
   getTournamentBoard,
@@ -301,7 +301,7 @@ import { buildMcpServer, mcpDiscovery } from "./mcp";
 import { forgeDepsFromEnv, handleForgeRequest } from "./forge-routes";
 import { forgeAdaptersFromEnv } from "./forge-adapters";
 import { listAppRepos, loadSetupFacts, setupSteps } from "./setup";
-import { runnerScript } from "./runner-script";
+import { resolveRunnerRef, runnerScript } from "./runner-script";
 import {
   describeScope,
   handleAuthorizeGet,
@@ -2490,7 +2490,9 @@ export default {
         }
       }
       if (request.method === "GET" && url.pathname === "/") {
-        return Response.redirect(new URL("/dashboard", url).toString(), 302);
+        // Keep the query (?demo=1, ?stage=1, ?tour=1): judges land on
+        // /?demo=1#/live. Browsers carry the #fragment across a 302.
+        return Response.redirect(dashboardRedirectUrl(url), 302);
       }
       if (request.method === "GET" && url.pathname === "/dashboard") {
         return dashboardResponse();
@@ -2498,10 +2500,12 @@ export default {
       // The API serves its own contract (generated module, CI-synced)
       // plus an interactive Redoc reference over it.
       // One-line runner setup for the dashboard's "Use my computer":
-      // curl -fsSL <origin>/runner.sh | sh -s <PAIR-CODE>. Public — the
-      // single-use pairing code (an argument) is the only secret.
+      // curl -fsSL <origin>/runner.sh | FLARE_PAIR_CODE=<CODE> sh. Public:
+      // the single-use pairing code (environment, never argv) is the
+      // only secret, and the runner checkout is pinned to a tag/commit.
       if (request.method === "GET" && url.pathname === "/runner.sh") {
-        const script = runnerScript(url.origin);
+        const fleetVersion = await getSetting(env.DB, SETTING_KEYS.runnerVersion).catch(() => null);
+        const script = runnerScript(url.origin, resolveRunnerRef(env.FLARE_RUNNER_REF, fleetVersion));
         if (!script) return json({ error: "unsupported origin" }, 400);
         return new Response(script, {
           headers: { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "public, max-age=300" },
@@ -2783,7 +2787,8 @@ export default {
         if (!repoAllowed(ident, `${namespace}/${valid.sourceRepo}`)) {
           return json({ error: "token is not scoped to that repo" }, 403);
         }
-        const out = await createTournament(env.DB, valid);
+        const out = await createTournamentChecked(env.DB, valid);
+        if ("error" in out) return json({ error: out.error, code: out.code }, 409);
         await audit(env.DB, ident.actor, "tournament.create", out.id);
         return json({ id: out.id }, 201);
       }

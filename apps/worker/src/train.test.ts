@@ -529,6 +529,9 @@ describe("trains: merger end-to-end (isomorphic-git + MemoryFS + git http-backen
       paths: ["src/a.ts", "flare.yml"],
       files: { "src/a.ts": withLine(lines("a"), 1, "a BUG"), "flare.yml": "jobs:\n  test:\n    steps:\n      - run: echo ok\n" },
     });
+    // flare.yml is a protected path: even a human-approved landing
+    // must still be verified by the trunk pipeline.
+    await approveLanding(h.deps, a, "alice");
     await cutTrain(h.deps, REPO);
     await buildTrains(h.deps, REPO);
     expect(h.dispatched.length).toBe(1);

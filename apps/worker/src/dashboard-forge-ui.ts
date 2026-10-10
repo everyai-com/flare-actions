@@ -71,6 +71,7 @@ tbody tr.clickable:hover, .run-row:hover, .run-row.selected { background: var(--
 .fx-livebadge[data-state="paused"]::before { border-radius: 1px; width: 7px; background: linear-gradient(90deg, var(--st-human) 0 35%, transparent 35% 65%, var(--st-human) 65%); }
 .fx-demo-tag { font: 600 11px/18px var(--mono); letter-spacing: 0.06em; padding: 0 8px; border-radius: 4px; border: 1px dashed var(--st-human); color: var(--st-human); text-transform: uppercase; white-space: nowrap; }
 .fx-notice { display: flex; gap: 10px; align-items: baseline; border: 1px dashed var(--st-human); background: var(--tint-human); border-radius: 8px; padding: 8px 12px; margin: 0 0 12px; font-size: 12.5px; color: var(--soft); }
+.fx-notice[hidden], .fx-tb[hidden], .fx-demo-tag[hidden], .fx-json[hidden], .fx-panel[hidden] { display: none; }
 .fx-notice strong { color: var(--st-human); font-weight: 600; }
 .fx-notice code { font-family: var(--mono); font-size: 12px; }
 .fx-screen[hidden] { display: none; }
@@ -421,6 +422,105 @@ button kbd { margin-left: 6px; }
 .fx-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
 .fx-tabs button { background: transparent; color: var(--muted); border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 12px; font-size: 13px; }
 .fx-tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); }
+/* ---- polish pass: auth demo CTA, Home card, agents rail, master-detail, tour ---- */
+.auth-demo { margin-top: 20px; padding-top: 4px; }
+.auth-demo h3 { margin: 12px 0 4px; font-size: 14px; }
+.auth-demo p { margin: 0 0 12px; font-size: 13px; line-height: 1.5; color: var(--soft); }
+.auth-demo .auth-demo-note { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+a.auth-demo-btn { display: flex; align-items: center; justify-content: center; min-height: 40px; border-radius: 6px; border: 1px solid var(--line-strong); color: var(--ink); text-decoration: none; font-size: 13.5px; font-weight: 600; background: var(--hover); }
+a.auth-demo-btn:hover { border-color: var(--ring); background: var(--card); }
+a.home-forge { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 14px; align-items: center; margin: 22px 0 0; padding: 16px; border-radius: 10px; border: 1px solid var(--line-strong); border-left: 3px solid var(--st-train); background: var(--tint-train); color: var(--ink); text-decoration: none; }
+a.home-forge:hover { border-color: var(--st-train); }
+.home-forge-icon { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 8px; background: var(--card); border: 1px solid var(--line-strong); color: var(--st-train); }
+.home-forge-icon svg { width: 18px; height: 18px; }
+.home-forge-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.home-forge-text strong { font-size: 14.5px; }
+.home-forge-text span { font-size: 12.5px; color: var(--soft); line-height: 1.45; }
+.home-forge-go { font: 600 12.5px var(--mono); color: var(--st-train); white-space: nowrap; }
+.fx-info { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin-left: 4px; border-radius: 999px; border: 1px solid var(--line-strong); font: 700 9px/1 var(--mono); color: var(--muted); text-transform: none; cursor: help; vertical-align: 1px; }
+.fx-info:hover, .fx-info:focus-visible { color: var(--ink); border-color: var(--ring); }
+.fx-railcol { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }
+.fx-railcol > .fx-rail { flex: 1 1 auto; min-height: 0; }
+.fx-agentsrail { flex: 0 1 auto; display: flex; flex-direction: column; min-height: 0; max-height: 48%; }
+.fx-agentsrail .fx-ar-list { list-style: none; margin: 0; padding: 4px 6px 6px; overflow-y: auto; min-height: 0; }
+.fx-ar-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 1px 8px; align-items: center; padding: 4px 6px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+.fx-ar-row:hover, .fx-ar-row.hl, .fx-ar-row:focus-visible { background: var(--hover); border-color: var(--line); }
+.fx-ar-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.fx-ar-name { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fx-ar-name .c { font: 500 11.5px var(--mono); color: var(--muted); margin-left: 4px; }
+.fx-ar-st { font: 600 11.5px var(--mono); white-space: nowrap; }
+.fx-ar-it { grid-column: 2 / 4; font-size: 12px; color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fx-ar-it .mono { color: var(--muted); font-size: 11.5px; margin-right: 4px; }
+#fxMap.agent-hl .fx-dot { opacity: 0.25; }
+#fxMap.agent-hl .fx-dot.hl { opacity: 1; z-index: 7; }
+.fx-dot.hl .fx-dot-core { box-shadow: 0 0 0 2px var(--card), 0 0 0 5px var(--ink); }
+.fx-dot.hl .fx-dot-tag { border-color: var(--ink); }
+.fx-cell.hot .fx-cell-label { right: auto; max-width: none; overflow: visible; text-overflow: clip; background: var(--card); padding: 0 4px; margin-left: -4px; border-radius: 3px; color: var(--ink); font-weight: 600; z-index: 6; }
+.fx-cell.overlap.hot .fx-cell-label, .fx-cell.conflict.hot .fx-cell-label { box-shadow: 0 0 0 1px var(--line-strong); }
+.fx-tip-sub { color: var(--muted); font-size: 12px; }
+.fx-md { display: grid; grid-template-columns: minmax(380px, 520px) minmax(0, 1fr); gap: 12px; align-items: start; }
+.fx-md-list { position: sticky; top: 60px; max-height: calc(100vh - 76px); display: flex; flex-direction: column; overflow: hidden; }
+.fx-md-list .fx-md-scroll { overflow-y: auto; min-height: 0; }
+.fx-md-detail { min-width: 0; }
+.fx-md-detail > .fx-md-dhead { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; font: var(--t-micro); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.fx-md-detail > .fx-md-dhead a { font: 500 12px var(--mono); letter-spacing: 0; text-transform: none; color: var(--soft); text-decoration: none; margin-left: auto; }
+.fx-md-detail > .fx-md-dhead a:hover { color: var(--ink); }
+.fx-md-detail .fx-detail-grid { grid-template-columns: minmax(0, 1fr) 270px; }
+@media (max-width: 1440px) { .fx-md-detail .fx-detail-grid { grid-template-columns: minmax(0, 1fr); } .fx-md-detail .fx-detail-grid > aside { position: static !important; } }
+.fx-fchips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.fx-fchip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--line-strong); background: transparent; color: var(--soft); font-size: 12px; font-weight: 500; }
+.fx-fchip:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+.fx-fchip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.fx-fchip[aria-pressed="true"] .n { color: var(--bg); opacity: 0.75; }
+.fx-fchip .g { font-size: 11px; }
+.fx-fchip .n { font: 600 11.5px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.fx-fchip:disabled { opacity: 0.45; }
+.fx-mgroup { padding: 10px 12px 4px; font: var(--t-micro); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); display: flex; gap: 6px; align-items: baseline; border-top: 1px solid var(--line); }
+.fx-mgroup:first-child { border-top: none; }
+.fx-mgroup .mono { flex: none; white-space: nowrap; text-transform: none; font: 600 11.5px var(--mono); color: var(--muted); letter-spacing: 0; }
+.fx-mgroup .t { text-transform: none; letter-spacing: 0; font: 500 12.5px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.fx-mrows { list-style: none; margin: 0; padding: 0; }
+.fx-mrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; padding: 10px 12px 10px 10px; border-bottom: 1px solid var(--line); border-left: 2px solid transparent; cursor: pointer; }
+.fx-mrow:last-child { border-bottom: none; }
+.fx-mrow:hover { background: var(--hover); }
+.fx-mrow.sel { background: var(--hover); border-left-color: var(--ink); }
+.fx-mrow:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.fx-mrow[data-tone="conflict"] { border-left-color: var(--st-conflict); }
+.fx-mrow[data-tone="human"] { border-left-color: var(--st-human); }
+.fx-mrow.sel[data-tone] { box-shadow: inset 2px 0 0 var(--ink); }
+.fx-mrow .m1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fx-mrow .m1 .t { font-weight: 600; font-size: 13.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-mrow .mr { display: flex; align-items: center; gap: 8px; justify-content: flex-end; font: 500 12px var(--mono); color: var(--muted); white-space: nowrap; }
+.fx-mrow .m2 { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; font: 500 12px var(--mono); color: var(--muted); min-width: 0; }
+.fx-mrow .m2 .ok { color: var(--st-landed); } .fx-mrow .m2 .bad { color: var(--st-conflict); } .fx-mrow .m2 .run { color: var(--st-train); } .fx-mrow .m2 .warn { color: var(--st-overlap); }
+.fx-mrow .m3 { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.fx-mrow .m3 .k { font: 600 11px var(--mono); color: var(--faint); text-transform: uppercase; letter-spacing: 0.04em; margin-right: 6px; }
+.fx-avs { display: inline-flex; align-items: center; }
+.fx-avs .fx-mono-av { width: 20px; height: 20px; font-size: 9px; margin-left: -4px; box-shadow: 0 0 0 2px var(--card); }
+.fx-avs .fx-mono-av:first-child { margin-left: 0; }
+.fx-md-foot { padding: 8px 12px; border-top: 1px solid var(--line); font: 500 11.5px var(--mono); color: var(--muted); }
+.fx-next { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; counter-reset: fxn; }
+.fx-next li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 4px 10px; align-items: start; counter-increment: fxn; }
+.fx-next li::before { content: counter(fxn); display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 999px; border: 1px solid var(--line-strong); font: 600 12px var(--mono); color: var(--soft); }
+.fx-next .t { font-weight: 600; font-size: 13.5px; margin: 1px 0 2px; }
+.fx-next .d { font-size: 12.5px; color: var(--muted); margin: 0 0 6px; }
+.fx-next .fx-cmd, .fx-next a.fx-json { grid-column: 2; }
+.fx-next a.fx-json { justify-self: start; }
+.fx-tour { position: fixed; z-index: 80; width: 360px; max-width: calc(100vw - 32px); background: var(--card); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); padding: 14px 16px 12px; animation: tRise 140ms ease; }
+.fx-tour[hidden], .fx-tour-ring[hidden] { display: none; }
+.fx-tour-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.fx-tour-step { font: var(--t-micro); letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-train); }
+.fx-tour-dots { display: inline-flex; gap: 4px; margin-left: auto; }
+.fx-tour-dots i { width: 6px; height: 6px; border-radius: 999px; background: var(--line-strong); }
+.fx-tour-dots i.on { background: var(--st-train); }
+.fx-tour-q { margin: 0 0 6px; font-size: 18px; line-height: 24px; letter-spacing: -0.01em; }
+.fx-tour-b { margin: 0 0 8px; font-size: 13px; line-height: 1.5; color: var(--soft); }
+.fx-tour-try { margin: 0 0 12px; font: 500 12px/1.45 var(--mono); color: var(--muted); }
+.fx-tour-try:empty { display: none; }
+.fx-tour-acts { display: flex; align-items: center; gap: 8px; }
+.fx-tour-acts button { padding: 7px 12px; font-size: 12.5px; }
+.fx-tour-ring { position: fixed; z-index: 79; pointer-events: none; border-radius: 10px; box-shadow: 0 0 0 2px var(--st-train), 0 0 0 6px var(--tint-train); transition: left 200ms ease, top 200ms ease, width 200ms ease, height 200ms ease; }
+.fx-tourbtn { white-space: nowrap; }
 .fx-flash { animation: fxFlash 600ms ease-out; }
 @keyframes fxFlash { from { background-color: var(--tint-working); } to { background-color: transparent; } }
 @media (prefers-reduced-motion: reduce) {
@@ -428,7 +528,8 @@ button kbd { margin-left: 6px; }
   .fx-dot .fx-dot-core, .fx-livebadge::before { animation: none !important; }
   .fx-dot[data-state="working"] .fx-dot-core, .fx-dot[data-state="claimed"] .fx-dot-core, .fx-dot[data-state="replaying"] .fx-dot-core { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--st-working); }
   .fx-counter.flash, .fx-flash { animation: none; background: transparent; outline: 1px solid var(--line-strong); }
-  .fx-drawer, .fx-modal, .fx-bulk { animation: none; }
+  .fx-drawer, .fx-modal, .fx-bulk, .fx-tour { animation: none; }
+  .fx-tour-ring { transition: none; }
   .fx-landing { display: none; }
 }
 body.fx-stagemode header { width: 60px; padding: 14px 8px; }
@@ -450,6 +551,10 @@ body.fx-stagemode .fx-map { height: calc(100vh - 330px); }
 body.fx-stagemode .fx-cell-label { font-size: 13px; }
 body.fx-stagemode .fx-notice { display: none; }
 body.fx-stagemode .fx-live-grid { grid-template-columns: minmax(0, 1fr) 380px; }
+@media (max-width: 1100px) {
+  .fx-md { grid-template-columns: minmax(0, 1fr); }
+  .fx-md-list { position: static; max-height: none; }
+}
 @media (max-width: 1200px) {
   .fx-inbox-grid { grid-template-columns: 170px minmax(0, 1fr); }
   .fx-inbox-grid .fx-detail { grid-column: 1 / -1; position: static; max-height: none; }
@@ -473,10 +578,16 @@ body.fx-stagemode .fx-live-grid { grid-template-columns: minmax(0, 1fr) 380px; }
   .fx-agent-row { grid-template-columns: 26px 60px minmax(0, 1fr) 60px; }
   .fx-agent-row > :nth-child(3), .fx-agent-row > :nth-child(5), .fx-agent-row > :nth-child(7) { display: none; }
   .fx-drawer { width: 100vw; }
+  .fx-agentsrail { max-height: none; }
+  a.home-forge { grid-template-columns: 36px minmax(0, 1fr); }
+  .home-forge-go { grid-column: 2; }
   .side-link .fx-badge { margin-left: 4px; }
 }
 @media (max-width: 640px) {
   .fx-counters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fx-clabel { white-space: normal; }
+  .fx-notice { font-size: 12px; }
+  .fx-md-list .fx-panel-head .fx-path:last-child { display: none; }
   .fx-counter:nth-child(n) { border-left: none; border-top: 1px solid var(--line); }
   .fx-counter:nth-child(2n) { border-left: 1px solid var(--line); }
   .fx-counter:nth-child(-n+2) { border-top: none; }
@@ -520,6 +631,7 @@ export const FORGE_PANE_HTML = String.raw`
 <nav class="fx-crumbs" id="fxCrumbs" aria-label="Breadcrumb"></nav>
 <label><span class="sr">Repository</span><select id="fxRepo" aria-label="Repository"></select></label>
 <span class="fx-demo-tag" id="fxDemoTag" hidden title="Fixture data: not measurements">Demo data</span>
+<button class="ghost fx-tb fx-tourbtn" id="fxTourBtn" type="button" data-action="tour_start" hidden>Take the tour</button>
 <span class="fx-spacer"></span>
 <span class="fx-livebadge" id="fxLiveBadge" data-state="off" role="status">offline</span>
 <button class="ghost fx-tb" id="fxPauseBtn" type="button" data-action="pause_live" aria-pressed="false" aria-keyshortcuts="p">Pause <kbd>p</kbd></button>
@@ -537,7 +649,10 @@ export const FORGE_PANE_HTML = String.raw`
 <div class="fx-map" id="fxMap" role="img" aria-label="Live map: repository paths sized by file count, one dot per active intent" aria-describedby="fxLiveTableWrap"></div>
 <div class="fx-table-twin" id="fxLiveTableWrap" hidden><div class="table-scroll"><table id="fxLiveTable"><caption class="sr">Live map as a table: paths, intents, owners, state, overlaps</caption><thead><tr><th scope="col">Path</th><th scope="col">Files</th><th scope="col">Intents</th><th scope="col">Owners</th><th scope="col">State</th><th scope="col">Overlaps with</th></tr></thead><tbody></tbody></table></div></div>
 </div>
+<div class="fx-railcol" id="fxRailCol">
+<aside class="fx-panel fx-agentsrail" id="fxAgentsRail" aria-label="Agents on map"></aside>
 <aside class="fx-panel fx-rail" id="fxTrack" aria-label="Train track into main"></aside>
+</div>
 </div>
 <div class="fx-legend" id="fxLegend" aria-label="Legend"></div>
 </div>
@@ -584,4 +699,29 @@ export const FORGE_OVERLAYS_HTML = String.raw`
 <div class="fx-modal-b"><div class="fx-keys" id="fxKeysGrid"></div></div>
 </div>
 </div>
+<div class="fx-tour-ring" id="fxTourRing" aria-hidden="true" hidden></div>
+<section class="fx-tour" id="fxTour" role="dialog" aria-modal="false" aria-labelledby="fxTourTitle" aria-describedby="fxTourBody" hidden>
+<div class="fx-tour-top"><span class="fx-tour-step" id="fxTourStep"></span><span class="fx-tour-dots" id="fxTourDots" aria-hidden="true"></span></div>
+<h2 class="fx-tour-q" id="fxTourTitle"></h2>
+<p class="fx-tour-b" id="fxTourBody"></p>
+<p class="fx-tour-try" id="fxTourTry"></p>
+<div class="fx-tour-acts"><button class="ghost" id="fxTourSkip" type="button" data-action="tour_skip">Skip tour <kbd>esc</kbd></button><span class="fx-spacer" style="flex:1"></span><button class="ghost" id="fxTourBack" type="button" data-action="tour_back">Back</button><button id="fxTourNext" type="button" data-action="tour_next">Next <kbd>→</kbd></button></div>
+</section>
 `;
+
+// Signed-out setup and login screens: a secondary path for a curious
+// visitor or judge who will never create an account here.
+export const FORGE_AUTH_DEMO_HTML = String.raw`<aside class="auth-demo" id="authDemo" aria-labelledby="authDemoTitle">
+<div class="divider">or just look around</div>
+<h3 id="authDemoTitle">See Flare Forge in action</h3>
+<p>Forge lets many AI coding agents change one repo at once. It shows who is doing what, catches overlapping work before it conflicts, lands changes through CI-verified trains, and keeps the why behind every line.</p>
+<a class="auth-demo-btn" id="authDemoBtn" href="/dashboard?demo=1#/live" data-action="explore_demo">Explore the live demo →</a>
+<p class="auth-demo-note">Read-only demo data. No account needed. Takes about two minutes.</p>
+</aside>`;
+
+// Easy-mode Home: the step that leads from CI setup into Forge.
+export const FORGE_HOME_CARD_HTML = String.raw`<a class="home-forge" id="homeCardForge" href="#/live" data-action="open_detail">
+<span class="home-forge-icon" aria-hidden="true">${FORGE_ICONS.live}</span>
+<span class="home-forge-text"><strong>Coordinate AI agents with Forge</strong><span>Running several coding agents on one repo? See who is doing what, which changes overlap, what needs your review, and why each line exists.</span></span>
+<span class="home-forge-go" aria-hidden="true">Open Live →</span>
+</a>`;
