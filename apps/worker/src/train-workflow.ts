@@ -16,7 +16,7 @@ import type { WorkerEnv } from "./env";
 import { validateRepo } from "./intents";
 import { MemoryFS } from "./memory-fs";
 import { artifactsRemoteFor } from "./promote";
-import { pollRaces, startReplay, type ReplayDeps } from "./replay";
+import { replayTick, startReplay, type ReplayDeps } from "./replay";
 import {
   activeTrains,
   advanceRepo,
@@ -111,7 +111,7 @@ export class TrainWorkflow extends WorkflowEntrypoint<WorkerEnv, TrainWorkflowPa
       }
       await step.do(`notes-${round}`, STEP, () => writeNotes(deps, repo));
       await step.do(`revoke-${round}`, STEP, () => revokeLandedTokens(deps, repo));
-      await step.do(`races-${round}`, STEP, () => pollRaces(deps, repo));
+      await step.do(`races-${round}`, STEP, () => replayTick(deps, repo));
       if (!decided || decided.status === "idle") break;
       // Bisect children are already forming; requeued or rebuilt intents
       // need a fresh cut on the new main.
@@ -155,7 +155,7 @@ export async function runTrainTick(env: WorkerEnv): Promise<{ repos: number; adv
         if (res.cut?.status === "cut") out.cut += 1;
         out.advanced += 1;
       }
-      await pollRaces(deps, repo);
+      await replayTick(deps, repo);
     } catch (err) {
       console.log(JSON.stringify({ level: "warn", msg: "train tick failed", repo, error: String(err instanceof Error ? err.message : err).slice(0, 200) }));
     }

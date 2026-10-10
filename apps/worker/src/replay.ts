@@ -493,7 +493,9 @@ export type ReplayOutcome =
   | { status: "notified"; strategy: ReplayStrategy }
   | { status: "resolved"; strategy: "auto"; sha: string; forkRepo: string }
   | { status: "racing"; tournamentId: string; attempts: number }
-  | { status: "skipped"; reason: "not-found" | "not-open" };
+  | { status: "requeued" }
+  | { status: "deferred"; reason: "other-side-pending" }
+  | { status: "skipped"; reason: "not-found" | "not-open" | "already-started" };
 
 export function replayForkName(conflictId: string, attempt: number): string {
   return `r-${conflictId.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 12)}-${attempt}`;
@@ -508,6 +510,15 @@ export async function startReplay(deps: ReplayDeps, conflictId: string): Promise
   const intent = await getIntent(deps.db, conflict.intentA);
   if (!intent) return { status: "skipped", reason: "not-found" };
   const other = conflict.intentB && conflict.intentB !== "trunk" ? await getIntent(deps.db, conflict.intentB) : null;
+  // Replay targets the trunk that *contains* the other side: wait until
+  // it lands. If it never will (failed/abandoned), the dropped intent
+  // simply re-queues unchanged — its original head may merge cleanly now.
+  if (other && other.state !== "landed") {
+    if (other.state === "failed" || other.state === "abandoned") return requeueUnchanged(deps, conflict, intent);
+    return { status: "deferred", reason: "other-side-pending" };
+  }
+  const started = await listForgeLedger(deps.db, "conflict", conflictId, 100);
+  if (started.some((r) => r.kind === "notified")) return { status: "skipped", reason: "already-started" };
   const policy = await loadPolicy(deps, conflict.repo);
   const strategy = chooseStrategy(policy, conflict, !!deps.ai && policy.replay.maxAttempts > 0);
   const trunkSha = (await trunkMainSha(deps, conflict.repo)) ?? "";
@@ -521,6 +532,43 @@ export async function startReplay(deps: ReplayDeps, conflictId: string): Promise
   if (strategy === "auto") return autoReplay(deps, conflict, intent, other);
   if (strategy === "race") return raceReplay(deps, conflict, intent, other, policy);
   return { status: "notified", strategy };
+}
+
+async function requeueUnchanged(deps: ReplayDeps, conflict: Conflict, intent: Intent): Promise<ReplayOutcome> {
+  const claimed = await claimConflictFor(deps, conflict.id, REPLAY_AGENT);
+  if ("error" in claimed) return { status: "skipped", reason: "not-open" };
+  const res = await resolveConflictFor(deps, conflict.id, REPLAY_AGENT, intent.headSha);
+  if ("error" in res) {
+    await releaseClaim(deps, conflict, intent.id, `requeue failed: ${res.message}`);
+    return { status: "skipped", reason: "not-open" };
+  }
+  return { status: "requeued" };
+}
+
+// Per-tick replay driver: start replays for open conflicts whose other
+// side has settled, then finalize decided resolution races.
+export async function replayTick(deps: ReplayDeps, repo: string): Promise<{ started: number; resolved: number; failed: number }> {
+  const out = { started: 0, resolved: 0, failed: 0 };
+  const open = await deps.db
+    .prepare(
+      `SELECT c.id FROM conflicts c WHERE c.repo = ? AND c.state = 'open'
+       AND NOT EXISTS (SELECT 1 FROM forge_ledger l WHERE l.subject_kind = 'conflict' AND l.subject_id = c.id AND l.kind = 'notified')
+       ORDER BY c.created_at ASC LIMIT 10`,
+    )
+    .bind(repo)
+    .all<{ id: string }>();
+  for (const row of open.results) {
+    try {
+      const r = await startReplay(deps, row.id);
+      if (r.status !== "deferred" && r.status !== "skipped") out.started += 1;
+    } catch (err) {
+      console.log(JSON.stringify({ level: "warn", msg: "replay start failed", conflict: row.id, error: String(err instanceof Error ? err.message : err).slice(0, 200) }));
+    }
+  }
+  const races = await pollRaces(deps, repo);
+  out.resolved = races.resolved;
+  out.failed = races.failed;
+  return out;
 }
 
 async function releaseClaim(deps: ReplayDeps, conflict: Conflict, intentId: string, why: string): Promise<void> {
@@ -550,7 +598,7 @@ async function autoReplay(deps: ReplayDeps, conflict: Conflict, intent: Intent, 
     return { status: "notified", strategy: "auto" };
   }
   const res = await resolveConflictFor(deps, conflict.id, REPLAY_AGENT, commit.sha, { forkRepo: forkName, llmReplay: true });
-  if ("error" in res && typeof res.error === "string") {
+  if ("error" in res) {
     await releaseClaim(deps, conflict, intent.id, `resolve failed: ${res.error}`);
     return { status: "notified", strategy: "auto" };
   }
@@ -618,7 +666,7 @@ export async function pollRaces(deps: ReplayDeps, repo: string): Promise<{ resol
         .first<{ fork_repo: string }>();
       if (run && run.status === "success" && winner) {
         const res = await resolveConflictFor(deps, row.id, REPLAY_AGENT, t.resolved_sha, { forkRepo: winner.fork_repo, llmReplay: true });
-        if (!("error" in res && typeof res.error === "string")) {
+        if (!("error" in res)) {
           out.resolved += 1;
           continue;
         }
