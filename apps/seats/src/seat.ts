@@ -1296,8 +1296,9 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       const durationMs = Date.now() - startedAt;
       const label = step.id ?? `step${i + 1}`;
       if (r.timedOut) {
-        records.push({ command: mask(command), exitCode: 124, durationMs, output: "[seat] step timed out after 10m" });
-        logParts.push(mask(`--- step ${i + 1}: ${command} ---\n[seat] step timed out after 10m\n(exit 124, ${durationMs}ms)`));
+        const limit = `[seat] step timed out after ${Math.round(stepTimeout / 60000)}m`;
+        records.push({ command: mask(command), exitCode: 124, durationMs, output: limit });
+        logParts.push(mask(`--- step ${i + 1}: ${command} ---\n${limit}\n(exit 124, ${durationMs}ms)`));
         await collectStepOutputs(i, label);
         anyFailed = true;
         if (step.continueOnError) {

@@ -685,12 +685,20 @@ const ZERO_SHA = "0000000000000000000000000000000000000000";
 // is acknowledged without a run — GitHub treats non-2xx as failed delivery.
 const RUN_EVENTS = ["push", "pull_request"];
 
+// pull_request activity types that run CI (GitHub Actions' defaults).
+// closed/labeled/edited/assigned/review_requested… would re-run an
+// unchanged head — merging a PR alone used to fan out a full run.
+const PR_RUN_ACTIONS = ["opened", "synchronize", "reopened"];
+
 // Pure gate for webhook fan-out: returns a skip reason, or null to proceed.
 // Branch/tag deletions carry deleted:true with a zero SHA; fanning those
 // out would create runs that can never check out (and mail failure noise).
 export function webhookSkipReason(event: string, payload: GitHubWebhookPayload): string | null {
   if (!RUN_EVENTS.includes(event)) return `unsupported event: ${event}`;
   if (event === "push" && payload.deleted === true) return "ref deleted";
+  if (event === "pull_request" && payload.action !== undefined && !PR_RUN_ACTIONS.includes(payload.action)) {
+    return `pull_request action: ${payload.action}`;
+  }
   const sha = payload.after ?? payload.pull_request?.head?.sha;
   if (typeof sha === "string" && sha === ZERO_SHA) return "zero sha (deleted ref)";
   return null;
