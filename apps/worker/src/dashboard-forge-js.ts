@@ -812,7 +812,9 @@ export const FORGE_JS = String.raw`
       var legend = document.getElementById("fxLegend");
       var avail = window.innerHeight - map.getBoundingClientRect().top - (legend.offsetHeight || 40) - 32 + (window.scrollY || 0);
       map.style.height = Math.max(380, Math.round(avail)) + "px";
-    } else map.style.height = "";
+      // the track rail scrolls inside the map's height so the legend stays on screen
+      var railH = (map.parentNode.offsetHeight || 0) + "px"; document.getElementById("fxTrack").style.maxHeight = railH; document.getElementById("fxTrack").style.height = railH;
+    } else { map.style.height = ""; document.getElementById("fxTrack").style.maxHeight = ""; document.getElementById("fxTrack").style.height = ""; }
     var W = map.clientWidth, H = map.clientHeight;
     if (W < 40 || H < 40) { FX.mapRetry = (FX.mapRetry || 0) + 1; if (FX.mapRetry < 20) setTimeout(function () { if (FX.route.screen === "live" && FX.snap) fxRenderMap(FX.snap); }, 60); return; }
     FX.mapRetry = 0;
@@ -996,7 +998,7 @@ export const FORGE_JS = String.raw`
       var cur = h("div", { cls: "fx-train-cur" + (red ? " red" : ""), "data-kind": "train", "data-id": t.id, "data-state": t.state }, [
         h("div", { cls: "fx-train-head" }, [t.sim ? h("span", { cls: "fx-idchip", text: t.id }) : fxLink(t.id), fxPill(t.state), h("span", { cls: "fx-spacer" }), h("span", { cls: "mono muted", text: (t.lanes || []).length + " lanes" })])
       ]);
-      (t.lanes || []).slice(0, 6).forEach(function (l) {
+      (t.lanes || []).slice(0, 4).forEach(function (l) {
         var lane = h("div", { cls: "fx-lane", "data-kind": "lane", "data-id": t.id + "/" + l.n }, [
           h("div", { cls: "fx-lane-top" }, [h("span", { text: "lane " + l.n }), h("span", { cls: "lp", title: (l.paths || []).join(", "), text: (l.paths || []).join(", ") })]),
           fxStageChain(l.stages, true),
@@ -1004,6 +1006,7 @@ export const FORGE_JS = String.raw`
         ]);
         cur.appendChild(lane);
       });
+      if ((t.lanes || []).length > 4) cur.appendChild(h("div", { cls: "fx-lane-top", style: "padding-top:6px", text: "+ " + (t.lanes.length - 4) + " more lanes in " + t.id }));
       body.appendChild(cur);
     } else {
       body.appendChild(h("div", { cls: "fx-empty", "data-state": "empty", "data-code": "no_train_in_flight", "data-hint": "The next train forms when an intent is marked ready." }, [h("p", { text: "No train in flight. The next one forms when an intent is marked ready." })]));
@@ -1021,7 +1024,7 @@ export const FORGE_JS = String.raw`
       body.appendChild(h("div", {}, [h("div", { cls: "fx-sec-h", text: "Recent" }), ul]));
     }
     var head = s.head || {};
-    body.appendChild(h("div", { cls: "fx-main-rule", id: "fxMainRule" }, [
+    rail.appendChild(h("div", { cls: "fx-main-rule", id: "fxMainRule" }, [
       h("div", { cls: "meta" }, [h("strong", { text: "main" }), h("span", {}, [head.sha ? fxSha(head.sha) : "—"])]),
       h("div", { cls: "rule", role: "img", "aria-label": "main at " + (head.sha || "unknown") }),
       h("div", { cls: "meta" }, [h("span", { text: "only trains write main" }), h("span", { text: "CI green on exact SHA" })])
