@@ -208,7 +208,7 @@ also calls `report_push`. This makes "any agent works" literally true.
 protected: [ "src/auth/**", "migrations/**" ]   # intents here stop at awaiting_plan
 auto_land_max_risk: 30                            # 0-100
 audit_sample: 0.05                                # fraction of auto-landed routed to humans
-lanes: { max_per_train: 50, max_parallel: 8 }
+lanes: { max_per_train: 50, max_parallel: 8, speculation_depth: 3 }
 replay: { max_attempts: 2, race_k: 3 }            # race_k>1 = resolution tournament
 ```
 
@@ -533,7 +533,7 @@ suggests one.
 | 3:15 | **Q2, conflicts** | A train with 3 lanes runs in parallel. One lane fails CI on the combined SHA, so it bisects, finds the culprit and lands the rest. A real merge conflict opens; replay runs with the other intent's why, CI goes green, it lands. |
 | 4:45 | **Q3, review** | The inbox: 1 story, 12 intents. 10 auto-landed (risk terms shown), 1 audit sample, 1 needs a human. A side-by-side resolution race. The human spends about 90 s. |
 | 5:45 | **Q4, why** | Click a line in the repo view. The chain: goal → intent → reasoning → rejected alternative → CI run → reviewer → **fork session** → a new agent continues from that exact context. |
-| 6:45 | **Scale + proof** | Simulator: 10k agents, measured trains/min, 0 red-main minutes, the baseline table, $ per 1k agents. |
+| 6:45 | **Scale + proof** | Simulator: 10k agents, measured trains/min, 0 main-red-from-integration minutes (exact-SHA, by construction; escaped defects shown separately), the baseline table, $ per 1k agents. |
 | 7:45 | **How it's built** | One diagram: Workers, Artifacts (forks, notes, events, tokens), Durable Objects, Workflows, Queues, Workers AI, Containers. "No agent ever holds a trunk token." |
 | 8:10 | **Try it** | Hosted URL plus `npm run forge:demo`. "Plain git and MCP: bring any agent." |
 

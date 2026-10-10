@@ -645,49 +645,108 @@ the router reads on each call. Going back to one DO is a re-hydrate.
 
 ## Trains and conflicts
 
-> Provenance: agent-drafted 2026-10-10 (trains stream). The behavior
-> described here is covered by `train-core.test.ts`, `train.test.ts`
-> and `replay.test.ts` (`npm test`, 2026-10-10). The end-to-end tests
-> run isomorphic-git and MemoryFS against real bare repos, served
-> in-process by `git http-backend` with no network. The timings were
-> measured in those tests on a laptop, not against Artifacts.
+> Provenance: agent-drafted 2026-10-10 (trains stream), revised the same
+> day for speculative stacked trains (branch `feat/forge-speculative`).
+> The behavior described here is covered by `train-core.test.ts`
+> (exhaustive + property tests of the chain, probes and capacity),
+> `train.test.ts` and `replay.test.ts` (`npm test`, 2026-10-10). The
+> end-to-end tests run isomorphic-git and MemoryFS against real bare
+> repos, served in-process by `git http-backend` with no network. The
+> timings were measured in those tests on a laptop, not against
+> Artifacts.
 
 ### Model
 
-- **One train group per repo at a time.**
-  - `cutTrain` orders ready intents by priority, then by oldest ready,
-    then by id.
-  - It takes at most `lanes.max_per_train` of them.
-  - It splits them into lanes whose footprints don't overlap: at most
-    `min(lanes.max_parallel, 8)` lanes.
-- **Stacked lanes.**
-  - Lane *i* is built on lane *i−1*'s head.
-  - Each lane head gets its own CI run on that exact SHA, so the runs
-    happen in parallel.
-  - If lane *i* is green, the whole prefix through *i* is green as one
-    SHA.
-  - The longest green prefix lands with one non-force push of `main`,
-    a compare-and-swap against the cut's base.
-  - The first red lane is bisected. Lanes stacked behind it go back to
-    the queue without blame.
-- **Bisect.**
-  - The red lane splits into two child trains (`parent_train_id`), with
-    the left half stacked under the right half.
-  - Left red: recurse into the left half and requeue the right half.
-  - Left green and right red: land the left half and recurse into the
-    right half.
-  - A red lane with a single intent is the culprit. That intent goes to
-    `failed`, and a `culprit` ledger row records the evidence.
-  - Bisection takes at most ⌈log₂ n⌉ rounds.
+- **Speculative chain** (`train-core.ts`: `cutCapacity`, `decideChain`,
+  `chainBreak`, `SpeculativeChain`; Zuul dependent pipeline / Uber
+  SubmitQueue speculation).
+  - Up to `lanes.speculation_depth` train groups (default **3**) may be
+    in flight per repo. A group cut while others are in flight is
+    *speculative*: its first lane is built on the chain head — the last
+    in-flight lane's head — assuming everything ahead passes.
+  - All active lanes form **one linear chain**: main ← group 1 lanes ←
+    group 2 lanes ← … An intent that overlaps in-flight work therefore
+    rides the next group, stacked on its overlap partner, instead of
+    waiting for it to land. (On an exact-SHA main the group holding the
+    partner is always an ancestor of the newest group.)
+  - Each group has at most `lanes.max_parallel` lanes (default 8); the
+    chain at most `speculation_depth × max_parallel` lanes, capped at
+    24 (the chain's share of the ref pool).
+- **Cutting a group** (`planTrain`).
+  - Order ready intents by priority, then oldest ready, then id; take at
+    most `lanes.max_per_train`.
+  - Split them into overlap components on the declared footprint (a
+    component never splits: overlapping intents merge in order in one
+    lane), then **pack** the components into at most the free lane
+    count, least-full first. Before this revision only the first 8
+    components were kept, so 50 disjoint ready intents yielded a train
+    of 8.
+- **Stacked lanes, exact SHA.**
+  - Every lane head gets its own CI run on that exact SHA, in parallel,
+    with the pipeline read from **trunk** (the chain root's base), never
+    from the lane head.
+  - `checkTrains` lands the longest contiguous green prefix of the chain
+    *as soon as it is green*, even while lanes behind it are still
+    verifying, with one non-force push of `main` (compare-and-swap
+    against the first lane's base). Lane *i*'s head contains exactly the
+    lanes before it, so invariant 2 holds: `main` only ever points at a
+    SHA whose own CI run is green.
+  - The landing gate is re-evaluated before `main` moves; a lane with an
+    intent that now needs human approval does not land (it and every
+    lane behind it are requeued).
+  - `chainBreak`: a lane whose base is not the previous lane's head (the
+    lane ahead was swept or failed to dispatch) is invalidated with
+    everything behind it; the CAS refuses a first lane whose base is not
+    main.
+- **A red lane** (with everything ahead of it green).
+  - Every lane behind it, in every descendant group, is **invalidated**:
+    aborted and its intents requeued without blame. Requeued intents
+    keep their place in line (their queue time goes back to when they
+    joined the train), so they are rebuilt at once on the new chain
+    head, without the red lane.
+  - The red lane leaves the chain. One intent: it is the culprit
+    (`failed`, with a `culprit` ledger row). More: it splits into two
+    **bisect probes**.
+- **Bisect probes** (off-chain).
+  - A probe (`parent_train_id` = the red train) is built alone on main
+    in a reserved slot and verified as its own exact SHA; both halves
+    run in parallel. Probes never land.
+  - Green probe: its intents are innocent and requeue without blame
+    (`probe_green` ledger row); they land through the chain.
+  - Red probe: one intent is the culprit, more split again. A culprit is
+    isolated within ⌈log₂ n⌉ probe rounds after its red lane.
+  - Why off-chain: in-chain bisect children block the pipeline and every
+    speculative group stacked on them holds the culprit. In the
+    simulator, moving bisection off the chain cut time-to-80%-landed
+    roughly in half at 2k agents (see `docs/FORGE-BENCH.md`).
 - **Lane refs.**
-  - Lanes use the fixed refs `forge/lane-0..7` and force-update them for
-    each train. Spike S5 found that pushing a *new* ref from
-    isomorphic-git uploads the whole history.
-  - Create the lane refs once, when the repo is bootstrapped.
+  - A fixed pool of 32 refs, `forge/lane-0..31`, force-updated per train
+    (spike S5: pushing a *new* ref from isomorphic-git uploads the whole
+    history). The chain uses slots 0–23 (lowest free first, so lane
+    order in a group = slot order); probes use 24–31. A train holds its
+    slot (`trains.lane`) until it leaves the active set; a probe waiting
+    for a slot has `lane = -1`.
+  - The Worker never creates a ref: a build that finds its slot's ref
+    missing aborts the lane (`lane ref … missing`) and requeues it.
+  - **Create the pool once, at repo bootstrap**:
+    `node scripts/artifacts-mirror.mjs lanes <artifacts-repo>` (any
+    existing Artifacts repo, at its current main), and
+    `artifacts-mirror.mjs sync` creates any missing pool ref at the
+    synced sha. Existing refs are never touched.
   - `main` is never force-pushed.
+- **Groups in D1.** `trains.group_seq` (migration
+  `0047_train_groups.sql`) orders groups; the chain is the active trains
+  without a parent, ordered by `(group_seq, lane)`.
+- **Executor.** `TrainWorkflow` keeps the pipeline full: on every CI
+  poll it runs `pumpRepo` (cut a speculative group when a level and
+  refs are free, build forming groups and probes), lands progress as it
+  happens (`progress`), and hands the repo to a successor instance when
+  its round budget is spent with work still in flight. The cron
+  fallback treats trains as abandoned only after the Workflow's full CI
+  wait (~75 min + 15).
 - **CI dispatch.**
-  - Lane runs use event `artifacts`, so seats check out the Artifacts
-    remote.
+  - Lane and probe runs use event `artifacts`, so seats check out the
+    Artifacts remote.
   - They run as agent `forge-train` at priority 8.
   - The train claims the `(repo, sha)` delivery before it pushes, so the
     push trigger doesn't start a duplicate run.
@@ -736,29 +795,48 @@ the router reads on each call. Going back to one DO is a re-hydrate.
 ```ts
 enqueueReady(deps, intentId, { cut? }): Promise<EnqueueResult | ForgeError>   // {risk, riskTerms, route, held, cut}
 approveLanding(deps, intentId, approvedBy): Promise<boolean>                  // human route -> may ride trains
-cutTrain(deps, repo): Promise<CutResult>         // cut | busy | idle | unavailable | no-pipeline | invalid-repo
-listTrains(deps, repo, { state?, limit? }): Promise<Train[]>
-getTrainDetail(deps, id): Promise<TrainDetail | null>  // lane intents (+squashed commit), CI run, bisect subtree, ledger
+cutTrain(deps, repo): Promise<CutResult>
+  // cut {trainIds, lanes, baseSha, deferred, speculative, groupSeq, slots}
+  // | busy (no free speculation level or lane ref) | idle | unavailable | no-pipeline | invalid-repo
+pumpRepo(deps, repo): Promise<{ cut, build }>    // cut (speculatively when allowed) + build forming groups and probes
+checkTrains(deps, repo): Promise<CheckResult>
+  // idle | building | waiting | retry | rebuild {requeued}
+  // | progress {mainSha, landed, requeued}   (green prefix landed, lanes behind still verifying; probes decided)
+  // | decided  {mainSha, landed, failed, requeued, bisected}   (chain red handled, or everything landed)
+listTrains(deps, repo, { state?, limit? }): Promise<Train[]>   // Train.groupSeq; probes have parentTrainId
+getTrainDetail(deps, id): Promise<TrainDetail | null>  // lane intents (+squashed commit), CI run, probe subtree, ledger
 claimConflictFor(deps, conflictId, agent): Promise<{ conflict, intent } | ForgeError>
 resolveConflictFor(deps, conflictId, agent, sha, { forkRepo?, llmReplay? })
-  : Promise<{ conflict, enqueue } | ForgeError>
-buildTrains / dispatchTrains / checkTrains / writeNotes / revokeLandedTokens / advanceRepo  // idempotent steps
+  : Promise<{ conflict, enqueue } | ForgeError>   // recomputes the replay's footprint vs trunk; footprint-unavailable fails closed
+buildTrains / dispatchTrains / writeNotes / revokeLandedTokens / advanceRepo  // idempotent steps
 runTrainTick(env)        // train-workflow.ts: cron fallback; also cuts and launches the Workflow
 replayTick(deps, repo)   // replay.ts: start replays, finalize races
 trainDepsFromEnv(env)    // production deps (isomorphic-git, MemoryFS, ARTIFACTS, AI, notes writer)
 ```
 
-`TrainWorkflow` (binding `TRAIN_WORKFLOW`) runs these durable steps in
-order:
+Policy (`.flare/policy.yml`):
+
+```yaml
+lanes:
+  max_per_train: 50      # intents per group (1-500)
+  max_parallel: 8        # lanes per group (1-64; capped by the ref pool)
+  speculation_depth: 3   # groups in flight per repo (1-8; 1 = no speculation)
+```
+
+`TrainWorkflow` (binding `TRAIN_WORKFLOW`) runs these durable steps:
 
 1. policy
 2. build
 3. check, polling with a `step.sleep` backoff from 10 s up to 2 min, at
-   most 40 polls
+   most 40 polls. While the chain is waiting (or made progress), each
+   poll also runs `pump` (speculative cut + build); a `progress` poll
+   also writes why notes and revokes landed tokens.
 4. notes
 5. revoke
 6. replays
 7. cut the next round
+8. after the last round: hand off to a successor instance if trains are
+   still in flight
 
 The number of rounds is capped at ⌈log₂ max_per_train⌉ + 5.
 
