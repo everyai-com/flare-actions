@@ -79,6 +79,11 @@ Clean up: `npx wrangler preview delete --name try-tournaments`
   then a real fast-forward push of the source branch runs from the
   Worker via isomorphic-git (memory filesystem, per-repo tokens).
   Any rejection falls back to the pointer with a ledger row.
+  A Forge trunk (any repo with goals or intents) is never promoted:
+  only the train moves its main. `POST /v1/tournaments` answers 409
+  `forge_trunk_promote` unless the create says `promote: false` (which
+  pre-files the `promote-failed` stop row), and `fastForwardWinner`
+  re-checks at push time, filing `promote-failed` with the reason.
 - **Ledger** (`GET /v1/tournaments/:id` board): opened → claimed →
   pushed → terminal → collision → verdict → resolved → promoted.
   Append-only; there is no update path.

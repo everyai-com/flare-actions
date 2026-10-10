@@ -226,7 +226,7 @@ import { ARTIFACTS_EVENT, handleArtifactsPush } from "./artifacts-push";
 import { ensureRepoMirror } from "./artifacts-mirrors";
 import {
   claimAttempt,
-  createTournament,
+  createTournamentChecked,
   getAttemptRace,
   getTournament,
   getTournamentBoard,
@@ -2783,7 +2783,8 @@ export default {
         if (!repoAllowed(ident, `${namespace}/${valid.sourceRepo}`)) {
           return json({ error: "token is not scoped to that repo" }, 403);
         }
-        const out = await createTournament(env.DB, valid);
+        const out = await createTournamentChecked(env.DB, valid);
+        if ("error" in out) return json({ error: out.error, code: out.code }, 409);
         await audit(env.DB, ident.actor, "tournament.create", out.id);
         return json({ id: out.id }, 201);
       }

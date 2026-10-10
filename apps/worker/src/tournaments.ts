@@ -138,6 +138,27 @@ export async function appendLedger(db: Db, tournamentId: string, kind: string, b
     .run();
 }
 
+// A repo is a Forge trunk once any goal or intent targets it. Only the
+// train may move a trunk's main (§3.2 invariant 1), so tournament
+// promotion must never push there. Fails closed: a lookup error counts
+// as a trunk (the blessed pointer still stands; nothing is pushed).
+export async function isForgeTrunk(db: Db, repo: string): Promise<boolean> {
+  try {
+    const row = await db
+      .prepare(
+        "SELECT 1 AS hit FROM intents WHERE repo = ? UNION ALL SELECT 1 AS hit FROM goals WHERE repo = ? LIMIT 1",
+      )
+      .bind(repo, repo)
+      .first<{ hit: number }>();
+    return row !== null;
+  } catch {
+    return true;
+  }
+}
+
+export const FORGE_TRUNK_PROMOTE_REASON =
+  "promotion disabled: source is a Forge trunk; only the train moves its main (invariant 1)";
+
 function isAlreadyExists(err: unknown): boolean {
   return (
     typeof err === "object" &&
@@ -417,8 +438,8 @@ export async function listTournaments(
 
 export function validateTournamentCreate(
   body: Record<string, unknown>,
-): { intent: string; sourceRepo: string; baseRef: string; baseSha: string } | { error: string } {
-  const { intent, sourceRepo, baseRef, baseSha } = body;
+): { intent: string; sourceRepo: string; baseRef: string; baseSha: string; promote: boolean } | { error: string } {
+  const { intent, sourceRepo, baseRef, baseSha, promote } = body;
   if (typeof intent !== "string" || !intent.trim() || intent.length > 2000) {
     return { error: "intent is required (1-2000 chars)" };
   }
@@ -431,7 +452,32 @@ export function validateTournamentCreate(
   if (baseSha !== undefined && (typeof baseSha !== "string" || baseSha.length > 64)) {
     return { error: "invalid baseSha" };
   }
-  return { intent: intent.trim(), sourceRepo, baseRef: baseRef ?? "main", baseSha: baseSha ?? "" };
+  if (promote !== undefined && typeof promote !== "boolean") {
+    return { error: "promote must be a boolean" };
+  }
+  return { intent: intent.trim(), sourceRepo, baseRef: baseRef ?? "main", baseSha: baseSha ?? "", promote: promote ?? true };
+}
+
+// API-facing create. On a Forge trunk the winner must never be pushed
+// (only the train writes trunk main), so a create that would promote is
+// refused, and a `promote: false` create pre-files the promote-failed
+// row fastForwardPass honors — the same stop replay races use.
+export async function createTournamentChecked(
+  db: Db,
+  input: { intent: string; sourceRepo: string; baseRef: string; baseSha: string; promote: boolean },
+): Promise<{ id: string } | { error: string; code: "forge_trunk_promote" }> {
+  const trunk = await isForgeTrunk(db, input.sourceRepo);
+  if (trunk && input.promote) {
+    return {
+      error: "sourceRepo is a Forge trunk: only the train moves its main. Create with promote: false to race without promotion.",
+      code: "forge_trunk_promote",
+    };
+  }
+  const out = await createTournament(db, input);
+  if (!input.promote || trunk) {
+    await appendLedger(db, out.id, "promote-failed", trunk ? FORGE_TRUNK_PROMOTE_REASON : "promotion disabled at creation (promote: false)");
+  }
+  return out;
 }
 
 export function validateTournamentClaim(body: Record<string, unknown>): { agent: string } | { error: string } {
