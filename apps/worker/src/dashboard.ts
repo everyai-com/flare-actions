@@ -68,6 +68,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <style>
 :root { color-scheme: dark; --bg: #0a0a0a; --card: #111113; --sidebar: #0a0a0a; --line: #1f1f23; --line-strong: #2e2e33; --ink: #fafafa; --soft: #a1a1aa; --muted: #71717a; --faint: #3f3f46; --accent: #fafafa; --accent-hover: #e4e4e7; --accent-ink: #7aa8f0; --danger: #f87171; --ok: #4ade80; --warn: #fbbf24; --info: #7db4f7; --hover: #17171a; --input-bg: #0a0a0a; --ring: #52525b; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
 header { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 14px 12px; background: var(--sidebar); border-right: 1px solid var(--line); position: fixed; left: 0; top: 0; bottom: 0; width: 228px; z-index: 20; }
 header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
@@ -89,6 +90,9 @@ body:not(.app) header { display: none; }
 .side-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 12px 8px 0; border-top: 1px solid var(--line); overflow: hidden; }
 .side-foot #userLabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 section.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+.settings-jump { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 6px; margin: -4px 0 14px; padding: 6px 0; background: var(--card, var(--bg)); }
+.settings-jump button { height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 500; }
+#teamPane h2[id], #settingsPane h2[id] { scroll-margin-top: 56px; }
 h2 { margin: 0 0 10px; font-size: 16px; font-weight: 600; line-height: 1.2; letter-spacing: -0.005em; }
 h2:not(:first-child) { margin-top: 24px; }
 h3 { margin: 16px 0 6px; font-size: 14px; font-weight: 600; line-height: 1.2; }
@@ -129,7 +133,7 @@ a { color: var(--accent-ink); }
   header { position: sticky; top: 0; width: auto; flex-direction: row; align-items: center; gap: 8px; padding: 10px 12px; border-right: none; border-bottom: 1px solid var(--line); }
   header h1.brand-head { padding: 0; }
   header h1.brand-head span:last-child { display: none; }
-  body.app nav.side-nav { flex-direction: row; overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: none; }
+  body.app nav.side-nav { flex-direction: row; overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: none; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); padding-right: 24px; }
   body.app nav.side-nav::-webkit-scrollbar { display: none; }
   .side-link { width: auto; flex: none; }
   .side-group { display: none; }
@@ -311,6 +315,7 @@ a.home-btn:hover, button.home-btn:hover { background: var(--accent-hover); }
 .home-verdict.bad { border-color: var(--danger, #dc2626); background: var(--tint-conflict, rgba(248,113,113,0.12)); }
 .home-verdict.busy { border-color: var(--info, #2563eb); background: var(--tint-working, rgba(125,180,247,0.12)); }
 .home-sub { font-size: 14px; margin: 18px 0 8px; }
+.home-agent .home-cmd code { white-space: normal; overflow-wrap: anywhere; }
 #runDetail { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
 .run-summary { margin: 4px 0 16px; align-items: flex-start; }
 .run-summary .big { font-size: 26px; }
@@ -526,6 +531,11 @@ ${FORGE_AUTH_DEMO_HTML}
 <p id="homeRunMsg" class="muted"></p>
 </div>
 ${FORGE_HOME_CARD_HTML}
+<div class="home-agent" id="homeAgent">
+<h3 class="home-sub">🤖 Using an AI coding agent?</h3>
+<p class="muted">Paste this into Claude Code, Codex, or Cursor inside your project. It reads this Flare's instructions and sets up your tests here.</p>
+<div class="home-cmd"><code id="homeAgentPrompt"></code><button id="homeAgentCopy" type="button" class="ghost">Copy</button></div>
+</div>
 <div class="home-cards">
 <button type="button" class="home-card" id="homeCardRuns"><strong>📋 All runs</strong><span>Every test run, newest first, with logs and the reason anything failed.</span></button>
 <button type="button" class="home-card" id="homeCardRaces"><strong>🏁 Agent races</strong><span>Give one task to several AI agents and let real tests pick the winner.</span></button>
@@ -562,7 +572,7 @@ ${FORGE_HOME_CARD_HTML}
 <details id="dispatchBox">
 <summary>Dispatch a run…</summary>
 <form id="dispatchForm" class="inline">
-<input id="dispatchRepo" placeholder="owner/repo" maxlength="100" aria-label="Repository">
+<input id="dispatchRepo" list="ghRepoList" autocomplete="off" placeholder="owner/repo" maxlength="100" aria-label="Repository">
 <input id="dispatchRef" placeholder="branch, tag, or SHA" maxlength="128" aria-label="Branch, tag, or SHA">
 <button type="submit">Dispatch</button>
 </form>
@@ -579,7 +589,15 @@ ${FORGE_HOME_CARD_HTML}
 <div id="runDetail" hidden></div>
 </section>
 <section id="teamPane" class="card" hidden>
-<h2>Access tokens</h2>
+<nav class="settings-jump" aria-label="Settings sections">
+<button type="button" class="ghost" data-jump="setTokens">Tokens</button>
+<button type="button" class="ghost" data-jump="setRunner">Runners</button>
+<button type="button" class="ghost" data-jump="setPeople">People</button>
+<button type="button" class="ghost" data-jump="setWebhook">Webhook</button>
+<button type="button" class="ghost" data-jump="setNotify">Notifications</button>
+<button type="button" class="ghost" data-jump="setGithub">GitHub App</button>
+</nav>
+<h2 id="setTokens">Access tokens</h2>
 <p class="muted">Issue tokens for runners and teammates. Runner tokens can pull jobs and update status; readonly tokens can only view runs. Revoked tokens stop working immediately.</p>
 <form id="tokenForm" class="inline">
 <input id="tokenName" placeholder="Token name, e.g. ci-laptop" maxlength="64">
@@ -594,7 +612,7 @@ ${FORGE_HOME_CARD_HTML}
 <p><button id="copyTokenBtn" class="ghost" type="button">Copy</button></p>
 </div>
 <div class="table-scroll"><table><thead><tr><th>Name</th><th>Scopes</th><th>Repos</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody id="tokensBody"></tbody></table></div>
-<h2>Pair a runner</h2>
+<h2 id="setRunner">Pair a runner</h2>
 <p class="muted">Zero-config machines: mint a code, paste one command on the fresh box, and it exchanges the code for a runner token and starts polling. Single use, expires in 10 minutes.</p>
 <form id="pairForm" class="inline">
 <input id="pairName" placeholder="Runner name, e.g. ci-metal-01" maxlength="64">
@@ -606,7 +624,7 @@ ${FORGE_HOME_CARD_HTML}
 <code class="token" id="pairCmd"></code>
 <p><button id="copyPairBtn" class="ghost" type="button">Copy</button></p>
 </div>
-<h2>GitHub users</h2>
+<h2 id="setPeople">GitHub users</h2>
 <p class="muted" id="usersInfo"></p>
 <form id="userForm" class="inline">
 <input id="userLogin" placeholder="GitHub username" maxlength="39">
@@ -631,7 +649,7 @@ ${FORGE_HOME_CARD_HTML}
 <div class="table-scroll"><table><thead><tr><th>Email</th><th>Expires</th></tr></thead><tbody id="invitesBody"></tbody></table></div>
 </section>
 <section id="settingsPane" class="card" hidden>
-<h2>Settings</h2>
+<h2 id="setWebhook">Webhook &amp; admin</h2>
 <p class="muted" id="settingsInfo"></p>
 <form id="webhookForm" class="inline">
 <input id="webhookInput" placeholder="GitHub webhook secret (16+ characters)">
@@ -644,7 +662,7 @@ ${FORGE_HOME_CARD_HTML}
 <p class="muted">Repos without a <span class="mono">flare.yml</span> run their existing <span class="mono">.github/workflows</span> files as-is: matching <span class="mono">on:</span> triggers, run steps, matrices, needs, cache, and artifacts translate automatically, and anything unsupported is dropped with a note in the worker log instead of being guessed at. Each run is tagged in the list with which pipeline ran. <a href="https://github.com/everyai-com/flare-actions/blob/main/docs/GITHUB-ACTIONS-COMPAT.md" target="_blank" rel="noopener">Support matrix</a></p>
 <p class="muted">No GitHub App? For public repos, add a plain repo webhook pointing at <span class="mono">https://&lt;this-worker&gt;/webhooks/github</span> with the secret above and pushes become runs. The App adds private repos, commit statuses, check runs, PR comments, and GitHub login.</p>
 </details>
-<h2>Run notifications</h2>
+<h2 id="setNotify">Run notifications</h2>
 <p class="muted" id="notifyInfo"></p>
 <form id="notifyForm" class="inline">
 <input id="notifyFromInput" placeholder="Sender email, e.g. ci@example.com" maxlength="254">
@@ -660,7 +678,7 @@ ${FORGE_HOME_CARD_HTML}
 <p class="muted" id="notifyWebhookInfo"></p>
 <p id="notifyWebhookErr" class="err"></p>
 <p id="notifyWebhookOk"></p>
-<h2>GitHub App</h2>
+<h2 id="setGithub">GitHub App</h2>
 <p class="muted" id="githubInfo"></p>
 <form id="githubForm" class="inline">
 <button type="submit">Connect GitHub</button>
@@ -677,7 +695,7 @@ ${FORGE_HOME_CARD_HTML}
 <p class="muted">One task races N agents in isolated forks. Open a tournament, agents claim slots, every push is verified, the verdict picks a winner. Press ⌘K to jump anywhere.</p>
 <form id="tournamentForm" class="inline">
 <input id="tournamentIntent" placeholder="task intent, e.g. fix the login redirect" maxlength="200" size="40" aria-label="Task intent">
-<input id="tournamentSource" placeholder="source repo" maxlength="100" size="20" aria-label="Source repo">
+<input id="tournamentSource" list="flareRepoList" autocomplete="off" placeholder="source repo" maxlength="100" size="20" aria-label="Source repo">
 <button type="submit">Open tournament</button>
 </form>
 <p id="tournamentsErr" class="err"></p>
@@ -708,7 +726,7 @@ ${FORGE_HOME_CARD_HTML}
 <h2>Merge queue</h2>
 <p class="muted">Agent PRs land one at a time: each entry rebases onto the current head, verifies with real CI, and merges on green. One verification runs per repo; entries whose base moves re-queue instead of landing stale.</p>
 <form id="mergeForm" class="inline">
-<input id="mergeRepo" placeholder="owner/repo" maxlength="100" aria-label="Repository">
+<input id="mergeRepo" list="ghRepoList" autocomplete="off" placeholder="owner/repo" maxlength="100" aria-label="Repository">
 <button type="submit">Load</button>
 </form>
 <p id="mergeErr" class="err"></p>
@@ -931,7 +949,8 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     invitePane.hidden = true;
     resetPane.hidden = true; resetConfirmPane.hidden = true; magicConfirmPane.hidden = true;
     authPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false; document.body.classList.add("app");
-    document.getElementById("connectBanner").hidden = !(admin && !githubConnected);
+    // Home's checklist owns "Connect GitHub"; the Runs pane stays about runs.
+    document.getElementById("connectBanner").hidden = true;
     // "email:pat@x" / "github:pat" are API actor ids; people read a name.
     userLabel.textContent = actor ? String(actor).replace(/^email:/, "").replace(/^github:/, "@") + " " : "";
     userLabel.title = actor || "";
@@ -1382,6 +1401,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     });
     sel.hidden = repos.length === 0;
     txt.hidden = repos.length > 0;
+    fillDatalist("ghRepoList", repos.map(function (r) { return r.fullName; }));
     if (prev) sel.value = prev;
   }
   function renderHomeStatus(st) {
@@ -1524,10 +1544,18 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       panes[name].classList.add("pane-enter");
     }
     fxOnSelect(name);
+    // Narrow screens: the nav is a scroll strip, so keep the active tab in view.
+    var activeLink = document.querySelector('.side-link[data-tab="' + name + '"]');
+    if (activeLink && window.innerWidth <= 900 && activeLink.scrollIntoView) activeLink.scrollIntoView({ block: "nearest", inline: "center" });
     syncHash();
   }
   document.getElementById("runsFilter").addEventListener("input", function () { renderRuns(); });
   document.getElementById("runsFilterForm").addEventListener("submit", function (ev) { ev.preventDefault(); });
+  (function () {
+    var prompt = "Read " + location.origin + "/llms.txt and move this repo's CI to Flare. Start with the cheapest path that works, and ask me before changing anything on GitHub.";
+    document.getElementById("homeAgentPrompt").textContent = prompt;
+    document.getElementById("homeAgentCopy").addEventListener("click", function (e) { copyText(prompt, e.currentTarget); });
+  })();
   function copyText(text, btn) {
     function done(ok) {
       btn.textContent = ok ? "Copied" : "Copy failed";
@@ -1610,8 +1638,27 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     var paths = body.slice(cut + 2).split(", ").filter(function (p) { return !!p; });
     return { a: pair[0], b: pair[1], paths: paths };
   }
+  // Autocomplete for free-text repo inputs; best-effort, never blocks.
+  (function () {
+    var jumps = document.querySelectorAll(".settings-jump [data-jump]");
+    for (var i = 0; i < jumps.length; i++) {
+      jumps[i].addEventListener("click", function (e) {
+        var target = document.getElementById(e.currentTarget.getAttribute("data-jump"));
+        if (target && !target.closest("[hidden]")) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  })();
+  function fillDatalist(id, names) {
+    var dl = document.getElementById(id);
+    if (!dl) return;
+    dl.textContent = "";
+    names.forEach(function (n) { var o = document.createElement("option"); o.value = n; dl.appendChild(o); });
+  }
   function loadTournaments() {
     stopTournamentTimer();
+    api("/v1/repos?limit=100").then(function (b) {
+      fillDatalist("flareRepoList", ((b && b.repos) || []).map(function (r) { return r.name; }));
+    }, function () {});
     var err = document.getElementById("tournamentsErr");
     var list = document.getElementById("tournamentsList");
     err.textContent = "";
@@ -2264,31 +2311,26 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     if (!list.children.length) {
       var empty = el("div"); empty.className = "empty";
       if (!lastRuns.length) {
-        empty.appendChild(el("h3", "No runs yet — three steps to the first one"));
-        var appDone = !!(lastStatus && lastStatus.githubConnected);
-        var steps = el("ol"); steps.className = "steps";
-        steps.appendChild(setupStep(
-          "Connect a repo",
-          appDone ? "GitHub App connected." : "Connect the App, or add a repo webhook for public repos.",
-          appDone,
-          isAdmin && !appDone ? { label: "Open Settings", fn: function () { selectTab("settings"); loadSettings(); } } : null,
-        ));
-        steps.appendChild(setupStep(
-          "Start an executor",
-          "Runs wait for a machine: npm run runner from the Flare checkout, or managed seats.",
-          false,
-          null,
-        ));
-        steps.appendChild(setupStep(
-          "Trigger the first run",
-          "Push to a connected repo — flare.yml or existing .github/workflows both run — or dispatch from this page.",
-          false,
-          isAdmin ? { label: "Dispatch a run", fn: function () {
+        // One setup story: Home owns the guided checklist, so this
+        // empty state points there instead of repeating it.
+        empty.appendChild(el("h3", "No runs yet"));
+        empty.appendChild(el("p", "Push to GitHub and your tests show up here. Flare runs your flare.yml, or your existing .github/workflows unchanged."));
+        var acts = el("p");
+        var toHome = el("button", "Finish setup on Home");
+        toHome.type = "button";
+        toHome.addEventListener("click", function () { location.hash = "#/home"; });
+        acts.appendChild(toHome);
+        if (isAdmin) {
+          var dispatchNow = el("button", "Dispatch a run");
+          dispatchNow.type = "button"; dispatchNow.className = "ghost";
+          dispatchNow.addEventListener("click", function () {
             document.getElementById("dispatchBox").open = true;
             document.getElementById("dispatchRepo").focus();
-          } } : null,
-        ));
-        empty.appendChild(steps);
+          });
+          acts.appendChild(document.createTextNode(" "));
+          acts.appendChild(dispatchNow);
+        }
+        empty.appendChild(acts);
       } else {
         empty.appendChild(el("h3", "No runs match"));
         empty.appendChild(el("p", "Try a different filter."));
@@ -3253,5 +3295,7 @@ ${FORGE_JS}
   startPoll();
 })();
 </script>
+<datalist id="ghRepoList"></datalist>
+<datalist id="flareRepoList"></datalist>
 </body>
 </html>`;

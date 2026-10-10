@@ -1,5 +1,6 @@
 import { parse as parseYaml } from "yaml";
 import { convertActionsWorkflow, isImportSuccess } from "../../../packages/runner-sdk/src/importActions.ts";
+import { outputEnvName } from "../../../packages/runner-sdk/src/outputs.ts";
 import { MAX_JOBS, normalizeJobCondition, parsePipeline, type PipelineJob } from "./pipeline.ts";
 
 // Native `.github/workflows` compatibility: when a repo has no flare.yml
@@ -253,7 +254,10 @@ const GITHUB_BUILTINS: [RegExp, string][] = [
   [/^github\.workflow$/i, "${FLARE_WORKFLOW}"],
 ];
 
-export function mapGithubExpressions(text: string): { text: string; dropped: string[] } {
+// `outputRefs: false` for env values: those are never shell-expanded, so
+// an env-read rewrite would land as literal text; drop with a warning.
+export function mapGithubExpressions(text: string, opts: { outputRefs?: boolean } = {}): { text: string; dropped: string[] } {
+  const outputRefs = opts.outputRefs ?? true;
   const dropped: string[] = [];
   const out = text.replace(/\$\{\{\s*([^}]*?)\s*\}\}/g, (match, exprRaw: string) => {
     const expr = exprRaw.trim();
@@ -261,10 +265,24 @@ export function mapGithubExpressions(text: string): { text: string; dropped: str
       if (re.test(expr)) return replacement;
     }
     if (/^secrets\./i.test(expr) || /^env\./i.test(expr) || /^matrix\./i.test(expr)) return match;
+    // Outputs ride step env (runner-sdk outputs.ts): read the variable,
+    // never paste the value into shell text.
+    const so = !outputRefs ? null : /^steps\.([A-Za-z_][\w-]*)\.outputs\.([A-Za-z_][\w-]*)$/.exec(expr);
+    if (so) return "${" + outputEnvName("FLARE_STEPS_", so[1] as string, so[2] as string) + "}";
+    const no = !outputRefs ? null : /^needs\.([A-Za-z_][\w-]*)\.(?:outputs\.([A-Za-z_][\w-]*)|(result))$/.exec(expr);
+    if (no) return "${" + outputEnvName("FLARE_NEEDS_", no[1] as string, no[2] ?? "RESULT") + "}";
     dropped.push(expr);
     return "";
   });
   return { text: out, dropped };
+}
+
+// Actions semantics for `${{ matrix.<key> }}`: the cell's value, or ""
+// when this cell lacks the key (include-only keys live only in the cells
+// they extended). The parser already interpolated step runs; this also
+// covers job env, which flare.yml leaves verbatim.
+export function resolveMatrixRefs(text: string, matrix: Record<string, string> | undefined): string {
+  return text.replace(/\$\{\{\s*matrix\.([A-Za-z_][\w-]*)\s*\}\}/g, (_match, key: string) => matrix?.[key] ?? "");
 }
 
 export interface TranslatedWorkflow {
@@ -321,7 +339,7 @@ export function translateWorkflow(
     if (skipped.has(job.base ?? job.name)) continue;
     const steps = [];
     for (const step of job.steps) {
-      const mapped = mapGithubExpressions(step.run);
+      const mapped = mapGithubExpressions(resolveMatrixRefs(step.run, job.matrix));
       step.run = mapped.text.trim();
       for (const expr of mapped.dropped) dropped.add(expr);
       if (step.run) steps.push(step);
@@ -333,7 +351,7 @@ export function translateWorkflow(
     }
     const env = { ...(job.env ?? {}) };
     for (const [key, value] of Object.entries(env)) {
-      const mapped = mapGithubExpressions(value);
+      const mapped = mapGithubExpressions(resolveMatrixRefs(value, job.matrix), { outputRefs: false });
       env[key] = mapped.text;
       for (const expr of mapped.dropped) dropped.add(expr);
     }
@@ -350,6 +368,19 @@ export function translateWorkflow(
 // `<workflow>: ` prefix on base names and needs (Actions `needs` is
 // workflow-scoped, so per-file validation then prefixing is exact);
 // FLARE_WORKFLOW rides each job's env either way.
+// Needs output refs became `${FLARE_NEEDS_<NEED>_<KEY>}` reads before
+// merging; executors key that env on the prefixed need name, so move the
+// stem along with the prefix. Longest stem first: `a` must not claim
+// `${FLARE_NEEDS_A_B_X}` when `a-b` is also a need.
+export function renameNeedsRefs(run: string, needs: string[], prefix: string): string {
+  const stem = (n: string): string => outputEnvName("FLARE_NEEDS_", n, "K").slice(0, -1);
+  const pairs = needs.map((n) => [stem(n), stem(prefix + n)] as const).sort((x, y) => y[0].length - x[0].length);
+  return run.replace(/\$\{(FLARE_NEEDS_[A-Z0-9_]+)\}/g, (match, name: string) => {
+    for (const [from, to] of pairs) if (name.startsWith(from)) return "${" + to + name.slice(from.length) + "}";
+    return match;
+  });
+}
+
 export function mergeWorkflows(items: { name: string; jobs: PipelineJob[] }[]): {
   jobs: PipelineJob[] | null;
   warnings: string[];
@@ -367,7 +398,10 @@ export function mergeWorkflows(items: { name: string; jobs: PipelineJob[] }[]): 
       }
       const merged: PipelineJob = { ...job, name, steps: job.steps.map((s) => ({ ...s })) };
       if (job.base) merged.base = prefix + job.base;
-      if (job.needs) merged.needs = job.needs.map((n) => prefix + n);
+      if (job.needs) {
+        merged.needs = job.needs.map((n) => prefix + n);
+        if (prefix) for (const s of merged.steps) s.run = renameNeedsRefs(s.run, job.needs, prefix);
+      }
       merged.env = { ...(job.env ?? {}) };
       if (!merged.env.FLARE_WORKFLOW) merged.env.FLARE_WORKFLOW = item.name;
       out.push(merged);

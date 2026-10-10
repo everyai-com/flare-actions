@@ -23,6 +23,20 @@ import { explainDigest } from "./explain.ts";
 import { formatCacheStats, parseCacheStats } from "./cache.ts";
 import { forgeCliDeps, runForge } from "./forge.ts";
 
+// npm runs scripts from the package root (`npm run cli` from any repo
+// subdirectory, `npm start` in apps/cli) and keeps the caller's directory
+// in INIT_CWD. Restore it so `import`, `local`, `init`, and `connect` act
+// on the directory the user ran the command in. Gated on one of this
+// repo's own scripts (root package flare-actions, CLI package flare-forge),
+// so a user's project script that `cd`s before calling `flare` is left
+// alone. Runs before loadEnv(), which walks up from cwd, so the repo-root
+// .env is still found from any subdirectory up to 6 levels deep.
+const initCwd = process.env["INIT_CWD"];
+const ownScript = process.env["npm_package_name"] === "flare-actions" || process.env["npm_package_name"] === "flare-forge";
+if (initCwd && ownScript && initCwd !== process.cwd()) {
+  process.chdir(initCwd);
+}
+
 loadEnv();
 
 const [cmd, ...rawRest] = process.argv.slice(2);
@@ -32,81 +46,90 @@ const { head, tail } = splitPassthrough(rawRest);
 const JSON_MODE = hasJsonFlag(head);
 const rest = [...stripJsonFlag(head), ...tail];
 
-function usage(): never {
-  console.log(
-    [
-      "usage:",
-      "  cli runs [agent]                          list recent runs, optionally one agent's",
-      "  cli logs <runId>                           show run jobs, steps, triage, logs",
-      "  cli explain <runId>                        one narrative: verdict, failures, next command",
-      "  cli local [job] [--file flare.yml]         run the pipeline in this directory (no server, warm cache)",
-      "  cli local --parity [--file] [job]          report local-vs-cloud divergences (image, cache, env) without running",
-      "  cli run <repo> <sha|branch|tag> [ref]      dispatch, wait, print the compact digest (exit 1 on failure)",
-      "  run/dispatch accept --agent <tag>          tag the run for per-agent caps + attribution",
-      "  run/dispatch accept --profile <name>      run one CI profile from flare.yml (else the event default, else all jobs)",
-      "  cli run <repo> --source [ref]              upload the working tree and run it (no commit needed)",
-      "  append --dry-run to run/dispatch           plan the fan-out (queued/blocked/budget) without creating a run",
-      "  cli watch <runId>                          wait for a run and print the compact digest",
-      "  cli cancel <runId>                         cancel queued/blocked jobs of a run",
-      "  cli dispatch <repo> <sha|branch|tag> [ref]  trigger a run without waiting",
-      "  cli rerun <runId> <jobId>                   reset a finished job to queued",
-      "  cli flaky <repo> [days]                     per-job failure rates, worst first",
-      "  cli bottlenecks <repo> [days]               slowest checks: p50/p95 run time + queue wait",
-      "  cli quarantine list <repo>                  quarantined (flaky) tests for a repo",
-      "  cli quarantine add <repo> <test>            move a test out of the blocking gate",
-      "  cli quarantine remove <repo> <test>         reinstate a quarantined test",
-      "  cli init [--force] [--stack <id>] [--template <id>]  scaffold flare.yml (auto-detected stack) + AGENTS.md snippet",
-      "  cli connect [repo] [--init] [--wire] [--dry-run]  detect stack, scaffold, wire, verify in one command",
-      "  cli tests <runId>                           per-test results and failing tests",
-      "  cli selection <runId>                       smart test selection: what was skipped and why",
-      "  cli attestation <receiptId>                 verify a reused-verdict receipt",
-      "  cli mergequeue enqueue <repo> <pr> <sha>   queue a PR for verify-then-land (--base, --agent)",
-      "  cli mergequeue status <repo>                queue entries + file-collision radar",
-      "  cli mergequeue cancel <entryId>             cancel a queued/verifying entry",
-      "  cli login [--url U] [--code C]              pair this machine (writes .env, 0600)",
-      "  cli races [raceId]                          list agent races, or one race board",
-      "  cli repos [name] [path] [--ref R]           list forge repos, or browse one",
-      "  cli forge <verb> ...                        Flare Forge: goal|declare|claim|push|ready|inbox|status|why|conflicts|trains|snapshot|connect-agent|init (cli forge --help)",
-      "  cli claim <raceId> <agent>                  claim a race lane (forks a workspace)",
-      "  cli verdict <raceId>                        winner ranking + why-it-won rationale",
-      "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
-      "  cli queue [labels]                        live queue + projected claim order (admin)",
-      "  cli cache list [prefix]                     list cache entries (admin)",
-      "  cli cache purge [prefix]                    delete cache entries (admin)",
-      "  cli cache stats                             shared warm-cache hit rate (7d)",
-      "  cli usage [days] [repo]                     runs, jobs, compute-minutes for billing",
-      "  cli usage --merged-pr <repo> [weeks]       cost-per-merged-PR trend (needs the GitHub App)",
-      "  cli credits [limit]                       prepaid balance + ledger (hosted; self-hosted is free)",
-      "  cli signup [--agent <tag>]                 onboard this deployment (tokenless probe + next steps)",
-      "  cli paused                                  repos auto-paused for runaway spend (admin)",
-      "  cli resume <repo>                           resume a paused repo (admin)",
-      "  cli github-jobs [repo]                    ephemeral runner-mode jobs (status, duration, list price)",
-      "  cli github-jobs --logs <jobId> [repo]    print one lane job's log digest",
-      "  cli search <query...>                       search all job logs (branch:main level:error ...)",
-      "  cli artifacts <runId>                       list a run's artifacts",
-      "  cli badge <repo> [branch]                   print badge markdown + url",
-      "  cli import <workflow.yml>                   convert a GitHub Actions workflow to flare.yml",
-      "  cli mcp-config                              print MCP client config for this server",
-      "  cli devbox create <name> [--image img]      create a persistent warm dev box (local docker)",
-      "  cli devbox exec <name> -- <cmd...>           run a command in the box (/work)",
-      "  cli devbox sync <name> [--dir D] [paths..]  tar local paths into the box workdir",
-      "  cli devbox fetch <name> <path> [dir]        copy a workdir-relative path out of the box",
-      "  cli devbox snapshot <name> [tag]            commit the box filesystem to a local image tag",
-      "  cli devbox restore <name> <tag>             recreate the box from a snapshot tag",
-      "  cli devbox list                             list dev boxes",
-      "  cli devbox destroy <name>                   remove the box (snapshot images kept)",
-      "  append --remote to devbox/mcp-serve        run boxes on the seats worker (SEATS_URL + SEATS_TOKEN)",
-      "  cli mcp-serve                               stdio MCP server for dev boxes (local agents)",
-      "",
-      "run/dispatch accept --priority N (0-10): higher jumps queued batch work.",
-      "every command accepts --json: stdout becomes one versioned envelope",
-      "  { version: 1, command, data } (mcp-config stays paste-ready, mcp-serve ignores it).",
-      "cli local reads FLARE_SECRET_<NAME> for ${{ secrets.NAME }} placeholders.",
-      "env: FLARE_ACTIONS_URL + RUNNER_TOKEN (from `npm run setup` or the dashboard).",
-      "Reads accept readonly tokens; dispatch/rerun need runner scope.",
-    ].join("\n"),
-  );
-  process.exit(2);
+const USAGE_LINES = [
+  "  cli runs [agent]                          list recent runs, optionally one agent's",
+  "  cli logs <runId>                           show run jobs, steps, triage, logs",
+  "  cli explain <runId>                        one narrative: verdict, failures, next command",
+  "  cli local [job] [--file flare.yml]         run the pipeline in this directory (no server, warm cache)",
+  "  cli local --parity [--file] [job]          report local-vs-cloud divergences (image, cache, env) without running",
+  "  cli run <repo> <sha|branch|tag> [ref]      dispatch, wait, print the compact digest (exit 1 on failure)",
+  "  run/dispatch accept --agent <tag>          tag the run for per-agent caps + attribution",
+  "  run/dispatch accept --profile <name>      run one CI profile from flare.yml (else the event default, else all jobs)",
+  "  cli run <repo> --source [ref]              upload the working tree and run it (no commit needed)",
+  "  append --dry-run to run/dispatch           plan the fan-out (queued/blocked/budget) without creating a run",
+  "  cli watch <runId>                          wait for a run and print the compact digest",
+  "  cli cancel <runId>                         cancel queued/blocked jobs of a run",
+  "  cli dispatch <repo> <sha|branch|tag> [ref]  trigger a run without waiting",
+  "  cli rerun <runId> <jobId>                   reset a finished job to queued",
+  "  cli flaky <repo> [days]                     per-job failure rates, worst first",
+  "  cli bottlenecks <repo> [days]               slowest checks: p50/p95 run time + queue wait",
+  "  cli quarantine list <repo>                  quarantined (flaky) tests for a repo",
+  "  cli quarantine add <repo> <test>            move a test out of the blocking gate",
+  "  cli quarantine remove <repo> <test>         reinstate a quarantined test",
+  "  cli init [--force] [--stack <id>] [--template <id>]  scaffold flare.yml (auto-detected stack) + AGENTS.md snippet",
+  "  cli connect [repo] [--init] [--wire] [--dry-run]  detect stack, scaffold, wire, verify in one command",
+  "  cli tests <runId>                           per-test results and failing tests",
+  "  cli selection <runId>                       smart test selection: what was skipped and why",
+  "  cli attestation <receiptId>                 verify a reused-verdict receipt",
+  "  cli mergequeue enqueue <repo> <pr> <sha>   queue a PR for verify-then-land (--base, --agent)",
+  "  cli mergequeue status <repo>                queue entries + file-collision radar",
+  "  cli mergequeue cancel <entryId>             cancel a queued/verifying entry",
+  "  cli login [--url U] [--code C]              pair this machine (writes .env, 0600)",
+  "  cli races [raceId]                          list agent races, or one race board",
+  "  cli repos [name] [path] [--ref R]           list forge repos, or browse one",
+  "  cli forge <verb> ...                        Flare Forge: goal|declare|claim|push|ready|inbox|status|why|conflicts|trains|snapshot|connect-agent|init (cli forge --help)",
+  "  cli claim <raceId> <agent>                  claim a race lane (forks a workspace)",
+  "  cli verdict <raceId>                        winner ranking + why-it-won rationale",
+  "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
+  "  cli queue [labels]                        live queue + projected claim order (admin)",
+  "  cli cache list [prefix]                     list cache entries (admin)",
+  "  cli cache purge [prefix]                    delete cache entries (admin)",
+  "  cli cache stats                             shared warm-cache hit rate (7d)",
+  "  cli usage [days] [repo]                     runs, jobs, compute-minutes for billing",
+  "  cli usage --merged-pr <repo> [weeks]       cost-per-merged-PR trend (needs the GitHub App)",
+  "  cli credits [limit]                       prepaid balance + ledger (hosted; self-hosted is free)",
+  "  cli signup [--agent <tag>]                 onboard this deployment (tokenless probe + next steps)",
+  "  cli paused                                  repos auto-paused for runaway spend (admin)",
+  "  cli resume <repo>                           resume a paused repo (admin)",
+  "  cli github-jobs [repo]                    ephemeral runner-mode jobs (status, duration, list price)",
+  "  cli github-jobs --logs <jobId> [repo]    print one lane job's log digest",
+  "  cli search <query...>                       search all job logs (branch:main level:error ...)",
+  "  cli artifacts <runId>                       list a run's artifacts",
+  "  cli badge <repo> [branch]                   print badge markdown + url",
+  "  cli import <workflow.yml>                   convert a GitHub Actions workflow to flare.yml",
+  "  cli mcp-config                              print MCP client config for this server",
+  "  cli devbox create <name> [--image img]      create a persistent warm dev box (local docker)",
+  "  cli devbox exec <name> -- <cmd...>           run a command in the box (/work)",
+  "  cli devbox sync <name> [--dir D] [paths..]  tar local paths into the box workdir",
+  "  cli devbox fetch <name> <path> [dir]        copy a workdir-relative path out of the box",
+  "  cli devbox snapshot <name> [tag]            commit the box filesystem to a local image tag",
+  "  cli devbox restore <name> <tag>             recreate the box from a snapshot tag",
+  "  cli devbox list                             list dev boxes",
+  "  cli devbox destroy <name>                   remove the box (snapshot images kept)",
+  "  append --remote to devbox/mcp-serve        run boxes on the seats worker (SEATS_URL + SEATS_TOKEN)",
+  "  cli mcp-serve                               stdio MCP server for dev boxes (local agents)",
+  "",
+  "run/dispatch accept --priority N (0-10): higher jumps queued batch work.",
+  "every command accepts --json: stdout becomes one versioned envelope",
+  "  { version: 1, command, data } (mcp-config stays paste-ready, mcp-serve ignores it).",
+  "cli local reads FLARE_SECRET_<NAME> for ${{ secrets.NAME }} placeholders.",
+  "env: FLARE_ACTIONS_URL + RUNNER_TOKEN (from `npm run setup` or the dashboard).",
+  "Reads accept readonly tokens; dispatch/rerun need runner scope.",
+];
+
+function usage(code = 2): never {
+  console.log(["usage:", ...USAGE_LINES].join("\n"));
+  process.exit(code);
+}
+
+// `<cmd> --help` / `-h`: print that command's usage lines (exit 0) instead
+// of treating the flag as an argument (e.g. `import --help` opening a file
+// named --help). Commands with their own help (forge) handle it themselves.
+function commandHelp(name: string): never {
+  const lines = USAGE_LINES.filter((l) => l.trimStart().startsWith(`cli ${name} `) || l.trim() === `cli ${name}`);
+  if (lines.length === 0) usage(0);
+  console.log(["usage:", ...lines].join("\n"));
+  process.exit(0);
 }
 
 function client(): FlareClient {
@@ -210,6 +233,14 @@ async function waitAndDigest(c: FlareClient, runId: string): Promise<FlareRunDig
   if (!JSON_MODE) printDigest(digest);
   return digest;
 }
+
+if (cmd === "--version" || cmd === "-v" || cmd === "version") {
+  console.log(process.env["FLARE_CLI_VERSION"] ?? "dev");
+  process.exit(0);
+}
+const HELP_FLAGS = new Set(["--help", "-h"]);
+if (!cmd || cmd === "help" || HELP_FLAGS.has(cmd)) usage(cmd ? 0 : 2);
+if (cmd !== "forge" && head.some((a) => HELP_FLAGS.has(a))) commandHelp(cmd);
 
 try {
   if (cmd === "runs") {

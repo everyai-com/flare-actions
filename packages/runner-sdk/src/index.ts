@@ -26,11 +26,13 @@ export {
   MAX_NEEDS_BYTES,
   MAX_OUTPUT_VALUE_BYTES,
   MAX_STEP_OUTPUTS,
+  parseKeyValueFile,
   parseOutputRef,
   parseStepOutputs,
   resolveJobOutputs,
 } from "./outputs.ts";
-export type { NeedsContext, ParsedStepOutputs, ResolvedJobOutputs } from "./outputs.ts";
+export type { KeyValueEntry, NeedsContext, ParsedStepOutputs, ResolvedJobOutputs } from "./outputs.ts";
+export { ENV_DENYLIST, ENV_DENYLIST_PREFIXES, isAllowedEnvName, STEP_FILE_ENV_NAMES } from "./envfiles.ts";
 export {
   buildImporters,
   canParsePath,

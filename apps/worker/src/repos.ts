@@ -214,6 +214,18 @@ export async function listRepos(
   };
 }
 
+// Machine-made forks: race attempts (`t-<tournament 8 hex>-<agent>`,
+// tournaments.forkNameFor), intent forks (`i-<12 hex>`,
+// intents-core.intentForkName) and agent sessions (`s-<12 hex>-...`,
+// session.sessionForkName). Only Artifacts forks qualify (`source`
+// set), so a hand-made repo that happens to share the shape stays
+// visible. Hidden from the default repo list; `?all=1` shows them.
+const SCRATCH_REPO = /^(?:t-[0-9a-f]{8}-[a-z0-9-]+|i-[0-9a-f]{12}(?:-[a-z0-9-]+)?|s-[0-9a-f]{12}-[a-z0-9-]+)$/;
+
+export function isScratchRepo(repo: Pick<RepoSummary, "name" | "source">): boolean {
+  return !!repo.source && repo.source.startsWith("artifacts:") && SCRATCH_REPO.test(repo.name);
+}
+
 // Allowlist-aware page: scoped tokens filter before paging, refilling
 // from later upstream pages (bounded) so a page is never empty while
 // more allowed repos follow. Each upstream fetch asks only for the
@@ -224,13 +236,15 @@ export async function listAllowedRepos(
   limit: number,
   cursor: string | undefined,
   allow: ((name: string) => boolean) | null,
+  hide: ((repo: RepoSummary) => boolean) | null = null,
 ): Promise<{ repos: RepoSummary[]; total: number; cursor?: string }> {
-  if (!allow) return listRepos(artifacts, limit, cursor);
+  if (!allow && !hide) return listRepos(artifacts, limit, cursor);
+  const keep = (r: RepoSummary): boolean => (!allow || allow(r.name)) && !(hide && hide(r));
   const repos: RepoSummary[] = [];
   let next = cursor;
   for (let pages = 0; pages < 10 && repos.length < limit; pages++) {
     const page = await listRepos(artifacts, limit - repos.length, next);
-    repos.push(...page.repos.filter((r) => allow(r.name)));
+    repos.push(...page.repos.filter(keep));
     next = page.cursor;
     if (!next) break;
   }

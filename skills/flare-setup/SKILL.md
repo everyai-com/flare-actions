@@ -18,8 +18,9 @@ what needs a human click.
 1. **Dry-run first**: `npx flare-forge connect --dry-run` (needs
    `FLARE_ACTIONS_URL`). It prints the plan and changes nothing.
 2. **Human clicks** (you cannot do these — link them, don't stall on them):
-   - Deploy, if there is no deployment yet: `npm run setup` is fully
-     non-interactive and prints the Worker URL; the one-click Deploy to
+   - Deploy, if there is no deployment yet: `npm run setup` is
+     non-interactive once `npx wrangler login` has run (or
+     `CLOUDFLARE_API_TOKEN` is set) and prints the Worker URL; the one-click Deploy to
      Cloudflare button needs a human's Cloudflare consent.
    - Dashboard admin claim (first login) and **Connect GitHub**
      (GitHub App Create flow) — both are browser clicks at

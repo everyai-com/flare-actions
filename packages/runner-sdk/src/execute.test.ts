@@ -5,6 +5,24 @@ import { describe, expect, it } from "vitest";
 import { executeSteps, parseDefinition } from "./execute";
 
 describe("executeSteps", () => {
+  it("exposes earlier steps' outputs to later steps as FLARE_STEPS_* env", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "flare-steps-env-"));
+    try {
+      const out = await executeSteps(
+        [
+          { id: "meta", run: 'echo "before=[${FLARE_STEPS_META_TAG:-unset}]"; echo "tag=v1.2; rm -rf x" >> "$GITHUB_OUTPUT"' },
+          { run: 'echo "after=[$FLARE_STEPS_META_TAG]"' },
+        ],
+        { cwd, env: { ...process.env } },
+      );
+      expect(out.success).toBe(true);
+      expect(out.results[0].output).toContain("before=[unset]");
+      expect(out.results[1].output).toContain("after=[v1.2; rm -rf x]");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("runs steps and captures output", async () => {
     const out = await executeSteps([{ run: "echo hi" }, { run: "echo bye" }], {
       cwd: "/tmp",
@@ -171,6 +189,80 @@ describe("executeSteps", () => {
       expect(out.stepOutputs.step1?.ok).toBe("1");
       expect(out.log).toContain("truncated values: big");
       expect(out.log).toContain("ignored lines: 1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("executeSteps step files", () => {
+  it("propagates $GITHUB_ENV (incl. heredoc) to later steps only, ignoring denylisted names", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-env-"));
+    try {
+      const out = await executeSteps(
+        [
+          { run: 'echo "early=[$ENVFILE_FOO]"' },
+          {
+            run: 'echo "ENVFILE_FOO=bar" >> "$GITHUB_ENV"; printf "ENVFILE_MULTI<<EOF\\nl1\\nl2\\nEOF\\n" >> "$FLARE_ENV"; echo "NODE_OPTIONS=--inspect" >> "$GITHUB_ENV"; echo "same=[$ENVFILE_FOO]"',
+          },
+          { run: 'echo "later=[$ENVFILE_FOO] node=[$NODE_OPTIONS]"; echo "$ENVFILE_MULTI"' },
+        ],
+        { cwd: dir, env: { ...process.env } },
+      );
+      expect(out.success).toBe(true);
+      expect(out.results[0].output).toContain("early=[]");
+      expect(out.results[1].output).toContain("same=[]");
+      expect(out.results[2].output).toContain("later=[bar] node=[");
+      expect(out.results[2].output).not.toContain("--inspect");
+      expect(out.results[2].output).toContain("l1\nl2");
+      expect(out.log).toContain("[env] step step2: set ENVFILE_FOO, ENVFILE_MULTI");
+      expect(out.log).toContain("ignored (reserved or invalid names): NODE_OPTIONS");
+      expect(existsSync(join(dir, ".flare-env-1"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not leak $GITHUB_ENV across jobs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-env-"));
+    try {
+      await executeSteps([{ run: 'echo "ENVFILE_LEAK=1" >> "$GITHUB_ENV"' }], { cwd: dir, env: { ...process.env } });
+      const out = await executeSteps([{ run: 'echo "leak=[$ENVFILE_LEAK]"' }], { cwd: dir, env: { ...process.env } });
+      expect(out.results[0].output).toContain("leak=[]");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prepends $GITHUB_PATH entries with later lines first", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-path-"));
+    try {
+      const out = await executeSteps(
+        [{ run: 'echo "/opt/a" >> "$GITHUB_PATH"; echo "/opt/b" >> "$GITHUB_PATH"' }, { run: 'echo "path=$PATH"' }],
+        { cwd: dir, env: { ...process.env, PATH: "/usr/bin:/bin" } },
+      );
+      expect(out.results[1].output).toContain("path=/opt/b:/opt/a:/usr/bin:/bin");
+      expect(out.log).toContain("[path] step step1: prepended /opt/a, /opt/b");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("appends $GITHUB_STEP_SUMMARY to the log, bounded per job", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-sum-"));
+    try {
+      const out = await executeSteps(
+        [
+          { run: 'echo "## Results" >> "$GITHUB_STEP_SUMMARY"', id: "report" },
+          { run: 'head -c 70000 /dev/zero | tr "\\0" x >> "$FLARE_STEP_SUMMARY"' },
+          { run: 'echo "dropped" >> "$GITHUB_STEP_SUMMARY"' },
+        ],
+        { cwd: dir, env: { ...process.env } },
+      );
+      expect(out.log).toContain("── step summary ── (report)\n## Results");
+      expect(out.log).toContain("step summary truncated");
+      expect(out.log).not.toContain("── step summary ── (step3)");
+      expect(out.log.length).toBeLessThan(70000);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
