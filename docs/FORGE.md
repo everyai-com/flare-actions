@@ -530,6 +530,18 @@ LiveCounters = { intents, agents, overlaps, overlapsCaught, pushOverlaps, driftA
 CoordinatorSnapshot = { v: 1, repo, at, ver, intents: LiveIntent[], edges: LiveEdge[], counters, truncated }
 ```
 
+Dashboard view fields (additive; `feed-core.ts` `dashboardOps` /
+`dashboardSnapshot`): the snapshot frame also carries `data`, the same
+snapshot in the REST shape the dashboard reads (intents with
+`footprint.{paths,declared,actual,drift}` and `path`, edges as
+`overlaps`, snake_case counters such as `overlaps_caught`). Intent and
+counters ops carry the same extra fields, and every `edge` op is
+followed by an `overlap` twin (`{ a, b, paths, state: "overlap" }`,
+same id and ver). Right after the snapshot the server sends
+`{ v: 1, type: "resync" }` (no seq): a hint to read
+`GET /v1/forge/snapshot` for what the DO does not hold (cells, train
+track, trunk head). Agents may ignore both.
+
 Client to server: `{"type":"resync"}` returns a fresh snapshot, and
 `{"type":"ping"}` returns a pong.
 
@@ -787,3 +799,74 @@ The number of rounds is capped at ⌈log₂ max_per_train⌉ + 5.
   one conflict.
 - Every number includes spawning a `git http-backend` process for each
   HTTP request.
+
+## Integration status
+
+> Provenance: agent-drafted 2026-10-10 (integration stream, branch
+> `feat/forge-wiring`). Live claims come from `npx wrangler dev
+> --persist-to /tmp/forge-e2e-<ts>` (fresh local D1 + Durable Objects;
+> Artifacts and Workers AI are remote bindings even in dev) driven by
+> throwaway scripts in `/tmp/forge-e2e-work` on 2026-10-10. Everything
+> else is covered by `npm test` (`forge-dashboard-api.test.ts`,
+> `forge-review-fixes.test.ts`, `forge-planner.test.ts`,
+> `feed-core.test.ts`, 2026-10-10).
+
+### Wiring
+
+- `forgeAdaptersFromEnv` (forge-adapters.ts) plugs the real ports into
+  REST and MCP when the bindings exist: the `RepoCoordinator` DO
+  (declare, report_push via `indexPush` so the push trigger dedupes on
+  `(intent, sha)` instead of recording twice, whats_happening,
+  snapshot, release), why.ts (exact blame + notes; any trace error
+  degrades to the D1 footprint answer with a `warnings` entry), the
+  `ForgeFeed` WebSocket, the train stream (`enqueueReady`, landing
+  approval, train detail, conflict claim/resolve) and the AI planner.
+  Each coordinator call degrades to D1 on its own (structured log).
+- D1 state changes made by forge-service (claim, ready, approve-plan,
+  approve-landing, send-back, conflict claim/resolve) call coordinator
+  `sync(intentId)` through `ctx.waitUntil`.
+- New routes: `POST /v1/forge/intents/:id/approve-landing` (admin),
+  `GET /v1/forge/intents/:id/session` (flare/session plan + steps),
+  `POST .../send-back` and `.../review` (admin; human review verbs),
+  `GET /v1/forge/agents`, `GET /v1/forge/bench` (the recorded run,
+  `simulated: true`), `POST /v1/forge/goals/plan`, and `POST
+  /v1/forge/goals` with `{ goal, intents[] }` (composer launch).
+  Dashboard aliases `/approve`, `/notes`, `/fork` map to approve-plan,
+  messages and fork-session. `GET /llms.txt` and
+  `GET /.well-known/mcp.json` serve the agent index and MCP discovery.
+- `fork_session` forks the source fork (`session.ts` `forkSession`:
+  code + `flare/session` + notes) into `s-<intent>-<agent>-<rand>` with
+  a 1 h write token on the copy; the source's reasoning is carried
+  fenced as untrusted peer data.
+- MCP: `approve_plan`, `send_back`, `review_sample` (human tier, admin
+  only). Successful forge MCP writes keep only the semantic `forge.*`
+  audit row (the generic `mcp.<tool>` row stays for failures).
+
+### Live run (wrangler dev, 2026-10-10)
+
+Trunk: the Artifacts mirror `everyai-com-flare-actions` (namespace
+`flare-tournaments`). Admin via `POST /v1/admin/bootstrap` on the fresh
+D1, then an admin and a runner API token from `POST /v1/admin/tokens`.
+
+| Step | Result |
+|---|---|
+| `POST /v1/forge/goals?plan=1` | 201. First run: glm-5.3 spent all 3,000 tokens reasoning (`finish_reason: length`, no content), so gpt-oss-120b answered in 93 s with 3 grounded proposals and `after` edges. Fix: thinking off for GLM + 8,000 tokens; afterwards glm-5.3 answered a smaller goal in 48 s. Planner latency is 48-235 s on this account: slow, but it never blocks or 500s. |
+| Feed WebSocket opened before declaring | `snapshot` on connect |
+| Declare A (`README.md`, `docs/FORGE-UX.md`), then B (`README.md`) | 201 in ~1.2-1.5 s each; B returns `overlaps: [A, README.md↔README.md]` and `send_note` as the first next step |
+| `GET /v1/forge/snapshot` | `source: "coordinator"`, one edge A~B (`origin: declared`), `overlaps_caught: 1`, 281 ms |
+| Feed frames | `snapshot`, `delta(intent, counters)`, `delta(intent, edge, counters)`; after the view-field change also `resync` and `overlap` twins (re-checked) |
+| `GET /v1/forge/why` README.md:1 | exact blame: commit "Roadmap: market-evidence OSS plan…", `origin: human`, warning "stopped after 50 commits"; no note on the mirror, so `empty: why_not_found` |
+| ONE claim (A) | 200 in 10.3 s: fork `i-28fe33c141e6`, `write:i-28fe33c141e6` token; clone (10.8 s) and push (1.6 s) with the `GIT_CONFIG_*` header form: the token never appeared in argv, the remote URL or `.git/config` |
+| `report_push` | first attempt hit a transient "Network connection lost" from the remote Artifacts binding; retry 200 in 17.4 s: verified diff `README.md`, risk 2, overlap with B |
+| heartbeat, session, intent detail | 200; no `flare/session` branch yet (agent never wrote one) |
+| Dashboard, signed in (no fixtures) | Live, Inbox, Intent, Train, Conflict and Why rendered from this data (trains and the conflict were seeded into the local D1 because they only form from real CI) |
+
+Not verified live: trains building and landing (needs a CI executor
+and would push lane refs to a shared remote repo), conflict replay
+forks, `fork_session` (another remote fork), and the push-trigger
+Workflow (Artifacts events do not reach `wrangler dev`). Those paths
+are covered by tests only.
+
+Left behind on the remote namespace: fork `i-28fe33c141e6` (delete with
+`npx wrangler artifacts repos delete i-28fe33c141e6 --namespace
+flare-tournaments`).
