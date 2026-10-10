@@ -224,3 +224,32 @@ describe("binding reader", () => {
     expect(await reader.read("not-a-sha")).toBeNull();
   });
 });
+
+describe("notes tip registry (Artifacts does not resolve refs/notes/* by name)", () => {
+  const target = "c".repeat(40);
+  const tip = "d".repeat(40);
+  // Mirrors the measured platform behaviour: by-name notes refs read as
+  // empty; a raw commit sha resolves.
+  const artifactsLike: WhyNoteRepo = {
+    async log({ ref } = {}) {
+      return ref === tip ? [{ hash: tip }] : [];
+    },
+    async readFile({ ref, path }) {
+      if (ref !== tip || path !== target) return null;
+      const text = JSON.stringify(note("tip-1"));
+      return { size: text.length, text: async () => text };
+    },
+  };
+
+  it("misses without a known tip and hits with one", async () => {
+    expect(await createWhyNoteReader(artifactsLike, "notes").read(target)).toBeNull();
+    expect(await createWhyNoteReader(artifactsLike, "notes", tip).read(target)).toMatchObject({
+      source: "notes",
+      note: { intent: { id: "tip-1" } },
+    });
+  });
+
+  it("ignores a malformed known tip", async () => {
+    expect(await createWhyNoteReader(artifactsLike, "notes", "not-a-sha").read(target)).toBeNull();
+  });
+});

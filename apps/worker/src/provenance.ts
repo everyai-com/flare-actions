@@ -20,6 +20,8 @@
 // refetches and replays its entries (bounded attempts).
 import type * as IsoGit from "isomorphic-git";
 import type { FsClient, HttpClient, TreeEntry } from "isomorphic-git";
+import type { Db } from "./db";
+import { appendForgeLedger } from "./intents";
 import { parseWhyNote, serializeWhyNote, WHY_NOTE_MAX_BYTES, type WhyNote } from "./intents-core";
 
 export type WhyStorage = "notes" | "branch";
@@ -354,8 +356,19 @@ function notePaths(sha: string): string[] {
 // Reader over the Artifacts binding. `"auto"` tries notes, then the
 // branch. Tip resolution is cached for the reader's lifetime (one
 // request), so a chain lookup of N shas costs ~N reads, not 2N.
-export function createWhyNoteReader(repo: WhyNoteRepo, storage: WhyStorage | "auto" = "auto"): WhyNoteReader {
-  let notesTip: Promise<string | null> | null = null;
+//
+// Artifacts' content APIs do not resolve `refs/notes/*` by name (verified
+// 2026-10-10: REST and binding `log`/`readFile` return []/null for
+// `refs/notes/why`, while a raw commit sha works). The train is the
+// single notes writer, so it records the tip it pushed (`recordNotesTip`)
+// and callers pass it here as `knownTip`; the by-name lookup stays as a
+// best-effort fallback in case the platform starts resolving it.
+export function createWhyNoteReader(
+  repo: WhyNoteRepo,
+  storage: WhyStorage | "auto" = "auto",
+  knownTip?: string | null,
+): WhyNoteReader {
+  let notesTip: Promise<string | null> | null = knownTip && SHA_RE.test(knownTip) ? Promise.resolve(knownTip) : null;
   const resolveNotesTip = (): Promise<string | null> => {
     notesTip ??= (async () => {
       try {
@@ -396,4 +409,24 @@ export function createWhyNoteReader(repo: WhyNoteRepo, storage: WhyStorage | "au
       return null;
     },
   };
+}
+
+// The notes tip registry (see createWhyNoteReader): the train records the
+// `refs/notes/why` commit it pushed so readers can address the notes tree
+// by sha. Stored as a forge_ledger row on the train that pushed it.
+export const NOTES_TIP_KIND = "notes.tip";
+
+export async function recordNotesTip(db: Db, repo: string, trainId: string, tip: string): Promise<void> {
+  const oid = tip.toLowerCase();
+  if (!SHA_RE.test(oid)) return;
+  await appendForgeLedger(db, { repo, subjectKind: "train", subjectId: trainId, kind: NOTES_TIP_KIND, body: oid });
+}
+
+export async function latestNotesTip(db: Db, repo: string): Promise<string | null> {
+  const row = await db
+    .prepare("SELECT body FROM forge_ledger WHERE repo = ? AND kind = ? ORDER BY created_at DESC LIMIT 1")
+    .bind(repo, NOTES_TIP_KIND)
+    .first<{ body: string | null }>();
+  const oid = row?.body?.toLowerCase() ?? "";
+  return SHA_RE.test(oid) ? oid : null;
 }

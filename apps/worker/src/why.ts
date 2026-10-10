@@ -16,7 +16,7 @@ import {
   type WhyNote,
 } from "./intents-core";
 import { getGoal, getIntent, getTrain, listForgeLedger, type ForgeLedgerRow } from "./intents";
-import { createWhyNoteReader, type WhyNoteBlob, type WhyStorage } from "./provenance";
+import { createWhyNoteReader, latestNotesTip, type WhyNoteBlob, type WhyStorage } from "./provenance";
 import { normalizeRepoPath, validateRef, type ReposCommit } from "./repos";
 import { SESSION_BRANCH } from "./session";
 
@@ -518,7 +518,13 @@ export async function why(deps: WhyDeps, input: WhyInput): Promise<WhyChain> {
     chain.trailers = parseTrailers(blamed.message);
 
     // Note: on the introducing commit first, then the trunk merge.
-    const reader = createWhyNoteReader(handle, deps.storage ?? "auto");
+    let knownTip: string | null = null;
+    try {
+      knownTip = await latestNotesTip(deps.db, input.repo);
+    } catch (err) {
+      warn("notes tip", err);
+    }
+    const reader = createWhyNoteReader(handle, deps.storage ?? "auto", knownTip);
     for (const sha of [blamed.sha, blamed.landedVia]) {
       if (!sha || chain.note) continue;
       try {
