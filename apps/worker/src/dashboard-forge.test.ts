@@ -48,14 +48,16 @@ describe("forge dashboard", () => {
     for (const m of FORGE_JS.matchAll(/^ {4}([a-z_]+): \{ m: "POST"/gm)) expect(FORGE_MCP_TOOL_NAMES).toContain(m[1]);
   });
 
-  it("puts Forge first with Live as the landing screen", () => {
+  it("puts the agent forge first under Home, which is the landing screen", () => {
     const nav = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('id="sideNav"'), DASHBOARD_HTML.indexOf("</nav>"));
-    expect(nav.indexOf("Forge")).toBeLessThan(nav.indexOf("Code"));
+    expect(nav.indexOf('id="tabHome"')).toBeLessThan(nav.indexOf("Agent forge"));
+    expect(nav.indexOf("Agent forge")).toBeLessThan(nav.indexOf("Code"));
     expect(nav.indexOf('id="tabLive"')).toBeLessThan(nav.indexOf('id="tabRepos"'));
     for (const tab of ["tabLive", "tabInbox", "tabIntents", "tabTrains", "tabConflicts", "tabAgents", "tabBench"]) {
       expect(nav).toContain('id="' + tab + '"');
     }
-    expect(DASHBOARD_HTML).toContain('palGoTab("live")');
+    expect(DASHBOARD_HTML).toContain('palGoTab("home")');
+    expect(DASHBOARD_HTML).toContain('fxNav("#/live")');
     expect(DASHBOARD_HTML).toContain('l: "live", i: "inbox", n: "intents", p: "trains", c: "conflicts", a: "agents", b: "bench"');
   });
 

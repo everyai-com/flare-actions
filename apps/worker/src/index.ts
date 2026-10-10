@@ -300,6 +300,8 @@ import type { OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
 import { buildMcpServer, mcpDiscovery } from "./mcp";
 import { forgeDepsFromEnv, handleForgeRequest } from "./forge-routes";
 import { forgeAdaptersFromEnv } from "./forge-adapters";
+import { listAppRepos, loadSetupFacts, setupSteps } from "./setup";
+import { runnerScript } from "./runner-script";
 import {
   describeScope,
   handleAuthorizeGet,
@@ -2495,6 +2497,16 @@ export default {
       }
       // The API serves its own contract (generated module, CI-synced)
       // plus an interactive Redoc reference over it.
+      // One-line runner setup for the dashboard's "Use my computer":
+      // curl -fsSL <origin>/runner.sh | sh -s <PAIR-CODE>. Public — the
+      // single-use pairing code (an argument) is the only secret.
+      if (request.method === "GET" && url.pathname === "/runner.sh") {
+        const script = runnerScript(url.origin);
+        if (!script) return json({ error: "unsupported origin" }, 400);
+        return new Response(script, {
+          headers: { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "public, max-age=300" },
+        });
+      }
       if (request.method === "GET" && url.pathname === "/openapi.yaml") {
         return new Response(OPENAPI_YAML, {
           headers: { "Content-Type": "text/yaml; charset=utf-8", "Cache-Control": "public, max-age=3600" },
@@ -3890,6 +3902,31 @@ export default {
         await createAuthServer(url.origin).getOAuthApi(oauthEnv(env)).revokeGrant(grantId, userId);
         await audit(env.DB, ident.actor, "oauth.revoke", `${userId} ${grantId}`);
         return json({ ok: true });
+      }
+      // Guided setup for the dashboard Home screen: done/next steps, the
+      // repos the App can see (a pick-list for "Run my tests"), and
+      // whether queued jobs are waiting on a machine. Repo-scoped.
+      if (request.method === "GET" && url.pathname === "/v1/setup") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const creds = await getAppCreds(env);
+        const facts = await loadSetupFacts(env.DB, {
+          githubConnected: creds !== null,
+          allowedRepos: ident.repos,
+          appRepos: () => (creds ? listAppRepos(creds) : Promise.resolve(null)),
+        });
+        const slug = creds ? await getSetting(env.DB, SETTING_KEYS.githubAppSlug) : null;
+        return json({
+          ...setupSteps(facts),
+          githubConnected: facts.githubConnected,
+          installUrl: slug ? installUrl(slug) : null,
+          repos: facts.repos,
+          runs: facts.runs,
+          passed: facts.passed,
+          latest: facts.latest,
+          executorSeen: facts.executorSeen,
+          admin: ident.scope === "admin",
+        });
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/status") {
         const ident = await authIdentity(request, env);
