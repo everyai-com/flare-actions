@@ -411,9 +411,9 @@ function bench() {
     sha: "3c9e1a0",
     demo: true,
     modes: [
-      { mode: "baseline", label: "Baseline PR + merge queue", projected: false, metrics: { changes_per_min: 3.1, median_declare_to_land_s: 11520, conflicts_hit: 1840, conflicts_avoided: 0, red_main_min: 47, human_min: 1210, usd_per_1k_agents: null } },
-      { mode: "trains", label: "Forge, trains only", projected: false, metrics: { changes_per_min: 88, median_declare_to_land_s: 580, conflicts_hit: 1790, conflicts_avoided: 0, red_main_min: 0, human_min: 1210, usd_per_1k_agents: 0.41 } },
-      { mode: "full", label: "Forge, full", projected: true, metrics: { changes_per_min: 131, median_declare_to_land_s: 245, conflicts_hit: 212, conflicts_avoided: 1628, red_main_min: 0, human_min: 96, usd_per_1k_agents: 0.44 } },
+      { mode: "baseline", label: "Baseline PR + merge queue", projected: false, metrics: { changes_per_min: 3.1, median_declare_to_land_s: 11520, conflicts_hit: 1840, conflicts_avoided: 0, escaped_defect_min: 47, main_red_integration_min: 0, human_min: 1210, usd_per_1k_agents: null } },
+      { mode: "trains", label: "Forge, trains only", projected: false, metrics: { changes_per_min: 88, median_declare_to_land_s: 580, conflicts_hit: 1790, conflicts_avoided: 0, escaped_defect_min: 0, main_red_integration_min: 0, human_min: 1210, usd_per_1k_agents: 0.41 } },
+      { mode: "full", label: "Forge, full", projected: true, metrics: { changes_per_min: 131, median_declare_to_land_s: 245, conflicts_hit: 212, conflicts_avoided: 1628, escaped_defect_min: 0, main_red_integration_min: 0, human_min: 96, usd_per_1k_agents: 0.44 } },
     ],
     declare_bench: { intents: 100000, p50_ms: 3.1, p99_ms: 11, shards: 4 },
     command: "npm run forge:bench -- --agents 10000 --mode all",
