@@ -1,7 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import type { Db } from "./db";
 import { handleForgeRequest, type ForgeIdentity } from "./forge-routes";
-import { forgeServiceDeps, type ForgeServiceDeps } from "./forge-service";
+import { forgeServiceDeps, gitAuthEnv, type ForgeServiceDeps } from "./forge-service";
 import { openConflict } from "./intents";
 import { DEFAULT_POLICY, routeLanding, scoreRisk } from "./intents-core";
 import { fakeArtifacts, forgeSqliteDb, sha } from "./forge.testkit";
@@ -100,6 +101,25 @@ describe("#2 the intent base is trunk main, never the caller's baseSha", () => {
     expect(rec(r.body.actualFootprint).files).toContain("src/auth/keys.ts");
     expect(r.body.drift).toContain("src/auth/keys.ts");
     expect((await h.call("POST", "/v1/forge/intents", { repo: "demo", title: "Bad", footprint: ["a"], reasoning: "r", baseSha: "nope" })).body.code).toBe("invalid_request");
+  });
+});
+
+describe("#16 git commands never put the token in a URL, argv or .git/config", () => {
+  it("emits the GIT_CONFIG_* http.extraHeader env form, which git reads as Basic x:<token>", async () => {
+    const h = reviewHarness();
+    const d = await h.call("POST", "/v1/forge/intents", { repo: "demo", title: "Edit x", footprint: ["x.ts"], reasoning: "r", agent: "alpha" });
+    const c = await h.call("POST", `/v1/forge/intents/${rec(d.body.intent).id as string}/claim`, { agent: "alpha" });
+    const clone = String(c.body.cloneCommand);
+    const push = String(c.body.pushCommand);
+    for (const cmd of [clone, push]) {
+      expect(cmd).not.toMatch(/https:\/\/[^"\s]*@/);
+      expect(cmd).toContain("GIT_CONFIG_KEY_0=http.extraHeader");
+      expect(cmd).not.toContain(String(c.body.token));
+    }
+    // The prefix evaluates to the right header in a real shell.
+    const prefix = gitAuthEnv("FLARE_FORK_TOKEN");
+    const out = execFileSync("bash", ["-c", `${prefix} env | grep '^GIT_CONFIG_VALUE_0='`], { env: { PATH: process.env.PATH ?? "", FLARE_FORK_TOKEN: "tok123" } }).toString().trim();
+    expect(out).toBe(`GIT_CONFIG_VALUE_0=Authorization: Basic ${Buffer.from("x:tok123").toString("base64")}`);
   });
 });
 
