@@ -27,6 +27,20 @@ tagged on `main` (`v0.1.0` is the first).
   refills from later pages, so pages are never empty while allowed
   repos remain.
 
+- Flare Cloud metering/enforcement (security review of the purchasing
+  scaffold): job reruns and `retry: N` attempts are now billed (rerun
+  rollups charge the delta under `run:<id>:<cents>` refs; earlier
+  attempts accumulate in the new `jobs.billed_ms`, migration 0044);
+  reruns pass the pause, budget, and plan-cap gates like dispatches;
+  the concurrent-job cap is enforced atomically at claim time (BYO
+  runners and seats), not only at dispatch; duplicate grant refs
+  report `duplicate: true` and mismatched reuse is a 409; default
+  top-up memos name the link by hash prefix instead of storing the
+  redeemable code.
+- The optional eslint pass (`lint:full`) is clean: wrapped errors keep
+  their `cause`, and the runner-group validator no longer needs a
+  control-character regex.
+
 ### Changed
 
 - Dependencies: TypeScript 6.0, wrangler 4.149, patch bumps across

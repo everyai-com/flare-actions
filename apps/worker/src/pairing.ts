@@ -123,6 +123,8 @@ export type RedeemTopupLinkResult =
   | { ok: true; amountCents: number; memo: string }
   | { ok: false; reason: "unknown" | "expired" };
 
+// The default memo names the link by hash prefix, never the code
+// itself: only hashes rest in D1 (memos surface via the balance API).
 // POST redeem: grants first (idempotent `topup:<hash>` ref), then
 // consumes — a crash between the two retries into a no-op grant and
 // a successful consume, so money is never created or lost. Parallel
@@ -139,7 +141,7 @@ export async function redeemTopupLink(db: Db, code: string): Promise<RedeemTopup
     await db.prepare("DELETE FROM topup_links WHERE code_hash = ?").bind(hash).run();
     return { ok: false, reason: "expired" };
   }
-  const granted = await grantCredits(db, row.amount_cents, row.memo || `top-up ${code}`, `topup:${hash}`);
+  const granted = await grantCredits(db, row.amount_cents, row.memo || `top-up ${hash.slice(0, 8)}`, `topup:${hash}`);
   if (!granted.ok) return { ok: false, reason: "unknown" };
   const consumed = await db
     .prepare("DELETE FROM topup_links WHERE code_hash = ? RETURNING code_hash")

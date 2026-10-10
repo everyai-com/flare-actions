@@ -24,18 +24,30 @@ and shaped so Cloud can provision without touching OSS behavior.
   (`{"maxConcurrentJobs": N}`, provisioned via
   `POST /v1/admin/settings`). `cloudVerdict` counts active
   (queued + running + blocked) jobs and refuses new dispatches at
-  the cap: 429 `plan_limit_exceeded` on the API/MCP lanes, skip-200
-  on webhooks, skip on schedules, `cloud.wouldBlock` on dry-run.
+  the cap: 429 `plan_limit_exceeded` on the API/MCP lanes (job reruns
+  included), skip-200 on webhooks, skip on schedules,
+  `cloud.wouldBlock` on dry-run. The cap is also a hard limit at claim
+  time: `claimJob` folds `COUNT(running) < cap` into its conditional
+  UPDATE, so neither one large dispatch nor concurrent dispatches can
+  run more than the cap at once — BYO runners get `{ job: null }`,
+  seats leave the job queued and re-wake in 60s (30-minute horizon).
 - **Credit ledger** — `credit_ledger` table (grants + run spend,
   `POST /v1/cloud/credits/grant` idempotent on `ref` so retried
-  billing webhooks credit once; `GET /v1/cloud/credits/balance`
+  billing webhooks credit once — replays answer `duplicate: true`, and
+  a reused ref with a different amount is a 409, never a silent no-op; `GET /v1/cloud/credits/balance`
   for `cli credits`). Balances may go negative: the scaffold
   **tracks, never blocks** — enforcement at zero is a future Cloud
   overage policy, not this seam.
-- **Run metering** — terminal rollups record exactly-once spend
-  (`ref = run:<runId>`, so redeliveries are a no-op) at the list
-  rate of 1¢/compute-minute, summed across jobs (parallel jobs both
-  count), rounded up per run. Wired through every terminal path:
+- **Run metering** — terminal rollups record exactly-once spend at
+  the list rate of 1¢/compute-minute, summed across jobs (parallel
+  jobs both count), rounded up per run. Each rollup charges only the
+  delta over what the run already paid, under `ref =
+  run:<runId>:<cumulativeCents>` (legacy `run:<runId>` rows count as
+  paid), so redeliveries are a no-op and a rerun that turns the run
+  terminal again is billed for its new compute. Earlier attempts live
+  in `jobs.billed_ms`: retries (`retry: N`) and reruns fold their
+  elapsed time in before resetting `started_at`; seat fallbacks and
+  dead-executor requeues do not (platform faults, not customer spend). Wired through every terminal path:
   worker finish/cancel/promote and both seat executors.
 - **Capability probe** — public `GET /v1/cloud/status`
   (`{ hosted, metering, maxConcurrentJobs }`) so CLIs and agents

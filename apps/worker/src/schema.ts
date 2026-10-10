@@ -48,6 +48,7 @@ export const SCHEMA_STATEMENTS = [
     attempts INTEGER NOT NULL DEFAULT 0,
     started_at TEXT,
     finished_at TEXT,
+    billed_ms INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
@@ -416,6 +417,7 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE runs ADD COLUMN profile TEXT`,
   `ALTER TABLE runs ADD COLUMN attested_by TEXT`,
   `ALTER TABLE gh_runner_jobs ADD COLUMN log_digest TEXT`,
+  `ALTER TABLE jobs ADD COLUMN billed_ms INTEGER NOT NULL DEFAULT 0`,
 ];
 
 let schemaPromise: Promise<void> | null = null;

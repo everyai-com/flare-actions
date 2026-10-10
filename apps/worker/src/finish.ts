@@ -230,7 +230,7 @@ export async function maybeRetryJob(
   if (!job) return false;
   const retryMax = readRetryPolicy(job.definition);
   if (retryMax <= 0 || (job.attempts ?? 0) >= retryMax) return false;
-  if (!(await releaseJob(db, jobId))) return false;
+  if (!(await releaseJob(db, jobId, { bill: true }))) return false;
   await bumpJobAttempt(db, jobId);
   await appendJobLog(db, jobId, `[flare] retrying after failure (attempt ${(job.attempts ?? 0) + 2}/${retryMax + 1})\n`);
   await rollupRunStatus(db, job.run_id);

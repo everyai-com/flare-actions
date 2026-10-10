@@ -1079,6 +1079,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          description: Refused like a dispatch — repo_paused, budget_exceeded (block mode), or plan_limit_exceeded (hosted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/attestations/{receiptId}:
     get:
       tags: [runs]
@@ -3739,12 +3745,17 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [ok, balanceCents]
+                required: [ok, duplicate, balanceCents]
                 properties:
                   ok:
                     type: boolean
+                  duplicate:
+                    type: boolean
+                    description: True when this ref was already granted (a replay; nothing new credited)
                   balanceCents:
                     type: integer
+        '409':
+          description: Ref already used by a different ledger entry (different amount or a spend row)
         '501':
           description: OSS deploy (hosted_only)
           content:

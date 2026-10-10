@@ -8,6 +8,7 @@ import {
   cancelSupersededBranchRuns,
   claimAdminMarker,
   claimNextJob,
+  cloudRunningCap,
   claimWebhookDelivery,
   createJob,
   createMonitor,
@@ -272,7 +273,7 @@ import {
 import { MAX_JUNIT_BYTES, parseJUnit } from "./junit";
 import { compileLogQuery, indexJobLog, searchLogs } from "./search";
 import { lookupPriorMs, recordRuntimePrior } from "./priors";
-import { apiError, dispatchErrorCode } from "./errors";
+import { apiError, dispatchErrorCode, type ErrorCode } from "./errors";
 import { billableWindow, fetchBillableUsage, fetchR2Bandwidth, summarizeBillableUsage, type R2BandwidthSummary } from "./billing";
 import { TRIAGE_MODEL } from "./triage";
 import { upsertPrComment } from "./prcomment";
@@ -495,7 +496,7 @@ async function serveMcpRequest(
         return { runId: out.runId, jobIds: out.jobIds };
       },
       rerunJob: async (runId, jobId) => {
-        const out = await rerunJobAndQueue(env, runId, jobId, basin);
+        const out = await rerunJobAndQueue(env, ctx, props.actor, runId, jobId, basin);
         if (out.ok) {
           await audit(env.DB, props.actor, "job.rerun", jobId);
           await wakeSeat(env, jobId);
@@ -1817,14 +1818,44 @@ async function dispatchRun(
   return { runId, jobIds, queuedIds, profile, reused };
 }
 
+// A rerun spends compute like a dispatch, so it passes the same gates
+// (pause, budget block, hosted plan cap) before the job is reset.
 async function rerunJobAndQueue(
   env: WorkerEnv,
+  ctx: ExecutionContext | undefined,
+  actor: string,
   runId: string,
   jobId: string,
   basin?: BasinSink,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; code?: ErrorCode; status?: number }> {
   const job = await getJob(env.DB, jobId);
-  if (!job || job.run_id !== runId) return { ok: false, error: "job not found" };
+  if (!job || job.run_id !== runId) return { ok: false, error: "job not found", status: 404 };
+  const run = await getRun(env.DB, runId);
+  if (!run) return { ok: false, error: "job not found", status: 404 };
+  if (await isRepoPaused(env.DB, run.repo)) {
+    return { ok: false, code: "repo_paused", error: `${run.repo} is paused for runaway spend`, status: 429 };
+  }
+  const verdict = await budgetVerdict(env, run.repo);
+  if (ctx) await maybeAutoPause(env, ctx, run.repo, actor, verdict);
+  if (verdict?.mode === "block") {
+    await audit(env.DB, actor, "budget.blocked", `${run.repo} ${verdict.usedMinutes}/${verdict.cap}`);
+    return {
+      ok: false,
+      code: "budget_exceeded",
+      error: `monthly budget exceeded for ${run.repo} (${verdict.usedMinutes}/${verdict.cap} compute-minutes)`,
+      status: 429,
+    };
+  }
+  const cloud = await cloudVerdict(env);
+  if (cloud) {
+    await audit(env.DB, actor, "cloud.plan_limited", `${run.repo} ${cloud.used}/${cloud.cap}`);
+    return {
+      ok: false,
+      code: "plan_limit_exceeded",
+      error: `Flare Cloud plan saturated (${cloud.used}/${cloud.cap} concurrent jobs)`,
+      status: 429,
+    };
+  }
   const reset = await rerunJob(env.DB, jobId);
   if (!reset) return { ok: false, error: "job not found" };
   await rollupRunStatus(env.DB, runId, env.ANALYTICS, basin, cloudMetering(env));
@@ -2996,6 +3027,9 @@ export default {
         const job = await claimNextJob(env.DB, labels, ident.repos, {
           fairSharePerRepo: "cap" in fairShare ? fairShare.cap : 0,
           fairSharePerAgent: "cap" in agentShare ? agentShare.cap : 0,
+          // Hosted plans cap concurrently running jobs at claim time too:
+          // dispatch-time checks alone let one dispatch overshoot.
+          maxRunning: hostedMode(env) ? await cloudRunningCap(env.DB) : null,
         });
         if (!job) return json({ job: null }, 200);
         await rollupRunStatus(env.DB, job.run_id, env.ANALYTICS, basinSink(env, ctx), cloudMetering(env));
@@ -3170,8 +3204,11 @@ export default {
         if (!ident) return json({ error: "unauthorized" }, 401);
         const rerunRun = await getRun(env.DB, rerunMatch[1]);
         if (!rerunRun || !repoAllowed(ident, rerunRun.repo)) return json({ error: "job not found" }, 404);
-        const out = await rerunJobAndQueue(env, rerunMatch[1], rerunMatch[2], basinSink(env, ctx));
-        if (!out.ok) return json({ error: out.error ?? "rerun failed" }, 404);
+        const out = await rerunJobAndQueue(env, ctx, ident.actor, rerunMatch[1], rerunMatch[2], basinSink(env, ctx));
+        if (!out.ok) {
+          const message = out.error ?? "rerun failed";
+          return json(out.code ? apiError(out.code, message) : { error: message }, out.status ?? 404);
+        }
         await audit(env.DB, ident.actor, "job.rerun", rerunMatch[2]);
         await wakeSeat(env, rerunMatch[2]);
         return json({ ok: true });
@@ -3849,9 +3886,9 @@ export default {
           typeof body.memo === "string" ? body.memo : "",
           typeof body.ref === "string" && body.ref ? body.ref : crypto.randomUUID(),
         );
-        if (!out.ok) return json({ error: out.error }, 400);
-        await audit(env.DB, ident.actor, "cloud.grant", `${body.amountCents}c`);
-        return json({ ok: true, balanceCents: await creditBalance(env.DB) });
+        if (!out.ok) return json({ error: out.error }, out.conflict ? 409 : 400);
+        await audit(env.DB, ident.actor, out.duplicate ? "cloud.grant_replay" : "cloud.grant", `${body.amountCents}c`);
+        return json({ ok: true, duplicate: out.duplicate, balanceCents: await creditBalance(env.DB) });
       }
       // Ledger balance + recent rows for `cli credits`. Hosted-only.
       if (request.method === "GET" && url.pathname === "/v1/cloud/credits/balance") {
