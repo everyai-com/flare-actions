@@ -1,4 +1,4 @@
-import { FORGE_CSS, FORGE_NAV_HTML, FORGE_NAV_BENCH_HTML, FORGE_PANE_HTML, FORGE_OVERLAYS_HTML } from "./dashboard-forge-ui";
+import { FORGE_CSS, FORGE_NAV_HTML, FORGE_NAV_BENCH_HTML, FORGE_PANE_HTML, FORGE_OVERLAYS_HTML, FORGE_AUTH_DEMO_HTML, FORGE_HOME_CARD_HTML } from "./dashboard-forge-ui";
 import { FORGE_JS } from "./dashboard-forge-js";
 import { forgeFixturesJson } from "./forge-fixtures";
 
@@ -34,7 +34,26 @@ export const DASHBOARD_UI_ACTIONS = [
   "copy_chain",
   "show_shortcuts",
   "select_item",
+  "select_row",
+  "filter_list",
+  "open_detail",
+  "highlight_agent",
+  "tour_start",
+  "tour_next",
+  "tour_back",
+  "tour_skip",
+  "explore_demo",
 ] as const;
+
+// GET / -> /dashboard keeping the query string: ?demo=1, ?stage=1 and
+// ?tour=1 must survive the hop (a judge's /?demo=1#/live link). The
+// #fragment never reaches the server; browsers re-attach it to a
+// Location without one (RFC 9110 §10.2.2).
+export function dashboardRedirectUrl(url: URL): string {
+  const dest = new URL("/dashboard", url);
+  dest.search = url.search;
+  return dest.toString();
+}
 
 export const DASHBOARD_HTML = `<!doctype html>
 <html lang="en">
@@ -352,14 +371,14 @@ ${FORGE_CSS}</style>
 <header>
 <h1 class="brand-head"><span class="brand-mark">F</span><span>Flare Actions</span></h1>
 <nav class="side-nav" id="sideNav" aria-label="Primary">
-<button id="tabHome" class="side-link" data-tab="home" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.2 8 2.5l5.5 4.7V13a.5.5 0 0 1-.5.5H9.6V10H6.4v3.5H3a.5.5 0 0 1-.5-.5z"/></svg><span>Home</span></button>
 ${FORGE_NAV_HTML}
+<div class="side-group">Flare CI</div>
+<button id="tabHome" class="side-link" data-tab="home" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.2 8 2.5l5.5 4.7V13a.5.5 0 0 1-.5.5H9.6V10H6.4v3.5H3a.5.5 0 0 1-.5-.5z"/></svg><span>Home</span></button>
+<button id="tabRuns" class="side-link" data-tab="runs" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6.6 5.4 11 8l-4.4 2.6z" fill="currentColor" stroke="none"/></svg><span>Runs</span></button>
+<button id="tabMerge" class="side-link" data-tab="merge" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="8" r="1.7"/><path d="M4 5.7v4.6M5.6 4.6c2.8.3 2.4 3.4 4.7 3.4"/></svg><span>Merge queue</span></button>
 <div class="side-group">Code</div>
 <button id="tabRepos" class="side-link" data-tab="repos" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5 8 2l5 2.5v7L8 14l-5-2.5z"/><path d="M3 4.5 8 7l5-2.5M8 7v7"/></svg><span>Repositories</span></button>
 <button id="tabTournaments" class="side-link" data-tab="tournaments" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.8" r="3.2"/><path d="M6.2 8.4 5.2 13.8 8 12.2l2.8 1.6-1-5.4"/></svg><span>Races</span></button>
-<div class="side-group">Your tests</div>
-<button id="tabRuns" class="side-link" data-tab="runs" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6.6 5.4 11 8l-4.4 2.6z" fill="currentColor" stroke="none"/></svg><span>Runs</span></button>
-<button id="tabMerge" class="side-link" data-tab="merge" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="8" r="1.7"/><path d="M4 5.7v4.6M5.6 4.6c2.8.3 2.4 3.4 4.7 3.4"/></svg><span>Merge queue</span></button>
 <div class="side-group">Manage</div>
 <button id="tabSettings" class="side-link" data-tab="settings" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.5h12M2 10.5h12"/><circle cx="10" cy="5.5" r="1.8" style="fill:var(--sidebar)"/><circle cx="6" cy="10.5" r="1.8" style="fill:var(--sidebar)"/></svg><span>Settings</span></button>
 ${FORGE_NAV_BENCH_HTML}
@@ -414,6 +433,7 @@ ${FORGE_NAV_BENCH_HTML}
 </div>
 <p id="loginErr" class="err"></p>
 </div>
+${FORGE_AUTH_DEMO_HTML}
 </div>
 </section>
 <section id="invitePane" class="card auth-card" hidden>
@@ -505,6 +525,7 @@ ${FORGE_NAV_BENCH_HTML}
 </form>
 <p id="homeRunMsg" class="muted"></p>
 </div>
+${FORGE_HOME_CARD_HTML}
 <div class="home-cards">
 <button type="button" class="home-card" id="homeCardRuns"><strong>📋 All runs</strong><span>Every test run, newest first, with logs and the reason anything failed.</span></button>
 <button type="button" class="home-card" id="homeCardRaces"><strong>🏁 Agent races</strong><span>Give one task to several AI agents and let real tests pick the winner.</span></button>
@@ -1034,7 +1055,13 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       var mt = q.get("magic_token");
       var installed = q.get("installation_id");
       var setupAction = q.get("setup_action");
-      if ((g || inv || rt || m || mt || installed || setupAction) && window.history && window.history.replaceState) window.history.replaceState({}, "", "/dashboard");
+      if ((g || inv || rt || m || mt || installed || setupAction) && window.history && window.history.replaceState) {
+        // Drop one-shot params; keep the view params (demo, stage, tour) and the hash route.
+        var keep = new URLSearchParams();
+        ["demo", "stage", "tour"].forEach(function (k) { if (q.get(k)) keep.set(k, q.get(k)); });
+        var ks = keep.toString();
+        window.history.replaceState({}, "", "/dashboard" + (ks ? "?" + ks : "") + (location.hash || ""));
+      }
       if (installed) {
         try { sessionStorage.setItem("flare-installed", setupAction || "install"); } catch (e) {}
       }

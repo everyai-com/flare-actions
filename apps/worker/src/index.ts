@@ -105,7 +105,7 @@ import {
 import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, getDefaultBranch, getInstallationToken, getPullRequestHead, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, resolveRunnerGroupId, updatePullRequestBranch, verifyGitHubSignature } from "./github";
 import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
-import { DASHBOARD_HTML } from "./dashboard";
+import { DASHBOARD_HTML, dashboardRedirectUrl } from "./dashboard";
 import { apiDocsPage } from "./apidocs";
 import { OPENAPI_YAML } from "./openapi-spec";
 import { ensureSchema } from "./schema";
@@ -2490,7 +2490,9 @@ export default {
         }
       }
       if (request.method === "GET" && url.pathname === "/") {
-        return Response.redirect(new URL("/dashboard", url).toString(), 302);
+        // Keep the query (?demo=1, ?stage=1, ?tour=1): judges land on
+        // /?demo=1#/live. Browsers carry the #fragment across a 302.
+        return Response.redirect(dashboardRedirectUrl(url), 302);
       }
       if (request.method === "GET" && url.pathname === "/dashboard") {
         return dashboardResponse();

@@ -47,7 +47,10 @@ describe("dashboard", () => {
 
   it("lands on a guided Home with plain-language steps and status", () => {
     expect(DASHBOARD_HTML).toContain('id="tabHome"');
-    expect(DASHBOARD_HTML.indexOf('id="tabHome"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabLive"'));
+    // Forge leads the nav (competition story); Home heads the CI group
+    // right under it and stays the signed-in landing screen.
+    expect(DASHBOARD_HTML.indexOf('id="tabLive"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabHome"'));
+    expect(DASHBOARD_HTML.indexOf('id="tabHome"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabRuns"'));
     expect(DASHBOARD_HTML).toContain('id="homePane"');
     expect(DASHBOARD_HTML).toContain('api("/v1/setup")');
     expect(DASHBOARD_HTML).toContain("Your tests are waiting for a computer");
@@ -203,7 +206,7 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("side-foot");
     expect(DASHBOARD_HTML).toContain("side-group");
     expect(DASHBOARD_HTML).not.toContain("nav.tabs");
-    expect(DASHBOARD_HTML.indexOf('id="tabTournaments"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabRuns"'));
+    expect(DASHBOARD_HTML.indexOf('id="tabRuns"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabTournaments"'));
     // Signed-in users land on Home (guided setup / plain status); the
     // signed-out demo tour still opens the forge Live screen.
     expect(DASHBOARD_HTML).toContain('else if (!applyHashRoute()) palGoTab("home")');
