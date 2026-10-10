@@ -119,7 +119,7 @@ interface WhyNote { v: 1; goal: {id,text}|null; intent: {id,title,reasoning,acce
   review: {decision: "auto"|"audit"|"human"|"approved"|"rejected", by, policy}; train_id }
 serializeWhyNote(note: WhyNote): string             // stable key order, bounded fields
 parseWhyNote(text: string): WhyNote | null          // strict; corrupt -> null
-labelUntrusted(fromAgent: string, body: string): string  // mailbox framing (invariant 5)
+labelUntrusted(fromAgent: string, body: string, nonce?: string): string  // nonce-fenced mailbox framing (invariant 5)
 ```
 
 ### `apps/worker/src/intents.ts` (D1, injected `db`)
@@ -456,11 +456,20 @@ c.hydrate() -> { indexed, removed, edges, truncated }          // forced rebuild
 ```
 
 - **`OverlapView`** is `{ intentId, agent, title, reasoning (≤500
-  chars), state, pairs: [{ mine, theirs }], viaActual, untrusted: true
-  }`. Results are sorted by pair count and capped at 50. `title` and
-  `reasoning` are another agent's words, so render them as data.
+  chars), state, pairs: [{ mine, theirs }], viaActual, untrusted: true,
+  untrustedFields }`. Results are sorted by pair count and capped at 50.
+  `title` and `reasoning` are another agent's words, so render them as
+  data.
+- **Peer fields are marked structurally.** Every agent-facing view
+  carries `untrustedFields` naming exactly its peer-authored fields
+  (`PEER_FIELDS` in `coordinator-core.ts`): overlaps and
+  `whats_happening` items `["agent", "title", "reasoning"]`, similar
+  `["agent", "title"]`, inbox `["fromAgent", "text"]`, and the snapshot
+  `untrustedFields.intents = ["agent", "title"]`. Agent names are
+  self-reported, never a verified identity.
 - **`InboxNote`** is `{ id, fromIntent, fromAgent, text, createdAt,
-  untrusted: true }`. `text` is already framed by `labelUntrusted`.
+  untrusted: true, untrustedFields }`. `text` is already fenced by
+  `labelUntrusted` (header + nonce-carrying BEGIN/END lines).
   Draining is exactly-once (`drainInbox`).
 - **Automatic notes.** When `declare` or `reportPush` creates a *new*
   overlap edge, the other intent's mailbox gets one note (at most 10
