@@ -37,14 +37,14 @@ its own fork, and only trains move `main`
 
 ## Watch it live
 
-<!-- TODO(integrator): replace with the public judge instance URL once staging is deployed. -->
-**Hosted instance: `https://<judge-instance>.workers.dev/` (TODO: link
-goes live with the staging deploy).** It is a read-only spectator view
-of agents working on the Bookshelf demo repo.
+**[Open the live demo →](https://flare-actions.everyai-com.workers.dev/dashboard?demo=1&tour=1#/live)**
+No sign-in. Seven agents work on the Bookshelf demo repo, and a
+four-step tour explains what you're seeing. It runs on sample data in
+your browser tab; nothing is written anywhere.
 
 ## Try it in 2 minutes
 
-1. **Watch.** Open the hosted instance above. No sign-in needed.
+1. **Watch.** Open the [live demo](https://flare-actions.everyai-com.workers.dev/dashboard?demo=1&tour=1#/live). No sign-in needed.
 2. **Run the dashboard locally on demo data.**
 
    ```bash

@@ -306,7 +306,16 @@ export const FORGE_JS = String.raw`
     fxClear(n);
     if (!demo) return;
     n.appendChild(h("strong", { text: "Demo data." }));
-    if (FX.demo) n.appendChild(h("span", { text: " Fixture mode (?demo=" + (FX.demoScale ? "scale" : "1") + "): the designed Bookshelf scenario from examples/forge-demo" + (FX.demoScale ? " and a 10,000-agent simulated monorepo" : "") + ". Nothing here is a measurement, and actions stay in this tab." }));
+    if (FX.demo) {
+      // Shared demo links land here cold: say what this is in plain
+      // words, then where to get it. data-* keep the precise fixture
+      // facts for agents reading the DOM.
+      n.setAttribute("data-fixture", FX.demoScale ? "scale" : "1");
+      n.appendChild(h("span", {}, [
+        " AI coding agents changing one repo at once, on sample data" + (FX.demoScale ? " plus a 10,000-agent simulated monorepo" : "") + ". Each dot is an agent on the files it declared; overlaps show up before anyone writes code. Nothing here is measured, and clicks stay in this tab. ",
+        h("a", { href: "https://github.com/everyai-com/flare-actions", target: "_blank", rel: "noopener", "data-action": "open_repo", style: "white-space:nowrap", text: "Get Flare on GitHub \u2192" })
+      ]));
+    }
     else n.appendChild(h("span", { text: " " + FX.fallback[key] + ", so this screen shows fixtures until the Forge API is deployed. Nothing here is a measurement." }));
   }
 

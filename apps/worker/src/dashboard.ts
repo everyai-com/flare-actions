@@ -43,6 +43,7 @@ export const DASHBOARD_UI_ACTIONS = [
   "tour_back",
   "tour_skip",
   "explore_demo",
+  "open_repo",
 ] as const;
 
 // GET / -> /dashboard keeping the query string: ?demo=1, ?stage=1 and
