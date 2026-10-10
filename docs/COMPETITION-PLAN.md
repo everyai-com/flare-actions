@@ -37,7 +37,16 @@
 | `forge:demo`, `forge:agents`, `forge:director`, DEMO.md | 🔄 in progress | |
 | UX polish (demo-link redirect, judge CTA, master–detail lists, hot-cell sizing, agent rail, guided tour) | 🔄 in progress | From the integrator's hands-on review, 2026-10-10 |
 | Adversarial review of the whole branch | 🔄 in progress | Findings will be fixed before staging |
-| Staging deploy and live run with real Claude Code agents | ⏳ next | |
+| Demo tooling: `forge:demo`, `forge:agents`, `forge:director`, DEMO.md | ✅ merged | Dry-run verified. First live run happens on staging, never prod |
+| Review fixes: 2 critical, 6 high, 8 medium, 4 low | 🔄 in progress | Split across the wiring, trains and hardening agents, one regression test each |
+| **Judge instance**: public read-only spectator view, swarm loop, read-only public MCP | 🔄 in progress | From the strategic review: the single URL that serves all three criteria |
+| **Forge-first identity**: README, fold Tournaments into "resolution races", retire old video scripts | 🔄 in progress | |
+| Publishable CLI (`npx …`), `cli forge init` scaffolding (AGENTS.md + `.mcp.json`) | 🔄 in progress | **User** runs `npm publish` |
+| Staging deploy and live run with real Claude Code agents | ⏳ next | First measured number: the baseline-vs-Forge table at 1k |
+| Cold-start check (8.6 s first hit observed on staging) | ⏳ | Measure after staging deploy |
+| Dogfooding: mirror this repo into Artifacts and run `flare why` on a line of Forge itself | ⏳ after staging | |
+| GitHub bridge: mirror a GitHub repo in, land back out as a PR or push | ⏳ post-submission adoption wedge | Mirror-in already exists (`artifacts-mirrors.ts`) |
+| User actions | ⏳ | GitHub repo description to Forge-first (needs your OK), `npm publish`, MCP registry submission, eligibility email |
 | README "start here", video, submission | ⏳ Mon Oct 13 | Varun to confirm eligibility (student status vs "legal resident") with git-competition@cloudflare.com |
 
 **How work lands now.** Each stream works on its own branch, which merges into `feat/forge-intents`. That branch goes to `main` by PR, which is also how the parallel sessions on other accounts land their work. Every branch rebases on `origin/main` before its PR.
@@ -232,6 +241,13 @@ lanes: { max_per_train: 50, max_parallel: 8 }
 replay: { max_attempts: 2, race_k: 3 }            # race_k>1 = resolution tournament
 ```
 
+`flare.yml`, `.flare/**` and `.github/workflows/**` are **always**
+protected (`BUILTIN_PROTECTED` in `intents-core.ts`), merged into every
+policy and not removable by it: they are the pipeline that produces the
+green evidence and the policy itself, so an agent cannot lift its own
+guardrails by editing them. The built-ins also feed the risk score's
+protected-path term (declared or undeclared drift).
+
 ### 3.5 Risk score (deterministic and explainable; never a bare LLM number)
 
 Risk runs from 0 to 100. It is the **sum** of these contributions (the
@@ -245,6 +261,7 @@ weights are capped and tuned on the simulator):
 | Resolved by an LLM replay | +15 |
 | CI evidence weak: no tests touched the footprint, or a flaky test was quarantined | +10 |
 | The clean-context reviewer agent disagrees with the author | +15 |
+| Actual footprint truncated (fail closed: unseen files may be protected) | +40 |
 
 The inbox shows **which terms fired**. Explainability is the UX.
 

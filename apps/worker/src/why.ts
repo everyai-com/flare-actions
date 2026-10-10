@@ -558,11 +558,18 @@ export async function why(deps: WhyDeps, input: WhyInput): Promise<WhyChain> {
     return chain;
   }
 
-  // Intent (D1 first; the note is the durable fallback).
+  // Intent (D1 first; the note is the durable fallback). Trailers are
+  // plain commit text anyone can write, so every D1 row they point at
+  // must belong to THIS repo: a cross-repo intent/goal/ledger/train is
+  // dropped with a warning, never shown as this line's provenance.
   let rowGoalId: string | null = null;
+  let foreign = false;
   try {
     const row = await getIntent(deps.db, intentId);
-    if (row) {
+    if (row && row.repo !== input.repo) {
+      foreign = true;
+      chain.warnings.push(`intent ${intentId} belongs to another repo; its intent, goal, ledger and conflicts were not used`);
+    } else if (row) {
       rowGoalId = row.goalId;
       chain.intent = {
         id: row.id,
@@ -598,14 +605,15 @@ export async function why(deps: WhyDeps, input: WhyInput): Promise<WhyChain> {
       planApprovedBy: null,
     };
   }
-  if (!chain.intent) chain.warnings.push(`intent ${intentId} not found in D1 and no why note`);
+  if (!chain.intent && !foreign) chain.warnings.push(`intent ${intentId} not found in D1 and no why note`);
 
   // Goal.
   const goalId = rowGoalId ?? chain.trailers?.goal ?? note?.goal?.id ?? null;
   if (goalId) {
     try {
       const g = await getGoal(deps.db, goalId);
-      if (g) chain.goal = { id: g.id, text: g.text, state: g.state };
+      if (g && g.repo !== input.repo) chain.warnings.push(`goal ${goalId} belongs to another repo; ignored`);
+      else if (g) chain.goal = { id: g.id, text: g.text, state: g.state };
     } catch (err) {
       warn("goal", err);
     }
@@ -615,7 +623,7 @@ export async function why(deps: WhyDeps, input: WhyInput): Promise<WhyChain> {
   // Ledger: decisions, alternatives, review, tournaments.
   const tournamentIds = new Set<string>();
   try {
-    const rows = await listForgeLedger(deps.db, "intent", intentId, 100);
+    const rows = foreign ? [] : (await listForgeLedger(deps.db, "intent", intentId, 100)).filter((r) => r.repo === input.repo);
     chain.timeline = rows.map(entry);
     for (const r of rows) {
       if (DECISION_KIND.test(r.kind)) chain.decisions.push(entry(r));
@@ -640,9 +648,9 @@ export async function why(deps: WhyDeps, input: WhyInput): Promise<WhyChain> {
   try {
     const res = await deps.db
       .prepare(
-        "SELECT id, intent_a, intent_b, files_json, state, resolver_agent, resolution_sha FROM conflicts WHERE intent_a = ? OR intent_b = ? ORDER BY created_at ASC LIMIT 20",
+        "SELECT id, intent_a, intent_b, files_json, state, resolver_agent, resolution_sha FROM conflicts WHERE repo = ? AND (intent_a = ? OR intent_b = ?) ORDER BY created_at ASC LIMIT 20",
       )
-      .bind(intentId, intentId)
+      .bind(foreign ? "" : input.repo, intentId, intentId)
       .all<{
         id: string;
         intent_a: string;
@@ -672,6 +680,7 @@ export async function why(deps: WhyDeps, input: WhyInput): Promise<WhyChain> {
       });
       try {
         for (const l of await listForgeLedger(deps.db, "conflict", r.id, 50)) {
+          if (l.repo !== input.repo) continue;
           if (TOURNAMENT_KIND.test(l.kind)) {
             const m = UUID_RE.exec(l.body);
             if (m) tournamentIds.add(m[0].toLowerCase());
@@ -710,9 +719,10 @@ export async function why(deps: WhyDeps, input: WhyInput): Promise<WhyChain> {
   if (trainId) {
     try {
       const t = await getTrain(deps.db, trainId);
-      if (t) chain.train = { id: t.id, state: t.state, lane: t.lane, runId: t.runId, headSha: t.headSha };
-      if (!chain.review) {
-        const landed = (await listForgeLedger(deps.db, "train", trainId, 50)).find((r) => REVIEW_KIND.test(r.kind));
+      if (t && t.repo !== input.repo) chain.warnings.push(`train ${trainId} belongs to another repo; ignored`);
+      else if (t) chain.train = { id: t.id, state: t.state, lane: t.lane, runId: t.runId, headSha: t.headSha };
+      if (!chain.review && (!t || t.repo === input.repo)) {
+        const landed = (await listForgeLedger(deps.db, "train", trainId, 50)).find((r) => r.repo === input.repo && REVIEW_KIND.test(r.kind));
         if (landed) chain.review = { decision: landed.kind, by: landed.actor, policy: landed.body, source: "ledger" };
       }
     } catch (err) {

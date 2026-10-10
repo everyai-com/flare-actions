@@ -96,11 +96,13 @@ interface ForgePolicy { protected: string[]; autoLandMaxRisk: number; auditSampl
   lanes: { maxPerTrain: number; maxParallel: number }; replay: { maxAttempts: number; raceK: number } }
 POLICY_PATH = ".flare/policy.yml"; DEFAULT_POLICY  // risk 30, sample 0.05, lanes 50/8, replay 2/1
 parsePolicy(text: string | null | undefined): Result<ForgePolicy>
-protectedMatches(fp: Footprint, policy: ForgePolicy): string[]
+BUILTIN_PROTECTED = ["flare.yml", ".flare/**", ".github/workflows/**"]  // always protected
+effectiveProtected(policy): string[]               // built-ins + policy.protected (deduped)
+protectedMatches(fp: Footprint, policy: ForgePolicy): string[]  // over effectiveProtected
 
 // risk (§3.5)
 RISK_WEIGHTS, GLOBSTAR_WEIGHT (= 10 files)
-scoreRisk(input: { footprint; actualFootprint?; policy?; llmReplay?; weakEvidence?; reviewerDisagrees? })
+scoreRisk(input: { footprint; actualFootprint?; policy?; llmReplay?; weakEvidence?; reviewerDisagrees?; truncated? })
   : { risk: number /*0-100, capped*/; terms: RiskTerm[] }
 footprintWeight(fp): number; footprintSizePoints(weight): number   // log-scaled, ≤15
 routeLanding(risk: number, policy: ForgePolicy, roll: number): "auto" | "audit" | "human"
@@ -117,7 +119,7 @@ interface WhyNote { v: 1; goal: {id,text}|null; intent: {id,title,reasoning,acce
   review: {decision: "auto"|"audit"|"human"|"approved"|"rejected", by, policy}; train_id }
 serializeWhyNote(note: WhyNote): string             // stable key order, bounded fields
 parseWhyNote(text: string): WhyNote | null          // strict; corrupt -> null
-labelUntrusted(fromAgent: string, body: string): string  // mailbox framing (invariant 5)
+labelUntrusted(fromAgent: string, body: string, nonce?: string): string  // nonce-fenced mailbox framing (invariant 5)
 ```
 
 ### `apps/worker/src/intents.ts` (D1, injected `db`)
@@ -454,11 +456,20 @@ c.hydrate() -> { indexed, removed, edges, truncated }          // forced rebuild
 ```
 
 - **`OverlapView`** is `{ intentId, agent, title, reasoning (≤500
-  chars), state, pairs: [{ mine, theirs }], viaActual, untrusted: true
-  }`. Results are sorted by pair count and capped at 50. `title` and
-  `reasoning` are another agent's words, so render them as data.
+  chars), state, pairs: [{ mine, theirs }], viaActual, untrusted: true,
+  untrustedFields }`. Results are sorted by pair count and capped at 50.
+  `title` and `reasoning` are another agent's words, so render them as
+  data.
+- **Peer fields are marked structurally.** Every agent-facing view
+  carries `untrustedFields` naming exactly its peer-authored fields
+  (`PEER_FIELDS` in `coordinator-core.ts`): overlaps and
+  `whats_happening` items `["agent", "title", "reasoning"]`, similar
+  `["agent", "title"]`, inbox `["fromAgent", "text"]`, and the snapshot
+  `untrustedFields.intents = ["agent", "title"]`. Agent names are
+  self-reported, never a verified identity.
 - **`InboxNote`** is `{ id, fromIntent, fromAgent, text, createdAt,
-  untrusted: true }`. `text` is already framed by `labelUntrusted`.
+  untrusted: true, untrustedFields }`. `text` is already fenced by
+  `labelUntrusted` (header + nonce-carrying BEGIN/END lines).
   Draining is exactly-once (`drainInbox`).
 - **Automatic notes.** When `declare` or `reportPush` creates a *new*
   overlap edge, the other intent's mailbox gets one note (at most 10
@@ -564,9 +575,14 @@ backoff):
 6. **Call `reportPush`** on the trunk repo's coordinator with
    `source: "trigger"`.
 
-The trigger is configured only at the top level. Previews share the
-`flare-tournaments` namespace, so a preview trigger would also consume
-production pushes. Workflow names are also account-global.
+The trigger is configured only at the top level. Previews bind their
+own Artifacts namespace, `flare-forge-preview` (binding and
+`ARTIFACTS_NAMESPACE` var in the `previews` block), and their own train
+Workflow, `flare-forge-train-preview`, so a preview never reads or
+writes production trunks or forks (AGENTS.md: previews never point at
+prod resources). Event triggers are namespace-filtered and Workflow
+names are account-global, so previews get no push trigger; preview
+forks rely on `report_push`.
 
 ### Benchmark: index at 100k intents
 
