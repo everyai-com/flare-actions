@@ -3,12 +3,19 @@
 # a backstop — see .github/workflows/ci.yml).
 jobs:
   verify:
+    # npm ci deletes node_modules, so cache npm's tarball store instead.
+    cache:
+      key: npm-cache-v1
+      paths: [.npm-cache]
+      restore-keys: [npm-cache-]
     steps:
       - run: node --version && npm --version
-      # Seats showed npm ci hanging silently to the 10m step cap: log
-      # HTTP progress so a stall is diagnosable, skip audit/fund round
-      # trips, and allow a cold cache more room.
-      - run: npm ci --prefer-offline --no-audit --no-fund --loglevel=http
+      # Seats showed npm ci hanging to the step cap and OOM-killed (137):
+      # V2 seats started without an `instance` size, i.e. the 1/16 vCPU /
+      # 256 MiB lite default (fixed in seat-do.ts, now standard-2). Log HTTP progress so a stall is
+      # diagnosable, skip audit/fund round trips, and allow a cold cache
+      # more room.
+      - run: npm ci --cache .npm-cache --prefer-offline --no-audit --no-fund --loglevel=http
         timeout-minutes: 20
       - run: npm run types
       - run: npm run typecheck

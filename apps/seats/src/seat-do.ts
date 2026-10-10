@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import type { BrowserWorker } from "@cloudflare/puppeteer";
 import { DirectoryBackup, Files, S3Mount } from "@cloudflare/sandbox";
 import type { DirectoryBackupGatewayBinding, S3GatewayBinding } from "@cloudflare/sandbox";
-import { runSeatJob, type ContainerCtl, type ContainerStartOptions, type SeatDeps } from "./seat";
+import { runSeatJob, seatInstanceFrom, type ContainerCtl, type ContainerInstanceSize, type ContainerStartOptions, type SeatDeps } from "./seat";
 import {
   BoxError,
   createBox,
@@ -41,6 +41,8 @@ export interface SeatsEnv {
   GITHUB_APP_ID?: string;
   GITHUB_PRIVATE_KEY?: string;
   SEATS_TOKEN?: string;
+  // Container size for V2 seats + boxes (lite|standard-1..4; default standard-2).
+  SEAT_INSTANCE?: string;
   NOTIFY_FROM_EMAIL?: string;
   SECRETS_KEY?: string;
   AI_GATEWAY_ID?: string;
@@ -120,16 +122,19 @@ const SEAT_ALARM_MS = 60 * 1000;
 // V2 adapter (durable_object policy): full start config plus
 // snapshots. Sets the inactivity timeout on every start — timeouts do
 // not survive DO restarts, so the constructor re-arms them too.
-function adaptV2(container: BoundContainer): ContainerCtl {
+function adaptV2(container: BoundContainer, size: ContainerInstanceSize): ContainerCtl {
   return {
     get running() {
       return container.running;
     },
     start: async (opts?: ContainerStartOptions) => {
+      // Every path sizes the microVM: omitting `instance` means `lite`.
+      const instance = opts?.instance ?? size;
       if (opts?.snapshotId) {
         container.start({
           enableInternet: opts.enableInternet ?? false,
           containerSnapshot: { id: opts.snapshotId },
+          instance,
           ...(opts.entrypoint ? { entrypoint: opts.entrypoint } : {}),
           ...(opts.env ? { env: opts.env } : {}),
         });
@@ -137,14 +142,12 @@ function adaptV2(container: BoundContainer): ContainerCtl {
         container.start({
           enableInternet: opts.enableInternet ?? false,
           image: opts.image,
+          instance,
           ...(opts.entrypoint ? { entrypoint: opts.entrypoint } : {}),
           ...(opts.env ? { env: opts.env } : {}),
-          ...(opts.instance ? { instance: opts.instance } : {}),
         });
-      } else if (opts) {
-        container.start({ enableInternet: opts.enableInternet ?? false });
       } else {
-        container.start();
+        container.start({ enableInternet: opts?.enableInternet ?? false, instance });
       }
       await container.setInactivityTimeout(SEAT_INACTIVITY_MS);
     },
@@ -238,7 +241,7 @@ async function seatDeps(
     gatewayId: env.AI_GATEWAY_ID,
     webSearch: env.TRIAGE_WEB_SEARCH === "1" ? true : undefined,
     triageModel: env.TRIAGE_MODEL,
-    container: v2 ? adaptV2(container) : adaptV1(container),
+    container: v2 ? adaptV2(container, seatInstanceFrom(env.SEAT_INSTANCE)) : adaptV1(container),
     ...(v2
       ? {
           containerStart: {
@@ -438,7 +441,7 @@ export class BoxSeat extends DurableObject<SeatsEnv> {
     if (!seatImage) {
       return Response.json({ error: "seat image not configured (durable_object policy)" }, { status: 500 });
     }
-    const deps: BoxDeps = { db: this.env.DB, container: adaptV2(container), fs: adaptFiles(new Files(container)), seatImage };
+    const deps: BoxDeps = { db: this.env.DB, container: adaptV2(container, seatInstanceFrom(this.env.SEAT_INSTANCE)), fs: adaptFiles(new Files(container)), seatImage };
     // destroy is instant (no container I/O to protect); every other op
     // holds the box awake until it answers.
     const keepalive = op !== "destroy";

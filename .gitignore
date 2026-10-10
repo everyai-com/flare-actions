@@ -15,3 +15,4 @@ apps/seats/wrangler.staging.jsonc
 
 # Agent worktrees (Claude Code)
 .claude/worktrees/
+.npm-cache/
