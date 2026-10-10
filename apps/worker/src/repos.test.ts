@@ -4,6 +4,7 @@ import {
   getRepoCommits,
   getRepoInfo,
   getRepoTree,
+  isScratchRepo,
   listAllowedRepos,
   listRepos,
   normalizeRepoPath,
@@ -205,5 +206,25 @@ describe("listAllowedRepos", () => {
     const second = await listAllowedRepos(artifacts, 2, first.cursor, allow);
     expect(second.repos.map((r) => r.name)).toEqual(["ok3"]);
     expect(second.cursor).toBeUndefined();
+  });
+});
+
+describe("isScratchRepo", () => {
+  const fork = "artifacts:flare/src";
+  it("hides race, intent, and session forks", () => {
+    expect(isScratchRepo({ name: "t-64be2eb8-gamma", source: fork })).toBe(true);
+    expect(isScratchRepo({ name: "i-f86bdb3ed577", source: fork })).toBe(true);
+    expect(isScratchRepo({ name: "s-3f2a9c1e77aa-claude-ab12", source: fork })).toBe(true);
+  });
+  it("keeps hand-made repos, even ones shaped like forks", () => {
+    expect(isScratchRepo({ name: "t-64be2eb8-gamma", source: null })).toBe(false);
+    expect(isScratchRepo({ name: "t-64be2eb8-gamma", source: "git:https://github.com/a/b.git" })).toBe(false);
+    expect(isScratchRepo({ name: "bookshelf", source: fork })).toBe(false);
+    expect(isScratchRepo({ name: "i-intent", source: fork })).toBe(false);
+  });
+  it("filters through listAllowedRepos without an allowlist", async () => {
+    const artifacts = fakeArtifacts({ repos: [{ name: "app" }, { name: "t-64be2eb8-alpha" }] });
+    const page = await listAllowedRepos(artifacts, 10, undefined, null, (r) => r.name.startsWith("t-"));
+    expect(page.repos.map((r) => r.name)).toEqual(["app"]);
   });
 });

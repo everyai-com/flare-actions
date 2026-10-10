@@ -24,6 +24,8 @@ jobs:
       - run: node scripts/check-openapi.mjs
       - run: npm run lint:openapi
       - run: npm run openapi:gen && git diff --exit-code -- apps/worker/src/openapi-spec.ts apps/worker/src/llms-txt.ts
+      # The npm package ships only the bundle; prove it builds and runs.
+      - run: npm run build:cli && node apps/cli/dist/cli.mjs --version && node apps/cli/dist/cli.mjs import --help
       # The seats config is generated (gitignored) from its committed
       # template; dry-run just needs a well-formed placeholder account.
       - run: node -e "const fs=require('fs');fs.writeFileSync('apps/seats/wrangler.jsonc',fs.readFileSync('apps/seats/wrangler.jsonc.example','utf8').replace('__ACCOUNT_ID__','0123456789abcdef0123456789abcdef'))"

@@ -1,5 +1,6 @@
 import { FORGE_CSS, FORGE_NAV_HTML, FORGE_NAV_BENCH_HTML, FORGE_PANE_HTML, FORGE_OVERLAYS_HTML, FORGE_AUTH_DEMO_HTML, FORGE_HOME_CARD_HTML } from "./dashboard-forge-ui";
 import { FORGE_JS } from "./dashboard-forge-js";
+import { NEXT_MOVE_JS } from "./next-move";
 import { forgeFixturesJson } from "./forge-fixtures";
 
 // Every data-action in the dashboard is either an MCP tool name (agents
@@ -43,6 +44,13 @@ export const DASHBOARD_UI_ACTIONS = [
   "tour_back",
   "tour_skip",
   "explore_demo",
+  "open_repo",
+  // Simple/Pro modes (docs/UX-BUDGET.md)
+  "toggle_mode",
+  "toggle_more",
+  "show_more",
+  "open_section",
+  "next_move",
 ] as const;
 
 // GET / -> /dashboard keeping the query string: ?demo=1, ?stage=1 and
@@ -60,6 +68,18 @@ export const DASHBOARD_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script id="uiModeScript">
+/* ui-mode: Simple (default) or Pro, set before first paint. ?mode= overrides and persists. */
+(function () {
+  var m = "simple";
+  try {
+    var q = new URLSearchParams(location.search).get("mode");
+    if (q === "pro" || q === "simple") { m = q; localStorage.setItem("flare-ui-mode", q); }
+    else if (localStorage.getItem("flare-ui-mode") === "pro") m = "pro";
+  } catch (e) { /* storage blocked: stay Simple */ }
+  document.documentElement.classList.add(m === "pro" ? "ui-pro" : "ui-simple");
+})();
+</script>
 <meta name="description" content="Flare Actions dashboard: agent tournaments, CI runs, merge queue, and settings.">
 <meta name="theme-color" content="#0a0a0a">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23fafafa'/%3E%3Ctext x='16' y='23' font-family='system-ui,sans-serif' font-size='19' font-weight='800' fill='black' text-anchor='middle'%3EF%3C/text%3E%3C/svg%3E">
@@ -68,6 +88,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <style>
 :root { color-scheme: dark; --bg: #0a0a0a; --card: #111113; --sidebar: #0a0a0a; --line: #1f1f23; --line-strong: #2e2e33; --ink: #fafafa; --soft: #a1a1aa; --muted: #71717a; --faint: #3f3f46; --accent: #fafafa; --accent-hover: #e4e4e7; --accent-ink: #7aa8f0; --danger: #f87171; --ok: #4ade80; --warn: #fbbf24; --info: #7db4f7; --hover: #17171a; --input-bg: #0a0a0a; --ring: #52525b; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
 header { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 14px 12px; background: var(--sidebar); border-right: 1px solid var(--line); position: fixed; left: 0; top: 0; bottom: 0; width: 228px; z-index: 20; }
 header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
@@ -89,6 +110,9 @@ body:not(.app) header { display: none; }
 .side-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 12px 8px 0; border-top: 1px solid var(--line); overflow: hidden; }
 .side-foot #userLabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 section.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+.settings-jump { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 6px; margin: -4px 0 14px; padding: 6px 0; background: var(--card, var(--bg)); }
+.settings-jump button { height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 500; }
+#teamPane h2[id], #settingsPane h2[id] { scroll-margin-top: 56px; }
 h2 { margin: 0 0 10px; font-size: 16px; font-weight: 600; line-height: 1.2; letter-spacing: -0.005em; }
 h2:not(:first-child) { margin-top: 24px; }
 h3 { margin: 16px 0 6px; font-size: 14px; font-weight: 600; line-height: 1.2; }
@@ -129,7 +153,7 @@ a { color: var(--accent-ink); }
   header { position: sticky; top: 0; width: auto; flex-direction: row; align-items: center; gap: 8px; padding: 10px 12px; border-right: none; border-bottom: 1px solid var(--line); }
   header h1.brand-head { padding: 0; }
   header h1.brand-head span:last-child { display: none; }
-  body.app nav.side-nav { flex-direction: row; overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: none; }
+  body.app nav.side-nav { flex-direction: row; overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: none; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); padding-right: 24px; }
   body.app nav.side-nav::-webkit-scrollbar { display: none; }
   .side-link { width: auto; flex: none; }
   .side-group { display: none; }
@@ -311,6 +335,7 @@ a.home-btn:hover, button.home-btn:hover { background: var(--accent-hover); }
 .home-verdict.bad { border-color: var(--danger, #dc2626); background: var(--tint-conflict, rgba(248,113,113,0.12)); }
 .home-verdict.busy { border-color: var(--info, #2563eb); background: var(--tint-working, rgba(125,180,247,0.12)); }
 .home-sub { font-size: 14px; margin: 18px 0 8px; }
+.home-agent .home-cmd code { white-space: normal; overflow-wrap: anywhere; }
 #runDetail { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
 .run-summary { margin: 4px 0 16px; align-items: flex-start; }
 .run-summary .big { font-size: 26px; }
@@ -365,30 +390,189 @@ a.home-btn:hover, button.home-btn:hover { background: var(--accent-hover); }
   details.step summary { overflow-wrap: anywhere; }
   pre.log { white-space: pre-wrap; overflow-wrap: anywhere; }
 }
-${FORGE_CSS}</style>
+${FORGE_CSS}
+/* ---------- Simple / Pro modes (docs/UX-BUDGET.md) ----------
+   <html> carries ui-simple or ui-pro from the head script. Pro is the
+   full dashboard; Simple hides what is over the cognitive-load budget.
+   .simple-only / .pro-only swap copy; .simple-more (and the ids below)
+   hide behind a pane's "Show more" (section.card.more-open). */
+html:not(.ui-simple) .simple-only { display: none !important; }
+html.ui-simple .pro-only { display: none !important; }
+html.ui-simple kbd { display: none !important; }
+html[data-tab="home"] #nextMoveChip { display: none !important; }
+@media (max-width: 720px) { #nextMoveChip { display: none !important; } }
+html.ui-simple .side-group { display: none; }
+html.ui-simple nav.side-nav > * { order: 7; }
+html.ui-simple #tabHome { order: 1; }
+html.ui-simple #tabRuns { order: 2; }
+html.ui-simple #tabLive { order: 3; }
+html.ui-simple #tabRepos { order: 4; }
+html.ui-simple #tabSettings { order: 5; }
+html.ui-simple #navMoreBtn { order: 6; }
+html.ui-simple nav.side-nav > .side-link:not([data-simple-nav]) { display: none; }
+html.ui-simple nav.side-nav.more-open > .side-link:not([data-simple-nav]) { display: flex; }
+html.ui-simple .side-link { font-size: 14px; }
+.side-more { color: var(--faint); }
+.side-more .more-caret { margin-left: auto; font-size: 11px; }
+.mode-btn { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px; font-size: 12px; white-space: nowrap; flex: none; }
+.mode-btn span { color: var(--muted); font-weight: 500; }
+.mode-btn .mode-arrow { color: var(--faint); }
+html.ui-simple .mode-btn .mode-s, html:not(.ui-simple) .mode-btn .mode-p { color: var(--ink); font-weight: 700; }
+html.ui-simple section.card:not(.more-open) .simple-more,
+html.ui-simple section.card:not(.more-open) #homeAgent,
+html.ui-simple section.card:not(.more-open) .home-cards,
+html.ui-simple section.card:not(.more-open) #homeCardForge,
+html.ui-simple section.card:not(.more-open) #usageStrip,
+html.ui-simple section.card:not(.more-open) #cacheStatsStrip,
+html.ui-simple section.card:not(.more-open) #cacheBox,
+html.ui-simple section.card:not(.more-open) #dispatchBox,
+html.ui-simple section.card:not(.more-open) #runsFilterForm,
+html.ui-simple section.card:not(.more-open) #runsCount,
+html.ui-simple section.card:not(.more-open) #bottlenecksBox { display: none !important; }
+html.ui-simple #homeSetup, html.ui-simple #homeWaiting, html.ui-simple #homeStatus, html.ui-simple #homeRunNow,
+html.ui-simple .settings-jump, html.ui-simple #reposPane > h2 + p.muted,
+html.ui-simple #setTokens, html.ui-simple #setTokens + p.muted, html.ui-simple #setRunner, html.ui-simple #setRunner + p.muted,
+html.ui-simple #setPeople, html.ui-simple #setWebhook, html.ui-simple #setNotify, html.ui-simple #setGithub { display: none !important; }
+html.ui-simple .home h2 { font-size: var(--s-h1); }
+html.ui-simple .home-lead { font-size: 16px; }
+/* Simple design tokens. The Forge screens (dashboard-forge-*) reuse these
+   exact names, so keep them stable. Colours follow the theme because they
+   resolve on <html>, where the theme variables live too. */
+html.ui-simple {
+  --s-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --s-radius: 12px; --s-gap: 16px;
+  --s-primary: var(--accent); --s-primary-fg: var(--accent-fg, #000);
+  --s-ok: var(--ok); --s-bad: var(--danger); --s-wait: var(--warn); --s-muted: var(--muted);
+  --s-card-bg: var(--card); --s-border: var(--line-strong);
+  --s-h1: 24px; --s-h2: 18px; --s-body: 15px;
+}
+html.ui-simple body { font-family: var(--s-font); }
+html.ui-simple .s-pane { border-radius: var(--s-radius); padding: calc(var(--s-gap) + 4px); margin-bottom: var(--s-gap); background: var(--s-card-bg); font-size: var(--s-body); }
+html.ui-simple .s-pane .s-head { font-size: var(--s-h1); letter-spacing: -0.015em; margin: 0 0 6px; }
+html.ui-simple .s-pane h3, html.ui-simple .s-pane .acc-btn, html.ui-simple .quest-name { font-size: var(--s-h2); }
+html.ui-simple .s-pane .muted, html.ui-simple .s-pane p { font-size: var(--s-body); }
+html.ui-simple .s-pane form button:not([type="button"]):not(.ghost):not(.s-second),
+html.ui-simple .s-pane .home-btn, html.ui-simple .s-primary {
+  background: var(--s-primary); color: var(--s-primary-fg); border: 1px solid transparent; border-radius: 10px;
+  min-height: 40px; padding: 10px 18px; font-size: var(--s-body); font-weight: 600;
+}
+html.ui-simple .s-pane button.ghost, html.ui-simple .s-pane button.danger { border-radius: 10px; min-height: 36px; }
+html.ui-simple .s-pane button.s-second { background: transparent; color: var(--ink); border: 1px solid var(--s-border); border-radius: 10px; min-height: 40px; }
+html.ui-simple .s-pane input, html.ui-simple .s-pane select { border-radius: 10px; min-height: 40px; font-size: var(--s-body); }
+html.ui-simple .s-pane .home-verdict, html.ui-simple .s-pane .everywhere, html.ui-simple .s-pane .quest,
+html.ui-simple .s-pane .t-verdict, html.ui-simple .s-pane .acc-btn { border-radius: var(--s-radius); }
+html.ui-simple .home-verdict.ok { border-color: var(--s-ok); }
+html.ui-simple .home-verdict.bad { border-color: var(--s-bad); }
+html.ui-simple .home-verdict.busy { border-color: var(--s-wait); }
+html.ui-simple .pill.success::before { background: var(--s-ok); }
+html.ui-simple .pill.failure::before, html.ui-simple .pill.error::before { background: var(--s-bad); }
+html.ui-simple .pill.running::before, html.ui-simple .pill.queued::before, html.ui-simple .pill.blocked::before { background: var(--s-wait); }
+.s-status { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0 14px; padding: 12px 14px; border-radius: var(--s-radius, 12px); border: 1px solid var(--s-border, var(--line-strong)); font-weight: 600; }
+.s-status.ok { border-color: var(--s-ok, var(--ok)); }
+.s-status.bad { border-color: var(--s-bad, var(--danger)); }
+.s-status.wait { border-color: var(--s-wait, var(--warn)); }
+.s-status .s-why { flex-basis: 100%; font-weight: 400; color: var(--s-muted, var(--muted)); }
+.s-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--s-ok, var(--ok)); font-size: 13px; font-weight: 700; }
+html.ui-simple #paletteFoot, html.ui-simple .settings-jump { display: none !important; }
+html.ui-simple #authPane:not(.auth-more) #breakGlassBox { display: none !important; }
+.more-row { margin: 14px 0 0; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+button.linkish { background: transparent; border: none; color: var(--accent-ink); padding: 6px 2px; font-size: 14px; font-weight: 600; }
+button.linkish:hover:not(:disabled) { background: transparent; text-decoration: underline; }
+.quest { border: 1px solid var(--line-strong); border-radius: 14px; padding: 18px; margin: 0 0 16px; background: var(--card); }
+.quest-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 12px; }
+.quest-level { font-size: 13px; font-weight: 700; color: var(--soft); letter-spacing: 0.02em; }
+.quest-map { display: flex; align-items: center; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.quest-map li { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 999px; font-size: 13px; }
+.quest-map li.done { font-size: 17px; }
+.quest-map li.now { border: 2px solid var(--ink); color: var(--ink); font-weight: 700; font-size: 12px; }
+.quest-map li.locked::before { content: ""; width: 8px; height: 8px; border-radius: 999px; background: var(--faint); }
+.quest-name { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 4px; }
+.quest-text { color: var(--soft); font-size: 15px; margin: 0 0 14px; max-width: 52ch; }
+.quest-act { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.quest-act select, .quest-act input { min-height: 40px; font-size: 14px; flex: 1 1 200px; max-width: 360px; }
+.quest-msg { margin: 10px 0 0; color: var(--muted); font-size: 13.5px; min-height: 1em; }
+.quest-cmd { margin: 12px 0 0; }
+.quest-cmd p { margin: 0 0 6px; color: var(--soft); font-size: 13.5px; }
+.health .home-verdict { padding: 22px; }
+.health .home-verdict .big { font-size: 44px; }
+.health .home-verdict .what strong { font-size: 24px; }
+.health-streak { font-size: 15px; font-weight: 600; margin: 0 0 10px; }
+.badges { display: flex; gap: 8px; flex-wrap: wrap; list-style: none; margin: 0 0 6px; padding: 0; }
+.badges li { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line-strong); font-size: 12.5px; font-weight: 600; color: var(--soft); }
+.runs-verdict { margin: 0 0 14px; }
+.runs-verdict .home-verdict { margin: 0; }
+.acc-h { margin: 0 !important; }
+.acc-h:first-child + h2 { margin-top: 0; }
+.acc-btn { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 12px 14px; margin: 6px 0 0; text-align: left; background: transparent; color: var(--ink); border: 1px solid var(--line); border-radius: 10px; font-size: 15px; font-weight: 600; }
+.acc-btn:hover:not(:disabled) { background: var(--hover); }
+.acc-btn::after { content: "▸"; margin-left: auto; color: var(--muted); }
+.acc-btn[aria-expanded="true"] { border-color: var(--line-strong); background: var(--hover); }
+.acc-btn[aria-expanded="true"]::after { content: "▾"; }
+html.ui-simple [data-sec]:not(.sec-open) { display: none !important; }
+html.ui-simple [data-sec].sec-open { margin-left: 4px; }
+details.simple-all { margin: 14px 0; border: 1px solid var(--line); border-radius: 10px; padding: 4px 12px 10px; }
+details.simple-all > summary { cursor: pointer; padding: 8px 0; font-weight: 600; color: var(--accent-ink); }
+.next-chip { display: flex; align-items: center; gap: 4px; width: 100%; margin: 10px 0 0; padding: 9px 10px; border-radius: 8px; background: var(--hover); color: var(--ink); border: 1px solid var(--line-strong); font-size: 13px; font-weight: 600; text-align: left; overflow: hidden; }
+.next-chip:hover:not(:disabled) { background: var(--line); }
+.next-chip .next-k { color: var(--accent-ink); flex: none; }
+.next-chip #nextMoveLabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.auth-meaning { margin: 4px 0 10px; }
+.auth-meaning h2 { font-size: 15px; font-weight: 600; margin: 6px 0 4px; color: var(--soft, #666); }
+/* Simple budget: one headline (the form's), one way in, the rest on ask. */
+html.ui-simple #authPane:not(.auth-more) #magicForm,
+html.ui-simple #authPane:not(.auth-more) #forgotBtn,
+html.ui-simple #authPane #authDemo,
+html.ui-simple #authPane #emailDesc { display: none !important; }
+html.ui-simple #authPane.auth-more #authMoreRow { display: none !important; }
+.auth-meaning p { margin: 0 0 6px; }
+.everywhere { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 14px 0; }
+.everywhere h3 { margin: 0 0 4px; }
+.everywhere p { margin: 0 0 8px; color: var(--soft); }
+.confetti { position: fixed; inset: 0; pointer-events: none; z-index: 70; overflow: hidden; }
+.confetti span { position: absolute; top: -14px; width: 8px; height: 13px; border-radius: 2px; animation: flConfetti 900ms ease-in forwards; }
+@keyframes flConfetti { to { transform: translate(var(--dx, 0px), 105vh) rotate(560deg); opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .confetti { display: none; } }
+@media (max-width: 900px) {
+  .next-chip { width: auto; max-width: 160px; margin: 0; flex: none; padding: 6px 8px; }
+  .side-more .more-caret { margin-left: 4px; }
+  .mode-btn { height: 32px; }
+}
+@media (max-width: 640px) {
+  html.ui-simple .s-pane { padding: 14px; }
+  .mode-btn .mode-arrow { display: none; }
+  .health .home-verdict .what strong { font-size: 20px; }
+}
+</style>
 </head>
 <body>
 <header>
 <h1 class="brand-head"><span class="brand-mark">F</span><span>Flare Actions</span></h1>
 <nav class="side-nav" id="sideNav" aria-label="Primary">
+<button id="tabHome" class="side-link" data-tab="home" type="button" data-simple-nav="primary"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.2 8 2.5l5.5 4.7V13a.5.5 0 0 1-.5.5H9.6V10H6.4v3.5H3a.5.5 0 0 1-.5-.5z"/></svg><span data-simple="label">Home</span></button>
 ${FORGE_NAV_HTML}
 <div class="side-group">Flare CI</div>
-<button id="tabHome" class="side-link" data-tab="home" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.2 8 2.5l5.5 4.7V13a.5.5 0 0 1-.5.5H9.6V10H6.4v3.5H3a.5.5 0 0 1-.5-.5z"/></svg><span>Home</span></button>
-<button id="tabRuns" class="side-link" data-tab="runs" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6.6 5.4 11 8l-4.4 2.6z" fill="currentColor" stroke="none"/></svg><span>Runs</span></button>
-<button id="tabMerge" class="side-link" data-tab="merge" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="8" r="1.7"/><path d="M4 5.7v4.6M5.6 4.6c2.8.3 2.4 3.4 4.7 3.4"/></svg><span>Merge queue</span></button>
+<button id="tabRuns" class="side-link" data-tab="runs" type="button" data-simple-nav="primary"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6.6 5.4 11 8l-4.4 2.6z" fill="currentColor" stroke="none"/></svg><span class="pro-only">Runs</span><span class="simple-only" data-simple="label">Checks</span></button>
+<button id="tabMerge" class="side-link" data-tab="merge" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="8" r="1.7"/><path d="M4 5.7v4.6M5.6 4.6c2.8.3 2.4 3.4 4.7 3.4"/></svg><span class="pro-only">Merge queue</span><span class="simple-only" data-simple="label">Waiting to land</span></button>
 <div class="side-group">Code</div>
-<button id="tabRepos" class="side-link" data-tab="repos" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5 8 2l5 2.5v7L8 14l-5-2.5z"/><path d="M3 4.5 8 7l5-2.5M8 7v7"/></svg><span>Repositories</span></button>
+<button id="tabRepos" class="side-link" data-tab="repos" type="button" data-simple-nav="primary"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5 8 2l5 2.5v7L8 14l-5-2.5z"/><path d="M3 4.5 8 7l5-2.5M8 7v7"/></svg><span class="pro-only">Repositories</span><span class="simple-only" data-simple="label">Projects</span></button>
 <button id="tabTournaments" class="side-link" data-tab="tournaments" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.8" r="3.2"/><path d="M6.2 8.4 5.2 13.8 8 12.2l2.8 1.6-1-5.4"/></svg><span>Races</span></button>
 <div class="side-group">Manage</div>
-<button id="tabSettings" class="side-link" data-tab="settings" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.5h12M2 10.5h12"/><circle cx="10" cy="5.5" r="1.8" style="fill:var(--sidebar)"/><circle cx="6" cy="10.5" r="1.8" style="fill:var(--sidebar)"/></svg><span>Settings</span></button>
+<button id="tabSettings" class="side-link" data-tab="settings" type="button" data-simple-nav="primary"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.5h12M2 10.5h12"/><circle cx="10" cy="5.5" r="1.8" style="fill:var(--sidebar)"/><circle cx="6" cy="10.5" r="1.8" style="fill:var(--sidebar)"/></svg><span data-simple="label">Settings</span></button>
 ${FORGE_NAV_BENCH_HTML}
+<button id="navMoreBtn" class="side-link side-more simple-only" type="button" data-simple-nav="more" data-action="toggle_more" aria-expanded="false" aria-controls="sideNav"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg><span id="navMoreLabel" data-simple="label">More</span><span class="more-caret" aria-hidden="true">▾</span></button>
 </nav>
-<div class="side-foot"><span id="userLabel" class="muted"></span> <button id="paletteBtn" class="ghost" type="button" aria-label="Open command palette">⌘K</button> <button id="logoutBtn" class="ghost" hidden>Log out</button></div>
+<button id="nextMoveChip" class="next-chip simple-only" type="button" data-action="next_move" hidden><span class="next-k" data-simple="label">Next:</span> <span id="nextMoveLabel"></span></button>
+<div class="side-foot"><span id="userLabel" class="muted"></span> <button id="paletteBtn" class="ghost" type="button" aria-label="Open command palette">⌘K</button> <button id="modeBtn" class="ghost mode-btn" type="button" role="switch" aria-checked="false" aria-label="Pro mode" data-action="toggle_mode" title="Simple shows less. Pro shows every detail."><span class="mode-s">Simple</span><span class="mode-arrow" aria-hidden="true">⇄</span><span class="mode-p">Pro</span></button> <button id="logoutBtn" class="ghost" hidden>Log out</button></div>
 </header>
 <main><div class="wrap">
-<section id="authPane" class="card auth-card" hidden>
+<section id="authPane" class="card s-pane auth-card" hidden>
 <div class="auth-narrow">
 <div class="brand"><span class="brand-mark">F</span><span class="brand-name">Flare Actions</span></div>
+<div class="auth-meaning simple-only">
+<h2 data-simple="head">Your code, always checked</h2>
+<p class="muted" data-simple="text">Your AI agents work together without breaking each other's code.</p>
+<p><a href="/dashboard?demo=1&amp;tour=1#/live" data-action="explore_demo" data-simple="label">👀 Curious? Watch agents work live</a></p>
+</div>
 <div id="emailBox">
 <h2 id="emailTitle">Log in with email</h2>
 <p class="muted" id="emailDesc">Welcome back.</p>
@@ -401,6 +585,7 @@ ${FORGE_NAV_BENCH_HTML}
 </form>
 <p id="emailErr" class="err"></p>
 <p class="muted"><button id="forgotBtn" class="ghost" type="button">Forgot password?</button></p>
+<p class="muted simple-only" id="authMoreRow"><button id="authMoreBtn" class="ghost" type="button" data-action="show_more" data-simple="label">Other ways to log in</button></p>
 <p class="muted"><button id="registerToggleBtn" class="ghost" type="button" hidden>No account? Create one</button></p>
 <form id="magicForm" class="auth-form">
 <label class="field">No password? Get a login link by email<input id="magicEmail" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254"></label>
@@ -420,13 +605,13 @@ ${FORGE_NAV_BENCH_HTML}
 <div id="githubBox">
 <div class="divider" id="oauthDivider">or continue with</div>
 <button id="githubLoginBtn" class="btn-github btn-block">Login with GitHub</button>
-<p class="muted" id="githubOpenHint" hidden>Open registration is on — any GitHub user can log in (reader access).</p>
-<p id="authInstallBox" hidden><a id="authInstallLink" href="#" target="_blank" rel="noopener">Install the App on your repos first</a></p>
+<p class="muted" id="githubOpenHint" hidden><span class="pro-only">Open registration is on — any GitHub user can log in (reader access).</span><span class="simple-only" data-simple="text">Anyone with GitHub can join and look around.</span></p>
+<p id="authInstallBox" hidden><a id="authInstallLink" href="#" target="_blank" rel="noopener"><span class="pro-only">Install the App on your repos first</span><span class="simple-only" data-simple="label">Pick your projects on GitHub first ↗</span></a></p>
 <p id="loginMsg"></p>
 <div id="breakGlassBox" hidden>
-<p class="muted">Or use the recovery password.</p>
+<p class="muted"><span class="pro-only">Or use the recovery password.</span><span class="simple-only" data-simple="text">Or use the backup password.</span></p>
 <form id="recoveryForm" class="auth-form">
-<label class="field"><span>Recovery password</span><input id="recoveryInput" type="password" placeholder="Recovery password" autocomplete="current-password"></label>
+<label class="field"><span class="pro-only">Recovery password</span><span class="simple-only" data-simple="label">Backup password</span><input id="recoveryInput" type="password" placeholder="Recovery password" autocomplete="current-password"></label>
 <button type="submit" class="btn-block ghost">Log in</button>
 </form>
 <p id="recoveryErr" class="err"></p>
@@ -436,10 +621,10 @@ ${FORGE_NAV_BENCH_HTML}
 ${FORGE_AUTH_DEMO_HTML}
 </div>
 </section>
-<section id="invitePane" class="card auth-card" hidden>
+<section id="invitePane" class="card s-pane auth-card" hidden>
 <div class="auth-narrow">
 <div class="brand"><span class="brand-mark">F</span><span class="brand-name">Flare Actions</span></div>
-<h2>You've been invited</h2>
+<h2 data-simple="head">You've been invited 👋</h2>
 <p class="muted" id="inviteInfo"></p>
 <form id="inviteForm" class="auth-form">
 <label class="field"><span>New password</span><input id="invitePw1" type="password" placeholder="8+ characters" autocomplete="new-password"></label>
@@ -450,11 +635,11 @@ ${FORGE_AUTH_DEMO_HTML}
 <p id="inviteErr" class="err"></p>
 </div>
 </section>
-<section id="resetPane" class="card auth-card" hidden>
+<section id="resetPane" class="card s-pane auth-card" hidden>
 <div class="auth-narrow">
 <div class="brand"><span class="brand-mark">F</span><span class="brand-name">Flare Actions</span></div>
-<h2>Reset your password</h2>
-<p class="muted">If that account exists, we'll email a single-use reset link (1 hour).</p>
+<h2 data-simple="head">Reset your password</h2>
+<p class="muted"><span class="pro-only">If that account exists, we'll email a single-use reset link (1 hour).</span><span class="simple-only" data-simple="text">We'll email you a link. It works once, for one hour.</span></p>
 <form id="resetRequestForm" class="auth-form">
 <label class="field"><span>Email</span><input id="resetEmailInput" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254"></label>
 <div id="tsReset"></div>
@@ -462,13 +647,13 @@ ${FORGE_AUTH_DEMO_HTML}
 </form>
 <p id="resetRequestErr" class="err"></p>
 <p id="resetRequestOk"></p>
-<p class="muted"><button id="resetBackBtn" class="ghost" type="button">Back to login</button></p>
+<p class="muted"><button id="resetBackBtn" class="ghost" type="button"><span class="pro-only">Back to login</span><span class="simple-only" data-simple="label">← Back to log in</span></button></p>
 </div>
 </section>
-<section id="resetConfirmPane" class="card auth-card" hidden>
+<section id="resetConfirmPane" class="card s-pane auth-card" hidden>
 <div class="auth-narrow">
 <div class="brand"><span class="brand-mark">F</span><span class="brand-name">Flare Actions</span></div>
-<h2>Choose a new password</h2>
+<h2 data-simple="head">Choose a new password</h2>
 <form id="resetConfirmForm" class="auth-form">
 <label class="field"><span>New password</span><input id="resetPw1" type="password" placeholder="8+ characters" autocomplete="new-password"></label>
 <label class="field"><span>Confirm password</span><input id="resetPw2" type="password" placeholder="Confirm password" autocomplete="new-password"></label>
@@ -477,11 +662,11 @@ ${FORGE_AUTH_DEMO_HTML}
 <p id="resetConfirmErr" class="err"></p>
 </div>
 </section>
-<section id="magicConfirmPane" class="card auth-card" hidden>
+<section id="magicConfirmPane" class="card s-pane auth-card" hidden>
 <div class="auth-narrow">
 <div class="brand"><span class="brand-mark">F</span><span class="brand-name">Flare Actions</span></div>
-<h2>Finish logging in</h2>
-<p class="muted">This link works once. Continue only if you requested it.</p>
+<h2 data-simple="head">Finish logging in</h2>
+<p class="muted"><span class="pro-only">This link works once. Continue only if you requested it.</span><span class="simple-only" data-simple="text">This link works once. Go on only if you asked for it.</span></p>
 <form id="magicConfirmForm" class="auth-form">
 <button type="submit" class="btn-block">Continue to Flare Actions</button>
 </form>
@@ -489,11 +674,13 @@ ${FORGE_AUTH_DEMO_HTML}
 </div>
 </section>
 <section id="appPane" hidden>
-<section id="homePane" class="card home" hidden aria-labelledby="homeTitle">
+<section id="homePane" class="card s-pane home" hidden aria-labelledby="homeTitle">
 <div class="home-hero">
 <h2 id="homeTitle">Welcome to Flare 👋</h2>
 <p class="home-lead" id="homeLead">Flare checks your code for you. Every time you save your work to GitHub, Flare runs your tests and tells you if anything broke.</p>
 </div>
+<div id="homeQuest" class="quest simple-only" hidden></div>
+<div id="homeHealth" class="health simple-only" hidden></div>
 <div id="homeSetup" hidden>
 <div class="home-progress" aria-hidden="true"><span class="home-bar"><span id="homeBarFill"></span></span><span id="homeProgressText" class="home-progress-text"></span></div>
 <ol class="home-steps" id="homeSteps" aria-label="Setup steps"></ol>
@@ -525,7 +712,13 @@ ${FORGE_AUTH_DEMO_HTML}
 </form>
 <p id="homeRunMsg" class="muted"></p>
 </div>
+<p class="more-row simple-only"><button id="homeMoreBtn" type="button" class="linkish" data-action="show_more" data-more-for="homePane" aria-expanded="false" data-simple="label">Show more</button><button id="homeAgentLink" type="button" class="linkish" data-action="show_more" data-more-for="homePane" data-simple="label">🤖 Using an AI agent?</button></p>
 ${FORGE_HOME_CARD_HTML}
+<div class="home-agent" id="homeAgent">
+<h3 class="home-sub">🤖 Using an AI coding agent?</h3>
+<p class="muted">Paste this into Claude Code, Codex, or Cursor inside your project. It reads this Flare's instructions and sets up your tests here.</p>
+<div class="home-cmd"><code id="homeAgentPrompt"></code><button id="homeAgentCopy" type="button" class="ghost">Copy</button></div>
+</div>
 <div class="home-cards">
 <button type="button" class="home-card" id="homeCardRuns"><strong>📋 All runs</strong><span>Every test run, newest first, with logs and the reason anything failed.</span></button>
 <button type="button" class="home-card" id="homeCardRaces"><strong>🏁 Agent races</strong><span>Give one task to several AI agents and let real tests pick the winner.</span></button>
@@ -533,19 +726,20 @@ ${FORGE_HOME_CARD_HTML}
 </div>
 <p id="homeErr" class="err"></p>
 </section>
-<section id="runsPane" class="card" hidden>
+<section id="runsPane" class="card s-pane" hidden>
 <div id="connectBanner" hidden>
-<h2>Finish setup</h2>
-<p class="muted">Connect GitHub to run pushes from your repos — one click, then install the App.</p>
+<h2 data-simple="head">Finish setup</h2>
+<p class="muted"><span class="pro-only">Connect GitHub to run pushes from your repos — one click, then install the App.</span><span class="simple-only" data-simple="text">Connect GitHub so Flare can check your code. It takes one click.</span></p>
 <p><button id="connectBannerBtn">Connect GitHub</button></p>
 <p id="connectBannerErr" class="err"></p>
 </div>
 <div id="installNotice" class="notice" hidden>
-<h3 id="installNoticeTitle">GitHub App installed</h3>
-<p>Push to a connected repo to trigger your first run.</p>
+<h3 id="installNoticeTitle"><span class="pro-only">GitHub App installed</span><span class="simple-only" data-simple="head">GitHub is ready ✅</span></h3>
+<p><span class="pro-only">Push to a connected repo to trigger your first run.</span><span class="simple-only" data-simple="text">Push code to GitHub. Your first check starts by itself.</span></p>
 <p><button id="installNoticeBtn" class="ghost">Got it</button></p>
 </div>
-<h2>Runs</h2>
+<h2 class="s-head"><span class="pro-only">Runs</span><span class="simple-only" data-simple="head">Checks</span></h2>
+<div id="runsVerdict" class="runs-verdict simple-only" role="status" hidden></div>
 <p id="usageStrip" class="muted"></p>
 <p id="cacheStatsStrip" class="muted"></p>
 <details id="cacheBox" hidden>
@@ -562,7 +756,7 @@ ${FORGE_HOME_CARD_HTML}
 <details id="dispatchBox">
 <summary>Dispatch a run…</summary>
 <form id="dispatchForm" class="inline">
-<input id="dispatchRepo" placeholder="owner/repo" maxlength="100" aria-label="Repository">
+<input id="dispatchRepo" list="ghRepoList" autocomplete="off" placeholder="owner/repo" maxlength="100" aria-label="Repository">
 <input id="dispatchRef" placeholder="branch, tag, or SHA" maxlength="128" aria-label="Branch, tag, or SHA">
 <button type="submit">Dispatch</button>
 </form>
@@ -572,95 +766,120 @@ ${FORGE_HOME_CARD_HTML}
 <form id="runsFilterForm" class="inline"><input id="runsFilter" placeholder="Filter by repo, branch, commit, status…" maxlength="64" aria-label="Filter runs"></form>
 <p class="muted" id="runsCount"></p>
 <div id="runsList"></div>
+<p class="more-row simple-only"><button id="runsMoreBtn" type="button" class="linkish" data-action="show_more" data-more-for="runsPane" aria-expanded="false" data-simple="label">Show more</button></p>
 <details id="bottlenecksBox" hidden>
 <summary>Slowest checks (last 14 days)</summary>
 <div id="bottlenecksBody" class="muted"></div>
 </details>
 <div id="runDetail" hidden></div>
 </section>
-<section id="teamPane" class="card" hidden>
-<h2>Access tokens</h2>
+<section id="teamPane" class="card s-pane" hidden>
+<h2 class="simple-only s-head" data-simple="head">Settings</h2>
+<nav class="settings-jump" aria-label="Settings sections">
+<button type="button" class="ghost" data-jump="setTokens">Tokens</button>
+<button type="button" class="ghost" data-jump="setRunner">Runners</button>
+<button type="button" class="ghost" data-jump="setPeople">People</button>
+<button type="button" class="ghost" data-jump="setWebhook">Webhook</button>
+<button type="button" class="ghost" data-jump="setNotify">Notifications</button>
+<button type="button" class="ghost" data-jump="setGithub">GitHub App</button>
+</nav>
+<h2 class="acc-h simple-only"><button type="button" class="acc-btn" data-action="open_section" data-sec-target="setTokens" aria-expanded="false" data-simple="label">🔑 Keys for computers and agents</button></h2>
+<h2 id="setTokens">Access tokens</h2>
 <p class="muted">Issue tokens for runners and teammates. Runner tokens can pull jobs and update status; readonly tokens can only view runs. Revoked tokens stop working immediately.</p>
+<p class="muted simple-only" data-simple="text">A key lets a computer or an agent use Flare. You see each key once.</p>
 <form id="tokenForm" class="inline">
-<input id="tokenName" placeholder="Token name, e.g. ci-laptop" maxlength="64">
-<select id="tokenScope"><option value="runner">runner</option><option value="readonly">readonly</option><option value="admin">admin</option></select>
-<input id="tokenRepos" placeholder="optional: owner/repo, org/* (blank = all repos)" maxlength="2000">
-<button type="submit">Create token</button>
+<input id="tokenName" placeholder="Name, e.g. my-laptop" maxlength="64">
+<select id="tokenScope" class="pro-only"><option value="runner">runner</option><option value="readonly">readonly</option><option value="admin">admin</option></select>
+<input id="tokenRepos" class="pro-only" placeholder="optional: owner/repo, org/* (blank = all repos)" maxlength="2000">
+<button type="submit"><span class="pro-only">Create token</span><span class="simple-only" data-simple="label">Make a key</span></button>
 </form>
 <p id="tokenErr" class="err"></p>
 <div id="newTokenBox" hidden>
-<p><strong>Copy this token now — it is shown once.</strong></p>
+<p><strong><span class="pro-only">Copy this token now — it is shown once.</span><span class="simple-only" data-simple="text">Copy this key now. You see it only once.</span></strong></p>
 <code class="token" id="newTokenVal"></code>
 <p><button id="copyTokenBtn" class="ghost" type="button">Copy</button></p>
 </div>
-<div class="table-scroll"><table><thead><tr><th>Name</th><th>Scopes</th><th>Repos</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody id="tokensBody"></tbody></table></div>
-<h2>Pair a runner</h2>
+<div class="table-scroll"><table><thead><tr><th>Name</th><th><span class="pro-only">Scopes</span><span class="simple-only" data-simple="label">Can do</span></th><th class="pro-only">Repos</th><th><span class="pro-only">Created</span><span class="simple-only" data-simple="label">Made</span></th><th><span class="pro-only">Status</span><span class="simple-only" data-simple="label">Working?</span></th><th></th></tr></thead><tbody id="tokensBody"></tbody></table></div>
+<h2 class="acc-h simple-only"><button type="button" class="acc-btn" data-action="open_section" data-sec-target="setRunner" aria-expanded="false" data-simple="label">💻 Add a computer</button></h2>
+<h2 id="setRunner">Pair a runner</h2>
 <p class="muted">Zero-config machines: mint a code, paste one command on the fresh box, and it exchanges the code for a runner token and starts polling. Single use, expires in 10 minutes.</p>
+<p class="muted simple-only" data-simple="text">Make a code, then paste one line on the other computer. The code works once.</p>
 <form id="pairForm" class="inline">
 <input id="pairName" placeholder="Runner name, e.g. ci-metal-01" maxlength="64">
-<button type="submit">Create pairing code</button>
+<button type="submit"><span class="pro-only">Create pairing code</span><span class="simple-only" data-simple="label">Make a code</span></button>
 </form>
 <p id="pairErr" class="err"></p>
 <div id="pairBox" hidden>
-<p><strong>Run this on the new machine — the code works once.</strong></p>
+<p><strong><span class="pro-only">Run this on the new machine — the code works once.</span><span class="simple-only" data-simple="text">Paste this on the other computer. It works once.</span></strong></p>
 <code class="token" id="pairCmd"></code>
 <p><button id="copyPairBtn" class="ghost" type="button">Copy</button></p>
 </div>
-<h2>GitHub users</h2>
-<p class="muted" id="usersInfo"></p>
-<form id="userForm" class="inline">
+<h2 class="acc-h simple-only"><button type="button" class="acc-btn" data-action="open_section" data-sec-target="setPeople" aria-expanded="false" data-simple="label">👋 People</button></h2>
+<h2 id="setPeople">GitHub users</h2>
+<p class="muted simple-only" data-simple="text">Let friends see your checks. Invite links work once.</p>
+<p class="muted simple-more" id="usersInfo"></p>
+<form id="userForm" class="inline simple-more">
 <input id="userLogin" placeholder="GitHub username" maxlength="39">
-<button type="submit">Allow user</button>
+<button type="submit" class="s-second"><span class="pro-only">Allow user</span><span class="simple-only" data-simple="label">Let them in</span></button>
 </form>
-<p id="userErr" class="err"></p>
-<div class="table-scroll"><table><thead><tr><th>Username</th><th></th></tr></thead><tbody id="usersBody"></tbody></table></div>
-<h2>Email users</h2>
+<p id="userErr" class="err simple-more"></p>
+<div class="table-scroll simple-more"><table><thead><tr><th><span class="pro-only">Username</span><span class="simple-only" data-simple="label">GitHub name</span></th><th></th></tr></thead><tbody id="usersBody"></tbody></table></div>
+<h2><span class="pro-only">Email users</span><span class="simple-only" data-simple="head">Invite a friend</span></h2>
 <p class="muted" id="emailUsersInfo"></p>
 <form id="inviteFormBtn" class="inline">
 <input id="inviteEmail" type="email" placeholder="teammate@example.com" maxlength="254">
-<button type="submit">Invite by email</button>
+<button type="submit"><span class="pro-only">Invite by email</span><span class="simple-only" data-simple="label">Make an invite link</span></button>
 </form>
 <p id="inviteUserErr" class="err"></p>
 <div id="inviteLinkBox" hidden>
-<p><strong>Send this invite link — it works once and expires in 24h.</strong></p>
+<p><strong><span class="pro-only">Send this invite link — it works once and expires in 24h.</span><span class="simple-only" data-simple="text">Send this link to your friend. It works once, for one day.</span></strong></p>
 <code class="token" id="inviteLinkVal"></code>
 <p><button id="copyInviteBtn" class="ghost" type="button">Copy</button></p>
 </div>
-<div class="table-scroll"><table><thead><tr><th>Email</th><th>Role</th><th></th></tr></thead><tbody id="emailUsersBody"></tbody></table></div>
-<h2>Pending invites</h2>
-<div class="table-scroll"><table><thead><tr><th>Email</th><th>Expires</th></tr></thead><tbody id="invitesBody"></tbody></table></div>
+<div class="table-scroll"><table><thead><tr><th>Email</th><th><span class="pro-only">Role</span><span class="simple-only" data-simple="label">Can do</span></th><th></th></tr></thead><tbody id="emailUsersBody"></tbody></table></div>
+<h2><span class="pro-only">Pending invites</span><span class="simple-only" data-simple="head">Invites not used yet</span></h2>
+<div class="table-scroll"><table><thead><tr><th>Email</th><th><span class="pro-only">Expires</span><span class="simple-only" data-simple="label">Stops working</span></th></tr></thead><tbody id="invitesBody"></tbody></table></div>
+<p class="more-row simple-only"><button type="button" class="linkish" data-action="show_more" data-more-for="teamPane" aria-expanded="false" data-simple="label">Show more</button></p>
 </section>
-<section id="settingsPane" class="card" hidden>
-<h2>Settings</h2>
+<section id="settingsPane" class="card s-pane" hidden>
+<h2 class="acc-h simple-only"><button type="button" class="acc-btn" data-action="open_section" data-sec-target="setWebhook" aria-expanded="false" data-simple="label">🔒 Secret for GitHub</button></h2>
+<h2 id="setWebhook">Webhook &amp; admin</h2>
+<p class="muted simple-only" data-simple="text">GitHub uses this secret to talk to Flare safely.</p>
 <p class="muted" id="settingsInfo"></p>
 <form id="webhookForm" class="inline">
 <input id="webhookInput" placeholder="GitHub webhook secret (16+ characters)">
-<button type="submit">Save webhook secret</button>
+<button type="submit"><span class="pro-only">Save webhook secret</span><span class="simple-only" data-simple="label">Save secret</span></button>
 </form>
 <p id="settingsErr" class="err"></p>
 <p id="settingsOk"></p>
-<details id="actionsHelp">
+<details id="actionsHelp" class="simple-more">
 <summary>Coming from GitHub Actions?</summary>
 <p class="muted">Repos without a <span class="mono">flare.yml</span> run their existing <span class="mono">.github/workflows</span> files as-is: matching <span class="mono">on:</span> triggers, run steps, matrices, needs, cache, and artifacts translate automatically, and anything unsupported is dropped with a note in the worker log instead of being guessed at. Each run is tagged in the list with which pipeline ran. <a href="https://github.com/everyai-com/flare-actions/blob/main/docs/GITHUB-ACTIONS-COMPAT.md" target="_blank" rel="noopener">Support matrix</a></p>
 <p class="muted">No GitHub App? For public repos, add a plain repo webhook pointing at <span class="mono">https://&lt;this-worker&gt;/webhooks/github</span> with the secret above and pushes become runs. The App adds private repos, commit statuses, check runs, PR comments, and GitHub login.</p>
 </details>
-<h2>Run notifications</h2>
+<p class="more-row simple-only"><button type="button" class="linkish" data-action="show_more" data-more-for="settingsPane" aria-expanded="false" data-simple="label">Show more</button></p>
+<h2 class="acc-h simple-only"><button type="button" class="acc-btn" data-action="open_section" data-sec-target="setNotify" aria-expanded="false" data-simple="label">🔔 Alerts</button></h2>
+<h2 id="setNotify">Run notifications</h2>
+<p class="muted simple-only" data-simple="text">Get a message when a check finishes.</p>
 <p class="muted" id="notifyInfo"></p>
 <form id="notifyForm" class="inline">
 <input id="notifyFromInput" placeholder="Sender email, e.g. ci@example.com" maxlength="254">
 <select id="notifyModeSelect"><option value="all">all completions</option><option value="failures">failures only</option><option value="off">off</option></select>
-<button type="submit">Save notifications</button>
+<button type="submit"><span class="pro-only">Save notifications</span><span class="simple-only" data-simple="label">Save</span></button>
 </form>
 <p id="notifyErr" class="err"></p>
 <p id="notifyOk"></p>
-<form id="notifyWebhookForm" class="inline">
+<form id="notifyWebhookForm" class="inline simple-more">
 <input id="notifyWebhookInput" placeholder="Slack/Discord webhook URL (https, write-only)" maxlength="512">
-<button type="submit">Save webhook</button>
+<button type="submit" class="s-second"><span class="pro-only">Save webhook</span><span class="simple-only" data-simple="label">Save chat link</span></button>
 </form>
-<p class="muted" id="notifyWebhookInfo"></p>
+<p class="muted simple-more" id="notifyWebhookInfo"></p>
 <p id="notifyWebhookErr" class="err"></p>
 <p id="notifyWebhookOk"></p>
-<h2>GitHub App</h2>
+<p class="more-row simple-only"><button type="button" class="linkish" data-action="show_more" data-more-for="settingsPane" aria-expanded="false" data-simple="label">Show more</button></p>
+<h2 class="acc-h simple-only"><button type="button" class="acc-btn" data-action="open_section" data-sec-target="setGithub" aria-expanded="false" data-simple="label">🐙 Connect GitHub</button></h2>
+<h2 id="setGithub">GitHub App</h2>
+<p class="muted simple-only" data-simple="text">Connect GitHub so Flare can see your code.</p>
 <p class="muted" id="githubInfo"></p>
 <form id="githubForm" class="inline">
 <button type="submit">Connect GitHub</button>
@@ -668,60 +887,64 @@ ${FORGE_HOME_CARD_HTML}
 <p id="githubErr" class="err"></p>
 <p id="githubOk"></p>
 <div id="githubInstallBox" hidden>
-<p><strong>App connected — install it on your repos to run pushes.</strong></p>
-<p><a id="githubInstallLink" href="#" target="_blank" rel="noopener">Install the GitHub App</a></p>
+<p><strong><span class="pro-only">App connected — install it on your repos to run pushes.</span><span class="simple-only" data-simple="text">Next, pick which projects Flare checks.</span></strong></p>
+<p><a id="githubInstallLink" href="#" target="_blank" rel="noopener"><span class="pro-only">Install the GitHub App</span><span class="simple-only" data-simple="label">Pick projects on GitHub ↗</span></a></p>
 </div>
 </section>
-<section id="tournamentsPane" class="card" hidden>
-<h2>Agent races</h2>
-<p class="muted">One task races N agents in isolated forks. Open a tournament, agents claim slots, every push is verified, the verdict picks a winner. Press ⌘K to jump anywhere.</p>
+<section id="tournamentsPane" class="card s-pane" hidden>
+<h2 class="s-head" data-simple="head">Agent races</h2>
+<p class="muted"><span class="pro-only">One task races N agents in isolated forks. Open a tournament, agents claim slots, every push is verified, the verdict picks a winner. Press ⌘K to jump anywhere.</span><span class="simple-only" data-simple="text">Let several agents try one task. Tests pick the winner.</span></p>
 <form id="tournamentForm" class="inline">
 <input id="tournamentIntent" placeholder="task intent, e.g. fix the login redirect" maxlength="200" size="40" aria-label="Task intent">
-<input id="tournamentSource" placeholder="source repo" maxlength="100" size="20" aria-label="Source repo">
-<button type="submit">Open tournament</button>
+<input id="tournamentSource" list="flareRepoList" autocomplete="off" placeholder="source repo" maxlength="100" size="20" aria-label="Source repo">
+<button type="submit">Start a race</button>
 </form>
 <p id="tournamentsErr" class="err"></p>
 <div id="tournamentsList"></div>
 <div id="tournamentDetail" hidden>
-<p><button id="backToTournaments" class="ghost">Back to list</button> <button id="refreshTournament" class="ghost">Refresh</button></p>
+<p><button id="backToTournaments" class="ghost"><span class="pro-only">Back to list</span><span class="simple-only" data-simple="label">← All races</span></button> <button id="refreshTournament" class="ghost pro-only">Refresh</button></p>
 <div id="tWhy"></div>
 <div id="tReview"></div>
-<div id="tLanes"></div>
-<div id="tRadar"></div>
-<div id="tActivity"></div>
+<div id="tLanes" class="simple-more"></div>
+<div id="tRadar" class="simple-more"></div>
+<div id="tActivity" class="simple-more"></div>
+<p class="more-row simple-only"><button type="button" class="linkish" data-action="show_more" data-more-for="tournamentsPane" aria-expanded="false" data-simple="label">Show more</button></p>
 </div>
 </section>
-<section id="reposPane" class="card" hidden>
-<h2>Repositories</h2>
+<section id="reposPane" class="card s-pane" hidden>
+<h2 class="s-head"><span class="pro-only">Repositories</span><span class="simple-only" data-simple="head">Projects</span></h2>
 <p class="muted">Every codebase lives in one place. Open a repo to browse files and history — or race agents on it.</p>
+<p class="muted simple-only" data-simple="text">Open a project to see its files and checks.</p>
 <p id="reposErr" class="err"></p>
 <div id="reposList"></div>
 <div id="repoDetail" hidden>
-<p><button id="backToRepos" class="ghost">Back to list</button></p>
+<p><button id="backToRepos" class="ghost"><span class="pro-only">Back to list</span><span class="simple-only" data-simple="label">← All projects</span></button></p>
 <div id="repoHead"></div>
 <div id="repoFiles"></div>
 <div id="repoRuns"></div>
-<div id="repoCommits"></div>
+<div id="repoCommits" class="simple-more"></div>
+<p class="more-row simple-only"><button type="button" class="linkish" data-action="show_more" data-more-for="reposPane" aria-expanded="false" data-simple="label">Show more</button></p>
 </div>
 </section>
-<section id="mergePane" class="card" hidden>
-<h2>Merge queue</h2>
-<p class="muted">Agent PRs land one at a time: each entry rebases onto the current head, verifies with real CI, and merges on green. One verification runs per repo; entries whose base moves re-queue instead of landing stale.</p>
+<section id="mergePane" class="card s-pane" hidden>
+<h2 class="s-head"><span class="pro-only">Merge queue</span><span class="simple-only" data-simple="head">Waiting to land</span></h2>
+<p class="muted"><span class="pro-only">Agent PRs land one at a time: each entry rebases onto the current head, verifies with real CI, and merges on green. One verification runs per repo; entries whose base moves re-queue instead of landing stale.</span><span class="simple-only" data-simple="text">Agent changes join the main version one at a time, after a passing check.</span></p>
 <form id="mergeForm" class="inline">
-<input id="mergeRepo" placeholder="owner/repo" maxlength="100" aria-label="Repository">
-<button type="submit">Load</button>
+<input id="mergeRepo" list="ghRepoList" autocomplete="off" placeholder="owner/repo" maxlength="100" aria-label="Repository">
+<button type="submit"><span class="pro-only">Load</span><span class="simple-only" data-simple="label">Show</span></button>
 </form>
 <p id="mergeErr" class="err"></p>
-<h3>Entries</h3>
-<div class="table-scroll"><table><thead><tr><th>PR</th><th>Status</th><th>Agent</th><th>Head</th><th>Note</th><th></th></tr></thead><tbody id="mergeBody"></tbody></table></div>
-<h3>Collisions</h3>
-<p class="muted">Live entries touching the same files — land order matters here.</p>
-<div id="mergeCollisions"></div>
-<form id="mergeEnqueueForm" class="inline">
+<h3><span class="pro-only">Entries</span><span class="simple-only" data-simple="head">Waiting now</span></h3>
+<div class="table-scroll"><table><thead><tr><th><span class="pro-only">PR</span><span class="simple-only" data-simple="label">Change</span></th><th><span class="pro-only">Status</span><span class="simple-only" data-simple="label">How it is going</span></th><th>Agent</th><th class="pro-only">Head</th><th>Note</th><th></th></tr></thead><tbody id="mergeBody"></tbody></table></div>
+<h3 class="simple-more"><span class="pro-only">Collisions</span><span class="simple-only" data-simple="head">Same files</span></h3>
+<p class="muted simple-more"><span class="pro-only">Live entries touching the same files — land order matters here.</span><span class="simple-only" data-simple="text">These changes touch the same files. The order they land matters.</span></p>
+<div id="mergeCollisions" class="simple-more"></div>
+<form id="mergeEnqueueForm" class="inline simple-more">
 <input id="mergePr" placeholder="PR number" maxlength="7" size="10" aria-label="PR number">
 <input id="mergeSha" placeholder="head SHA" maxlength="64" size="16" aria-label="Head SHA">
-<button type="submit">Enqueue</button>
+<button type="submit" class="s-second"><span class="pro-only">Enqueue</span><span class="simple-only" data-simple="label">Add a change</span></button>
 </form>
+<p class="more-row simple-only"><button type="button" class="linkish" data-action="show_more" data-more-for="mergePane" aria-expanded="false" data-simple="label">Show more</button></p>
 </section>
 ${FORGE_PANE_HTML}</section>
 </div></main>
@@ -804,6 +1027,455 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   // custom strings) shows as-is. The raw value stays in class + tooltip.
   var PILL_WORDS = { success: "passed", failure: "failed", error: "couldn't run", running: "running", queued: "waiting", blocked: "waiting", cancelled: "stopped", skipped: "skipped" };
   function pill(status) { var s = el("span", PILL_WORDS[status] || status); s.className = "pill " + status; s.title = status; return s; }
+
+  // ---------- Simple / Pro modes (docs/UX-BUDGET.md) ----------
+  // The head script put ui-simple or ui-pro on <html> before first paint.
+  // Simple-mode renderers branch on uiSimple(); Pro code paths are the
+  // untouched originals. All Simple copy lives in SC so ux-budget.test.ts
+  // can hold it to the budget: h_ = headline (<= 6 words), l_ = label
+  // (<= 6 words), t_ = sentences (<= 15 words each), no jargon.
+  function uiSimple() { return document.documentElement.classList.contains("ui-simple"); }
+  // simple-copy:start
+  var SC = {
+    h_quest: "Let's set up Flare ⭐",
+    t_quest: "Finish five short levels. Then Flare checks your code for you.",
+    h_health: "Is my code OK?",
+    t_health: "Flare checks your code every time you push to GitHub.",
+    l_level: "Level {n} of 5",
+    l_levels: "Your levels",
+    l_lvl_account: "Make your account",
+    l_lvl_github: "Connect GitHub",
+    l_lvl_repos: "Pick a project",
+    l_lvl_first_run: "Run your first check",
+    l_lvl_green: "Get a green check",
+    l_lvl_done: "Level {n} done",
+    l_lvl_now: "Level {n}, you are here",
+    l_lvl_locked: "Level {n}, locked",
+    t_lvl_github: "Flare needs to see your code. GitHub asks you to say yes.",
+    t_lvl_github_ask: "Ask the person who set up Flare to connect GitHub.",
+    t_lvl_repos: "Choose which projects Flare should check. You can change this later.",
+    t_lvl_first_run: "Press the button. Flare checks your code and shows the result.",
+    t_lvl_first_run_push: "Push code to GitHub. Flare starts a check by itself.",
+    t_lvl_green: "A green check means your code passed every test.",
+    t_lvl_green_push: "Push code to GitHub to start a new check.",
+    t_lvl_green_bad: "It broke this time. That is normal. Let's see what to fix.",
+    t_lvl_green_busy: "Flare is checking your code right now.",
+    l_pick: "Pick projects on GitHub ↗",
+    l_did_it: "I did it",
+    l_start: "▶ Start a check",
+    l_see_broke: "See what broke",
+    l_watch: "Watch it",
+    l_use_computer: "Use my computer",
+    l_see_checks: "See all checks",
+    l_project: "Project",
+    h_computer: "Your checks need a computer",
+    t_computer: "Use the computer you are on now. It takes one line.",
+    t_computer_ask: "Ask the owner to add a computer.",
+    t_computer_how: "Open the Terminal app. Paste this line and press Enter.",
+    t_computer_keep: "Keep that window open while your checks go.",
+    t_computer_fail: "Couldn't make a code. Only the owner can do this.",
+    t_making_code: "Making a one-time code…",
+    l_copy: "Copy",
+    h_ok: "All good",
+    h_bad: "Something broke",
+    h_busy: "Checking…",
+    h_wait: "Waiting for a computer",
+    h_stopped: "Check stopped",
+    l_streak: "🔥 {n} green in a row",
+    l_badges: "Your badges",
+    l_badge_green: "First green check",
+    l_badge_agent: "Agent connected",
+    l_badge_team: "Teammate invited",
+    h_latest: "Latest checks",
+    l_more: "Show more",
+    l_less: "Show less",
+    l_nav_more: "More",
+    l_nav_less: "Less",
+    t_pick_first: "Pick a project first.",
+    t_starting: "Starting your check…",
+    t_started: "Started! This page updates by itself.",
+    t_cant_start: "Couldn't start the check.",
+    t_level_up: "Level up! ⭐",
+    t_first_green: "Level up! ⭐ Your first green check!",
+    t_streak: "🔥 {n} green in a row!",
+    l_st_success: "Passed",
+    l_st_failure: "Broke",
+    l_st_error: "Broke",
+    l_st_running: "Checking…",
+    l_st_queued: "Waiting for a computer",
+    l_st_blocked: "Waiting",
+    l_st_cancelled: "Stopped",
+    l_st_skipped: "Skipped",
+    h_no_checks: "No checks yet",
+    t_no_checks: "Push code to GitHub. Your checks show up here.",
+    l_go_home: "Go to Home",
+    h_what_broke: "What broke",
+    l_broken_step: "This step broke",
+    l_last_lines: "Last lines it printed",
+    l_try: "💡 Try this",
+    t_next_look: "Open “Show all steps”. Look for the first red line.",
+    h_passed: "All good! Everything passed.",
+    t_detail_wait: "Waiting for a computer. Go Home and press “Use my computer”.",
+    t_detail_busy: "Checking your code right now. This page updates by itself.",
+    t_detail_stopped: "This check was stopped.",
+    l_all_steps: "Show all steps",
+    l_back: "← Back to checks",
+    h_no_projects: "No projects yet",
+    t_no_projects: "Your projects show up here once Flare has their code.",
+    t_mode_simple: "Simple mode. Less on the screen.",
+    t_mode_pro: "Pro mode. Every detail is back.",
+    l_next: "Next:",
+    t_ask_owner: "Ask the person who set up Flare to do this step.",
+    h_main_broke: "Main is broken",
+    l_waiting: "{n} waiting since {t}",
+    h_everywhere: "Flare everywhere",
+    t_everywhere: "Add Flare to every project and agent on this computer. One line does it.",
+    l_everywhere_doc: "How it works ↗",
+    // Errors and toasts: plain words plus the next move (Octalysis: no dead ends).
+    t_err_generic: "Something went wrong. Try again in a minute.",
+    l_retry: "Try again",
+    l_loading: "Loading…",
+    t_no_page: "No page called {t}. Here is Home.",
+    // Account flows
+    t_pw_mismatch: "The two passwords are different. Type them again.",
+    t_acct_fail: "Couldn't make your account. Use a real email and 8+ letters.",
+    t_login_fail: "Wrong email or password. Try again, or reset your password.",
+    t_magic_sent: "Check your email for a login link.",
+    t_magic_fail: "Couldn't send a link. Try again in a minute.",
+    t_link_old: "This link is old or used. Ask for a new one.",
+    t_reset_sent: "Check your email for the reset link.",
+    t_reset_send_fail: "Couldn't send it. Check the email and try again.",
+    t_reset_fail: "Couldn't save it. The link may be old, or the password too short.",
+    t_invite_for: "Make a password for {t}.",
+    t_invite_bad: "This invite link is old or used. Ask for a new one.",
+    t_invite_fail: "Couldn't make your account. The link may be old, or the password too short.",
+    t_pw_saved: "New password saved. Log in now.",
+    t_owner_github: "The owner must connect GitHub first.",
+    t_backup_wrong: "Wrong password. Try again.",
+    t_gh_connected_login: "GitHub is connected. Log in with GitHub to finish.",
+    t_gh_forbidden: "This GitHub account can't join yet. Ask the owner.",
+    t_gh_expired: "Logging in took too long. Try again.",
+    t_gh_refused: "GitHub said no this time. Try again.",
+    t_gh_ready: "GitHub is connected 🎉 Next, pick your projects.",
+    t_gh_updated: "GitHub is updated ✓",
+    t_connect_fail: "Couldn't connect GitHub here. The server set it up already.",
+    t_load_setup_fail: "Couldn't load your setup. Refresh the page to try again.",
+    // Races
+    t_race_need: "Type a task and pick a project first.",
+    t_race_started: "Race started! Agents can join now.",
+    t_race_fail: "Couldn't start the race. Check the project name and try again.",
+    t_race_load_fail: "Couldn't load the races. Try again in a minute.",
+    t_race_describe: "Type the task, then press Start a race.",
+    l_ph_task: "Task, like fix the login page",
+    l_ph_project: "Project name",
+    h_no_races: "No races yet",
+    t_no_races: "Type a task above. Agents try it, and tests pick the winner.",
+    l_race_open: "🏁 Open",
+    l_race_verifying: "⏳ Testing",
+    l_race_decided: "🏆 Winner picked",
+    l_try_claimed: "Starting",
+    l_try_pushing: "Working",
+    l_try_verifying: "Testing",
+    l_try_terminal: "Done",
+    h_who_wins: "Who will win?",
+    l_winner: "🏆 Winner",
+    l_why_won: "Why it won",
+    t_won_default: "Its check did best.",
+    t_race_wait_none: "No agent has joined yet. Agents join on their own.",
+    t_race_wait: "Agents are still trying. {n} of {t} done.",
+    l_race_trying: "Trying: {t}",
+    l_see_check: "See its check",
+    // Projects
+    t_repos_load_fail: "Couldn't load your projects. Try again in a minute.",
+    h_project_q: "What's in this project?",
+    l_checked: "✅ Checked by Flare",
+    l_not_setup: "⚪ Not set up yet",
+    t_not_setup: "Start one check to see if your tests pass.",
+    l_last_check: "Last check: {t}",
+    h_files: "Files",
+    h_recent: "Recent checks",
+    t_no_recent: "No checks yet for this project.",
+    t_repo_empty: "No code here yet. Push code to start.",
+    t_dir_empty: "This folder is empty.",
+    t_file_binary: "This file can't be shown here.",
+    t_file_big: "This file is too big to show.",
+    t_file_cut: "Showing the first part of this file.",
+    t_files_cut: "Showing the first {n} files.",
+    l_back_files: "← Back to files",
+    l_race_here: "🏁 Race agents on this project",
+    l_changed: "Changed {t}",
+    l_no_code: "No code yet",
+    // Waiting to land
+    t_merge_pick: "Type a project name, then press Show.",
+    t_merge_empty: "Nothing is waiting. Agent changes show up here.",
+    t_merge_need: "Type the change number and its latest commit.",
+    t_merge_added: "Added. It lands after its check passes.",
+    t_merge_add_fail: "Couldn't add it. Check the number and try again.",
+    t_merge_stopped: "Stopped. It won't land.",
+    t_merge_stop_fail: "Couldn't stop it. Try again.",
+    t_merge_load_fail: "Couldn't load this list. Check the project name.",
+    t_merge_clean: "No two changes touch the same files.",
+    l_mq_queued: "🕐 Waiting",
+    l_mq_verifying: "⏳ Checking",
+    l_mq_landed: "✅ Landed",
+    l_mq_failed: "❌ Broke",
+    l_mq_other: "⏹️ Stopped",
+    l_stop: "Stop",
+    l_ph_change: "Change number",
+    l_ph_commit: "Latest commit",
+    // Checks
+    t_runs_fail: "Couldn't load your checks.",
+    l_run_again: "Run again",
+    t_rerun_fail: "Couldn't start it again. Try again in a minute.",
+    t_dispatch_need: "Type a project and a branch first.",
+    t_dispatched: "Started! It shows up below.",
+    t_cache_fail: "Couldn't load saved files. Try again.",
+    t_cache_purge_fail: "Couldn't clear saved files. Try again.",
+    // Settings
+    l_ph_key: "Key name, like my-laptop",
+    l_ph_computer: "Computer name, like my-laptop",
+    l_ph_gh: "GitHub name",
+    l_ph_secret: "Secret, 16 or more letters",
+    l_ph_sender: "Send from, like flare@example.com",
+    l_ph_chat: "Slack or Discord link",
+    t_key_fail: "Couldn't make a key. Give it a name first.",
+    t_code_fail: "Couldn't make a code. Try again in a minute.",
+    t_keys_fail: "Couldn't load your keys. Try again.",
+    t_keys_none: "No keys yet. Make one above.",
+    l_can_runner: "Run checks",
+    l_can_readonly: "Look only",
+    l_can_admin: "Everything",
+    l_key_on: "✅ Working",
+    l_key_off: "⏹️ Turned off",
+    l_turn_off: "Turn off",
+    l_sure: "Sure? Click again",
+    l_remove: "Remove",
+    t_people_fail: "Couldn't load people. Try again.",
+    t_owner_is: "Owner: {t}. People you add can see checks.",
+    t_no_gh_users: "No GitHub friends added yet.",
+    t_no_email_users: "Nobody else yet. Make an invite link below.",
+    l_role_owner: "Owner",
+    l_role_viewer: "Can look",
+    t_no_invites: "No invites waiting.",
+    t_invite_make_fail: "Couldn't make the link. Use an email that isn't here yet.",
+    t_gh_user_fail: "Couldn't add them. Check the GitHub name.",
+    t_settings_fail: "Couldn't load settings. Try again.",
+    t_secret_set: "The secret is set ✅",
+    t_secret_none: "No secret yet. Make one up and save it.",
+    t_secret_server: "The server keeps this secret. Nothing to do here.",
+    t_secret_fail: "Couldn't save. Use 16 or more letters.",
+    l_saved: "Saved ✓",
+    l_cleared: "Cleared ✓",
+    t_notify_info: "We email everyone with an account here.",
+    t_notify_server: "The server sends these emails for you.",
+    t_notify_fail: "Couldn't save. Use a real sender email.",
+    t_chat_on: "Chat messages are on ✅",
+    t_chat_off: "Add a Slack or Discord link to get chat messages.",
+    t_chat_fail: "Couldn't save. Paste a full https link, or leave it empty.",
+    l_notify_all: "Every check",
+    l_notify_failures: "Only when something breaks",
+    l_notify_off: "Never",
+    t_gh_on: "GitHub is connected ✅",
+    t_gh_off: "GitHub is not connected yet.",
+    // Command palette and nav tooltips
+    l_pal_go: "Go to",
+    l_pal_actions: "Actions",
+    l_pal_refresh: "Refresh this page",
+    l_pal_copy: "Copy link to this race",
+    t_pal_none: "Nothing found. Try another word.",
+    l_pal_ph: "Search or jump to…",
+    l_pal_open: "Search and jump",
+    t_link_copied: "Link copied ✓",
+    t_copy_fail: "Couldn't copy. Copy the address bar instead.",
+    l_tab_home: "Home",
+    l_tab_runs: "Checks",
+    l_tab_tournaments: "Races",
+    l_tab_repos: "Projects",
+    l_tab_merge: "Waiting to land",
+    l_tab_settings: "Settings",
+    t_nav_home: "Start here. Is my code OK?",
+    t_nav_live: "See what your agents are doing right now.",
+    t_nav_inbox: "Things that need you.",
+    t_nav_intents: "The plans your agents made.",
+    t_nav_trains: "Changes landing together after their checks pass.",
+    t_nav_conflicts: "Places where two agents clash.",
+    t_nav_agents: "Every agent you connected.",
+    t_nav_repos: "Your projects, their files, and their checks.",
+    t_nav_tournaments: "Let several agents try one task.",
+    t_nav_runs: "Every check, newest first.",
+    t_nav_merge: "Agent changes waiting to land.",
+    t_nav_settings: "Keys, computers, people, and alerts.",
+    t_nav_bench: "How fast Flare is."
+  };
+  // simple-copy:end
+  // The next-move engine (next-move.ts), spliced in verbatim so the
+  // tested string is the shipped one.
+  ${NEXT_MOVE_JS}
+  function scf(key, n, t) { return String(SC[key] || "").replace("{n}", String(n)).replace("{t}", String(t === undefined ? "" : t)); }
+  // Every person-facing error and toast goes through plain(): Simple mode
+  // gets the SC sentence (plain words + the next move), Pro keeps its
+  // precise string. ux-budget.test.ts rejects bare literals at toast( and
+  // error-line assignments.
+  function plain(key, pro) { return uiSimple() && SC[key] ? SC[key] : pro; }
+  function plainf(key, pro, n, t) { return uiSimple() && SC[key] ? scf(key, n, t) : pro; }
+  // Simple: destructive buttons ask twice (game rule 6: safe to explore).
+  function twoClick(btn, fn) {
+    if (!uiSimple()) { btn.addEventListener("click", fn); return; }
+    var armed = false, label = btn.textContent;
+    btn.addEventListener("click", function () {
+      if (armed) { fn(); return; }
+      armed = true; btn.textContent = SC.l_sure;
+      setTimeout(function () { armed = false; btn.textContent = label; }, 3000);
+    });
+  }
+  // Static words that markup cannot swap with spans: placeholders, select
+  // options, aria labels, nav tooltips. Pro values are remembered once.
+  var SIMPLE_PH = { tokenName: "l_ph_key", pairName: "l_ph_computer", userLogin: "l_ph_gh", webhookInput: "l_ph_secret", notifyFromInput: "l_ph_sender", notifyWebhookInput: "l_ph_chat", tournamentIntent: "l_ph_task", tournamentSource: "l_ph_project", mergeRepo: "l_ph_project", mergePr: "l_ph_change", mergeSha: "l_ph_commit", paletteInput: "l_pal_ph" };
+  var SIMPLE_OPT = { all: "l_notify_all", failures: "l_notify_failures", off: "l_notify_off" };
+  function syncSimpleWords() {
+    var simple = uiSimple();
+    Object.keys(SIMPLE_PH).forEach(function (id) {
+      var n = document.getElementById(id);
+      if (!n) return;
+      if (!n.hasAttribute("data-pro-ph")) n.setAttribute("data-pro-ph", n.getAttribute("placeholder") || "");
+      n.setAttribute("placeholder", simple ? SC[SIMPLE_PH[id]] : n.getAttribute("data-pro-ph"));
+    });
+    var sel = document.getElementById("notifyModeSelect");
+    for (var i = 0; sel && i < sel.options.length; i++) {
+      var o = sel.options[i];
+      if (!o.hasAttribute("data-pro")) o.setAttribute("data-pro", o.textContent);
+      o.textContent = simple && SIMPLE_OPT[o.value] ? SC[SIMPLE_OPT[o.value]] : o.getAttribute("data-pro");
+    }
+    var pb = document.getElementById("paletteBtn");
+    if (pb) pb.setAttribute("aria-label", simple ? SC.l_pal_open : "Open command palette");
+    var links = document.querySelectorAll(".side-link[data-tab]");
+    for (var j = 0; j < links.length; j++) {
+      var tab = links[j].getAttribute("data-tab");
+      var hint = simple ? SC["t_nav_" + tab] : NAV_HINTS[tab];
+      if (hint) links[j].title = hint;
+    }
+  }
+  function tabTitle(name) { return uiSimple() && SC["l_tab_" + name] ? SC["l_tab_" + name] : TAB_TITLES[name]; }
+  var SIMPLE_ICON = { success: "✅", failure: "❌", error: "❌", running: "⏳", queued: "🕐", blocked: "🕐", cancelled: "⏹️", skipped: "➖" };
+  var SIMPLE_TONE = { success: "ok", failure: "bad", error: "bad", running: "busy", queued: "busy", blocked: "busy" };
+  // [icon, plain word, tone] for a run/job status in Simple mode.
+  function simpleStatus(status) {
+    return [SIMPLE_ICON[status] || "•", SC["l_st_" + status] || status || "", SIMPLE_TONE[status] || ""];
+  }
+  // Colour (pill dot) + icon + word: state never rides on colour alone.
+  function simplePill(status) {
+    var st = simpleStatus(status);
+    var s = el("span", st[0] + " " + st[1]); s.className = "pill " + status; s.title = status; return s;
+  }
+  (function () {
+    var b = document.getElementById("authMoreBtn");
+    if (b) b.addEventListener("click", function () { document.getElementById("authPane").classList.add("auth-more"); var m = document.getElementById("magicEmail"); if (m) m.focus(); });
+  })();
+  function setUiMode(mode) {
+    var root = document.documentElement;
+    root.classList.remove("ui-simple", "ui-pro");
+    root.classList.add(mode === "pro" ? "ui-pro" : "ui-simple");
+    try { localStorage.setItem("flare-ui-mode", mode === "pro" ? "pro" : "simple"); } catch (e) { /* per-tab only */ }
+    syncModeBtn();
+    syncSimpleWords();
+    if (appPane.hidden) return;
+    syncSimpleNav(currentTab);
+    if (currentTab === "runs") { renderRuns(); }
+    if (currentTab === "settings") applySettingsAccordion();
+    toast(mode === "pro" ? SC.t_mode_pro : SC.t_mode_simple);
+    refreshCurrent();
+  }
+  function syncModeBtn() {
+    var b = document.getElementById("modeBtn");
+    if (b) b.setAttribute("aria-checked", uiSimple() ? "false" : "true");
+  }
+  // Simple nav: five items; everything else lives behind "More". A deep
+  // link to a More screen opens the drawer so the active item shows.
+  var navMoreOpen = false;
+  function setNavMore(open) {
+    navMoreOpen = !!open;
+    var nav = document.getElementById("sideNav");
+    nav.classList.toggle("more-open", navMoreOpen);
+    var b = document.getElementById("navMoreBtn");
+    b.setAttribute("aria-expanded", navMoreOpen ? "true" : "false");
+    document.getElementById("navMoreLabel").textContent = navMoreOpen ? SC.l_nav_less : SC.l_nav_more;
+  }
+  function syncSimpleNav(name) {
+    var link = document.querySelector('.side-link[data-tab="' + name + '"]');
+    if (link && !link.hasAttribute("data-simple-nav") && !navMoreOpen) setNavMore(true);
+  }
+  // "Show more" disclosures: the pane (a section.card) gets .more-open.
+  function setPaneMore(paneId, open) {
+    var pane = document.getElementById(paneId);
+    if (!pane) return;
+    pane.classList.toggle("more-open", !!open);
+    var btns = pane.querySelectorAll('[data-action="show_more"][aria-expanded]');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].setAttribute("aria-expanded", open ? "true" : "false");
+      btns[i].textContent = open ? SC.l_less : SC.l_more;
+    }
+  }
+  // Settings accordion (Simple): one section open at a time. Elements
+  // between a section's h2[id] and the next one get data-sec=<id>.
+  var openSettingsSec = "setTokens";
+  (function tagSettingsSections() {
+    ["teamPane", "settingsPane"].forEach(function (pid) {
+      var pane = document.getElementById(pid);
+      if (!pane) return;
+      var cur = "";
+      for (var c = pane.firstElementChild; c; c = c.nextElementSibling) {
+        if (c.classList.contains("acc-h") || c.classList.contains("settings-jump")) continue;
+        if (c.tagName === "H2" && c.id) cur = c.id;
+        if (cur) c.setAttribute("data-sec", cur);
+      }
+    });
+  })();
+  function applySettingsAccordion() {
+    var secs = document.querySelectorAll("[data-sec]");
+    for (var i = 0; i < secs.length; i++) secs[i].classList.toggle("sec-open", secs[i].getAttribute("data-sec") === openSettingsSec);
+    var btns = document.querySelectorAll(".acc-btn[data-sec-target]");
+    for (var j = 0; j < btns.length; j++) btns[j].setAttribute("aria-expanded", btns[j].getAttribute("data-sec-target") === openSettingsSec ? "true" : "false");
+  }
+  // Celebrations: confetti (pure DOM + CSS, <= 1.2s, none under
+  // prefers-reduced-motion) plus a toast. Pure decoration: aria-hidden.
+  function confetti() {
+    try { if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return; } catch (e) { return; }
+    var box = el("div"); box.className = "confetti"; box.setAttribute("aria-hidden", "true");
+    var colors = ["#4ade80", "#fbbf24", "#7db4f7", "#f87171", "#c084fc", "#fafafa"];
+    for (var i = 0; i < 40; i++) {
+      var p = el("span");
+      p.style.left = Math.round(Math.random() * 100) + "%";
+      p.style.background = colors[i % colors.length];
+      p.style.animationDelay = Math.round(Math.random() * 250) + "ms";
+      p.style.setProperty("--dx", Math.round(Math.random() * 180 - 90) + "px");
+      box.appendChild(p);
+    }
+    document.body.appendChild(box);
+    setTimeout(function () { if (box.parentNode) box.parentNode.removeChild(box); }, 1200);
+  }
+  // Wins are detected client-side between polls; the last celebrated
+  // state lives in localStorage so a reload never re-celebrates. A first
+  // visit only records the baseline.
+  var CELEB_KEY = "flare-celebrated";
+  function celebrateWins(st, streak) {
+    var prev = null;
+    try { prev = JSON.parse(localStorage.getItem(CELEB_KEY) || "null"); } catch (e) { prev = null; }
+    try { localStorage.setItem(CELEB_KEY, JSON.stringify({ done: st.done, streak: streak })); } catch (e) { return; }
+    if (!prev || typeof prev.done !== "number") return;
+    if (st.done > prev.done) { confetti(); toast(st.complete ? SC.t_first_green : SC.t_level_up); }
+    else if (streak >= 5 && streak % 5 === 0 && streak > (prev.streak || 0)) { confetti(); toast(scf("t_streak", streak)); }
+  }
+  // Green streak: consecutive passing checks, newest first, ignoring
+  // checks still going (and stopped/skipped ones).
+  function greenStreak(runs) {
+    var n = 0;
+    for (var i = 0; i < runs.length; i++) {
+      var s = runs[i].status;
+      if (s === "success") n++;
+      else if (s === "failure" || s === "error") break;
+    }
+    return n;
+  }
 
   // Turnstile widgets render lazily per auth pane (the site key arrives
   // with /v1/admin/status, and hidden panes break widget execution).
@@ -931,7 +1603,8 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     invitePane.hidden = true;
     resetPane.hidden = true; resetConfirmPane.hidden = true; magicConfirmPane.hidden = true;
     authPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false; document.body.classList.add("app");
-    document.getElementById("connectBanner").hidden = !(admin && !githubConnected);
+    // Home's checklist owns "Connect GitHub"; the Runs pane stays about runs.
+    document.getElementById("connectBanner").hidden = true;
     // "email:pat@x" / "github:pat" are API actor ids; people read a name.
     userLabel.textContent = actor ? String(actor).replace(/^email:/, "").replace(/^github:/, "@") + " " : "";
     userLabel.title = actor || "";
@@ -943,7 +1616,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     notice.hidden = true;
     fxStartForge();
     if (justInstalled && admin) {
-      toast(justInstalled === "update" ? "GitHub App updated ✓" : "GitHub is connected 🎉 Next: pick the projects to test.");
+      toast(justInstalled === "update" ? plain("t_gh_updated", "GitHub App updated ✓") : plain("t_gh_ready", "GitHub is connected 🎉 Next: pick the projects to test."));
       palGoTab("home");
     } else if (!applyHashRoute()) palGoTab("home");
   }
@@ -1036,6 +1709,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       showApp(st.user.actor, st.user.admin, st.githubConnected);
       loadRuns();
       registerWebMcpTools(st.user.admin);
+      startMovePoll();
       if (st.user.admin) { loadTokens(); loadUsers(); }
     } else if (FX.demo) {
       fxShowAnonDemo();
@@ -1071,11 +1745,11 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
           if (!res.ok) throw new Error("bad");
           return res.json();
         }).then(function (data) {
-          document.getElementById("inviteInfo").textContent = "Create a password for " + data.email + ".";
+          document.getElementById("inviteInfo").textContent = plainf("t_invite_for", "Create a password for " + data.email + ".", 0, data.email);
           showInvite();
         }).catch(function () {
           route(st);
-          document.getElementById("loginErr").textContent = "Invite invalid or expired.";
+          document.getElementById("loginErr").textContent = plain("t_invite_bad", "Invite invalid or expired.");
         });
         return;
       }
@@ -1089,8 +1763,8 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       }
       route(st);
       handleGithubQuery(st, g, q.get("reason"));
-      if (rt === "done") document.getElementById("loginMsg").textContent = "Password updated — log in.";
-      if (m === "expired") document.getElementById("magicErr").textContent = "That link expired or was already used — request a new one.";
+      if (rt === "done") document.getElementById("loginMsg").textContent = plain("t_pw_saved", "Password updated — log in.");
+      if (m === "expired") document.getElementById("magicErr").textContent = plain("t_link_old", "That link expired or was already used — request a new one.");
     }).catch(function () { showAuth({ claimed: true, githubConnected: false, breakGlass: false, installUrl: null, openRegistration: false }); });
   }
 
@@ -1103,7 +1777,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     var bootstrap = lastStatus && !lastStatus.claimed;
     if (bootstrap) {
       var pw2 = document.getElementById("emailPw2").value;
-      if (pw !== pw2) { err.textContent = "Passwords do not match."; return; }
+      if (pw !== pw2) { err.textContent = plain("t_pw_mismatch", "Passwords do not match."); return; }
       fetch("/v1/admin/bootstrap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email, password: pw, turnstileToken: turnstileToken("tsEmail") }) })
         .then(function (res) {
           if (!res.ok) throw new Error("bad");
@@ -1112,12 +1786,12 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
           document.getElementById("emailPw2").value = "";
           boot();
         })
-        .catch(function () { err.textContent = "Could not create account (valid email, 8+ char password)."; });
+        .catch(function () { err.textContent = plain("t_acct_fail", "Could not create account (valid email, 8+ char password)."); });
       return;
     }
     if (emailMode === "register") {
       var pwAgain = document.getElementById("emailPw2").value;
-      if (pw !== pwAgain) { err.textContent = "Passwords do not match."; return; }
+      if (pw !== pwAgain) { err.textContent = plain("t_pw_mismatch", "Passwords do not match."); return; }
       fetch("/v1/admin/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email, password: pw, turnstileToken: turnstileToken("tsEmail") }) })
         .then(function (res) {
           if (!res.ok) throw new Error("bad");
@@ -1126,7 +1800,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
           document.getElementById("emailPw2").value = "";
           boot();
         })
-        .catch(function () { err.textContent = "Could not create account (valid email, 8+ char password)."; });
+        .catch(function () { err.textContent = plain("t_acct_fail", "Could not create account (valid email, 8+ char password)."); });
       return;
     }
     fetch("/v1/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email, password: pw, turnstileToken: turnstileToken("tsEmail") }) })
@@ -1135,7 +1809,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         document.getElementById("emailPw").value = "";
         boot();
       })
-      .catch(function () { err.textContent = "Invalid email or password."; });
+      .catch(function () { err.textContent = plain("t_login_fail", "Invalid email or password."); });
   });
 
   document.getElementById("magicForm").addEventListener("submit", function (ev) {
@@ -1149,9 +1823,9 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       .then(function (res) {
         if (!res.ok) throw new Error("bad");
         document.getElementById("magicEmail").value = "";
-        ok.textContent = "If an account exists for that email, a login link is on its way (15 min).";
+        ok.textContent = plain("t_magic_sent", "If an account exists for that email, a login link is on its way (15 min).");
       })
-      .catch(function () { err.textContent = "Could not send a link. Try again later."; });
+      .catch(function () { err.textContent = plain("t_magic_fail", "Could not send a link. Try again later."); });
   });
 
   document.getElementById("magicConfirmForm").addEventListener("submit", function (ev) {
@@ -1165,7 +1839,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       })
       .catch(function () {
         route(lastStatus || { claimed: true, githubConnected: false, breakGlass: false, installUrl: null, openRegistration: false });
-        document.getElementById("magicErr").textContent = "That link expired or was already used — request a new one.";
+        document.getElementById("magicErr").textContent = plain("t_link_old", "That link expired or was already used — request a new one.");
       });
   });
 
@@ -1194,9 +1868,9 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       .then(function (res) {
         if (!res.ok) throw new Error("bad");
         document.getElementById("resetEmailInput").value = "";
-        ok.textContent = "If that account exists, a reset link is on its way.";
+        ok.textContent = plain("t_reset_sent", "If that account exists, a reset link is on its way.");
       })
-      .catch(function () { err.textContent = "Could not send (check the address, or try again later)."; });
+      .catch(function () { err.textContent = plain("t_reset_send_fail", "Could not send (check the address, or try again later)."); });
   });
 
   document.getElementById("resetConfirmForm").addEventListener("submit", function (ev) {
@@ -1205,7 +1879,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     err.textContent = "";
     var a = document.getElementById("resetPw1").value;
     var b = document.getElementById("resetPw2").value;
-    if (a !== b) { err.textContent = "Passwords do not match."; return; }
+    if (a !== b) { err.textContent = plain("t_pw_mismatch", "Passwords do not match."); return; }
     fetch("/v1/admin/reset/confirm", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1215,7 +1889,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         if (!res.ok) throw new Error("bad");
         window.location.href = "/dashboard?reset=done";
       })
-      .catch(function () { err.textContent = "Could not reset (link expired, or 8+ char password needed)."; });
+      .catch(function () { err.textContent = plain("t_reset_fail", "Could not reset (link expired, or 8+ char password needed)."); });
   });
 
   document.getElementById("inviteForm").addEventListener("submit", function (ev) {
@@ -1224,7 +1898,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     err.textContent = "";
     var a = document.getElementById("invitePw1").value;
     var b = document.getElementById("invitePw2").value;
-    if (a !== b) { err.textContent = "Passwords do not match."; return; }
+    if (a !== b) { err.textContent = plain("t_pw_mismatch", "Passwords do not match."); return; }
     fetch("/v1/admin/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: inviteToken, password: a, turnstileToken: turnstileToken("tsInvite") }) })
       .then(function (res) {
         if (!res.ok) throw new Error("bad");
@@ -1232,12 +1906,12 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         document.getElementById("invitePw2").value = "";
         boot();
       })
-      .catch(function () { err.textContent = "Could not create account (invite expired, or 8+ char password needed)."; });
+      .catch(function () { err.textContent = plain("t_invite_fail", "Could not create account (invite expired, or 8+ char password needed)."); });
   });
 
   document.getElementById("githubLoginBtn").addEventListener("click", function () {
     if (lastStatus && !lastStatus.githubConnected) {
-      document.getElementById("loginMsg").textContent = "Connect GitHub first (step 1 above).";
+      document.getElementById("loginMsg").textContent = plain("t_owner_github", "Connect GitHub first (step 1 above).");
       return;
     }
     window.location.href = "/v1/admin/github/login";
@@ -1254,7 +1928,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       route(st);
     }).catch(function () {
       sessionStorage.removeItem(KEY);
-      err.textContent = "Wrong password.";
+      err.textContent = plain("t_backup_wrong", "Wrong password.");
     });
   });
   function submitManifest(postUrl, manifest) {
@@ -1273,7 +1947,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     errEl.textContent = "";
     api("/v1/admin/github/connect", { method: "POST", body: JSON.stringify({}) })
       .then(function (data) { submitManifest(data.postUrl, data.manifest); })
-      .catch(function () { errEl.textContent = "Could not start connect (already managed via environment)."; });
+      .catch(function () { errEl.textContent = plain("t_connect_fail", "Could not start connect (already managed via environment)."); });
   }
   document.getElementById("connectForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
@@ -1382,6 +2056,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     });
     sel.hidden = repos.length === 0;
     txt.hidden = repos.length > 0;
+    fillDatalist("ghRepoList", repos.map(function (r) { return r.fullName; }));
     if (prev) sel.value = prev;
   }
   function renderHomeStatus(st) {
@@ -1425,9 +2100,316 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       li.appendChild(b); list.appendChild(li);
     });
   }
+  // ---------- Home, Simple mode: the quest, then the health screen ----------
+  var QUEST_LEVELS = ["account", "github", "repos", "first_run", "green"];
+  var teamSeen = false;
+  function openRunFromHome(id) { selectTab("runs"); loadRuns(); loadRun(id, true); }
+  function homeButton(label, primary, fn) {
+    var b = el("button", label); b.type = "button"; b.className = primary ? "home-btn" : "ghost";
+    b.addEventListener("click", fn);
+    return b;
+  }
+  // Starts a check on repo@branch; words answer the click immediately.
+  function homeStart(repo, branch, msg) {
+    if (!repo) { msg.textContent = SC.t_pick_first; return; }
+    msg.textContent = SC.t_starting;
+    api("/v1/runs/dispatch", { method: "POST", body: JSON.stringify({ repo: repo, sha: branch || "main" }) })
+      .then(function () { msg.textContent = SC.t_started; toast(SC.t_started); return loadHome(); })
+      .catch(function (e) { msg.textContent = SC.t_cant_start + " " + SC.t_err_generic; msg.title = (e && e.message) || ""; });
+  }
+  // "Use my computer": one-time pair code, shown as one copyable line.
+  function homePairInto(box, msg) {
+    msg.textContent = SC.t_making_code;
+    api("/v1/admin/pair-codes", { method: "POST", body: JSON.stringify({}) })
+      .then(function (data) {
+        msg.textContent = "";
+        box.textContent = "";
+        var cmd = "curl -fsSL " + window.location.origin + "/runner.sh | FLARE_PAIR_CODE=" + data.code + " sh";
+        box.appendChild(el("p", SC.t_computer_how));
+        var row = el("div"); row.className = "home-cmd";
+        row.appendChild(el("code", cmd));
+        var copy = el("button", SC.l_copy); copy.type = "button"; copy.className = "ghost";
+        copy.addEventListener("click", function () { copyText(cmd, copy); });
+        row.appendChild(copy);
+        box.appendChild(row);
+        box.appendChild(el("p", SC.t_computer_keep));
+        box.hidden = false;
+      })
+      .catch(function () { msg.textContent = SC.t_computer_fail; });
+  }
+  // The computer action: replaces a level's (or the health screen's)
+  // single button when checks sit waiting for a machine.
+  function computerAction(st, acts, msg, after) {
+    if (!st.admin) { msg.textContent = SC.t_computer_ask; return; }
+    var cmdBox = el("div"); cmdBox.className = "quest-cmd"; cmdBox.hidden = true;
+    acts.appendChild(homeButton(SC.l_use_computer, true, function () { homePairInto(cmdBox, msg); }));
+    after.appendChild(cmdBox);
+  }
+  function repoPicker(st, acts) {
+    var repos = st.repos || [];
+    if (repos.length > 1) {
+      var sel = el("select"); sel.setAttribute("aria-label", SC.l_project);
+      repos.forEach(function (r) {
+        var o = el("option", r.fullName + (r.private ? " 🔒" : "")); o.value = r.fullName; o.setAttribute("data-branch", r.defaultBranch || "main");
+        sel.appendChild(o);
+      });
+      acts.appendChild(sel);
+      return function () { var o = sel.options[sel.selectedIndex]; return o ? [o.value, o.getAttribute("data-branch") || "main"] : ["", ""]; };
+    }
+    if (repos.length === 1) return function () { return [repos[0].fullName, repos[0].defaultBranch || "main"]; };
+    var inp = el("input"); inp.placeholder = "owner/repo"; inp.maxLength = 100; inp.setAttribute("aria-label", SC.l_project);
+    acts.appendChild(inp);
+    return function () { return [inp.value.trim(), "main"]; };
+  }
+  // ---------- Next move (docs/OCTALYSIS.md): one engine, Home + side bar ----------
+  var currentMove = null;
+  function stepDone(st, id) {
+    var d = false;
+    (st.steps || []).forEach(function (s) { if (s.id === id && s.done) d = true; });
+    return d;
+  }
+  function inboxCount() {
+    var b = document.getElementById("fxBadgeInbox");
+    if (!b || b.hidden) return 0;
+    var n = parseInt(b.textContent || "0", 10);
+    return isFinite(n) && n > 0 ? n : 0;
+  }
+  function moveState(st) {
+    return {
+      signedIn: true,
+      admin: !!st.admin,
+      githubConnected: stepDone(st, "github"),
+      projectPicked: stepDone(st, "repos"),
+      waitingForComputer: !!st.waitingForComputer,
+      checks: st.runs || 0,
+      passed: st.passed || 0,
+      latestStatus: st.latest ? st.latest.status : "",
+      inboxCount: inboxCount(),
+      agentSeen: homeRuns.some(function (r) { return !!r.agent; }),
+      teammateSeen: teamSeen
+    };
+  }
+  // Agents and tests read the move off <html data-next-move data-phase>.
+  function applyNextMove(st) {
+    currentMove = nextMove(moveState(st));
+    var root = document.documentElement;
+    root.setAttribute("data-next-move", currentMove.key);
+    root.setAttribute("data-phase", currentMove.phase);
+    var chip = document.getElementById("nextMoveChip");
+    chip.setAttribute("data-next-move", currentMove.key);
+    document.getElementById("nextMoveLabel").textContent = currentMove.label;
+    chip.title = SC.l_next + " " + currentMove.label;
+    chip.hidden = false;
+    return currentMove;
+  }
+  function moveLabel(m) { return (m.key === "run" || m.key === "first_check" ? "▶ " : "") + m.label; }
+  function goInvite() {
+    palGoTab("settings");
+    openSettingsSec = "setPeople";
+    applySettingsAccordion();
+    setTimeout(function () { var i = document.getElementById("inviteEmail"); if (i) { i.scrollIntoView({ behavior: "smooth", block: "center" }); i.focus(); } }, 300);
+  }
+  function goAgentPrompt() {
+    setPaneMore("homePane", true);
+    var a = document.getElementById("homeAgent");
+    if (a && a.scrollIntoView) a.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+  // Side bar chip: the same move, from any screen.
+  function runNextMove() {
+    var m = currentMove, st = homeState;
+    if (!m || !st) return;
+    var latestId = st.latest ? st.latest.id : null;
+    if (m.owner && !st.admin) { palGoTab("home"); return; }
+    if (m.key === "github") startConnect(document.getElementById("homeErr"));
+    else if (m.key === "project" && st.installUrl) window.open(st.installUrl, "_blank", "noopener");
+    else if ((m.key === "see_broke" || m.key === "watch") && latestId) openRunFromHome(latestId);
+    else if (m.key === "inbox") palGoTab("inbox");
+    else if (m.key === "invite") goInvite();
+    else if (m.key === "agent") { palGoTab("home"); setTimeout(goAgentPrompt, 200); }
+    else {
+      palGoTab("home");
+      setTimeout(function () { var p = document.getElementById("homePrimary"); if (p) p.focus(); }, 400);
+    }
+  }
+  // Home's one primary button is the next move.
+  function renderMoveAction(m, st, acts, msg, after) {
+    if (m.owner && !st.admin) { msg.textContent = SC.t_ask_owner; return; }
+    var latestId = st.latest ? st.latest.id : null;
+    var primary = null;
+    if (m.key === "github") primary = homeButton(m.label, true, function () { startConnect(msg); });
+    else if (m.key === "project") {
+      if (st.installUrl) {
+        primary = el("a", SC.l_pick); primary.href = st.installUrl; primary.target = "_blank"; primary.rel = "noopener"; primary.className = "home-btn";
+      }
+      acts.appendChild(primary || homeButton(SC.l_did_it, true, function () { msg.textContent = SC.h_busy; loadHome(); }));
+      if (primary) acts.appendChild(homeButton(SC.l_did_it, false, function () { msg.textContent = SC.h_busy; loadHome(); }));
+      else primary = acts.lastChild;
+      primary.id = "homePrimary";
+      return;
+    } else if (m.key === "computer") {
+      computerAction(st, acts, msg, after);
+      if (acts.lastChild) acts.lastChild.id = "homePrimary";
+      return;
+    } else if (m.key === "first_check") {
+      var pick = repoPicker(st, acts);
+      primary = homeButton(moveLabel(m), true, function () { var r = pick(); homeStart(r[0], r[1], msg); });
+    } else if ((m.key === "see_broke" || m.key === "watch") && latestId) primary = homeButton(m.label, true, function () { openRunFromHome(latestId); });
+    else if (m.key === "inbox") primary = homeButton(m.label, true, function () { palGoTab("inbox"); });
+    else if (m.key === "agent") primary = homeButton(m.label, true, goAgentPrompt);
+    else if (m.key === "invite") primary = homeButton(m.label, true, goInvite);
+    else if (m.key === "run" && st.latest && st.latest.repo) {
+      var latest = st.latest, branch = latest.branch || "";
+      if (!branch) (st.repos || []).forEach(function (r) { if (r.fullName === latest.repo) branch = r.defaultBranch || ""; });
+      primary = homeButton(moveLabel(m), true, function () { homeStart(latest.repo, branch || "main", msg); });
+    } else primary = homeButton(SC.l_see_checks, true, function () { palGoTab("runs"); });
+    primary.id = "homePrimary";
+    acts.appendChild(primary);
+  }
+  function renderQuest(st, box, m) {
+    box.textContent = "";
+    var idx = QUEST_LEVELS.indexOf(st.next);
+    if (idx < 0) idx = QUEST_LEVELS.length - 1;
+    var top = el("div"); top.className = "quest-top";
+    top.appendChild(el("span", scf("l_level", idx + 1))).className = "quest-level";
+    var map = el("ol"); map.className = "quest-map"; map.setAttribute("aria-label", SC.l_levels);
+    QUEST_LEVELS.forEach(function (id, i) {
+      var li = el("li");
+      if (stepDone(st, id)) { li.className = "done"; li.textContent = "⭐"; li.setAttribute("aria-label", scf("l_lvl_done", i + 1) + ": " + SC["l_lvl_" + id]); }
+      else if (i === idx) { li.className = "now"; li.textContent = String(i + 1); li.setAttribute("aria-label", scf("l_lvl_now", i + 1)); li.setAttribute("aria-current", "step"); }
+      else { li.className = "locked"; li.setAttribute("aria-label", scf("l_lvl_locked", i + 1)); }
+      li.title = SC["l_lvl_" + id];
+      map.appendChild(li);
+    });
+    top.appendChild(map);
+    box.appendChild(top);
+    var id = QUEST_LEVELS[idx];
+    var name = el("h3", SC["l_lvl_" + id]); name.className = "quest-name";
+    var text = el("p"); text.className = "quest-text";
+    var acts = el("div"); acts.className = "quest-act";
+    var msg = el("p"); msg.className = "quest-msg"; msg.setAttribute("role", "status");
+    var after = el("div");
+    var tone = st.latest ? (SIMPLE_TONE[st.latest.status] || "") : "";
+    if (m.key === "computer") { name.textContent = SC.h_computer; text.textContent = st.admin ? SC.t_computer : SC.t_computer_ask; }
+    else if (id === "github") text.textContent = st.admin ? SC.t_lvl_github : SC.t_lvl_github_ask;
+    else if (id === "repos") text.textContent = SC.t_lvl_repos;
+    else if (id === "first_run") text.textContent = st.admin ? SC.t_lvl_first_run : SC.t_lvl_first_run_push;
+    else if (tone === "bad") text.textContent = SC.t_lvl_green_bad;
+    else if (tone === "busy") text.textContent = SC.t_lvl_green_busy;
+    else text.textContent = SC.t_lvl_green + " " + SC.t_lvl_green_push;
+    renderMoveAction(m, st, acts, msg, after);
+    if (m.owner && !st.admin && m.key !== "computer" && id !== "github") msg.textContent = SC.t_ask_owner;
+    box.appendChild(name); box.appendChild(text);
+    if (acts.children.length) box.appendChild(acts);
+    box.appendChild(after);
+    box.appendChild(msg);
+  }
+  // Real waits only (CD6): how many checks wait, since when.
+  function waitingLine() {
+    var n = 0, oldest = "";
+    homeRuns.forEach(function (r) {
+      if (r.status === "queued" || r.status === "blocked") { n++; if (!oldest || r.created_at < oldest) oldest = r.created_at; }
+    });
+    return n ? scf("l_waiting", n, fmtAgo(oldest)) : "";
+  }
+  function renderHealth(st, box, m) {
+    box.textContent = "";
+    var latest = st.latest;
+    var status = latest ? latest.status : "";
+    var tone = SIMPLE_TONE[status] || "";
+    var head = SC.h_stopped;
+    var mainBranch = latest && (latest.branch === "main" || latest.branch === "master");
+    if (status === "success") head = SC.h_ok;
+    else if (tone === "bad") head = mainBranch ? SC.h_main_broke : SC.h_bad;
+    else if (status === "queued" || status === "blocked") head = st.waitingForComputer ? SC.h_wait : SC.h_busy;
+    else if (status === "running") head = SC.h_busy;
+    var v = el("div"); v.className = "home-verdict" + (tone ? " " + tone : ""); v.setAttribute("role", "status");
+    var big = el("span", SIMPLE_ICON[status] || "•"); big.className = "big"; big.setAttribute("aria-hidden", "true");
+    var what = el("div"); what.className = "what";
+    what.appendChild(el("strong", head));
+    var sub = latest ? latest.repo + " · " + fmtAgo(latest.createdAt) : "";
+    if (st.waitingForComputer && waitingLine()) sub = waitingLine();
+    if (sub) what.appendChild(el("span", sub));
+    v.appendChild(big); v.appendChild(what);
+    var msg = el("p"); msg.className = "quest-msg"; msg.setAttribute("role", "status");
+    var after = el("div");
+    var acts = el("div"); acts.className = "quest-act";
+    renderMoveAction(m, st, acts, msg, after);
+    if (acts.children.length) v.appendChild(acts);
+    box.appendChild(v);
+    box.appendChild(after);
+    box.appendChild(msg);
+    var streak = greenStreak(homeRuns);
+    if (streak > 0) { var sl = el("p", scf("l_streak", streak)); sl.className = "health-streak"; box.appendChild(sl); }
+    var badges = [];
+    if (st.passed > 0) badges.push("🏅 " + SC.l_badge_green);
+    if (homeRuns.some(function (r) { return !!r.agent; })) badges.push("🤖 " + SC.l_badge_agent);
+    if (teamSeen) badges.push("👋 " + SC.l_badge_team);
+    if (badges.length) {
+      var ul = el("ul"); ul.className = "badges"; ul.setAttribute("aria-label", SC.l_badges);
+      badges.slice(0, 3).forEach(function (b) { ul.appendChild(el("li", b)); });
+      box.appendChild(ul);
+    }
+    if (m.phase === "endgame") box.appendChild(everywhereCard());
+    if (homeRuns.length) {
+      var h = el("h3", SC.h_latest); h.className = "home-sub"; box.appendChild(h);
+      var list = el("ul"); list.className = "home-runs";
+      homeRuns.slice(0, 6).forEach(function (r, i) {
+        var fr = simpleStatus(r.status);
+        var li = el("li"); if (i >= 3) li.className = "simple-more";
+        var b = el("button"); b.type = "button";
+        var ic = el("span", fr[0]); ic.className = "icon"; ic.setAttribute("aria-hidden", "true");
+        var nm = el("span", (r.repo || "") + (r.branch ? " · " + r.branch : "")); nm.className = "name";
+        var wd = el("span", fr[1]); wd.className = "word";
+        // Number budget (<= 3 per screen): the time lives in the tooltip.
+        b.appendChild(ic); b.appendChild(nm); b.appendChild(wd);
+        b.title = fmtTime(r.created_at);
+        b.setAttribute("aria-label", fr[1] + ": " + nm.textContent + ", " + fmtAgo(r.created_at));
+        b.addEventListener("click", function () { openRunFromHome(r.id); });
+        li.appendChild(b); list.appendChild(li);
+      });
+      box.appendChild(list);
+    }
+    return streak;
+  }
+  // Endgame (CD1): Flare on every repo and agent on this machine.
+  function everywhereCard() {
+    var c = el("div"); c.className = "everywhere";
+    c.appendChild(el("h3", "🌍 " + SC.h_everywhere));
+    c.appendChild(el("p", SC.t_everywhere));
+    var cmd = "npx flare-forge forge init --global";
+    var row = el("div"); row.className = "home-cmd";
+    row.appendChild(el("code", cmd));
+    var copy = el("button", SC.l_copy); copy.type = "button"; copy.className = "ghost";
+    copy.addEventListener("click", function () { copyText(cmd, copy); });
+    row.appendChild(copy);
+    c.appendChild(row);
+    var a = el("a", SC.l_everywhere_doc); a.href = "https://github.com/everyai-com/flare-actions/blob/main/docs/EVERYWHERE.md"; a.target = "_blank"; a.rel = "noopener";
+    c.appendChild(a);
+    return c;
+  }
+  // Phases, not pages: Home shows only the current phase's job.
+  function renderHomeSimple(st) {
+    var m = currentMove || applyNextMove(st);
+    var quest = document.getElementById("homeQuest"), health = document.getElementById("homeHealth");
+    var onboarding = m.phase === "onboarding" || m.phase === "discovery";
+    document.getElementById("homeTitle").textContent = onboarding ? SC.h_quest : SC.h_health;
+    document.getElementById("homeLead").textContent = onboarding ? SC.t_quest : SC.t_health;
+    quest.hidden = !onboarding; health.hidden = onboarding;
+    var streak = 0;
+    if (onboarding) renderQuest(st, quest, m);
+    else streak = renderHealth(st, health, m);
+    renderHomeRepos(st);
+    document.getElementById("homeCardInvite").hidden = !st.admin;
+    // Link budget (<= 3): once an agent has connected, the "Using an AI
+    // agent?" shortcut has done its job.
+    document.getElementById("homeAgentLink").hidden = moveState(st).agentSeen;
+    celebrateWins(st, streak);
+  }
   function renderHome(st) {
     homeState = st;
     document.getElementById("homeErr").textContent = "";
+    applyNextMove(st);
+    if (uiSimple()) { renderHomeSimple(st); return; }
     document.getElementById("homeTitle").textContent = st.complete ? "Your projects" : "Welcome to Flare 👋";
     document.getElementById("homeLead").textContent = st.complete
       ? "Flare runs your tests every time you push to GitHub. Here's how things look right now."
@@ -1442,9 +2424,19 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   function loadHome() {
     return Promise.all([
       api("/v1/setup"),
-      api("/v1/runs?limit=5").then(function (d) { return d.runs || []; }, function () { return []; })
+      // Simple mode reads 20 for the green streak; Pro shows 5.
+      api("/v1/runs?limit=" + (uiSimple() ? 20 : 5)).then(function (d) { return d.runs || []; }, function () { return []; })
     ]).then(function (out) { homeRuns = out[1]; renderHome(out[0]); })
-      .catch(function (e) { if (String(e && e.message) !== "unauthorized") document.getElementById("homeErr").textContent = "Couldn't load your setup — try refreshing the page."; });
+      .catch(function (e) { if (String(e && e.message) !== "unauthorized") document.getElementById("homeErr").textContent = plain("t_load_setup_fail", "Couldn't load your setup — try refreshing the page."); });
+  }
+  // The side bar "Next:" chip needs /v1/setup on every screen: fetch once
+  // if Home isn't the landing screen, then every 30s while Home is hidden
+  // (Home's own 10s poll covers it while shown).
+  var movePollTimer = null;
+  function startMovePoll() {
+    if (currentTab !== "home" && uiSimple()) loadHome();
+    if (movePollTimer) return;
+    movePollTimer = setInterval(function () { if (uiSimple() && !document.hidden && !appPane.hidden && homePane.hidden) loadHome(); }, 30000);
   }
   function startHomePoll() {
     if (homeTimer) return;
@@ -1457,11 +2449,11 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     var repo = "", branch = "main";
     if (!sel.hidden && sel.value) { repo = sel.value; var opt = sel.options[sel.selectedIndex]; branch = (opt && opt.getAttribute("data-branch")) || "main"; }
     else repo = document.getElementById("homeRepoText").value.trim();
-    if (!repo) { msg.textContent = "Pick a project first."; return; }
-    msg.textContent = "Starting your tests…";
+    if (!repo) { msg.textContent = plain("t_pick_first", "Pick a project first."); return; }
+    msg.textContent = plain("t_starting", "Starting your tests…");
     api("/v1/runs/dispatch", { method: "POST", body: JSON.stringify({ repo: repo, sha: branch }) })
-      .then(function () { msg.textContent = "Started! Watch it below — this page updates by itself."; toast("Tests started for " + repo); return loadHome(); })
-      .catch(function (e) { msg.textContent = "Couldn't start the tests: " + (e.message || "error") + ". Does the repo have a flare.yml or a .github/workflows file?"; });
+      .then(function () { msg.textContent = plain("t_started", "Started! Watch it below — this page updates by itself."); toast(plain("t_started", "Tests started for " + repo)); return loadHome(); })
+      .catch(function (e) { msg.textContent = plain("t_cant_start", "Couldn't start the tests: " + (e.message || "error") + ". Does the repo have a flare.yml or a .github/workflows file?"); });
   });
   document.getElementById("homePairBtn").addEventListener("click", function () {
     var err = document.getElementById("homePairErr");
@@ -1472,7 +2464,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
           "curl -fsSL " + window.location.origin + "/runner.sh | FLARE_PAIR_CODE=" + data.code + " sh";
         document.getElementById("homePairBox").hidden = false;
       })
-      .catch(function () { err.textContent = "Couldn't make a setup code. Only the owner (admin) can do this."; });
+      .catch(function () { err.textContent = plain("t_computer_fail", "Couldn't make a setup code. Only the owner (admin) can do this."); });
   });
   document.getElementById("homePairCopy").addEventListener("click", function () { copyText(document.getElementById("homePairCmd").textContent, this); });
   document.getElementById("homeAllRuns").addEventListener("click", function () { selectTab("runs"); loadRuns(); });
@@ -1480,6 +2472,35 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   document.getElementById("homeCardRaces").addEventListener("click", function () { selectTab("tournaments"); loadTournaments(); });
   document.getElementById("homeCardInvite").addEventListener("click", function () { palGoTab("settings"); setTimeout(function () { var i = document.getElementById("inviteEmail") || document.querySelector("#teamPane input[type=email]"); if (i) { i.scrollIntoView({ behavior: "smooth", block: "center" }); i.focus(); } }, 300); });
   tabHome.addEventListener("click", function () { palGoTab("home"); });
+  document.getElementById("modeBtn").addEventListener("click", function () { setUiMode(uiSimple() ? "pro" : "simple"); });
+  syncModeBtn();
+  document.getElementById("navMoreBtn").addEventListener("click", function () { setNavMore(!navMoreOpen); });
+  document.getElementById("nextMoveChip").addEventListener("click", runNextMove);
+  (function () {
+    var mores = document.querySelectorAll('[data-action="show_more"][data-more-for]');
+    for (var i = 0; i < mores.length; i++) {
+      mores[i].addEventListener("click", function (ev) {
+        var b = ev.currentTarget;
+        var pid = b.getAttribute("data-more-for");
+        var pane = document.getElementById(pid);
+        if (b.id === "homeAgentLink") {
+          setPaneMore(pid, true);
+          var agent = document.getElementById("homeAgent");
+          if (agent && agent.scrollIntoView) agent.scrollIntoView({ behavior: "smooth", block: "center" });
+          return;
+        }
+        setPaneMore(pid, !(pane && pane.classList.contains("more-open")));
+      });
+    }
+    var accs = document.querySelectorAll(".acc-btn[data-sec-target]");
+    for (var j = 0; j < accs.length; j++) {
+      accs[j].addEventListener("click", function (ev) {
+        var t = ev.currentTarget.getAttribute("data-sec-target");
+        openSettingsSec = openSettingsSec === t ? "" : t;
+        applySettingsAccordion();
+      });
+    }
+  })();
   var NAV_HINTS = {
     home: "Start here: setup steps and how your tests are doing",
     live: "Agent forge: a live map of which AI agents are working on which files",
@@ -1494,14 +2515,11 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     merge: "Changes waiting to be merged after their tests pass",
     settings: "Accounts, access tokens, runners and other options"
   };
-  (function () {
-    var links = document.querySelectorAll(".side-link[data-tab]");
-    for (var i = 0; i < links.length; i++) {
-      var hint = NAV_HINTS[links[i].getAttribute("data-tab")];
-      if (hint) links[i].title = hint;
-    }
-  })();
+  syncSimpleWords();
   function selectTab(name) {
+    // Lets CSS drop the "Next:" chip on Home, where the big button
+    // already is the next move (one thing per screen).
+    document.documentElement.setAttribute("data-tab", name);
     tabHome.className = "side-link" + (name === "home" ? " active" : "");
     homePane.hidden = name !== "home";
     tabRuns.className = "side-link" + (name === "runs" ? " active" : "");
@@ -1516,7 +2534,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     settingsPane.hidden = name !== "settings";
     teamPane.hidden = name !== "settings";
     currentTab = name;
-    document.title = (TAB_TITLES[name] || "Dashboard") + " · Flare Actions";
+    document.title = (tabTitle(name) || "Dashboard") + " · Flare Actions";
     var panes = { home: homePane, runs: runsPane, tournaments: tournamentsPane, repos: reposPane, merge: mergePane, settings: settingsPane };
     if (panes[name]) {
       panes[name].classList.remove("pane-enter");
@@ -1524,10 +2542,19 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       panes[name].classList.add("pane-enter");
     }
     fxOnSelect(name);
+    if (uiSimple()) { syncSimpleNav(name); if (name === "settings") applySettingsAccordion(); }
+    // Narrow screens: the nav is a scroll strip, so keep the active tab in view.
+    var activeLink = document.querySelector('.side-link[data-tab="' + name + '"]');
+    if (activeLink && window.innerWidth <= 900 && activeLink.scrollIntoView) activeLink.scrollIntoView({ block: "nearest", inline: "center" });
     syncHash();
   }
   document.getElementById("runsFilter").addEventListener("input", function () { renderRuns(); });
   document.getElementById("runsFilterForm").addEventListener("submit", function (ev) { ev.preventDefault(); });
+  (function () {
+    var prompt = "Read " + location.origin + "/llms.txt and move this repo's CI to Flare. Start with the cheapest path that works, and ask me before changing anything on GitHub.";
+    document.getElementById("homeAgentPrompt").textContent = prompt;
+    document.getElementById("homeAgentCopy").addEventListener("click", function (e) { copyText(prompt, e.currentTarget); });
+  })();
   function copyText(text, btn) {
     function done(ok) {
       btn.textContent = ok ? "Copied" : "Copy failed";
@@ -1570,22 +2597,22 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     err.textContent = "";
     var intent = document.getElementById("tournamentIntent").value.trim();
     var source = document.getElementById("tournamentSource").value.trim();
-    if (!intent || !source) { err.textContent = "intent and source repo are required"; return; }
+    if (!intent || !source) { err.textContent = plain("t_race_need", "intent and source repo are required"); return; }
     api("/v1/tournaments", { method: "POST", body: JSON.stringify({ intent: intent, sourceRepo: source }) }).then(function (b) {
       document.getElementById("tournamentIntent").value = "";
-      toast("Tournament opened — agents can claim slots");
+      toast(plain("t_race_started", "Tournament opened — agents can claim slots"));
       showTournament(b.id);
-    }, function (e) { err.textContent = e.message; toast(e.message, true); });
+    }, function (e) { err.textContent = plain("t_race_fail", e.message); toast(err.textContent, true); });
   });
   var TOURNAMENT_STATE_CLASS = { open: "queued", verifying: "running", decided: "success" };
   function tournamentStatePill(state) {
-    var s = el("span", state);
+    var s = el("span", uiSimple() && SC["l_race_" + state] ? SC["l_race_" + state] : state);
     s.className = "pill " + (TOURNAMENT_STATE_CLASS[state] || "queued");
     return s;
   }
   var ATTEMPT_STATE_CLASS = { claimed: "queued", pushing: "running", verifying: "running", terminal: "blocked" };
   function attemptStatePill(state) {
-    var s = el("span", state);
+    var s = el("span", uiSimple() && SC["l_try_" + state] ? SC["l_try_" + state] : state);
     s.className = "pill " + (ATTEMPT_STATE_CLASS[state] || "queued");
     return s;
   }
@@ -1610,14 +2637,33 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     var paths = body.slice(cut + 2).split(", ").filter(function (p) { return !!p; });
     return { a: pair[0], b: pair[1], paths: paths };
   }
+  // Autocomplete for free-text repo inputs; best-effort, never blocks.
+  (function () {
+    var jumps = document.querySelectorAll(".settings-jump [data-jump]");
+    for (var i = 0; i < jumps.length; i++) {
+      jumps[i].addEventListener("click", function (e) {
+        var target = document.getElementById(e.currentTarget.getAttribute("data-jump"));
+        if (target && !target.closest("[hidden]")) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  })();
+  function fillDatalist(id, names) {
+    var dl = document.getElementById(id);
+    if (!dl) return;
+    dl.textContent = "";
+    names.forEach(function (n) { var o = document.createElement("option"); o.value = n; dl.appendChild(o); });
+  }
   function loadTournaments() {
     stopTournamentTimer();
+    api("/v1/repos?limit=100").then(function (b) {
+      fillDatalist("flareRepoList", ((b && b.repos) || []).map(function (r) { return r.name; }));
+    }, function () {});
     var err = document.getElementById("tournamentsErr");
     var list = document.getElementById("tournamentsList");
     err.textContent = "";
     list.textContent = "";
     document.getElementById("tournamentDetail").hidden = true;
-    document.title = "Tournaments · Flare Actions";
+    document.title = "Races · Flare Actions";
     list.className = "t-enter";
     skeleton(list, 3, "skel-row");
     api("/v1/tournaments").then(function (b) {
@@ -1627,6 +2673,15 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       syncHash();
       if (tournaments.length === 0) {
         var empty = el("div"); empty.className = "empty";
+        if (uiSimple()) {
+          // CD7 curiosity: one sentence, and the form above is the one move.
+          empty.appendChild(el("h3", SC.h_no_races));
+          empty.appendChild(el("p", SC.t_no_races));
+          list.appendChild(empty);
+          var ti = document.getElementById("tournamentIntent");
+          if (ti && !ti.value) ti.focus();
+          return;
+        }
         empty.appendChild(el("h3", "No races yet — here's the whole model"));
         var steps = el("ol"); steps.className = "steps";
         steps.appendChild(setupStep("Open a task", "Write the intent above. That sentence is the why every agent shares.", false, null));
@@ -1645,7 +2700,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         var main = el("div"); main.className = "run-main";
         var title = el("div", t.intent); title.className = "run-repo"; main.appendChild(title);
         var meta = el("div"); meta.className = "run-meta";
-        meta.appendChild(document.createTextNode((t.source_repo || "") + " · opened "));
+        meta.appendChild(document.createTextNode((t.source_repo || "") + (uiSimple() ? " · " : " · opened ")));
         var metaTime = el("span", fmtAgo(t.created_at)); metaTime.setAttribute("data-ago", t.created_at); meta.appendChild(metaTime);
         main.appendChild(meta);
         row.appendChild(main);
@@ -1654,7 +2709,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         row.addEventListener("keydown", function (kev) { if (kev.key === "Enter") showTournament(t.id); });
         list.appendChild(row);
       });
-    }, function (e) { err.textContent = e.message; });
+    }, function (e) { err.textContent = plain("t_race_load_fail", e.message); });
   }
   document.getElementById("backToTournaments").addEventListener("click", function () {
     stopTournamentTimer();
@@ -1669,11 +2724,12 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     var box = document.getElementById("tWhy");
     box.textContent = "";
     var hero = el("div"); hero.className = "t-hero";
-    hero.appendChild(zoneTitle("Why this race exists", null));
+    var simple = uiSimple();
+    if (!simple) hero.appendChild(zoneTitle("Why this race exists", null));
     var intent = el("p", b.tournament.intent); intent.className = "t-intent"; hero.appendChild(intent);
     var meta = el("div"); meta.className = "t-meta";
     meta.appendChild(tournamentStatePill(b.tournament.state));
-    var repoChip = chip("repo " + b.tournament.source_repo);
+    var repoChip = chip((simple ? "" : "repo ") + b.tournament.source_repo);
     repoChip.setAttribute("role", "button"); repoChip.setAttribute("tabindex", "0");
     repoChip.setAttribute("title", "Open in Repositories"); repoChip.style.cursor = "pointer";
     (function (rn) {
@@ -1682,6 +2738,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       repoChip.addEventListener("keydown", function (kev) { if (kev.key === "Enter") go(); });
     })(b.tournament.source_repo);
     meta.appendChild(repoChip);
+    if (simple) { hero.appendChild(meta); box.appendChild(hero); return; }
     meta.appendChild(chip("base " + (b.tournament.base_ref || "main") + "@" + String(b.tournament.base_sha || "").slice(0, 7)));
     var ago = el("span", "opened " + fmtAgo(b.tournament.created_at)); ago.className = "muted"; ago.setAttribute("data-ago", b.tournament.created_at); ago.setAttribute("data-prefix", "opened "); meta.appendChild(ago);
     if (b.tournament.resolved_sha) meta.appendChild(chip("resolved " + String(b.tournament.resolved_sha).slice(0, 12)));
@@ -1718,7 +2775,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       if (a.run_status) foot.appendChild(pill(a.run_status));
       else if (a.run_id) foot.appendChild(chip("run " + String(a.run_id).slice(0, 8)));
       if (a.run_id) {
-        var open = el("button", "Open verification run");
+        var open = el("button", uiSimple() ? SC.l_see_check : "Open verification run");
         open.className = "ghost";
         open.type = "button";
         (function (runId) {
@@ -1775,9 +2832,45 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       return attempts.slice().sort(function (x, y) { return (x.verdict_rank || 99) - (y.verdict_rank || 99); });
     }
   }
+  // Simple: the winner and why first (CD2 badge), or "Who will win?"
+  // while agents try (CD7). Ranking within the race and every internal
+  // sit under Show more; no ranking between people anywhere.
+  function renderTournamentReviewSimple(b, box) {
+    var zone = el("div"); zone.className = "t-zone";
+    var attempts = b.attempts || [];
+    var names = attempts.map(function (a) { return a.agent; }).filter(function (n) { return !!n; });
+    if (!b.verdict) {
+      var done = attempts.filter(function (a) { return a.state === "terminal"; }).length;
+      var wait = el("div"); wait.className = "s-status wait"; wait.setAttribute("role", "status");
+      wait.appendChild(el("span", "⏳ " + SC.h_who_wins));
+      wait.appendChild(el("span", attempts.length ? scf("t_race_wait", done, attempts.length) : SC.t_race_wait_none)).className = "s-why";
+      if (names.length) wait.appendChild(el("span", scf("l_race_trying", 0, names.join(", ")))).className = "s-why";
+      zone.appendChild(wait);
+      box.appendChild(zone);
+      return;
+    }
+    var order = verdictOrder(b);
+    var winner = order.length ? order[0] : null;
+    var panel = el("div"); panel.className = "t-verdict"; panel.setAttribute("role", "status");
+    var banner = el("div"); banner.className = "t-winner";
+    if (winner) banner.appendChild(agentAvatar(winner.agent));
+    banner.appendChild(el("span", winner ? winner.agent : "")).className = "t-winner-name";
+    banner.appendChild(el("span", SC.l_winner)).className = "s-badge";
+    panel.appendChild(banner);
+    panel.appendChild(el("h3", SC.l_why_won));
+    var rat = el("p", b.verdict.rationale || SC.t_won_default); rat.className = "t-rationale"; panel.appendChild(rat);
+    if (winner && winner.run_id) {
+      var see = el("button", SC.l_see_check); see.type = "button"; see.className = "ghost";
+      (function (runId) { see.addEventListener("click", function () { selectTab("runs"); loadRun(runId, true); }); })(winner.run_id);
+      panel.appendChild(see);
+    }
+    zone.appendChild(panel);
+    box.appendChild(zone);
+  }
   function renderTournamentReview(b) {
     var box = document.getElementById("tReview");
     box.textContent = "";
+    if (uiSimple()) { renderTournamentReviewSimple(b, box); return; }
     var zone = el("div"); zone.className = "t-zone";
     var attempts = b.attempts || [];
     if (!b.verdict) {
@@ -1864,7 +2957,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
           showTournament(id);
         }, 5000);
       }
-    }, function (e) { err.textContent = e.message; });
+    }, function (e) { err.textContent = plain("t_race_load_fail", e.message); });
   }
   var currentRepo = "";
   var currentRepoRef = "main";
@@ -1876,7 +2969,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     list.textContent = "";
     document.getElementById("repoDetail").hidden = true;
     currentRepo = "";
-    document.title = "Repositories · Flare Actions";
+    document.title = tabTitle("repos") + " · Flare Actions";
     list.className = "t-enter";
     skeleton(list, 4, "skel-row");
     api("/v1/repos?limit=50").then(function (b) {
@@ -1885,6 +2978,12 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       var repos = (b && b.repos) || [];
       if (repos.length === 0) {
         var empty = el("div"); empty.className = "empty";
+        if (uiSimple()) {
+          empty.appendChild(el("h3", SC.h_no_projects));
+          empty.appendChild(el("p", SC.t_no_projects));
+          list.appendChild(empty);
+          return;
+        }
         empty.appendChild(el("h3", "No repositories yet"));
         empty.appendChild(el("p", "Push code to the Artifacts namespace or import a repo — it shows up here, ready to browse and race on."));
         list.appendChild(empty);
@@ -1896,6 +2995,15 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         var main = el("div"); main.className = "run-main";
         var title = el("div", r.name); title.className = "run-repo mono"; main.appendChild(title);
         var meta = el("div"); meta.className = "run-meta";
+        if (uiSimple()) {
+          meta.textContent = r.lastPushAt ? scf("l_changed", 0, fmtAgo(r.lastPushAt)) : SC.l_no_code;
+          main.appendChild(meta);
+          row.appendChild(main);
+          row.addEventListener("click", function () { openRepo(r.name); });
+          row.addEventListener("keydown", function (kev) { if (kev.key === "Enter") openRepo(r.name); });
+          list.appendChild(row);
+          return;
+        }
         meta.appendChild(document.createTextNode(r.defaultBranch || "main"));
         if (r.lastPushAt) {
           meta.appendChild(document.createTextNode(" · pushed "));
@@ -1908,7 +3016,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         row.addEventListener("keydown", function (kev) { if (kev.key === "Enter") openRepo(r.name); });
         list.appendChild(row);
       });
-    }, function (e) { list.textContent = ""; err.textContent = e.message; });
+    }, function (e) { list.textContent = ""; err.textContent = plain("t_repos_load_fail", e.message); });
   }
   document.getElementById("backToRepos").addEventListener("click", function () {
     currentRepo = "";
@@ -1920,6 +3028,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     err.textContent = "";
     currentRepo = name;
     currentRepoPath = "";
+    repoSimple = { runs: null, pipeline: null, info: null };
     document.getElementById("reposList").textContent = "";
     document.getElementById("repoDetail").hidden = false;
     document.title = name + " · Flare Actions";
@@ -1935,18 +3044,68 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         var files = document.getElementById("repoFiles");
         files.textContent = "";
         var empty = el("p", "Empty repository — push code to " + currentRepoRef + ", or race agents to fill it.");
-        empty.className = "t-clean"; files.appendChild(empty);
+        empty.className = "t-clean"; if (!uiSimple()) files.appendChild(empty);
         document.getElementById("repoCommits").textContent = "";
         return;
       }
       loadRepoTree();
       loadRepoRuns();
       loadRepoCommits();
-    }, function (e) { err.textContent = e.message; });
+    }, function (e) { err.textContent = plain("t_repos_load_fail", e.message); });
+  }
+  // Simple: one job, "What's in this project?". A status line (checked
+  // by Flare or not set up yet) with the one next move, the files, the
+  // last three checks; history and races wait under Show more.
+  var repoSimple = { runs: null, pipeline: null, info: null };
+  function repoStartCheck(info, msg) {
+    msg.textContent = SC.t_starting;
+    api("/v1/runs/dispatch", { method: "POST", body: JSON.stringify({ repo: info.name, sha: info.defaultBranch || "main" }) })
+      .then(function () { msg.textContent = SC.t_started; toast(SC.t_started); loadRepoRuns(); })
+      .catch(function (e) { msg.textContent = SC.t_cant_start + " " + SC.t_err_generic; msg.title = (e && e.message) || ""; });
+  }
+  function renderRepoStatus() {
+    var box = document.getElementById("repoStatusLine");
+    var info = repoSimple.info;
+    if (!box || !info) return;
+    box.textContent = "";
+    var runs = repoSimple.runs || [];
+    var latest = runs[0];
+    var checked = runs.length > 0 || repoSimple.pipeline === true;
+    var tone = latest ? (SIMPLE_TONE[latest.status] || "") : "";
+    box.className = "s-status " + (tone === "bad" ? "bad" : tone === "busy" ? "wait" : checked ? "ok" : "");
+    box.appendChild(el("span", checked ? SC.l_checked : SC.l_not_setup));
+    var why = el("span", latest ? scf("l_last_check", 0, simpleStatus(latest.status).slice(0, 2).join(" ")) : info.head ? SC.t_not_setup : SC.t_repo_empty); why.className = "s-why";
+    box.appendChild(why);
+    var acts = el("div"); acts.className = "quest-act";
+    var msg = el("p"); msg.className = "quest-msg"; msg.setAttribute("role", "status");
+    if (latest && tone === "bad") acts.appendChild(homeButton(SC.l_see_broke, true, function () { selectTab("runs"); loadRun(latest.id, true); }));
+    else if (latest && tone === "busy") acts.appendChild(homeButton(SC.l_watch, true, function () { selectTab("runs"); loadRun(latest.id, true); }));
+    else if (isAdmin && info.head) acts.appendChild(homeButton(SC.l_start, true, function () { repoStartCheck(info, msg); }));
+    if (acts.children.length) box.appendChild(acts);
+    box.appendChild(msg);
+  }
+  function renderRepoHeadSimple(info, box) {
+    repoSimple.info = info;
+    var hero = el("div"); hero.className = "t-hero";
+    var title = el("p", info.name); title.className = "t-intent"; hero.appendChild(title);
+    var q = el("p", SC.h_project_q); q.className = "muted"; hero.appendChild(q);
+    var status = el("div"); status.id = "repoStatusLine"; status.setAttribute("role", "status");
+    hero.appendChild(status);
+    var race = el("button", SC.l_race_here); race.type = "button"; race.className = "ghost simple-more";
+    race.addEventListener("click", function () {
+      document.getElementById("tournamentSource").value = info.name;
+      selectTab("tournaments"); loadTournaments();
+      document.getElementById("tournamentIntent").focus();
+      toast(SC.t_race_describe);
+    });
+    hero.appendChild(race);
+    box.appendChild(hero);
+    renderRepoStatus();
   }
   function renderRepoHead(info) {
     var box = document.getElementById("repoHead");
     box.textContent = "";
+    if (uiSimple()) { renderRepoHeadSimple(info, box); return; }
     var hero = el("div"); hero.className = "t-hero";
     var title = el("p", info.name); title.className = "t-intent mono"; hero.appendChild(title);
     var meta = el("div"); meta.className = "t-meta"; meta.id = "repoHeadMeta";
@@ -1965,7 +3124,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       document.getElementById("tournamentSource").value = info.name;
       selectTab("tournaments"); loadTournaments();
       document.getElementById("tournamentIntent").focus();
-      toast("Describe the task, then open the race");
+      toast(plain("t_race_describe", "Describe the task, then open the race"));
     });
     actions.appendChild(race);
     hero.appendChild(actions);
@@ -1995,7 +3154,12 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     skeleton(box, 3, "skel-row");
     api("/v1/repos/" + encodeURIComponent(currentRepo) + "/tree?ref=" + encodeURIComponent(currentRepoRef) + "&path=" + encodeURIComponent(currentRepoPath)).then(function (t) {
       box.textContent = "";
-      if (!t.path && !document.getElementById("repoCiChip")) {
+      var simple = uiSimple();
+      if (simple && !t.path) {
+        repoSimple.pipeline = t.entries.some(function (e) { return e.name === "flare.yml" || e.name === ".github"; });
+        renderRepoStatus();
+      }
+      if (!simple && !t.path && !document.getElementById("repoCiChip")) {
         var hasPipeline = t.entries.some(function (e) { return e.name === "flare.yml"; });
         var hm = document.getElementById("repoHeadMeta");
         if (hm) {
@@ -2005,10 +3169,10 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         }
       }
       var zone = el("div"); zone.className = "t-zone";
-      zone.appendChild(zoneTitle("Files", t.entries.length + " items"));
+      zone.appendChild(simple ? zoneTitle(SC.h_files, null) : zoneTitle("Files", t.entries.length + " items"));
       zone.appendChild(repoCrumbs());
       if (t.entries.length === 0) {
-        var none = el("p", "Empty directory."); none.className = "t-clean"; zone.appendChild(none);
+        var none = el("p", plain("t_dir_empty", "Empty directory.")); none.className = "t-clean"; zone.appendChild(none);
       }
       t.entries.forEach(function (e) {
         var row = el("div"); row.className = "run-row";
@@ -2025,10 +3189,10 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         zone.appendChild(row);
       });
       if (t.truncated) {
-        var more = el("p", "Showing the first " + t.entries.length + " entries."); more.className = "t-clean"; zone.appendChild(more);
+        var more = el("p", plainf("t_files_cut", "Showing the first " + t.entries.length + " entries.", t.entries.length)); more.className = "t-clean"; zone.appendChild(more);
       }
       box.appendChild(zone);
-    }, function (e) { box.textContent = ""; err.textContent = e.message; });
+    }, function (e) { box.textContent = ""; err.textContent = plain("t_repos_load_fail", e.message); });
   }
   function openRepoFile(path) {
     var box = document.getElementById("repoFiles");
@@ -2038,24 +3202,24 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       box.textContent = "";
       var zone = el("div"); zone.className = "t-zone";
       var head = el("p");
-      var back = el("button", "Back to files"); back.type = "button"; back.className = "ghost";
+      var back = el("button", plain("l_back_files", "Back to files")); back.type = "button"; back.className = "ghost";
       back.addEventListener("click", loadRepoTree);
       head.appendChild(back);
       head.appendChild(document.createTextNode(" "));
       head.appendChild(chip(path));
       zone.appendChild(head);
       if (b.binary) {
-        var bin = el("p", "Binary file — " + fmtBytes(b.size) + "."); bin.className = "t-clean"; zone.appendChild(bin);
+        var bin = el("p", plain("t_file_binary", "Binary file — " + fmtBytes(b.size) + ".")); bin.className = "t-clean"; zone.appendChild(bin);
       } else if (b.text === null || b.text === undefined) {
-        var big = el("p", "File too large to preview — " + fmtBytes(b.size) + "."); big.className = "t-clean"; zone.appendChild(big);
+        var big = el("p", plain("t_file_big", "File too large to preview — " + fmtBytes(b.size) + ".")); big.className = "t-clean"; zone.appendChild(big);
       } else {
         zone.appendChild(fxCodeView(b.text, currentRepo, path, 0, null));
         if (b.truncated) {
-          var note = el("p", "Truncated preview of " + fmtBytes(b.size) + "."); note.className = "t-clean"; zone.appendChild(note);
+          var note = el("p", plain("t_file_cut", "Truncated preview of " + fmtBytes(b.size) + ".")); note.className = "t-clean"; zone.appendChild(note);
         }
       }
       box.appendChild(zone);
-    }, function (e) { box.textContent = ""; err.textContent = e.message; });
+    }, function (e) { box.textContent = ""; err.textContent = plain("t_repos_load_fail", e.message); });
   }
   function loadRepoRuns() {
     var box = document.getElementById("repoRuns");
@@ -2063,6 +3227,24 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       box.textContent = "";
       var zone = el("div"); zone.className = "t-zone";
       var runs = (b && b.runs) || [];
+      if (uiSimple()) {
+        repoSimple.runs = runs;
+        renderRepoStatus();
+        zone.appendChild(zoneTitle(SC.h_recent, null));
+        if (runs.length === 0) { var sNone = el("p", SC.t_no_recent); sNone.className = "t-clean"; zone.appendChild(sNone); }
+        runs.slice(0, 3).forEach(function (r) {
+          var sRow = el("div"); sRow.className = "run-row";
+          sRow.setAttribute("role", "button"); sRow.setAttribute("tabindex", "0");
+          sRow.appendChild(simplePill(r.status));
+          var sMain = el("div", r.branch || ""); sMain.className = "run-main run-meta"; sRow.appendChild(sMain);
+          sRow.title = fmtTime(r.created_at);
+          sRow.addEventListener("click", function () { selectTab("runs"); loadRun(r.id, true); });
+          sRow.addEventListener("keydown", function (kev) { if (kev.key === "Enter") { selectTab("runs"); loadRun(r.id, true); } });
+          zone.appendChild(sRow);
+        });
+        box.appendChild(zone);
+        return;
+      }
       zone.appendChild(zoneTitle("Verifications", runs.length === 0 ? "none yet" : "latest " + runs.length));
       if (runs.length === 0) {
         var none = el("p", "No verification runs yet — race agents on this repo to produce the first one.");
@@ -2126,7 +3308,10 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       try { input.value = localStorage.getItem("flare.mergeRepo") || ""; } catch (e) { input.value = ""; }
     }
     if (input.value.trim()) loadMergeQueue();
-    else input.focus();
+    else {
+      input.focus();
+      if (uiSimple()) document.getElementById("mergeErr").textContent = SC.t_merge_pick;
+    }
   }
   document.getElementById("mergeForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
@@ -2139,14 +3324,14 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     var headSha = document.getElementById("mergeSha").value.trim();
     var err = document.getElementById("mergeErr");
     err.textContent = "";
-    if (!repo || !Number.isInteger(pr) || pr < 1 || !headSha) { err.textContent = "repo, PR number, and head SHA are required"; return; }
+    if (!repo || !Number.isInteger(pr) || pr < 1 || !headSha) { err.textContent = plain("t_merge_need", "repo, PR number, and head SHA are required"); return; }
     api("/v1/merge-queue", { method: "POST", body: JSON.stringify({ repo: repo, pr: pr, headSha: headSha }) }).then(function () {
       document.getElementById("mergePr").value = "";
       document.getElementById("mergeSha").value = "";
-      toast("PR #" + pr + " enqueued for verified landing");
+      toast(plain("t_merge_added", "PR #" + pr + " enqueued for verified landing"));
       loadMergeQueue();
     }, function (e) {
-      err.textContent = (e && e.message) || "Enqueue failed";
+      err.textContent = plain("t_merge_add_fail", (e && e.message) || "Enqueue failed");
       toast(err.textContent, true);
     });
   });
@@ -2163,26 +3348,30 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     api("/v1/merge-queue?repo=" + encodeURIComponent(repo)).then(function (res) {
       var entries = (res && res.entries) || [];
       if (entries.length === 0) {
-        var empty = el("tr"); var td = el("td", "Queue is empty."); td.colSpan = 6; empty.appendChild(td); body.appendChild(empty);
+        var empty = el("tr"); var td = el("td", plain("t_merge_empty", "Queue is empty.")); td.colSpan = 6; empty.appendChild(td); body.appendChild(empty);
       }
+      var simple = uiSimple();
       entries.forEach(function (e) {
         var tr = el("tr");
         tr.appendChild(el("td", "#" + e.pr));
         var mqStatus = el("td");
-        var mqPill = el("span", e.status);
+        // Simple: icon + word on the coloured pill (never colour alone).
+        var mqWord = SC["l_mq_" + e.status] || SC.l_mq_other;
+        var mqPill = el("span", simple ? mqWord : e.status);
         mqPill.className = "pill " + (e.status === "landed" ? "success" : e.status === "failed" ? "failure" : e.status === "verifying" ? "running" : e.status === "queued" ? "queued" : "cancelled");
+        mqPill.title = e.status;
         mqStatus.appendChild(mqPill);
         tr.appendChild(mqStatus);
         tr.appendChild(el("td", e.agent || "-"));
-        var head = el("td", (e.headSha || "").slice(0, 7)); head.className = "mono"; tr.appendChild(head);
+        var head = el("td", (e.headSha || "").slice(0, 7)); head.className = "mono pro-only"; tr.appendChild(head);
         tr.appendChild(el("td", e.note || "-"));
         var act = el("td");
         if (e.status === "queued" || e.status === "verifying") {
-          var btn = el("button", "Cancel");
+          var btn = el("button", simple ? SC.l_stop : "Cancel");
           btn.className = "ghost";
-          btn.addEventListener("click", function () {
-            api("/v1/merge-queue/" + encodeURIComponent(e.id), { method: "DELETE" }).then(function () { toast("Queue entry cancelled"); loadMergeQueue(); }, function (fail) {
-              err.textContent = (fail && fail.message) || "Cancel failed";
+          twoClick(btn, function () {
+            api("/v1/merge-queue/" + encodeURIComponent(e.id), { method: "DELETE" }).then(function () { toast(plain("t_merge_stopped", "Queue entry cancelled")); loadMergeQueue(); }, function (fail) {
+              err.textContent = plain("t_merge_stop_fail", (fail && fail.message) || "Cancel failed");
               toast(err.textContent, true);
             });
           });
@@ -2193,7 +3382,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       });
       var collisions = (res && res.collisions) || [];
       if (collisions.length === 0) {
-        var mqClean = el("p", "No file collisions between live entries — land order is free.");
+        var mqClean = el("p", plain("t_merge_clean", "No file collisions between live entries — land order is free."));
         mqClean.className = "t-clean";
         radar.appendChild(mqClean);
         return;
@@ -2211,7 +3400,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         radar.appendChild(card);
       });
     }, function (e) {
-      err.textContent = (e && e.message) || "Merge queue failed";
+      err.textContent = plain("t_merge_load_fail", (e && e.message) || "Merge queue failed");
     });
   }
   tabSettings.addEventListener("click", function () { selectTab("settings"); loadSettings(); loadTokens(); loadUsers(); });
@@ -2261,40 +3450,78 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     else if (shown === lastRuns.length) { count.textContent = lastRuns.length + " runs"; }
     else { count.textContent = "Showing " + shown + " of " + lastRuns.length + " runs"; }
     document.getElementById("runsFilterForm").style.display = lastRuns.length ? "" : "none";
+    renderRunsVerdict();
+    if (!list.children.length && !lastRuns.length && uiSimple()) {
+      var sEmpty = el("div"); sEmpty.className = "empty";
+      sEmpty.appendChild(el("h3", SC.h_no_checks));
+      sEmpty.appendChild(el("p", SC.t_no_checks));
+      var sActs = el("p");
+      // The empty screen's one button is the next move itself, so the
+      // way forward never means a detour through Home.
+      var sHome = el("button", currentMove ? moveLabel(currentMove) : SC.l_go_home); sHome.type = "button";
+      sHome.setAttribute("data-action", "next_move");
+      sHome.addEventListener("click", function () { if (currentMove) runNextMove(); else location.hash = "#/home"; });
+      sActs.appendChild(sHome); sEmpty.appendChild(sActs);
+      list.appendChild(sEmpty);
+    }
     if (!list.children.length) {
       var empty = el("div"); empty.className = "empty";
       if (!lastRuns.length) {
-        empty.appendChild(el("h3", "No runs yet — three steps to the first one"));
-        var appDone = !!(lastStatus && lastStatus.githubConnected);
-        var steps = el("ol"); steps.className = "steps";
-        steps.appendChild(setupStep(
-          "Connect a repo",
-          appDone ? "GitHub App connected." : "Connect the App, or add a repo webhook for public repos.",
-          appDone,
-          isAdmin && !appDone ? { label: "Open Settings", fn: function () { selectTab("settings"); loadSettings(); } } : null,
-        ));
-        steps.appendChild(setupStep(
-          "Start an executor",
-          "Runs wait for a machine: npm run runner from the Flare checkout, or managed seats.",
-          false,
-          null,
-        ));
-        steps.appendChild(setupStep(
-          "Trigger the first run",
-          "Push to a connected repo — flare.yml or existing .github/workflows both run — or dispatch from this page.",
-          false,
-          isAdmin ? { label: "Dispatch a run", fn: function () {
+        // One setup story: Home owns the guided checklist, so this
+        // empty state points there instead of repeating it.
+        empty.appendChild(el("h3", "No runs yet"));
+        empty.appendChild(el("p", "Push to GitHub and your tests show up here. Flare runs your flare.yml, or your existing .github/workflows unchanged."));
+        var acts = el("p");
+        var toHome = el("button", "Finish setup on Home");
+        toHome.type = "button";
+        toHome.addEventListener("click", function () { location.hash = "#/home"; });
+        acts.appendChild(toHome);
+        if (isAdmin) {
+          var dispatchNow = el("button", "Dispatch a run");
+          dispatchNow.type = "button"; dispatchNow.className = "ghost";
+          dispatchNow.addEventListener("click", function () {
             document.getElementById("dispatchBox").open = true;
             document.getElementById("dispatchRepo").focus();
-          } } : null,
-        ));
-        empty.appendChild(steps);
+          });
+          acts.appendChild(document.createTextNode(" "));
+          acts.appendChild(dispatchNow);
+        }
+        empty.appendChild(acts);
       } else {
         empty.appendChild(el("h3", "No runs match"));
         empty.appendChild(el("p", "Try a different filter."));
       }
       list.appendChild(empty);
     }
+  }
+  // Simple mode: one verdict line for the newest check + one next move.
+  function renderRunsVerdict() {
+    var box = document.getElementById("runsVerdict");
+    box.textContent = "";
+    var r = lastRuns[0];
+    box.hidden = !r;
+    if (!r) return;
+    var st = simpleStatus(r.status);
+    var head = r.status === "success" ? SC.h_ok : st[2] === "bad" ? SC.h_bad : r.status === "running" ? SC.h_busy : (r.status === "queued" || r.status === "blocked") ? SC.h_wait : SC.h_stopped;
+    var v = el("div"); v.className = "home-verdict" + (st[2] ? " " + st[2] : "");
+    var big = el("span", st[0]); big.className = "big"; big.setAttribute("aria-hidden", "true");
+    var what = el("div"); what.className = "what";
+    what.appendChild(el("strong", head));
+    what.appendChild(el("span", (r.repo || "") + (r.branch ? " · " + r.branch : "") + " · " + fmtAgo(r.updated_at)));
+    v.appendChild(big); v.appendChild(what);
+    var msg = el("p"); msg.className = "quest-msg"; msg.setAttribute("role", "status");
+    var go = null;
+    if (st[2] === "bad") go = homeButton(SC.l_see_broke, true, function () { selectedRunId = r.id; loadRun(r.id, true); });
+    else if (st[2] === "busy") go = homeButton(SC.l_watch, true, function () { selectedRunId = r.id; loadRun(r.id, true); });
+    else if (isAdmin && r.repo && r.event !== "source") go = homeButton(SC.l_start, true, function () {
+      msg.textContent = SC.t_starting;
+      api("/v1/runs/dispatch", { method: "POST", body: JSON.stringify({ repo: r.repo, sha: r.branch || r.sha }) })
+        .then(function (d) { msg.textContent = SC.t_started; toast(SC.t_started); selectedRunId = d.runId; loadRuns(); })
+        .catch(function (e) { msg.textContent = SC.t_cant_start + " " + SC.t_err_generic; msg.title = (e && e.message) || ""; });
+    });
+    if (go) v.appendChild(go);
+    box.appendChild(v);
+    box.appendChild(msg);
   }
   var usageStripAt = 0;
   function loadUsageStrip() {
@@ -2306,6 +3533,8 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     api("/v1/usage?days=30").then(function (u) {
       var list = (typeof u.actionsListUsd === "number" ? u.actionsListUsd : 0) +
         (typeof u.githubRunnerListUsd === "number" ? u.githubRunnerListUsd : 0);
+      // Nothing to report before the first run; the empty state speaks.
+      if (!u.runs) { document.getElementById("usageStrip").textContent = ""; return; }
       var base = "Last 30d: " + u.runs + " runs · " + u.computeMinutes + " compute-min · ≈$" +
         list.toFixed(2) + " spend avoided vs Actions list price";
       document.getElementById("usageStrip").textContent = base;
@@ -2357,7 +3586,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         tr.appendChild(el("td", e.uploaded ? String(e.uploaded).slice(0, 19).replace("T", " ") : ""));
         body.appendChild(tr);
       });
-    }).catch(function (e) { err.textContent = e && e.message ? e.message : "Could not load cache entries."; });
+    }).catch(function (e) { err.textContent = plain("t_cache_fail", e && e.message ? e.message : "Could not load cache entries."); });
   }
   function purgeCachePrefix() {
     var err = document.getElementById("cacheErr");
@@ -2367,23 +3596,25 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       note.textContent = "Purged " + out.deleted + " entr" + (out.deleted === 1 ? "y" : "ies") +
         (out.truncated ? " (more remain — purge again)" : "") + ".";
       loadCacheEntries();
-    }).catch(function (e) { err.textContent = e && e.message ? e.message : "Could not purge cache."; });
+    }).catch(function (e) { err.textContent = plain("t_cache_purge_fail", e && e.message ? e.message : "Could not purge cache."); });
   }
   function loadRuns() {
     var list = document.getElementById("runsList");
     list.textContent = "";
-    var loading = el("p", "Loading runs…"); loading.className = "muted"; list.appendChild(loading);
+    var loading = el("p", plain("l_loading", "Loading runs…")); loading.className = "muted"; list.appendChild(loading);
     loadUsageStrip();
     loadCacheStats();
-    document.getElementById("cacheBox").hidden = !isAdmin;
+    document.getElementById("cacheBox").hidden = true;
     api("/v1/runs").then(function (data) {
       lastRuns = data.runs || [];
+      // The cache only has something to browse once runs exist.
+      document.getElementById("cacheBox").hidden = !isAdmin || !lastRuns.length;
       renderRuns();
       loadBottlenecks();
     }).catch(function () {
       list.textContent = "";
-      var err = el("p"); err.appendChild(el("span", "Could not load runs. "));
-      var retry = el("button", "Retry"); retry.className = "ghost";
+      var err = el("p"); err.appendChild(el("span", plain("t_runs_fail", "Could not load runs.") + " "));
+      var retry = el("button", plain("l_retry", "Retry")); retry.className = "ghost";
       retry.addEventListener("click", function () { loadRuns(); });
       err.appendChild(retry); list.appendChild(err);
     });
@@ -2416,6 +3647,19 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   function appendRunRow(list, r) {
     var row = el("div");
     row.className = "run-row" + (r.id === selectedRunId ? " selected" : "");
+    if (uiSimple()) {
+      row.appendChild(simplePill(r.status));
+      var sMain = el("div"); sMain.className = "run-main";
+      var sRepo = el("div", r.repo || ""); sRepo.className = "run-repo"; sMain.appendChild(sRepo);
+      if (r.branch) { var sMeta = el("div", r.branch); sMeta.className = "run-meta"; sMain.appendChild(sMeta); }
+      row.appendChild(sMain);
+      var sT = el("span", fmtAgo(r.updated_at)); sT.className = "run-time"; sT.title = fmtTime(r.updated_at); row.appendChild(sT);
+      row.setAttribute("role", "button"); row.setAttribute("tabindex", "0");
+      row.addEventListener("click", function () { selectedRunId = r.id; loadRun(r.id, true); });
+      row.addEventListener("keydown", function (kev) { if (kev.key === "Enter") { selectedRunId = r.id; loadRun(r.id, true); } });
+      list.appendChild(row);
+      return;
+    }
     row.appendChild(pill(r.status));
     var main = el("div"); main.className = "run-main";
     var repo = el("div", r.repo); repo.className = "run-repo"; main.appendChild(repo);
@@ -2462,7 +3706,44 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     } catch (e) {}
     return null;
   }
+  // Simple mode: "What broke" first — the failing step, its last lines,
+  // and the AI's suggestion — in plain words.
+  function runSummarySimple(run, jobs) {
+    var st = simpleStatus(run.status);
+    var box = el("div"); box.className = "home-verdict run-summary" + (st[2] ? " " + st[2] : "");
+    var headText = SC.t_detail_stopped, lines = [], tail = "";
+    if (run.status === "success") headText = SC.h_passed;
+    else if (st[2] === "bad") {
+      headText = SC.h_what_broke;
+      var bad = null;
+      for (var i = 0; i < jobs.length; i++) if (jobs[i].status === "failure" || jobs[i].status === "error") { bad = jobs[i]; break; }
+      if (bad) {
+        var step = failedStepOf(bad);
+        lines.push([SC.l_broken_step, step ? (step.command || "").slice(0, 200) : (bad.name || bad.id), true]);
+        if (step && step.output) tail = String(step.output).split("\\n").slice(-12).join("\\n");
+        if (bad.triage) lines.push([SC.l_try, String(bad.triage).slice(0, 600), false]);
+        else lines.push(["", SC.t_next_look, false]);
+      }
+    } else if (run.status === "running") headText = SC.t_detail_busy;
+    else if (run.status === "queued" || run.status === "blocked") headText = SC.t_detail_wait;
+    var big = el("span", st[0]); big.className = "big"; big.setAttribute("aria-hidden", "true");
+    var what = el("div"); what.className = "what";
+    what.appendChild(el("strong", headText));
+    lines.forEach(function (l) {
+      var p = el("p"); p.className = "run-summary-line";
+      if (l[0]) p.appendChild(el("b", l[0] + ": "));
+      p.appendChild(el(l[2] ? "code" : "span", l[1]));
+      what.appendChild(p);
+    });
+    if (tail) {
+      var tl = el("p", SC.l_last_lines + ":"); tl.className = "run-summary-line"; what.appendChild(tl);
+      var pre = el("pre", tail); pre.className = "log"; what.appendChild(pre);
+    }
+    box.appendChild(big); box.appendChild(what);
+    return box;
+  }
   function runSummaryBox(run, jobs) {
+    if (uiSimple()) return runSummarySimple(run, jobs);
     var box = el("div"); box.className = "home-verdict run-summary";
     var icon = "•", headText = "", lines = [];
     if (run.status === "success") { box.className += " ok"; icon = "✅"; headText = "Everything passed."; }
@@ -2495,18 +3776,34 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   function loadRun(id, scroll) {
     api("/v1/runs/" + encodeURIComponent(id)).then(function (data) {
       var box = document.getElementById("runDetail");
+      // A poll re-render keeps "Show all steps" open if it was.
+      var allWasOpen = runDetailOpenId === data.run.id && !!box.querySelector("details.simple-all[open]");
       box.textContent = "";
       box.hidden = false;
       runDetailOpenId = data.run.id;
       document.title = (data.run.repo || "run") + " @ " + String(data.run.sha || "").slice(0, 7) + " · Flare Actions";
       syncHash();
       var head = el("h2");
+      if (uiSimple()) {
+        head.appendChild(el("span", (data.run.repo || "") + (data.run.branch ? " · " + data.run.branch : "") + " "));
+        head.appendChild(simplePill(data.run.status));
+      } else {
       head.appendChild(el("span", data.run.repo + " @ "));
       var shaCode = el("code", String(data.run.sha).slice(0, 7)); shaCode.className = "mono"; head.appendChild(shaCode);
       head.appendChild(el("span", " "));
       head.appendChild(pill(data.run.status));
+      }
       box.appendChild(head);
       box.appendChild(runSummaryBox(data.run, data.jobs || []));
+      // Simple mode: everything after "What broke" sits under one
+      // "Show all steps" disclosure; Pro appends straight to the box.
+      var sink = box;
+      if (uiSimple()) {
+        sink = document.createElement("details"); sink.className = "simple-all";
+        if (allWasOpen) sink.open = true;
+        sink.appendChild(el("summary", SC.l_all_steps));
+        box.appendChild(sink);
+      }
       if (data.race && data.race.tournament_id) {
         var raceLine = el("p"); raceLine.className = "t-crumb";
         raceLine.appendChild(el("span", "Verifying " + (data.race.agent || "an agent") + " in race "));
@@ -2520,10 +3817,10 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         } else if (data.race.verdict_rank) {
           raceLine.appendChild(el("span", "ranked #" + data.race.verdict_rank));
         }
-        box.appendChild(raceLine);
+        sink.appendChild(raceLine);
       }
       if (data.summary) {
-        box.appendChild(el("p", data.summary.finishedJobs + "/" + data.summary.jobs + " jobs finished, " +
+        sink.appendChild(el("p", data.summary.finishedJobs + "/" + data.summary.jobs + " jobs finished, " +
           data.summary.computeMinutes + " compute-min (~$" + data.summary.actionsListUsd + " at Actions list price)"));
       }
       var srcLabel = pipelineSourceLabel(data.run.pipeline_source);
@@ -2533,10 +3830,10 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         srcLine.textContent = srcLabel === "Actions"
           ? "Pipeline: .github/workflows (GitHub Actions drop-in)"
           : "Pipeline: " + srcLabel;
-        box.appendChild(srcLine);
+        sink.appendChild(srcLine);
       }
       var testsBox = document.createElement("div");
-      box.appendChild(testsBox);
+      sink.appendChild(testsBox);
       (function renderTests(runId) {
         api("/v1/runs/" + encodeURIComponent(runId) + "/tests").then(function (t) {
           if (!t || !t.totals || !t.totals.total) return;
@@ -2557,7 +3854,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         }).catch(function () {});
       })(data.run.id);
       var egressBox = document.createElement("div");
-      box.appendChild(egressBox);
+      sink.appendChild(egressBox);
       (function renderEgress(runId) {
         api("/v1/runs/" + encodeURIComponent(runId) + "/egress").then(function (e) {
           if (!e || !e.totals || (e.totals.reqBytes === 0 && e.totals.respBytes === 0)) return;
@@ -2568,7 +3865,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         }).catch(function () {});
       })(data.run.id);
       var resBox = document.createElement("div");
-      box.appendChild(resBox);
+      sink.appendChild(resBox);
       (function renderResources(jobs) {
         var measured = [];
         (jobs || []).forEach(function (j) {
@@ -2603,17 +3900,17 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         if (j.labels) meta.push(j.labels);
         if (j.durationMs !== null && j.durationMs !== undefined) meta.push((j.durationMs / 1000) + "s");
         if (meta.length) { var mspan = el("span", " " + meta.join(" · ")); mspan.className = "muted"; jhead.appendChild(mspan); }
-        box.appendChild(jhead);
+        sink.appendChild(jhead);
         if (j.status === "failure" || j.status === "error" || j.status === "cancelled" || j.status === "success") {
-          var rerun = el("button", "Re-run job");
+          var rerun = el("button", plain("l_run_again", "Re-run job"));
           rerun.className = "ghost";
           (function (jobId) {
             rerun.addEventListener("click", function () {
               api("/v1/runs/" + encodeURIComponent(data.run.id) + "/jobs/" + encodeURIComponent(jobId) + "/rerun", { method: "POST" })
-                .then(function () { loadRun(data.run.id); loadRuns(); }).catch(function () {});
+                .then(function () { loadRun(data.run.id); loadRuns(); }).catch(function () { if (uiSimple()) toast(SC.t_rerun_fail, true); });
             });
           })(j.id);
-          box.appendChild(rerun);
+          sink.appendChild(rerun);
         }
         var hasSteps = false;
         try {
@@ -2631,13 +3928,13 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
                 sum.appendChild(el("span", " (exit " + s.exitCode + ", " + s.durationMs + "ms)"));
                 det.appendChild(sum);
                 var out = el("pre", String(s.output)); out.className = "log"; det.appendChild(out);
-                box.appendChild(det);
+                sink.appendChild(det);
               } else {
                 var line = el("p");
                 line.appendChild(el("span", "[" + (s.exitCode === 0 ? "ok" : "FAIL") + "] "));
                 var cmd2 = el("code", s.command); cmd2.className = "mono"; line.appendChild(cmd2);
                 line.appendChild(el("span", " (exit " + s.exitCode + ", " + s.durationMs + "ms)"));
-                box.appendChild(line);
+                sink.appendChild(line);
               }
             });
           }
@@ -2647,24 +3944,24 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
           tri.className = "triage";
           var tlabel = el("div", "AI triage"); tlabel.className = "triage-label"; tri.appendChild(tlabel);
           tri.appendChild(document.createTextNode("\\n" + j.triage));
-          box.appendChild(tri);
+          sink.appendChild(tri);
         }
         if (j.retained_until) {
           var ret = el("p", "Retained for debugging until " + j.retained_until + " (seat job-" + j.id + ").");
           ret.className = "muted";
-          box.appendChild(ret);
+          sink.appendChild(ret);
         }
         var fdet = document.createElement("details"); fdet.className = "fulllog";
         if (!hasSteps) fdet.open = true;
         fdet.appendChild(el("summary", "Full log"));
         var pre = el("pre", j.log || "(no log output)");
         pre.className = "log"; fdet.appendChild(pre);
-        box.appendChild(fdet);
+        sink.appendChild(fdet);
       });
-      var back = el("button", "Back to runs");
+      var back = el("button", uiSimple() ? SC.l_back : "Back to runs");
       back.id = "backToRuns";
       back.className = "ghost";
-      back.addEventListener("click", function () { box.hidden = true; runDetailOpenId = null; selectedRunId = null; document.title = "Runs · Flare Actions"; loadRuns(); syncHash(); });
+      back.addEventListener("click", function () { box.hidden = true; runDetailOpenId = null; selectedRunId = null; document.title = tabTitle("runs") + " · Flare Actions"; loadRuns(); syncHash(); });
       box.appendChild(back);
       if (scroll) box.scrollIntoView();
     }).catch(function () {});
@@ -2676,17 +3973,17 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     err.textContent = ""; ok.textContent = "";
     var repo = document.getElementById("dispatchRepo").value.trim();
     var ref = document.getElementById("dispatchRef").value.trim();
-    if (!repo || !ref) { err.textContent = "Repository and branch, tag, or SHA are required."; return; }
-    ok.textContent = "Dispatching…";
+    if (!repo || !ref) { err.textContent = plain("t_dispatch_need", "Repository and branch, tag, or SHA are required."); return; }
+    ok.textContent = plain("t_starting", "Dispatching…");
     api("/v1/runs/dispatch", { method: "POST", body: JSON.stringify({ repo: repo, sha: ref }) })
       .then(function (data) {
-        ok.textContent = "Run dispatched.";
+        ok.textContent = plain("t_dispatched", "Run dispatched.");
         document.getElementById("dispatchBox").open = false;
         selectedRunId = data.runId;
         loadRuns();
         loadRun(data.runId, true);
       })
-      .catch(function (e) { ok.textContent = ""; err.textContent = "Dispatch failed: " + (e.message || "error"); });
+      .catch(function (e) { ok.textContent = ""; err.textContent = plain("t_cant_start", "Dispatch failed: " + (e.message || "error")); });
   });
   var pollStarted = false;
   function startPoll() {
@@ -2706,7 +4003,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     err.textContent = "";
     document.getElementById("secretOk").textContent = "";
     var repo = secretRepo();
-    if (!repo) { err.textContent = "Enter a repository first."; return; }
+    if (!repo) { err.textContent = plain("t_err_generic", "Enter a repository first."); return; }
     box.textContent = "";
     var loading = el("p", "Loading…"); loading.className = "muted"; box.appendChild(loading);
     api("/v1/admin/secrets?repo=" + encodeURIComponent(repo)).then(function (data) {
@@ -2727,12 +4024,12 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         del.addEventListener("click", function () {
           api("/v1/admin/secrets?repo=" + encodeURIComponent(secretRepo()) + "&name=" + encodeURIComponent(name), { method: "DELETE" })
             .then(loadSecrets)
-            .catch(function (e) { err.textContent = "Delete failed: " + (e.message || "error"); });
+            .catch(function (e) { err.textContent = plain("t_err_generic", "Delete failed: " + (e.message || "error")); });
         });
         row.appendChild(del);
         box.appendChild(row);
       });
-    }).catch(function (e) { box.textContent = ""; err.textContent = "Could not load secrets: " + (e.message || "error"); });
+    }).catch(function (e) { box.textContent = ""; err.textContent = plain("t_err_generic", "Could not load secrets: " + (e.message || "error")); });
   }
   // The secrets card was removed from the markup (b067b21); guard so the
   // rest of the script (palette, keys, boot) still runs.
@@ -2745,45 +4042,48 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     var repo = secretRepo();
     var name = document.getElementById("secretNameInput").value.trim();
     var value = document.getElementById("secretValueInput").value;
-    if (!repo) { err.textContent = "Enter a repository first."; return; }
-    if (!name) { err.textContent = "Enter a secret name."; return; }
-    if (!value) { err.textContent = "Enter a secret value."; return; }
+    if (!repo) { err.textContent = plain("t_err_generic", "Enter a repository first."); return; }
+    if (!name) { err.textContent = plain("t_err_generic", "Enter a secret name."); return; }
+    if (!value) { err.textContent = plain("t_err_generic", "Enter a secret value."); return; }
     api("/v1/admin/secrets", { method: "POST", body: JSON.stringify({ repo: repo, name: name, value: value }) })
       .then(function () {
-        ok.textContent = "Secret saved.";
+        ok.textContent = plain("l_saved", "Secret saved.");
         document.getElementById("secretNameInput").value = "";
         document.getElementById("secretValueInput").value = "";
         loadSecrets();
       })
-      .catch(function (e) { err.textContent = "Save failed: " + (e.message || "error"); });
+      .catch(function (e) { err.textContent = plain("t_err_generic", "Save failed: " + (e.message || "error")); });
   });
   function loadTokens() {
     var body = document.getElementById("tokensBody");
-    stateRow(body, 6, "Loading tokens…", "muted");
+    stateRow(body, 6, plain("l_loading", "Loading tokens…"), "muted");
     api("/v1/admin/tokens").then(function (data) {
       body.textContent = "";
+      var simple = uiSimple();
       (data.tokens || []).forEach(function (t) {
         var tr = el("tr");
         tr.appendChild(el("td", t.name));
-        tr.appendChild(el("td", t.scopes));
-        tr.appendChild(el("td", t.repos ? t.repos : "all"));
+        // Simple: what the key can do, in words (runner/readonly/admin stay in Pro).
+        var can = String(t.scopes || "").split(/[ ,]+/).map(function (x) { return SC["l_can_" + x] || x; }).join(", ");
+        tr.appendChild(el("td", simple ? can : t.scopes));
+        var reposTd = el("td", t.repos ? t.repos : "all"); reposTd.className = "pro-only"; tr.appendChild(reposTd);
         tr.appendChild(timeCell(t.created_at));
-        tr.appendChild(el("td", t.revoked_at ? "revoked" : "active"));
+        tr.appendChild(el("td", simple ? (t.revoked_at ? SC.l_key_off : SC.l_key_on) : (t.revoked_at ? "revoked" : "active")));
         var tdBtn = el("td");
         if (!t.revoked_at) {
-          var btn = el("button", "Revoke");
+          var btn = el("button", simple ? SC.l_turn_off : "Revoke");
           btn.className = "danger";
-          btn.addEventListener("click", function () {
+          twoClick(btn, function () {
             api("/v1/admin/tokens/" + encodeURIComponent(t.id) + "/revoke", { method: "POST" })
-              .then(loadTokens).catch(function () {});
+              .then(loadTokens).catch(function () { if (uiSimple()) toast(SC.t_err_generic, true); });
           });
           tdBtn.appendChild(btn);
         }
         tr.appendChild(tdBtn);
         body.appendChild(tr);
       });
-      if (!body.children.length) stateRow(body, 6, "No tokens yet — create one above.", "muted");
-    }).catch(function () { stateRow(body, 6, "Could not load tokens.", "err"); });
+      if (!body.children.length) stateRow(body, 6, plain("t_keys_none", "No tokens yet — create one above."), "muted");
+    }).catch(function () { stateRow(body, 6, plain("t_keys_fail", "Could not load tokens."), "err"); });
   }
 
   document.getElementById("tokenForm").addEventListener("submit", function (ev) {
@@ -2802,7 +4102,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         document.getElementById("tokenRepos").value = "";
         loadTokens();
       })
-      .catch(function () { err.textContent = "Could not create token (name required; repos must be owner/name entries)."; });
+      .catch(function () { err.textContent = plain("t_key_fail", "Could not create token (name required; repos must be owner/name entries)."); });
   });
 
   document.getElementById("copyPairBtn").addEventListener("click", function () {
@@ -2822,7 +4122,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         document.getElementById("pairBox").hidden = false;
         document.getElementById("pairName").value = "";
       })
-      .catch(function () { err.textContent = "Could not create a pairing code."; });
+      .catch(function () { err.textContent = plain("t_code_fail", "Could not create a pairing code."); });
   });
 
 
@@ -2835,8 +4135,10 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     stateRow(document.getElementById("emailUsersBody"), 3, "Loading…", "muted");
     stateRow(document.getElementById("invitesBody"), 2, "Loading…", "muted");
     api("/v1/admin/users").then(function (data) {
+      var simple = uiSimple();
+      teamSeen = (data.users || []).length > 0 || (data.invites || []).length > 0 || (data.emailUsers || []).length > 1;
       var adminLabel = data.admin ? "@" + data.admin : (data.adminEmail ? data.adminEmail : "—");
-      document.getElementById("usersInfo").textContent =
+      document.getElementById("usersInfo").textContent = simple ? scf("t_owner_is", 0, adminLabel) :
         "Admin: " + adminLabel + ". Allowed users can view runs.";
       var body = document.getElementById("usersBody");
       body.textContent = "";
@@ -2844,33 +4146,33 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         var tr = el("tr");
         tr.appendChild(el("td", "@" + u));
         var tdBtn = el("td");
-        var btn = el("button", "Remove");
+        var btn = el("button", plain("l_remove", "Remove"));
         btn.className = "danger";
-        btn.addEventListener("click", function () {
+        twoClick(btn, function () {
           api("/v1/admin/users", { method: "POST", body: JSON.stringify({ login: u, action: "remove" }) })
-            .then(loadUsers).catch(function () {});
+            .then(loadUsers).catch(function () { if (uiSimple()) toast(SC.t_err_generic, true); });
         });
         tdBtn.appendChild(btn);
         tr.appendChild(tdBtn);
         body.appendChild(tr);
       });
-      if (!body.children.length) stateRow(body, 2, "No allowed GitHub users.", "muted");
+      if (!body.children.length) stateRow(body, 2, plain("t_no_gh_users", "No allowed GitHub users."), "muted");
       document.getElementById("emailUsersInfo").textContent =
-        (data.emailUsers || []).length ? "" : "No email accounts yet — invite teammates below.";
+        (data.emailUsers || []).length ? "" : plain("t_no_email_users", "No email accounts yet — invite teammates below.");
       var ebody = document.getElementById("emailUsersBody");
       ebody.textContent = "";
       (data.emailUsers || []).forEach(function (u) {
         var tr = el("tr");
         tr.appendChild(el("td", u.email));
-        tr.appendChild(el("td", u.isAdmin ? "admin" : "viewer"));
+        tr.appendChild(el("td", simple ? (u.isAdmin ? SC.l_role_owner : SC.l_role_viewer) : (u.isAdmin ? "admin" : "viewer")));
         var tdBtn = el("td");
         if (!u.isAdmin) {
-          var btn = el("button", "Remove");
+          var btn = el("button", plain("l_remove", "Remove"));
           btn.className = "danger";
           (function (email) {
-            btn.addEventListener("click", function () {
+            twoClick(btn, function () {
               api("/v1/admin/users/email", { method: "POST", body: JSON.stringify({ email: email, action: "remove" }) })
-                .then(loadUsers).catch(function () {});
+                .then(loadUsers).catch(function () { if (uiSimple()) toast(SC.t_err_generic, true); });
             });
           })(u.email);
           tdBtn.appendChild(btn);
@@ -2887,9 +4189,9 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         ibody.appendChild(tr);
       });
       if (!ibody.children.length) {
-        var tr = el("tr"); var td = el("td", "No pending invites."); td.colSpan = 2; td.className = "muted"; tr.appendChild(td); ibody.appendChild(tr);
+        var tr = el("tr"); var td = el("td", plain("t_no_invites", "No pending invites.")); td.colSpan = 2; td.className = "muted"; tr.appendChild(td); ibody.appendChild(tr);
       }
-    }).catch(function () { document.getElementById("usersInfo").textContent = "Could not load users."; });
+    }).catch(function () { document.getElementById("usersInfo").textContent = plain("t_people_fail", "Could not load users."); });
   }
 
   document.getElementById("inviteFormBtn").addEventListener("submit", function (ev) {
@@ -2905,7 +4207,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         document.getElementById("inviteEmail").value = "";
         loadUsers();
       })
-      .catch(function () { err.textContent = "Could not invite (valid email, not already registered)."; });
+      .catch(function () { err.textContent = plain("t_invite_make_fail", "Could not invite (valid email, not already registered)."); });
   });
 
   document.getElementById("userForm").addEventListener("submit", function (ev) {
@@ -2915,19 +4217,24 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     var v = document.getElementById("userLogin").value.trim();
     api("/v1/admin/users", { method: "POST", body: JSON.stringify({ login: v, action: "add" }) })
       .then(function () { document.getElementById("userLogin").value = ""; loadUsers(); })
-      .catch(function () { err.textContent = "Could not add user (valid GitHub username required)."; });
+      .catch(function () { err.textContent = plain("t_gh_user_fail", "Could not add user (valid GitHub username required)."); });
   });
 
   function loadSettings() {
     api("/v1/admin/settings").then(function (s) {
       var info = document.getElementById("settingsInfo");
       info.textContent = "";
+      var simple = uiSimple();
       var adminLabel = s.adminGithubUser ? "@" + s.adminGithubUser + " (GitHub)" : (s.adminEmail ? s.adminEmail + " (email)" : null);
+      // Simple: the server's info lines become one plain sentence each.
+      if (simple) info.appendChild(el("span", s.webhookSecretSource === "env" ? SC.t_secret_server : s.webhookSecretSource === "none" ? SC.t_secret_none : SC.t_secret_set));
+      else {
       info.appendChild(el("span", "Admin: " + (adminLabel ? adminLabel + ". " : "not claimed. ")));
       info.appendChild(el("span", "Webhook secret: " + (s.webhookSecretSource === "none" ? "not set." : "managed via " + s.webhookSecretSource + ".")));
+      }
       document.getElementById("webhookForm").style.display = s.webhookSecretSource === "env" ? "none" : "flex";
       document.getElementById("settingsOk").textContent = "";
-      document.getElementById("notifyInfo").textContent =
+      document.getElementById("notifyInfo").textContent = simple ? (s.notifyFromSource === "env" ? SC.t_notify_server : SC.t_notify_info) :
         "Emails go to all registered email users." +
         (s.notifyFromSource === "env" ? " Sender managed via environment." : " Sender domain must be enabled for Email Sending.");
       document.getElementById("notifyFromInput").value = s.notifyFrom || "";
@@ -2935,11 +4242,11 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       document.getElementById("notifyForm").style.display = s.notifyFromSource === "env" ? "none" : "flex";
       document.getElementById("notifyOk").textContent = "";
       document.getElementById("notifyWebhookInput").value = "";
-      document.getElementById("notifyWebhookInfo").textContent =
+      document.getElementById("notifyWebhookInfo").textContent = simple ? (s.notifyWebhookSet ? SC.t_chat_on : SC.t_chat_off) :
         "Chat webhook: " + (s.notifyWebhookSet ? "configured (write-only)." : "not set.") + " Works with Slack, Discord, and Mattermost-compatible URLs.";
       document.getElementById("notifyWebhookOk").textContent = "";
       var g = s.githubApp || { source: "none", installUrl: null };
-      document.getElementById("githubInfo").textContent =
+      document.getElementById("githubInfo").textContent = simple ? (g.source === "none" ? SC.t_gh_off : SC.t_gh_on) :
         "GitHub App: " + (g.source === "none" ? "not connected." : "connected via " + g.source + ".");
       document.getElementById("githubForm").style.display = g.source === "none" ? "flex" : "none";
       var box = document.getElementById("githubInstallBox");
@@ -2949,7 +4256,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       } else {
         box.hidden = true;
       }
-    }).catch(function () { document.getElementById("settingsErr").textContent = "Could not load settings."; });
+    }).catch(function () { document.getElementById("settingsErr").textContent = plain("t_settings_fail", "Could not load settings."); });
   }
 
   document.getElementById("githubForm").addEventListener("submit", function (ev) {
@@ -2959,7 +4266,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     err.textContent = ""; ok.textContent = "";
     api("/v1/admin/github/connect", { method: "POST", body: JSON.stringify({}) })
       .then(function (data) { submitManifest(data.postUrl, data.manifest); })
-      .catch(function () { err.textContent = "Could not start connect (already managed via environment)."; });
+      .catch(function () { err.textContent = plain("t_connect_fail", "Could not start connect (already managed via environment)."); });
   });
 
   function handleGithubQuery(st, status, reason) {
@@ -2967,20 +4274,21 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     if (st.user) {
       if (status === "connected") {
         selectTab("settings");
+        if (uiSimple()) { openSettingsSec = "setGithub"; applySettingsAccordion(); }
         loadSettings();
-        document.getElementById("githubOk").textContent = "App created and connected. Install it on your repos.";
+        document.getElementById("githubOk").textContent = plain("t_gh_ready", "App created and connected. Install it on your repos.");
       }
       return;
     }
     if (status === "connected") {
-      document.getElementById("loginMsg").textContent = "App connected — log in with GitHub to claim admin.";
+      document.getElementById("loginMsg").textContent = plain("t_gh_connected_login", "App connected — log in with GitHub to claim admin.");
     } else if (status === "forbidden") {
-      document.getElementById("loginErr").textContent = "That GitHub user is not allowed. Ask the admin.";
+      document.getElementById("loginErr").textContent = plain("t_gh_forbidden", "That GitHub user is not allowed. Ask the admin.");
     } else if (status === "error") {
-      var msg = reason === "expired" ? "Login expired — try again."
-        : reason === "exchange" ? "GitHub refused the exchange — try again."
-        : reason === "noapp" ? "Connect GitHub first (step 1 above)."
-        : "Something failed — try again.";
+      var msg = reason === "expired" ? plain("t_gh_expired", "Login expired — try again.")
+        : reason === "exchange" ? plain("t_gh_refused", "GitHub refused the exchange — try again.")
+        : reason === "noapp" ? plain("t_owner_github", "Connect GitHub first (step 1 above).")
+        : plain("t_err_generic", "Something failed — try again.");
       document.getElementById("loginErr").textContent = msg;
     }
   }
@@ -2994,10 +4302,10 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     var mode = document.getElementById("notifyModeSelect").value;
     api("/v1/admin/settings", { method: "POST", body: JSON.stringify({ notifyFromEmail: from, notifyMode: mode }) })
       .then(function () {
-        ok.textContent = "Saved.";
+        ok.textContent = plain("l_saved", "Saved.");
         loadSettings();
       })
-      .catch(function () { err.textContent = "Could not save (valid sender email required)."; });
+      .catch(function () { err.textContent = plain("t_notify_fail", "Could not save (valid sender email required)."); });
   });
 
   document.getElementById("notifyWebhookForm").addEventListener("submit", function (ev) {
@@ -3009,10 +4317,10 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     api("/v1/admin/settings", { method: "POST", body: JSON.stringify({ notifyWebhookUrl: url }) })
       .then(function () {
         document.getElementById("notifyWebhookInput").value = "";
-        ok.textContent = url ? "Saved." : "Cleared.";
+        ok.textContent = url ? plain("l_saved", "Saved.") : plain("l_cleared", "Cleared.");
         loadSettings();
       })
-      .catch(function () { err.textContent = "Could not save (a 12-512 char https URL is required; empty clears)."; });
+      .catch(function () { err.textContent = plain("t_chat_fail", "Could not save (a 12-512 char https URL is required; empty clears)."); });
   });
 
 
@@ -3037,14 +4345,17 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     api("/v1/admin/settings", { method: "POST", body: JSON.stringify({ webhookSecret: v }) })
       .then(function () {
         document.getElementById("webhookInput").value = "";
-        ok.textContent = "Saved.";
+        ok.textContent = plain("l_saved", "Saved.");
         loadSettings();
       })
-      .catch(function () { err.textContent = "Could not save (16+ characters)."; });
+      .catch(function () { err.textContent = plain("t_secret_fail", "Could not save (16+ characters)."); });
   });
 
   var currentTab = "tournaments";
   var TAB_TITLES = { home: "Home", runs: "Runs", tournaments: "Races", repos: "Repositories", merge: "Merge queue", settings: "Settings" };
+  // Human-readable URL spellings for tabs whose internal id differs from
+  // the label (#/races, #/queue, ...), so typed and shared links work.
+  var TAB_ALIASES = { races: "tournaments", race: "tournaments", queue: "merge", "merge-queue": "merge", mergequeue: "merge", repositories: "repos", repo: "repos", run: "runs", setup: "home", start: "home" };
   function toast(msg, isErr) {
     var box = document.getElementById("toasts");
     var t = el("div", msg);
@@ -3060,7 +4371,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   function syncHash() {
     if (fxIsScreen(currentTab)) { fxWriteHash(); return; }
     try {
-      var h = "#/" + currentTab;
+      var h = "#/" + (currentTab === "tournaments" ? "races" : currentTab);
       if (currentTab === "tournaments" && currentTournamentId && !document.getElementById("tournamentDetail").hidden) h += "/" + currentTournamentId;
       if (currentTab === "repos" && currentRepo && !document.getElementById("repoDetail").hidden) h += "/" + currentRepo;
       if (currentTab === "runs" && runDetailOpenId) h += "/" + runDetailOpenId;
@@ -3097,8 +4408,14 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     var hash = location.hash || "";
     if (hash.slice(0, 2) !== "#/") return false;
     var parts = hash.slice(2).split("/");
-    var tab = parts[0] || "";
-    if (!TAB_TITLES[tab]) return false;
+    var tab = TAB_ALIASES[parts[0]] || parts[0] || "";
+    if (!TAB_TITLES[tab]) {
+      // Unknown or typo'd links land Home with a note instead of leaving
+      // the previous screen up and looking like the click did nothing.
+      if (parts[0]) toast(plainf("t_no_page", "No page called \u201c" + parts[0] + "\u201d \u2014 showing Home.", 0, "\u201c" + parts[0] + "\u201d"), true);
+      palGoTab("home");
+      return true;
+    }
     if (!isAdmin && tab === "settings") return false;
     var id = parts[1] ? decodeURIComponent(parts[1]) : "";
     if (tab === "tournaments" && id) { selectTab("tournaments"); showTournament(id); }
@@ -3112,26 +4429,30 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   var palOpen = false, palItems = [], palActive = 0;
   function palCommands() {
     var cmds = [];
+    // Simple: plain group names and labels; the commands themselves (and
+    // their ids, kinds for agents, MCP names) are the same in both modes.
+    var simple = uiSimple();
+    var gGo = simple ? SC.l_pal_go : "Go to", gAct = simple ? SC.l_pal_actions : "Actions";
     ["home", "tournaments", "repos", "merge", "runs", "settings"].forEach(function (name) {
       if (FX.anon) return;
       if (!isAdmin && name === "settings") return;
-      cmds.push({ group: "Go to", label: "Go to " + TAB_TITLES[name], run: (function (n) { return function () { palGoTab(n); }; })(name) });
+      cmds.push({ group: gGo, label: gGo + " " + tabTitle(name), run: (function (n) { return function () { palGoTab(n); }; })(name) });
     });
     lastTournaments.forEach(function (t) {
-      cmds.push({ group: "Tournaments", label: t.intent, kind: t.state, run: (function (id) { return function () { selectTab("tournaments"); showTournament(id); }; })(t.id) });
+      cmds.push({ group: simple ? SC.l_tab_tournaments : "Tournaments", label: t.intent, kind: simple ? (SC["l_race_" + t.state] || t.state) : t.state, run: (function (id) { return function () { selectTab("tournaments"); showTournament(id); }; })(t.id) });
     });
     lastRuns.slice(0, 8).forEach(function (r) {
-      cmds.push({ group: "Runs", label: (r.repo || "") + " @ " + String(r.sha || "").slice(0, 7), kind: r.status, run: (function (id) { return function () { selectTab("runs"); loadRun(id, true); }; })(r.id) });
+      cmds.push({ group: simple ? SC.l_tab_runs : "Runs", label: simple ? (r.repo || "") + (r.branch ? " · " + r.branch : "") : (r.repo || "") + " @ " + String(r.sha || "").slice(0, 7), kind: simple ? simpleStatus(r.status).slice(0, 2).join(" ") : r.status, run: (function (id) { return function () { selectTab("runs"); loadRun(id, true); }; })(r.id) });
     });
-    cmds.push({ group: "Actions", label: "Refresh current view", kind: "R", run: function () { refreshCurrent(); } });
+    cmds.push({ group: gAct, label: simple ? SC.l_pal_refresh : "Refresh current view", kind: simple ? "" : "R", run: function () { refreshCurrent(); } });
     if (currentTournamentId && !document.getElementById("tournamentDetail").hidden) {
-      cmds.push({ group: "Actions", label: "Copy board link", kind: "", run: function () {
+      cmds.push({ group: gAct, label: simple ? SC.l_pal_copy : "Copy board link", kind: "", run: function () {
         var href = location.href;
-        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(href).then(function () { toast("Board link copied"); }, function () { toast("Copy failed", true); });
-        else toast("Clipboard unavailable", true);
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(href).then(function () { toast(plain("t_link_copied", "Board link copied")); }, function () { toast(plain("t_copy_fail", "Copy failed"), true); });
+        else toast(plain("t_copy_fail", "Clipboard unavailable"), true);
       } });
     }
-    if (FX.anon) cmds = cmds.filter(function (c) { return c.group === "Actions"; });
+    if (FX.anon) cmds = cmds.filter(function (c) { return c.group === gAct; });
     return fxPalCommands().concat(cmds);
   }
   function palMarkActive() {
@@ -3178,7 +4499,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       list.appendChild(row);
     });
     if (palItems.length === 0) {
-      var none = el("div", "No matching commands."); none.className = "pal-group"; list.appendChild(none);
+      var none = el("div", plain("t_pal_none", "No matching commands.")); none.className = "pal-group"; list.appendChild(none);
     }
     palMarkActive();
   }
@@ -3253,5 +4574,7 @@ ${FORGE_JS}
   startPoll();
 })();
 </script>
+<datalist id="ghRepoList"></datalist>
+<datalist id="flareRepoList"></datalist>
 </body>
 </html>`;

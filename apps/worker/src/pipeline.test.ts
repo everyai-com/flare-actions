@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  cellLabels,
   defaultPipeline,
   emptyProfiles,
   expandMatrixAxes,
@@ -260,6 +261,33 @@ describe("parsePipeline v2 keys", () => {
     expect(jobs?.[0].testReports).toEqual({ paths: ["junit.xml", "reports"] });
     expect(parsePipeline("jobs:\n  a:\n    test-reports:\n      paths: []\n    steps:\n      - run: echo\n")).toBeNull();
     expect(parsePipeline("jobs:\n  a:\n    test-reports: junit.xml\n    steps:\n      - run: echo\n")).toBeNull();
+  });
+});
+
+describe("matrix include/exclude", () => {
+  it("expands include/exclude with GitHub semantics and interpolates include-only keys", () => {
+    const jobs = parsePipeline(
+      "jobs:\n  test:\n    strategy:\n      matrix:\n        os: [linux]\n        node: [18, 20]\n        include:\n          - node: 20\n            npm: 10\n          - node: 22\n            experimental: true\n        exclude:\n          - node: 18\n    steps:\n      - run: echo ${{ matrix.node }} ${{ matrix.npm }} ${{ matrix.experimental }}\n",
+    );
+    expect(jobs?.map((j) => j.name)).toEqual(["test (os=linux, node=20, npm=10)", "test (node=22, experimental=true)"]);
+    expect(jobs?.map((j) => j.matrix)).toEqual([
+      { os: "linux", node: "20", npm: "10" },
+      { node: "22", experimental: "true" },
+    ]);
+    // A key this cell lacks is "" (Actions semantics; a literal ${{ }} breaks sh).
+    expect(jobs?.[0].steps[0].run).toBe("echo 20 10 ");
+    expect(jobs?.[1].steps[0].run).toBe("echo 22  true");
+    expect(jobs?.every((j) => j.base === "test")).toBe(true);
+  });
+
+  it("accepts include-only matrices and rejects invalid include/exclude", () => {
+    const only = parsePipeline("jobs:\n  a:\n    strategy:\n      matrix:\n        include:\n          - t: x\n          - t: y\n    steps:\n      - run: echo ${{ matrix.t }}\n");
+    expect(only?.map((j) => j.steps[0].run)).toEqual(["echo x", "echo y"]);
+    const bad = (m: string) => parsePipeline(`jobs:\n  a:\n    strategy:\n      matrix:\n${m}    steps:\n      - run: echo\n`);
+    expect(bad("        n: [1]\n        exclude:\n          - other: 1\n")).toBeNull();
+    expect(bad("        n: [1]\n        exclude:\n          - n: 1\n")).toBeNull();
+    expect(bad("        n: [1]\n        include: nope\n")).toBeNull();
+    expect(bad("        n: [1]\n        include:\n          - v: [1]\n")).toBeNull();
   });
 });
 
@@ -588,5 +616,35 @@ describe("selectProfileJobs", () => {
     expect(
       selectProfileJobs(narrow?.jobs ?? [], narrow?.profiles ?? emptyProfiles(), { override: "none" }),
     ).toMatchObject({ error: expect.stringContaining("selected no jobs") });
+  });
+});
+
+describe("matrix runs-on", () => {
+  it("resolves ${{ matrix.os }} per cell to portable labels", () => {
+    const yml = "jobs:\n  test:\n    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-14, gpu-box]\n    steps:\n      - run: echo hi\n";
+    const jobs = parsePipeline(yml);
+    expect(jobs?.map((j) => j.labels)).toEqual([["linux"], ["macos"], ["gpu-box"]]);
+  });
+  it("keeps literal labels and fails closed on refs that resolve to nothing or to a non-label", () => {
+    expect(cellLabels(["self-hosted", "${{ matrix.os }}"], { os: "ubuntu-22.04" })).toEqual(["self-hosted", "linux"]);
+    expect(cellLabels(["ubuntu-latest", "${{ matrix.gpu }}"], { os: "x" })).toBeNull();
+    expect(cellLabels(["${{ matrix.r }}"], { r: "a,b" })).toBeNull();
+    expect(cellLabels(["${{ matrix.r }}"], { r: "x".repeat(65) })).toBeNull();
+  });
+  it("rejects a matrix whose include-only runner leaves other cells unlabeled", () => {
+    const yml = "jobs:\n  t:\n    runs-on: ['${{ matrix.runner }}']\n    strategy:\n      matrix:\n        node: [20, 22]\n        include:\n          - node: 22\n            runner: gpu\n    steps:\n      - run: echo hi\n";
+    expect(parsePipeline(yml)).toBeNull();
+  });
+});
+
+describe("interpolateRun output refs", () => {
+  it("rewrites steps/needs output refs to env reads", () => {
+    expect(interpolateRun('echo "${{ steps.meta.outputs.tag }}" ${{ needs.build-app.result }}', {}, {})).toBe(
+      'echo "${FLARE_STEPS_META_TAG}" ${FLARE_NEEDS_BUILD_APP_RESULT}',
+    );
+  });
+  it("blanks matrix keys a cell lacks, keeps other expressions", () => {
+    expect(interpolateRun("[${{ matrix.experimental }}] ${{ github.sha }}", { node: "20" }, {})).toBe("[] ${{ github.sha }}");
+    expect(interpolateRun("[${{ matrix.x }}]", {}, {})).toBe("[${{ matrix.x }}]");
   });
 });

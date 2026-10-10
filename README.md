@@ -37,14 +37,14 @@ its own fork, and only trains move `main`
 
 ## Watch it live
 
-<!-- TODO(integrator): replace with the public judge instance URL once staging is deployed. -->
-**Hosted instance: `https://<judge-instance>.workers.dev/` (TODO: link
-goes live with the staging deploy).** It is a read-only spectator view
-of agents working on the Bookshelf demo repo.
+**[Open the live demo →](https://flare-actions.everyai-com.workers.dev/dashboard?demo=1&tour=1#/live)**
+No sign-in. Seven agents work on the Bookshelf demo repo, and a
+four-step tour explains what you're seeing. It runs on sample data in
+your browser tab; nothing is written anywhere.
 
 ## Try it in 2 minutes
 
-1. **Watch.** Open the hosted instance above. No sign-in needed.
+1. **Watch.** Open the [live demo](https://flare-actions.everyai-com.workers.dev/dashboard?demo=1&tour=1#/live). No sign-in needed.
 2. **Run the dashboard locally on demo data.**
 
    ```bash
@@ -71,9 +71,14 @@ of agents working on the Bookshelf demo repo.
 ```bash
 export FLARE_ACTIONS_URL=https://<your-flare>.workers.dev
 export FLARE_TOKEN=<runner token>                     # never commit it
+npx flare-forge doctor                                # checks setup; ends with one next: command
 npx flare-forge forge connect-agent --client claude   # or codex | cursor
 npx flare-forge forge init                            # AGENTS.md block + .mcp.json for this repo
 ```
+
+To make every repo and agent on a machine know Flare at once, run
+`npx flare-forge forge init --global`. For other GitHub orgs and
+Cloudflare accounts, see [docs/EVERYWHERE.md](docs/EVERYWHERE.md).
 
 `connect-agent` prints a one-line `claude mcp add ...` and the workflow
 prompt. `forge init` makes a repo Forge-ready for every agent: an
@@ -167,6 +172,37 @@ useful on its own too: repos without a `flare.yml` run their existing
 loop.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/everyai-com/flare-actions)
+
+### For AI agents: move a repo's CI off GitHub Actions
+
+Cheapest path first; the full playbook is
+[`skills/flare-migrate`](skills/flare-migrate/SKILL.md).
+
+```bash
+# 1. No account, no server: run the repo's existing .github/workflows here
+npx flare-forge local
+npx flare-forge import .github/workflows/ci.yml   # compatibility report
+
+# 2. With a Flare deployment (the human deploys once, see below)
+#    The human mints a one-time code in dashboard Settings → Pair a runner
+npx flare-forge login --url https://<their-worker>.workers.dev --code XXXX-XXXX
+#    (saves FLARE_ACTIONS_URL + RUNNER_TOKEN to ./.env; keep it gitignored)
+npx flare-forge connect --dry-run   # plan, change nothing
+npx flare-forge connect             # dispatch HEAD, report the verdict
+
+# 3. Wire the verify loop into your MCP client (OAuth, or a Bearer token)
+claude mcp add --transport http flare https://<their-worker>.workers.dev/mcp
+```
+
+Then use `run_and_wait` → `get_run_digest` instead of polling. Every
+deployment also serves its own `https://<worker>/llms.txt` with the URL
+filled in, so "read `<url>/llms.txt` and move this repo's CI to Flare"
+is a complete prompt (dashboard Home has it ready to copy).
+
+**What needs a human:** deploying (a Cloudflare account; there is no
+public hosted Flare yet), the first dashboard sign-up, and clicking
+**Connect GitHub**. Ask before any GitHub-side change (webhooks, App
+installs, `runs-on:` edits); never delete `.github/workflows`.
 
 ### Start here (no experience needed)
 
@@ -323,9 +359,13 @@ generation, and the Forge tools ([docs/MCP.md](docs/MCP.md)).
 ### CLI
 
 The CLI ships on npm as `flare-forge` (bins `flare-forge` and `flare`);
-from a clone, `npm run cli -- <command>` runs the same thing.
+from a clone, `npm run cli -- <command>` runs the same thing. Start with
+`doctor`: it checks your setup and ends with one `next:` command. Every
+command ends the same way (a failed run points at `explain`, an empty
+list at `connect`, an error at the fix), in the form you typed.
 
 ```bash
+npx flare-forge doctor                     # start here: what is set up, and the one next step
 npx flare-forge forge <verb>               # Forge: goal|declare|claim|push|ready|status|why|inbox|conflicts|trains|connect-agent|init
 npx flare-forge runs                       # list runs
 npx flare-forge local [job]                # run flare.yml here (no server, warm cache)
@@ -338,7 +378,8 @@ npx flare-forge login                      # pair this machine (writes .env)
 ```
 
 `npx flare-forge --help` lists every command. Every command accepts
-`--json` (one versioned envelope on stdout).
+`--json` (one versioned envelope on stdout; `next:` lines are for
+people and never appear in it).
 
 <details>
 <summary>HTTP API (selected routes; full spec at <code>/openapi.yaml</code>)</summary>
@@ -372,7 +413,7 @@ Clone the repo and point any coding agent at it:
 and conventions. For your own repos, `npx flare-forge forge init` wires
 Forge, `npx flare-forge init` scaffolds a `flare.yml` plus an AGENTS.md
 snippet for the CI verify loop, and the skills in [`skills/`](skills)
-(`flare-forge`, `flare-verify`, `flare-setup`) work in Claude Code,
+(`flare-forge`, `flare-migrate`, `flare-verify`, `flare-setup`) work in Claude Code,
 Codex and Cursor. [`llms.txt`](llms.txt) is the model-readable index.
 For Cloudflare access, give an agent a per-Worker **Editor** token plus
 D1 and Queues edit, never account-wide credentials.

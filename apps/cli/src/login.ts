@@ -53,6 +53,18 @@ export function mergeLoginEnv(cwd: string, baseUrl: string, token: string): stri
   return path;
 }
 
+// Flags runLogin would otherwise prompt for. Callers without a TTY use
+// this to fail fast (exit 2) instead of hanging on an unanswerable prompt.
+export function loginMissingArgs(
+  opts: Pick<LoginOptions, "baseUrl" | "code">,
+  env: Record<string, string | undefined>,
+): string[] {
+  const missing: string[] = [];
+  if (!(opts.baseUrl ?? env["FLARE_ACTIONS_URL"] ?? "").trim()) missing.push("--url <worker-url>");
+  if (!(opts.code ?? "").trim()) missing.push("--code <pairing-code>");
+  return missing;
+}
+
 function defaultPrompt(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {

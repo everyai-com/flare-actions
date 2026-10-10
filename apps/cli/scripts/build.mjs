@@ -28,6 +28,8 @@ await build({
   target: "node22",
   logLevel: "warning",
   legalComments: "none",
+  // `flare --version` reads this; source runs print "dev".
+  define: { "process.env.FLARE_CLI_VERSION": JSON.stringify(pkg.version) },
   // Bundled CommonJS deps (yaml) call require() for node builtins; ESM
   // output has no require, so provide one.
   banner: {
