@@ -273,10 +273,11 @@ Needs Phase 0 done:
   "next Git platform" competition — deadline Oct 14, 5–10 min demo
   video + MIT/Apache/BSD source + run instructions, multi-agent
   concurrency required; top 3 fly to Connect SF, first prize $25k
-  credits + VIP dinner. Flare's angle: **Flare Tournaments**, the pull
-  request for the agent era (race → verify → radar → verdict →
-  promote → ledger on Artifacts repos; entry status in Build status
-  above, execution spec in `.agents/plans/2026-10-06-git-competition.md`).
+  credits + VIP dinner. Flare's angle: **Flare Forge**, where the
+  intent (what, where, why, plus evidence) replaces the pull request as
+  the unit of agent collaboration; the original race → verify → radar →
+  verdict → ledger work lives on as Forge's resolution races (entry
+  status in Build status above, plan in `docs/COMPETITION-PLAN.md`).
 - **Per-job CPU/mem + right-sizing** (shipped: seats peak-RSS sampling
   via exec/cgroupfs into result-JSON `peakRssBytes`, hourly
   per-job-name runtime priors with LPT claim order in `priors.ts`,
