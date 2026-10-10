@@ -83,7 +83,7 @@ import {
   type TrainPort,
   type WhyPort,
 } from "./forge-ports";
-import type { GoalPlanner, PlannedIntent } from "./forge-planner";
+import type { GoalPlanner } from "./forge-planner";
 import { forkSession, readSession, SESSION_DEFAULT_STEPS, SESSION_MAX_STEPS, type SessionArtifacts } from "./session";
 import { tournamentAllowed } from "./tournaments";
 import { changedFiles } from "./verdict";
@@ -485,23 +485,24 @@ export function extractPaths(text: string): string[] {
   return [...out].sort();
 }
 
-// plan_goal: record the human's goal and hand back a planning scaffold.
-// With `plan` (REST `?plan=1`, MCP default) and an AI planner, the
-// proposals are 3-12 intents grounded in the trunk tree with `after`
-// edges for unavoidable overlaps; otherwise (or on any planner failure)
-// the heuristic: paths named in the goal, as one proposal.
-export interface GoalProposal {
+function wantsPlan(v: unknown): boolean {
+  return v === true || v === 1 || v === "1" || v === "true";
+}
+
+interface GoalProposal {
   title: string;
   footprint: string[];
   reasoning: string;
   accept: string;
-  after: number[];
+  // Indexes of earlier proposals this one must land after (AI plans only).
+  after?: number[];
 }
 
-function truthy(v: unknown): boolean {
-  return v === true || v === 1 || v === "1" || v === "true" || v === "yes";
-}
-
+// plan_goal: record the human's goal and hand back a planning scaffold
+// (paths named in the goal, live intents already near them, and the
+// declare_intent call to make per unit of change). With `plan: true` and
+// a planner wired (Workers AI), the proposals are a grounded 3-12 intent
+// split instead; any planner miss degrades to the heuristic, never a 500.
 export async function planGoal(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
   const denied = needWrite(p, "plan_goal");
   if (denied) return denied;
@@ -510,54 +511,48 @@ export async function planGoal(deps: ForgeServiceDeps, p: ForgePrincipal, args: 
   const goal = await createGoal(deps.db, { repo: r.repo, text: typeof args.text === "string" ? args.text : "", createdBy: p.actor });
   if (isForgeError(goal)) return fromForgeError(goal);
   await auditWrite(deps, p, "goal.create", `${r.repo} ${goal.id}`);
-  let proposals: GoalProposal[] = [];
-  let planner: { source: "ai" | "heuristic"; model: string | null; dropped: number; note: string | null } = {
-    source: "heuristic",
-    model: null,
-    dropped: 0,
-    note: null,
-  };
-  if (truthy(args.plan)) {
+  let planned: GoalProposal[] | null = null;
+  let planner: Record<string, unknown> | undefined;
+  if (wantsPlan(args.plan)) {
     if (!deps.planner) {
-      planner.note = "AI planner unavailable on this deployment (no AI binding); heuristic proposals";
+      planner = { used: false, reason: "no planner on this deployment (needs the AI binding); heuristic scaffold returned" };
     } else {
       try {
         const { policy } = await deps.loadPolicy(r.repo);
-        const planned = await deps.planner({ repo: r.repo, goal: goal.text, policy });
-        if (planned) {
-          proposals = planned.intents.map((x: PlannedIntent) => ({ ...x }));
-          planner = { source: "ai", model: planned.model, dropped: planned.dropped, note: null };
+        const out = await deps.planner({ repo: r.repo, goal: goal.text, policy });
+        if (out) {
+          planned = out.intents.map((i) => ({ title: i.title, footprint: i.footprint, reasoning: i.reasoning, accept: i.accept, after: i.after }));
+          planner = { used: true, model: out.model, dropped: out.dropped };
         } else {
-          planner.note = "AI planner returned no valid intents; heuristic proposals";
+          planner = { used: false, reason: "planner returned no valid intents; heuristic scaffold returned" };
         }
       } catch (err) {
         console.log(JSON.stringify({ level: "warn", msg: "forge planner failed", repo: r.repo, error: String(err instanceof Error ? err.message : err).slice(0, 200) }));
-        planner.note = "AI planner failed; heuristic proposals";
+        planner = { used: false, reason: "planner failed; heuristic scaffold returned" };
       }
     }
   }
-  const named = extractPaths(goal.text);
-  if (planner.source === "heuristic") {
-    const title = goal.text.split("\n")[0].slice(0, LIMITS.title).trim();
-    proposals = named.length
-      ? [{ title: title.length >= LIMITS.titleMin ? title : `Work on ${named[0]}`, footprint: named, reasoning: goal.text.slice(0, 1000), accept: "", after: [] }]
-      : [];
-  }
-  const nearPaths = [...new Set([...named, ...proposals.flatMap((x) => x.footprint)])].slice(0, 50);
-  const nearby = nearPaths.length ? await deps.coordinator.whatsHappening(r.repo, { paths: nearPaths, limit: 20 }) : [];
+  const paths = planned ? [...new Set(planned.flatMap((pr) => pr.footprint))].slice(0, 20) : extractPaths(goal.text);
+  const nearby = paths.length ? await deps.coordinator.whatsHappening(r.repo, { paths, limit: 20 }) : [];
+  const title = goal.text.split("\n")[0].slice(0, LIMITS.title).trim();
+  const proposals: GoalProposal[] =
+    planned ??
+    (paths.length
+      ? [{ title: title.length >= LIMITS.titleMin ? title : `Work on ${paths[0]}`, footprint: paths, reasoning: goal.text.slice(0, 1000), accept: "" }]
+      : []);
   const steps: NextStep[] = proposals.length
-    ? proposals.map((pr, i) => ({
+    ? proposals.map((pr) => ({
         tool: "declare_intent",
         args: {
           repo: r.repo,
           goalId: goal.id,
           title: pr.title,
           footprint: pr.footprint,
-          reasoning: planner.source === "ai" ? pr.reasoning : "<why this change>",
-          accept: pr.accept || "<command that proves it, e.g. npm test>",
+          reasoning: planned ? pr.reasoning : "<why this change>",
+          accept: planned && pr.accept ? pr.accept : "<command that proves it, e.g. npm test>",
         },
-        why: pr.after.length
-          ? `proposal ${i}: declare after proposal(s) ${pr.after.join(", ")} land (their footprints overlap); overlaps come back before any code is written`
+        why: pr.after?.length
+          ? `declare after proposal(s) ${pr.after.join(", ")} land — the planner found an unavoidable overlap`
           : "declare one intent per independent unit of change; overlaps come back before any code is written",
       }))
     : [
@@ -568,9 +563,9 @@ export async function planGoal(deps: ForgeServiceDeps, p: ForgePrincipal, args: 
         },
       ];
   if (nearby.length) {
-    steps.unshift({ tool: "whats_happening", args: { repo: r.repo, paths: nearPaths.slice(0, 20) }, why: `${nearby.length} live intent(s) already touch these paths; read them before splitting the work` });
+    steps.unshift({ tool: "whats_happening", args: { repo: r.repo, paths }, why: `${nearby.length} live intent(s) already touch these paths; read them before splitting the work` });
   }
-  return ok({ goal, proposals, planner, nearby, nextSteps: steps }, 201);
+  return ok({ goal, proposals, nearby, ...(planner ? { planner } : {}), nextSteps: steps }, 201);
 }
 
 export async function listGoalsOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
@@ -1608,8 +1603,7 @@ export async function sessionOp(deps: ForgeServiceDeps, p: ForgePrincipal, args:
 export type ForgeOp = (deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs) => Promise<ForgeOutcome>;
 
 export const FORGE_MCP_OPS: Record<string, ForgeOp> = {
-  // MCP plans with AI by default (pass plan: false for the scaffold).
-  plan_goal: (deps, p, args) => planGoal(deps, p, { plan: true, ...args }),
+  plan_goal: planGoal,
   declare_intent: declareOp,
   whats_happening: whatsHappeningOp,
   claim_intent: claimOp,

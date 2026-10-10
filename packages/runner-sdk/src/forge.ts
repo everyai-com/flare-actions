@@ -172,8 +172,14 @@ export class FlareForge {
   }
 
   // Goals
-  planGoal(repo: string, text: string): Promise<{ goal: ForgeGoal; proposals: ForgeJson[]; nearby: ForgeLiveIntent[]; nextSteps: ForgeNextStep[] }> {
-    return this.req("planGoal", "POST", "/v1/forge/goals", { repo, text });
+  // `plan: true` asks the server's AI planner for the split (heuristic
+  // fallback; `planner` reports which answered).
+  planGoal(
+    repo: string,
+    text: string,
+    opts: { plan?: boolean } = {},
+  ): Promise<{ goal: ForgeGoal; proposals: ForgeJson[]; nearby: ForgeLiveIntent[]; planner?: ForgeJson; nextSteps: ForgeNextStep[] }> {
+    return this.req("planGoal", "POST", "/v1/forge/goals", { repo, text, ...(opts.plan ? { plan: true } : {}) });
   }
   listGoals(repo: string, opts: { state?: string; limit?: number } = {}): Promise<{ goals: ForgeGoal[] }> {
     return this.req("listGoals", "GET", `/v1/forge/goals${this.q({ repo, ...opts })}`);

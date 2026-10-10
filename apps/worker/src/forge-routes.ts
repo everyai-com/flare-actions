@@ -5,11 +5,7 @@
 // serializes `{ ...data }` or `{ error, code, hint }`. Route literals and
 // regexes follow index.ts conventions so scripts/check-openapi.mjs sees
 // them. Runtime-free: tests call handleForgeRequest with fakes.
-import { getSetting } from "./db";
 import { apiError } from "./errors";
-import { doCoordinatorPort, feedPort, trainPort, whyPort } from "./forge-adapters";
-import { aiGoalPlanner, type GoalPlanner } from "./forge-planner";
-import { SETTING_KEYS } from "./settings";
 import type { WorkerEnv } from "./env";
 import type { ForgeArtifacts } from "./intents";
 import {
@@ -48,6 +44,7 @@ import {
   type ForgeServiceDeps,
 } from "./forge-service";
 import type { FeedPort, ForgeCoordinatorPort, TrainPort, WhyPort } from "./forge-ports";
+import type { GoalPlanner } from "./forge-planner";
 
 export interface ForgeIdentity {
   scope: string; // admin | runner | readonly
@@ -55,41 +52,26 @@ export interface ForgeIdentity {
   repos: string[];
 }
 
-// Integration seam: explicit adapters win; otherwise the real ports are
-// used whenever their bindings exist (forge-adapters.ts), and each port
-// degrades to its D1 fallback per call when they don't.
+// Integration seam: stream A/C/D adapters plug in here (unset = D1).
+// index.ts passes forgeAdaptersFromEnv(env, { waitUntil }) (forge-adapters.ts).
 export interface ForgeAdapters {
   coordinator?: ForgeCoordinatorPort;
   why?: WhyPort;
   trains?: TrainPort;
   feed?: FeedPort | null;
   planner?: GoalPlanner | null;
-  // Request context: background coordinator syncs ride waitUntil.
-  ctx?: { waitUntil(p: Promise<unknown>): void };
+  // Request context: background coordinator index syncs ride it.
+  waitUntil?: ((p: Promise<unknown>) => void) | null;
 }
 
 export function forgeDepsFromEnv(env: WorkerEnv, adapters: ForgeAdapters = {}): ForgeServiceDeps {
   const artifacts: ForgeArtifacts | null = env.ARTIFACTS ?? null;
-  const ctx = adapters.ctx;
-  const waitUntil = ctx ? (p: Promise<unknown>) => ctx.waitUntil(p) : null;
   return forgeServiceDeps({
     db: env.DB,
     artifacts,
     namespace: env.ARTIFACTS_NAMESPACE ?? "",
     accountId: env.ARTIFACTS_ACCOUNT_ID ?? "",
-    coordinator: adapters.coordinator ?? doCoordinatorPort(env, { waitUntil: waitUntil ?? undefined }),
-    why: adapters.why ?? whyPort(env),
-    trains: adapters.trains ?? trainPort(env),
-    feed: adapters.feed !== undefined ? adapters.feed : feedPort(env),
-    planner:
-      adapters.planner !== undefined
-        ? adapters.planner
-        : aiGoalPlanner({
-            ai: env.AI ?? null,
-            artifacts,
-            gatewayId: async () => env.AI_GATEWAY_ID ?? (await getSetting(env.DB, SETTING_KEYS.aiGatewayId)) ?? undefined,
-          }),
-    waitUntil,
+    ...adapters,
   });
 }
 
@@ -145,7 +127,7 @@ export async function handleForgeRequest(
 
   // --- goals ---------------------------------------------------------------
   if (method === "POST" && url.pathname === "/v1/forge/goals") {
-    // `?plan=1` asks the AI planner for grounded proposals.
+    // `?plan=1` (or body `plan: true`) asks for the AI planner's split.
     const plan = url.searchParams.get("plan");
     return write(planGoal, plan !== null ? { plan } : {});
   }

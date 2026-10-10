@@ -11,13 +11,16 @@
 // - `feedPort`: the hibernating ForgeFeed WebSocket.
 // - `trainPort`: train.ts (enqueue/route/cut, detail, landing approval,
 //   conflict claim/resolve through the replay stream).
+// - `forgePlanner`: the Workers AI goal planner (forge-planner.ts).
+//
+// `forgeAdaptersFromEnv` assembles all of them for index.ts (REST + MCP).
 //
 // The `*Over` constructors take injected clients so vitest drives the
 // mapping without a runtime (the `cloudflare:workers` import in
 // coordinator.ts / train-workflow.ts is aliased to a stub there).
 import { coordinatorFor, handleForgeFeedUpgrade } from "./coordinator";
 import type { CoordinatorError, CoordinatorSnapshot, DeclareResult, HappeningResult, OverlapView, ReportPushResult, SimilarView } from "./coordinator-core";
-import type { Db } from "./db";
+import { getSetting, type Db } from "./db";
 import type { WorkerEnv } from "./env";
 import {
   buildSnapshot,
@@ -36,11 +39,13 @@ import {
   type WhyLink,
   type WhyPort,
 } from "./forge-ports";
+import { aiGoalPlanner, type GoalPlanner } from "./forge-planner";
 import { getIntent, getTrain as getTrainD1 } from "./intents";
 import { driftPaths, type Intent, type RiskTerm } from "./intents-core";
 import { forkTrunk, replayForkName, type ReplayDeps } from "./replay";
 import { approveLanding, claimConflictFor, enqueueReady, getTrainDetail, isForgeError, listTrains, resolveConflictFor } from "./train";
 import { trainDepsFromEnv } from "./train-workflow";
+import { SETTING_KEYS } from "./settings";
 import { why as whyChain, type WhyChain, type WhyDeps } from "./why";
 
 function log(level: "info" | "warn", msg: string, extra: Record<string, unknown> = {}): void {
@@ -414,4 +419,43 @@ export function trainPortOver(deps: ReplayDeps): TrainPort {
 
 export function trainPort(env: WorkerEnv): TrainPort {
   return trainPortOver(trainDepsFromEnv(env));
+}
+
+// ---------------------------------------------------------------------------
+// Planner
+// ---------------------------------------------------------------------------
+
+export function forgePlanner(env: WorkerEnv): GoalPlanner | null {
+  return aiGoalPlanner({
+    ai: env.AI ?? null,
+    artifacts: env.ARTIFACTS ?? null,
+    gatewayId: async () => env.AI_GATEWAY_ID ?? (await getSetting(env.DB, SETTING_KEYS.aiGatewayId)) ?? undefined,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Assembly
+// ---------------------------------------------------------------------------
+
+export interface ForgeAdapterSet {
+  coordinator: ForgeCoordinatorPort;
+  why: WhyPort;
+  trains?: TrainPort;
+  feed: FeedPort | null;
+  planner: GoalPlanner | null;
+  waitUntil: WaitUntil | null;
+}
+
+// Every adapter whose binding exists; the rest stay on the D1 fallbacks
+// forgeServiceDeps fills in. Trains need Artifacts (forks, replay), so a
+// deployment without it keeps the D1 train queue.
+export function forgeAdaptersFromEnv(env: WorkerEnv, opts: { waitUntil?: WaitUntil } = {}): ForgeAdapterSet {
+  return {
+    coordinator: doCoordinatorPort(env, opts),
+    why: whyPort(env),
+    ...(env.ARTIFACTS ? { trains: trainPort(env) } : {}),
+    feed: feedPort(env),
+    planner: forgePlanner(env),
+    waitUntil: opts.waitUntil ?? null,
+  };
 }

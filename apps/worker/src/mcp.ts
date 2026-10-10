@@ -115,7 +115,7 @@ const FORGE_TOOL_SCHEMAS = {
   plan_goal: z.object({
     repo: forgeRepo,
     text: z.string().describe("The human's goal in their own words (required, ≤4000 chars)").optional(),
-    plan: z.boolean().describe("AI planning over the trunk tree (default true; false = heuristic scaffold only)").optional(),
+    plan: z.boolean().describe("true = ask the AI planner for a grounded 3-12 intent split (falls back to the heuristic scaffold)").optional(),
     confirm: forgeConfirm,
   }),
   declare_intent: z.object({
@@ -255,7 +255,7 @@ const FORGE_LOOP = "Forge loop: whats_happening → declare_intent → claim_int
 export const FORGE_TOOLS: McpToolDef[] = [
   {
     name: "plan_goal",
-    description: `Record a human's goal (the "why" every line traces back to) and get a plan: 3-12 proposed intents (title, reasoning, footprint grounded in the trunk tree, accept check, after: [earlier proposal indexes] for unavoidable overlaps) from Workers AI, falling back to a heuristic scaffold (paths named in the goal); live intents already near them; and the declare_intent calls to make. Call first when you are handed a new task. Returns {goal, proposals, planner: {source: ai|heuristic, model}, nearby, nextSteps}. Needs run scope. ${FORGE_LOOP}`,
+    description: `Record a human's goal (the "why" every line traces back to) and get a planning scaffold: paths named in the goal, live intents already near them, and the declare_intent calls to make (one per independent unit of change). Pass plan: true for an AI split grounded in the trunk tree (proposals carry \`after\` ordering for unavoidable overlaps). Call first when you are handed a new task. Returns {goal, proposals, nearby, planner?, nextSteps}. Needs run scope. ${FORGE_LOOP}`,
   },
   {
     name: "declare_intent",

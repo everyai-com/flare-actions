@@ -45,9 +45,19 @@ hogs.
 
 ## Pairing (zero-config machines)
 
-Dashboard Access → **Pair a runner** mints a short single-use code and
-shows one command. Paste it on the fresh box — no `.env` editing, no
-token copying:
+Dashboard Home → **Use my computer** (or Settings → **Pair a runner**)
+mints a short single-use code and shows one line. Paste it on the
+machine — no clone, no `.env` editing, no token copying:
+
+```bash
+curl -fsSL https://<your-worker>.workers.dev/runner.sh | sh -s K7MD-Q2XA ci-metal-01
+```
+
+`/runner.sh` checks for git and Node.js 22.6+ (plain-language errors
+with install links), clones or updates the runner into
+`~/flare-runner` (`FLARE_RUNNER_DIR` overrides), pairs, and starts
+polling. Run the same line without the code to restart it later. From
+an existing checkout the equivalent is:
 
 ```bash
 FLARE_ACTIONS_URL=https://<your-worker>.workers.dev npm run runner -- --pair K7MD-Q2XA --pair-name ci-metal-01
