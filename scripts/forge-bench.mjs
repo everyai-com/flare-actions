@@ -4,7 +4,7 @@
 // Layer 1, SIMULATED (deterministic, no network):
 //   node --experimental-strip-types scripts/forge-bench.mjs \
 //     --agents 1000,10000,100000 --seed 7 [--modes baseline,trains,forge] \
-//     [--json] [--out docs/bench] [--markdown]
+//     [--json] [--out docs/bench] [--markdown] [--max-parallel N]
 //   Prints a table per agent count; --json also writes
 //   docs/bench/forge-sim-seed<seed>.json (the GET /v1/forge/bench shape).
 //
@@ -69,14 +69,21 @@ async function simulated(args) {
   const modes = args.modes ? String(args.modes).split(",") : [...MODES];
   for (const m of modes) if (!MODES.includes(m)) die(`unknown mode ${m} (${MODES.join(", ")})`);
 
+  // Sensitivity knob: train lanes in parallel (policy lanes.max_parallel).
+  const constants = {};
+  if (args["max-parallel"] !== undefined) {
+    const mp = Number(args["max-parallel"]);
+    if (!Number.isInteger(mp) || mp < 1 || mp > 64) die("--max-parallel must be 1-64");
+    constants.policy = { ...DEFAULT_CONSTANTS.policy, lanes: { ...DEFAULT_CONSTANTS.policy.lanes, maxParallel: mp } };
+  }
   const sha = gitSha();
   const date = new Date().toISOString().slice(0, 10);
-  const command = `node --experimental-strip-types scripts/forge-bench.mjs --agents ${agentsList.join(",")} --seed ${seed}${args.modes ? ` --modes ${modes.join(",")}` : ""}`;
+  const command = `node --experimental-strip-types scripts/forge-bench.mjs --agents ${agentsList.join(",")} --seed ${seed}${args.modes ? ` --modes ${modes.join(",")}` : ""}${constants.policy ? ` --max-parallel ${constants.policy.lanes.maxParallel}` : ""}`;
   const docs = [];
   process.stdout.write("SIMULATED results: outputs of a deterministic model, not measurements of a running system.\n\n");
   for (const n of agentsList) {
     const t0 = Date.now();
-    const result = simulate({ agents: n, seed, modes });
+    const result = simulate({ agents: n, seed, modes, constants });
     const doc = toBenchDoc(result, { sha, date, command });
     docs.push(doc);
     process.stdout.write(`${args.markdown ? formatMarkdown(doc) : formatTable(doc)}\n`);
@@ -85,7 +92,8 @@ async function simulated(args) {
   if (args.json) {
     const outDir = resolve(ROOT, typeof args.out === "string" ? args.out : "docs/bench");
     mkdirSync(outDir, { recursive: true });
-    const file = join(outDir, `forge-sim-seed${seed}.json`);
+    const suffix = constants.policy ? `-mp${constants.policy.lanes.maxParallel}` : "";
+    const file = join(outDir, `forge-sim-seed${seed}${suffix}.json`);
     const body = {
       kind: "simulated",
       note: "SIMULATED: outputs of apps/sim/src/sim.ts under the constants below; not measurements.",
@@ -93,7 +101,7 @@ async function simulated(args) {
       sha,
       command,
       seed,
-      constants: DEFAULT_CONSTANTS,
+      constants: { ...DEFAULT_CONSTANTS, ...constants },
       constant_sources: CONSTANT_SOURCES,
       runs: docs,
     };
