@@ -112,7 +112,10 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("--accent: #fafafa");
     expect(DASHBOARD_HTML).toContain("--bg: #0a0a0a");
     expect(DASHBOARD_HTML).toContain("--card: #111113");
-    expect(DASHBOARD_HTML).not.toContain("prefers-color-scheme");
+    // Dark is the default; the Forge light theme (docs/FORGE-UX.md 2.1) only
+    // applies when the OS prefers light and no explicit data-theme is set.
+    expect(DASHBOARD_HTML).not.toContain("prefers-color-scheme: dark");
+    expect(DASHBOARD_HTML).toContain('@media (prefers-color-scheme: light) { :root:not([data-theme="dark"])');
     expect(DASHBOARD_HTML).toContain("table-scroll");
     expect(DASHBOARD_HTML).toContain('id="runsList"');
     expect(DASHBOARD_HTML).toContain("run-row");

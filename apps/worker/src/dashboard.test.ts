@@ -190,7 +190,7 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("side-group");
     expect(DASHBOARD_HTML).not.toContain("nav.tabs");
     expect(DASHBOARD_HTML.indexOf('id="tabTournaments"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabRuns"'));
-    expect(DASHBOARD_HTML).toContain('if (!applyHashRoute()) palGoTab("tournaments")');
+    expect(DASHBOARD_HTML).toContain('if (!applyHashRoute()) palGoTab("live")');
     expect(DASHBOARD_HTML).toContain("No races yet");
   });
 
