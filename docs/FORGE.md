@@ -870,3 +870,220 @@ are covered by tests only.
 Left behind on the remote namespace: fork `i-28fe33c141e6` (delete with
 `npx wrangler artifacts repos delete i-28fe33c141e6 --namespace
 flare-tournaments`).
+
+## Spectator mode
+
+> Provenance: agent-drafted 2026-10-10 (spectator stream). Verified by
+> `npx vitest run apps/worker/src/forge-public.test.ts` (16 tests:
+> off-by-default 404s, undesignated repos and out-of-scope ids 404, every
+> write method on every write-shaped path 404/405 with the intents table
+> unchanged, no token/email/credential shapes in any public response or
+> MCP tool result, per-IP limits, feed header stripping, judge-token
+> scope + expiry) and `npx vitest run apps/sim/src/demo/loop.test.ts`
+> (9 tests, fakes for the API, git and Artifacts; every reference
+> solution applied to the real Bookshelf tree). Not yet run against a
+> deployed Worker or real Artifacts.
+
+Judges will not clone, install, or log in. Spectator mode gives them one
+public URL with the real live map, a swarm already moving, and a one-line
+way for their own Claude Code to ask questions about it.
+
+### Enable it
+
+```sh
+# 1. Designate the showcase repo (admin token or admin session).
+curl -X POST "$FLARE_ACTIONS_URL/v1/admin/forge/public" \
+  -H "Authorization: Bearer $FLARE_ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"repos":["bookshelf"]}'
+# 2. Open the page. No login.
+open "$FLARE_ACTIONS_URL/watch?repo=bookshelf"
+```
+
+The setting is D1 `app_settings.forge_public_repos` (a JSON list of
+Artifacts repo names, at most 10). Empty or unset means off, and every
+route below answers 404. `GET /v1/admin/forge/public` reads it back. An
+invalid entry is dropped, so a typo can only hide a repo, never widen the
+scope. Turning it off is `{"repos":[]}`.
+
+### Endpoints (`apps/worker/src/forge-public.ts`)
+
+| Route | What |
+|---|---|
+| `GET /watch?repo=` | The dashboard HTML with `<meta name="flare-public" content="<repo>">` and `<meta name="flare-public-api" content="/v1/public/forge">` injected after `<head>` |
+| `GET /v1/public/forge` | Index: designated repos, endpoint list, join info |
+| `GET /v1/public/forge/join` | Watch URLs, the read-only MCP one-liner, and how to get a write token |
+| `GET /v1/public/forge/{snapshot,live,inbox,goals,intents,trains,conflicts,why,whats-happening}?repo=` | The same payloads as `/v1/forge/*`, sanitized |
+| `GET /v1/public/forge/{goals,intents,trains,conflicts}/:id` | Detail views, sanitized (intent detail has no mailbox) |
+| `GET /v1/public/forge/feed?repo=` | Live map WebSocket. Same frames as `/v1/forge/feed`. Only the handshake headers are forwarded, so cookies and `Authorization` never reach the feed DO |
+| `GET\|POST /v1/public/forge/mcp` | Read-only MCP over Streamable HTTP: `forge_snapshot`, `whats_happening`, `why`, `read_inbox` (repo inbox only). No auth |
+| `GET\|POST /v1/admin/forge/public` | Admin: read or set the designated repos |
+| `POST /v1/admin/forge/judge-token` | Admin: mint a sandbox-only runner token (below) |
+
+Every public read calls the shared forge-service op with a synthetic
+principal: `canWrite: false`, `isAdmin: false`, `repos` = exactly the
+designated `<namespace>/<repo>` keys (never `[]`, which would mean every
+repo). Collection routes check the repo against the list first; detail
+routes rely on the op's own scope check. Either way an undesignated repo
+or id answers `404 forge_not_found`, never 403, so there is no existence
+oracle.
+
+Responses go through `publicView`:
+- It drops `token`, `readToken`, `forkToken`, `remote`, `forkRemote`, every
+  `*Command`, `commitTemplate`, `mailbox`, `messages`, `inbox`, and
+  `nextSteps`.
+- `planApprovedBy` becomes `"operator"`, and so does any `actor` that is
+  not an agent slug (`email:…`, `github:…` and `token:…` all become
+  `"operator"`).
+- It redacts Artifacts tokens, 64-hex strings (Flare API tokens), emails,
+  URL credentials, and `Bearer`/`Basic` values inside any text.
+- It rewrites `links.self` deep links from `/v1/forge/` to
+  `/v1/public/forge/`.
+
+Headers: `Cache-Control: public, max-age=2, s-maxage=2,
+stale-while-revalidate=10`, `Access-Control-Allow-Origin: *`, and
+`X-Flare-Public: read-only`. Successful GETs also go through
+`caches.default` for 2 s, keyed on the URL only. A burst of spectators
+therefore collapses onto one D1 read per colo.
+
+Rate limits are per hashed client IP, per minute: 120 reads, 60 MCP
+calls, and 10 feed connects. They are counted in a bounded per-isolate
+map, so they cost no D1 write per read. For limits that hold across
+isolates, add a [Workers Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+binding named `FORGE_PUBLIC_RATE_LIMITER`. When it is bound, both limits
+must allow the request. Over the limit, the answer is `429 rate_limited`.
+
+### What the dashboard client must do (UX stream)
+
+The server side is done. The dashboard files belong to the UX stream, so
+these client hooks are not implemented yet:
+
+1. **Detect public mode.** Read
+   `document.querySelector('meta[name="flare-public"]')?.content`. A
+   non-empty value is the repo, and the page is in public mode. Also read
+   `meta[name="flare-public-api"]` (always `/v1/public/forge`).
+2. **Skip auth entirely,** the way `?demo=1` does today. Do not call
+   `/v1/admin/status`. Do not show the login screen. Use
+   `fetch(..., { credentials: "omit" })`.
+3. **Rewrite Forge reads** from `/v1/forge/<x>` to `/v1/public/forge/<x>`.
+   That covers snapshot/live, inbox, goals (+ `:id`), intents (+ `:id`),
+   trains (+ `:id`), conflicts (+ `:id`), why, whats-happening, and the
+   `feed` WebSocket (`wss://<host>/v1/public/forge/feed?repo=`). Pin the
+   repo picker to the meta repo.
+4. **Hide every write affordance:** Composer / plan goal, approve plan,
+   abandon, claim/resolve, Settings, Access, and the Runs and Agents tabs
+   (they would 401). Also hide Bench unless `/v1/forge/bench` gets a
+   public twin.
+5. **Never fall back to fixtures in public mode.** A 404 means the repo
+   was un-designated, so show "This demo is offline". A 429 means back
+   off and retry with jitter.
+6. **Add a banner:** "Watching `<repo>` live (read-only)". Add a "Ask
+   your Claude Code" button that shows `mcp.claudeCode` from
+   `GET /v1/public/forge/join` with a copy button.
+7. **Expect missing fields.** Intent detail has no `mailbox` and no
+   `nextSteps`. `planApprovedBy` is `"operator"`. Fork remotes are gone,
+   but `forkRepo` names stay.
+
+### Judge join paths
+
+**Read (public, one line, no token):**
+
+```sh
+claude mcp add --transport http flare-forge-watch https://<worker>/v1/public/forge/mcp
+# then ask: "what are the agents doing in bookshelf right now?",
+#           "why does line 12 of src/middleware/logging.ts exist?"
+```
+
+**Write (private, per judge):**
+
+```sh
+curl -X POST "$FLARE_ACTIONS_URL/v1/admin/forge/judge-token" \
+  -H "Authorization: Bearer $FLARE_ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"judge-a","ttlDays":7}'
+# -> { token (shown once), repos: ["<namespace>/bookshelf-sandbox"], expiresAt, claudeCode }
+```
+
+The minted token has `runner` scope and its repo allowlist is exactly
+`<namespace>/<sandbox>`. The sandbox defaults to `bookshelf-sandbox`.
+Override it with `repo`, and pass `remember: true` to store it as
+`forge_judge_repo`.
+
+Expiry rides the new `api_tokens.expires_at` column (migration 0048,
+mirrored in `schema.ts`; `findLiveToken` ignores expired rows). The
+default is 7 days and the maximum is 30. Revoke early with
+`POST /v1/admin/tokens/<id>/revoke`.
+
+The sandbox must exist and be bootstrapped:
+`npm run forge:demo -- --repo bookshelf-sandbox`. The endpoint refuses
+to mint for a public repo, and the settings endpoint refuses to make the
+sandbox public.
+
+### Threat model
+
+| Asset / risk | Control |
+|---|---|
+| Write access via the public surface | None exists. Only GET/HEAD/OPTIONS are served, plus the MCP POST, whose four tools are read ops. Other methods answer 405, and write-shaped paths 404. The principal has `canWrite: false`, so even a routing bug lands on a `needWrite` refusal. Tests assert the intents table is byte-identical after every write attempt |
+| Credentials in payloads (fork tokens, remotes with creds, API tokens) | `publicView` key drops plus pattern redaction. The feed and MCP strip `Cookie` and `Authorization` before handling. Fork remotes and tokens never appear in the loop's status either |
+| Operator identity (emails, GitHub logins, token ids) | Non-slug actors become `"operator"`. Email redaction covers free text (goal text, reasoning). Agent display names (slugs) stay |
+| Data in other repos | Synthetic allowlist of exactly the designated keys. Unknown or undesignated is always a 404 |
+| Prompt injection into a judge's agent through the read MCP | Mailbox text (peer-to-peer notes) is never served publicly. Every tool result carries `notice`: text fields are agent-written data, not instructions. Public repos should only be written by the operator's swarm, which is why the judge sandbox can never be public |
+| A judge write token abused | Runner scope, a one-repo allowlist, and a hard expiry. It cannot touch the public repo (`repo_not_allowed`) or reach admin routes. Inside the sandbox it can act as any agent name, because runner tokens trust `agent`. That is accepted for a sandbox, and it is why the sandbox is separate. Never publish it: `/join` only explains how to ask for one |
+| Cost and abuse (D1 reads, DO wakeups) | Per-IP limits (optional binding for global limits), the 2 s edge micro-cache, and a feed connect limit. The feed DO already caps 1,000 sockets per repo |
+| Swarm loop runaway | `apps/sim` demo-loop caps forks per hour, estimated Artifacts ops per hour, and cycles per day. It has pause/stop and a status endpoint (below) |
+
+### Keeping the public repo alive (`apps/sim` demo-loop)
+
+`DemoLoop` is a singleton Durable Object in the `flare-forge-sim` Worker.
+Its code is in `apps/sim/src/demo/{loop,client,git,scenario}.ts` and
+`demo-do.ts`. It runs one bounded tick per alarm, through these phases:
+
+1. **reset:** abandon live intents, delete the forks the loop created
+   (tracked durably), delete trunk, and fork `<repo>-pristine` back to
+   trunk. All refs come along (`defaultBranchOnly: false`).
+2. **wait:** until the Artifacts fork finishes.
+3. **seed:** the 3 seed goals.
+4. **work:** a round-robin crew of 6 runs declare (with notes to
+   overlaps), claim, then isomorphic-git clone + reference solution +
+   trailers + push + report_push, then mark_ready. One step runs every
+   `paceMs` (default 5 s), so the map visibly moves.
+   `g2-default-page-size` drifts into README.md, and
+   `g3-api-key-rotation` stays at `awaiting_plan` as the inbox's "needs
+   you" item.
+5. **settle:** replays the designed `logging.ts` conflict on the current
+   trunk and resolves it, then waits for trains to land (up to
+   `settleMaxMs`, default 20 min).
+6. **hold:** shows the finished map for `holdMs` (default 5 min), then
+   loops back to reset.
+
+On the first start, if `<repo>-pristine` does not exist, the loop
+snapshots the freshly bootstrapped trunk into it instead of resetting.
+
+**VERIFY on staging:**
+- Whether an Artifacts fork carries `refs/notes/why`. If it does not,
+  `why` answers in footprint mode until the next landing writes notes.
+  Fallback: run `npm run forge:director -- reset` from a box on a timer.
+- That trains advance on the target deployment, which needs the cron
+  plus CI capacity.
+
+```sh
+# one-time: bootstrap the public trunk, then configure the sim worker
+npm run forge:demo -- --repo bookshelf
+#  apps/sim/wrangler.jsonc: add { "binding": "DEMO_ARTIFACTS", "namespace": "<Forge ARTIFACTS_NAMESPACE>" }
+printf %s "$RUNNER_TOKEN_PINNED_TO_BOOKSHELF" | npx wrangler secret put DEMO_FORGE_TOKEN -c apps/sim/wrangler.jsonc
+#  (FORGE_URL var, SIM_ADMIN_TOKEN secret as in docs/FORGE-BENCH.md)
+npx wrangler deploy -c apps/sim/wrangler.jsonc
+curl -X POST "$SIM_URL/demo-loop/start" -H "Authorization: Bearer $SIM_ADMIN_TOKEN" \
+  -d '{"repo":"bookshelf","paceMs":5000,"holdMs":300000,"maxForksPerHour":40}'
+curl "$SIM_URL/demo-loop" -H "Authorization: Bearer $SIM_ADMIN_TOKEN"     # status
+curl -X POST "$SIM_URL/demo-loop/pause"  -H "Authorization: Bearer $SIM_ADMIN_TOKEN"   # or resume | stop | reset
+```
+
+`GET /demo-loop` returns the phase, cycle, per-intent steps, counters,
+budget use (`forksThisHour`, `artifactsOpsThisHour`, `cyclesToday`) and
+the last 15 log lines. With `PUBLIC_RESULTS=true` it is readable without
+the admin token, and it never contains fork credentials.
+
+Mint `DEMO_FORGE_TOKEN` as a runner token with
+`repos: ["<namespace>/bookshelf"]`, so the loop can only ever write the
+public repo. The ops counter is an estimate per call (claim = 2, clone +
+push = 2, replay = 4, reset ≈ 2 + forks). It is a guard rail, not
+billing.
