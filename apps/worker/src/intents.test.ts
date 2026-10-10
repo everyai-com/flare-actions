@@ -74,16 +74,45 @@ function sqliteDb(): { db: Db; raw: InstanceType<typeof DatabaseSync> } {
 interface FakeOpts {
   forkThrows?: boolean;
   tokenThrows?: boolean;
+  // Omit the handle's listTokens/revokeToken (an older binding).
+  noTokenApi?: boolean;
+  revokeThrows?: boolean;
+}
+
+interface FakeToken {
+  id: string;
+  repo: string;
+  plaintext: string;
+  state: "active" | "revoked";
 }
 
 function fakeArtifacts(opts: FakeOpts = {}): {
   artifacts: TournamentArtifacts;
   forks: string[];
   tokens: Array<{ repo: string; scope: string; ttl: number }>;
+  issued: FakeToken[];
 } {
   const forks: string[] = [];
   const tokens: Array<{ repo: string; scope: string; ttl: number }> = [];
+  const issued: FakeToken[] = [];
+  const tokenApi = (name: string) =>
+    opts.noTokenApi
+      ? {}
+      : {
+          listTokens: async () => ({
+            tokens: issued.filter((t) => t.repo === name).map((t) => ({ id: t.id, scope: "write", state: t.state })),
+            total: issued.filter((t) => t.repo === name).length,
+          }),
+          revokeToken: async (id: string) => {
+            if (opts.revokeThrows) throw new Error("revoke exploded");
+            const t = issued.find((x) => x.id === id && x.repo === name && x.state === "active");
+            if (!t) return false;
+            t.state = "revoked";
+            return true;
+          },
+        };
   const handle = (name: string): TournamentRepoHandle => ({
+    ...tokenApi(name),
     readFile: async () => null,
     fork: async (forkName: string) => {
       if (opts.forkThrows) throw new Error("fork exploded");
@@ -101,11 +130,12 @@ function fakeArtifacts(opts: FakeOpts = {}): {
     createToken: async (scope, ttl) => {
       if (opts.tokenThrows) throw new Error("token exploded");
       tokens.push({ repo: name, scope, ttl });
+      issued.push({ id: `id-${issued.length + 1}`, repo: name, plaintext: `tok-${name}`, state: "active" });
       return { plaintext: `tok-${name}` };
     },
     [Symbol.dispose]: () => undefined,
   });
-  return { artifacts: { get: async (name: string) => handle(name) }, forks, tokens };
+  return { artifacts: { get: async (name: string) => handle(name) }, forks, tokens, issued };
 }
 
 const SHA = "a".repeat(40);
@@ -237,6 +267,37 @@ describe("claimIntent", () => {
     expect(second.forkRepo).toBe(first.forkRepo);
     expect(fake.forks).toHaveLength(1);
     expect(second.intent.agent).toBe("a2");
+  });
+  it("revokes the previous holder's fork token before minting the new one on re-claim", async () => {
+    const { db } = sqliteDb();
+    const { intent } = await declared(db);
+    const fake = fakeArtifacts();
+    const first = await claimIntent(db, fake.artifacts, { id: intent.id, agent: "a1", leaseTtlSeconds: 1 });
+    if ("error" in first) throw new Error(first.message);
+    await expireLeases(db, new Date(Date.now() + 60_000).toISOString());
+    const second = await claimIntent(db, fake.artifacts, { id: intent.id, agent: "a2" });
+    if ("error" in second) throw new Error(second.message);
+    // a1's token is dead; only a2's (minted after the revoke) is live.
+    expect(fake.issued.map((t) => [t.id, t.state])).toEqual([
+      ["id-1", "revoked"],
+      ["id-2", "active"],
+    ]);
+    const ledger = await listForgeLedger(db, "intent", intent.id);
+    expect(ledger.some((l) => l.kind === "claimed" && l.body.includes("revoked 1 prior token"))).toBe(true);
+  });
+  it("fails closed when the prior tokens cannot be revoked", async () => {
+    for (const opts of [{ noTokenApi: true }, { revokeThrows: true }]) {
+      const { db } = sqliteDb();
+      const { intent } = await declared(db);
+      const fake = fakeArtifacts(opts);
+      const first = await claimIntent(db, fake.artifacts, { id: intent.id, agent: "a1", leaseTtlSeconds: 1 });
+      if ("error" in first) throw new Error(first.message);
+      await expireLeases(db, new Date(Date.now() + 60_000).toISOString());
+      const second = await claimIntent(db, fake.artifacts, { id: intent.id, agent: "a2" });
+      expect("error" in second && second.error).toBe("token-failed");
+      expect(fake.tokens).toHaveLength(1); // no second token was minted
+      expect((await getIntent(db, intent.id))?.state).toBe("expired");
+    }
   });
 });
 

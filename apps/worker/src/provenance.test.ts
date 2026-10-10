@@ -15,6 +15,10 @@ import {
 } from "./provenance";
 import { bareRemote, gitCli, harnessHttp, type BareRemote } from "./provenance-harness.test-util";
 
+// These suites spawn real git processes (or run the full simulator), which
+// can exceed vitest's 5 s default on a loaded machine.
+const SLOW_TEST_MS = 60_000;
+
 function note(intentId: string, extra: Partial<WhyNote> = {}): WhyNote {
   return {
     v: 1,
@@ -99,7 +103,7 @@ function cliRepo(remote: BareRemote): WhyNoteRepo & { calls: string[] } {
   };
 }
 
-describe("why notes: local round trip", () => {
+describe("why notes: local round trip", { timeout: SLOW_TEST_MS }, () => {
   for (const strategy of ["notes", "branch"] as WhyStorage[]) {
     it(`${strategy}: writes, reads back, overwrites in place`, async () => {
       const { fs, dir, shas } = await localRepoWithCommits(3);
@@ -138,7 +142,7 @@ describe("why notes: local round trip", () => {
   });
 });
 
-describe("why notes: push to a real git remote", () => {
+describe("why notes: push to a real git remote", { timeout: SLOW_TEST_MS }, () => {
   it("notes: creates refs/notes/why, git CLI reads it, binding reader reads it", async () => {
     const remote = bareRemote();
     const shas = seedRemote(remote, 2);

@@ -6,6 +6,10 @@ import { EventQueue, MODES, simulate, unionLength } from "./sim";
 import { filePathFor, generateWorkload } from "./workload";
 import { formatMarkdown, formatMinutes, formatTable, toBenchDoc } from "./report";
 
+// These suites spawn real git processes (or run the full simulator), which
+// can exceed vitest's 5 s default on a loaded machine.
+const SLOW_TEST_MS = 60_000;
+
 describe("prng", () => {
   it("is deterministic per seed and label", () => {
     const a = rngFor(7, "x");
@@ -91,7 +95,7 @@ describe("workload", () => {
   });
 });
 
-describe("simulate", () => {
+describe("simulate", { timeout: SLOW_TEST_MS }, () => {
   const run = simulate({ agents: 400, seed: 7, now: () => 0 });
   const by = Object.fromEntries(run.modes.map((m) => [m.mode, m]));
 

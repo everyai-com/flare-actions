@@ -5,7 +5,13 @@
 // with a ledger row, never half-pushing.
 import type { FsClient, HttpClient } from "isomorphic-git";
 import { type Db, nowIso } from "./db";
-import { appendLedger, getTournament, type TournamentArtifacts } from "./tournaments";
+import {
+  appendLedger,
+  FORGE_TRUNK_PROMOTE_REASON,
+  getTournament,
+  isForgeTrunk,
+  type TournamentArtifacts,
+} from "./tournaments";
 
 export type ResolveOutcome =
   | { status: "resolved"; winnerRunId: string; resolvedSha: string }
@@ -108,7 +114,7 @@ export interface FastForwardDeps {
 
 export type FastForwardOutcome =
   | { status: "pushed"; sha: string }
-  | { status: "skipped"; reason: "not-ready" | "already" | "unavailable" | "failed" };
+  | { status: "skipped"; reason: "not-ready" | "already" | "unavailable" | "failed" | "refused" };
 
 async function mintToken(
   artifacts: TournamentArtifacts,
@@ -148,6 +154,12 @@ export async function fastForwardWinner(
     .bind(tournamentId)
     .first<{ id: string }>();
   if (promoted) return { status: "skipped", reason: "already" };
+  // Invariant 1: a Forge trunk's main moves only through the train. A
+  // tournament on a trunk keeps its blessed pointer and never pushes.
+  if (await isForgeTrunk(deps.db, tournament.source_repo)) {
+    await appendLedger(deps.db, tournamentId, "promote-failed", FORGE_TRUNK_PROMOTE_REASON).catch(() => undefined);
+    return { status: "skipped", reason: "refused" };
+  }
   if (!deps.artifacts || !deps.git || !deps.http) return { status: "skipped", reason: "unavailable" };
   const winner = await deps.db
     .prepare("SELECT fork_repo FROM attempts WHERE tournament_id = ? AND verdict_rank = 1")
