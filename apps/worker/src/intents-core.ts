@@ -617,7 +617,8 @@ export type RiskTermName =
   | "drift"
   | "llm_replay"
   | "weak_evidence"
-  | "reviewer_disagrees";
+  | "reviewer_disagrees"
+  | "truncated_footprint";
 
 export interface RiskTerm {
   term: RiskTermName;
@@ -632,6 +633,9 @@ export const RISK_WEIGHTS = {
   llm_replay: 15,
   weak_evidence: 10,
   reviewer_disagrees: 15,
+  // Fail closed: an actual footprint we could not see in full may hide a
+  // protected path, so it alone exceeds the default auto-land threshold.
+  truncated_footprint: 40,
 } as const;
 
 // A `**` entry stands for a whole subtree; count it as this many files
@@ -647,6 +651,9 @@ export interface RiskInput {
   // No test touched the footprint, or a quarantined flaky test was hit.
   weakEvidence?: boolean;
   reviewerDisagrees?: boolean;
+  // The actual footprint was cut off (diff too large / listing bounded):
+  // risk cannot be computed from what is unseen, so route to a human.
+  truncated?: boolean;
 }
 
 export function footprintWeight(fp: Footprint): number {
@@ -695,6 +702,13 @@ export function scoreRisk(input: RiskInput): { risk: number; terms: RiskTerm[] }
       term: "reviewer_disagrees",
       points: RISK_WEIGHTS.reviewer_disagrees,
       detail: "clean-context reviewer disagrees with the author",
+    });
+  }
+  if (input.truncated) {
+    terms.push({
+      term: "truncated_footprint",
+      points: RISK_WEIGHTS.truncated_footprint,
+      detail: "actual footprint truncated; unseen files may touch protected paths",
     });
   }
   const risk = Math.min(100, terms.reduce((s, t) => s + t.points, 0));

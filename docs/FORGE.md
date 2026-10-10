@@ -102,7 +102,7 @@ protectedMatches(fp: Footprint, policy: ForgePolicy): string[]  // over effectiv
 
 // risk (§3.5)
 RISK_WEIGHTS, GLOBSTAR_WEIGHT (= 10 files)
-scoreRisk(input: { footprint; actualFootprint?; policy?; llmReplay?; weakEvidence?; reviewerDisagrees? })
+scoreRisk(input: { footprint; actualFootprint?; policy?; llmReplay?; weakEvidence?; reviewerDisagrees?; truncated? })
   : { risk: number /*0-100, capped*/; terms: RiskTerm[] }
 footprintWeight(fp): number; footprintSizePoints(weight): number   // log-scaled, ≤15
 routeLanding(risk: number, policy: ForgePolicy, roll: number): "auto" | "audit" | "human"

@@ -252,6 +252,7 @@ weights are capped and tuned on the simulator):
 | Resolved by an LLM replay | +15 |
 | CI evidence weak: no tests touched the footprint, or a flaky test was quarantined | +10 |
 | The clean-context reviewer agent disagrees with the author | +15 |
+| Actual footprint truncated (fail closed: unseen files may be protected) | +40 |
 
 The inbox shows **which terms fired**. Explainability is the UX.
 

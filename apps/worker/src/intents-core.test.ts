@@ -261,6 +261,15 @@ replay: { max_attempts: 2, race_k: 3 }
 
 describe("risk", () => {
   const policy = { ...DEFAULT_POLICY, protected: ["src/auth/**"] };
+  it("fails closed on a truncated actual footprint (routes to a human)", () => {
+    const clean = scoreRisk({ footprint: fp("src/a.ts"), actualFootprint: fp("src/a.ts"), policy });
+    const cut = scoreRisk({ footprint: fp("src/a.ts"), actualFootprint: fp("src/a.ts"), policy, truncated: true });
+    expect(cut.terms.find((t) => t.term === "truncated_footprint")?.points).toBe(40);
+    expect(cut.risk).toBe(clean.risk + 40);
+    expect(routeLanding(clean.risk, policy, 0.99)).toBe("auto");
+    expect(routeLanding(cut.risk, policy, 0.99)).toBe("human");
+    expect(scoreRisk({ footprint: fp("src/a.ts"), policy, truncated: false }).terms.some((t) => t.term === "truncated_footprint")).toBe(false);
+  });
   it("is zero-ish for a tiny clean change", () => {
     const r = scoreRisk({ footprint: fp("src/a.ts"), policy });
     expect(r.terms.map((t) => t.term)).toEqual(["footprint_size"]);
