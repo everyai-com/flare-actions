@@ -66,9 +66,15 @@ import { recordNotesTip, writeWhyNotes, type ProvenanceGit } from "./provenance"
 import {
   agentIdentity,
   bisectStep,
-  decideStack,
+  chainBreak,
+  cutCapacity,
+  decideChain,
+  freeSlots,
   landingGate,
   laneRef,
+  LANE_REF_PREFIX,
+  MAX_LANE_REFS,
+  MAX_SPECULATION_DEPTH,
   nextFetchDepth,
   planTrain,
   squashMessage,
@@ -186,14 +192,32 @@ async function changed(stmt: { run(): Promise<unknown> }): Promise<boolean> {
   return (res?.meta?.changes ?? 0) > 0;
 }
 
+// Active trains in chain order: group (cut order), then lane slot (slots
+// are assigned ascending within a group). Bounded by the lane-ref pool.
 export async function activeTrains(db: Db, repo: string): Promise<Train[]> {
   const res = await db
     .prepare(
-      `SELECT * FROM trains WHERE repo = ? AND state IN ('forming', 'merging', 'verifying') ORDER BY lane ASC, created_at ASC LIMIT 16`,
+      `SELECT * FROM trains WHERE repo = ? AND state IN ('forming', 'merging', 'verifying') ORDER BY group_seq ASC, lane ASC, created_at ASC LIMIT ${MAX_LANE_REFS * 2}`,
     )
     .bind(repo)
     .all<TrainRow>();
   return res.results.map(toTrain);
+}
+
+// Split chain-ordered trains into their groups (same groupSeq).
+export function groupTrains(trains: readonly Train[]): Train[][] {
+  const out: Train[][] = [];
+  for (const t of trains) {
+    const last = out[out.length - 1];
+    if (last && last[0].groupSeq === t.groupSeq) last.push(t);
+    else out.push([t]);
+  }
+  return out;
+}
+
+async function nextGroupSeq(db: Db, repo: string): Promise<number> {
+  const row = await db.prepare("SELECT COALESCE(MAX(group_seq), 0) AS g FROM trains WHERE repo = ?").bind(repo).first<{ g: number }>();
+  return (row?.g ?? 0) + 1;
 }
 
 async function setTrainIntents(db: Db, id: string, intentIds: string[]): Promise<void> {
@@ -238,10 +262,17 @@ async function trainCommitFor(db: Db, intentId: string, trainId: string): Promis
   return sha;
 }
 
-// Requeue without blame: in_train -> ready, clearing the train link.
+// Requeue without blame: in_train -> ready, clearing the train link. The
+// intent keeps its place in line: its queue timestamp goes back to when
+// it joined the train, so invalidated speculative work is rebuilt ahead
+// of everything that became ready since.
 async function requeueIntent(db: Db, intentId: string, reason: string): Promise<boolean> {
+  const before = await getIntent(db, intentId);
   const ok = await transitionIntent(db, intentId, "in_train", "ready", { trainId: null }, "train");
   if (ok) {
+    if (before?.updatedAt) {
+      await db.prepare("UPDATE intents SET updated_at = ? WHERE id = ? AND state = 'ready'").bind(before.updatedAt, intentId).run();
+    }
     const intent = await getIntent(db, intentId);
     await appendForgeLedger(db, { repo: intent?.repo ?? "", subjectKind: "intent", subjectId: intentId, kind: "requeued", body: reason, actor: "train" });
   }
@@ -482,7 +513,17 @@ export async function approveLanding(deps: TrainDeps, intentId: string, approved
 // ---------------------------------------------------------------------------
 
 export type CutResult =
-  | { status: "cut"; trainIds: string[]; lanes: string[][]; baseSha: string; deferred: string[] }
+  | {
+      status: "cut";
+      trainIds: string[];
+      lanes: string[][];
+      baseSha: string;
+      deferred: string[];
+      // Stacked on an in-flight group (built on its speculative head).
+      speculative: boolean;
+      groupSeq: number;
+      slots: number[];
+    }
   | { status: "busy"; trainIds: string[] }
   | { status: "idle" | "unavailable" | "no-pipeline" | "invalid-repo" };
 
@@ -501,19 +542,24 @@ export async function trunkMainSha(deps: TrainDeps, repo: string): Promise<strin
   }
 }
 
-// Cut one train for a repo from its ready queue. One train group per
-// repo at a time (lanes give the parallelism inside it), so cuts,
-// bisects and landings never race each other on main.
+// Cut one train group for a repo from its ready queue. Up to
+// lanes.speculation_depth groups may be in flight: a group cut while
+// others are active is speculative — it is built on the chain head (the
+// last in-flight lane's head), assuming everything ahead passes, so
+// ready intents that overlap in-flight work stack on it instead of
+// waiting for it to land. Each group takes free lane-ref slots; landings
+// stay serialized through one CAS on main (checkTrains).
 export async function cutTrain(deps: TrainDeps, repo: string): Promise<CutResult> {
   if (!validateRepo(repo)) return { status: "invalid-repo" };
   const active = await activeTrains(deps.db, repo);
-  if (active.length) return { status: "busy", trainIds: active.map((t) => t.id) };
+  const policy = await loadPolicy(deps, repo);
+  const cap = cutCapacity(policy, groupTrains(active).length, active.map((t) => t.lane));
+  if (!cap.slots.length) return { status: "busy", trainIds: active.map((t) => t.id) };
   const rows = await deps.db
     .prepare("SELECT * FROM intents WHERE repo = ? AND state = 'ready' ORDER BY updated_at ASC, id ASC LIMIT 500")
     .bind(repo)
     .all<IntentRow>();
   if (!rows.results.length) return { status: "idle" };
-  const policy = await loadPolicy(deps, repo);
   const approvedRows = await deps.db
     .prepare("SELECT DISTINCT subject_id FROM forge_ledger WHERE repo = ? AND subject_kind = 'intent' AND kind = 'land_approved'")
     .bind(repo)
@@ -532,12 +578,16 @@ export async function cutTrain(deps: TrainDeps, repo: string): Promise<CutResult
   // CI is the gate: without a pipeline at trunk there is nothing to
   // verify, so nothing may land (invariant 2).
   if (!(await loadPipelineAt(deps, repo, baseSha))) return { status: "no-pipeline" };
-  const plan = planTrain(candidates, policy);
+  const plan = planTrain(candidates, policy, { maxLanes: cap.slots.length });
+  const groupSeq = await nextGroupSeq(deps.db, repo);
   const trainIds: string[] = [];
   const lanes: string[][] = [];
+  const slots: number[] = [];
   for (let i = 0; i < plan.lanes.length; i++) {
     const lane = plan.lanes[i];
-    const train = await createTrain(deps.db, { repo, lane: i, baseSha, intentIds: lane.map((c) => c.id) });
+    // base_sha is provisional (main at cut); the builder stamps the real
+    // base (main, or the speculative head the lane is stacked on).
+    const train = await createTrain(deps.db, { repo, lane: cap.slots[i], baseSha, intentIds: lane.map((c) => c.id), groupSeq });
     const joined: string[] = [];
     for (const c of lane) {
       if (await transitionIntent(deps.db, c.id, "ready", "in_train", { trainId: train.id }, "train")) joined.push(c.id);
@@ -549,9 +599,12 @@ export async function cutTrain(deps: TrainDeps, repo: string): Promise<CutResult
     if (joined.length !== lane.length) await setTrainIntents(deps.db, train.id, joined);
     trainIds.push(train.id);
     lanes.push(joined);
+    slots.push(cap.slots[i]);
   }
   if (!trainIds.length) return { status: "idle" };
-  if (deps.launch) {
+  // Only the cut that starts a chain launches an executor; a speculative
+  // group is picked up by the executor already driving the repo.
+  if (deps.launch && !active.length) {
     try {
       await deps.launch(repo, trainIds[0]);
     } catch (err) {
@@ -559,7 +612,16 @@ export async function cutTrain(deps: TrainDeps, repo: string): Promise<CutResult
       log("warn", "train launch failed", { repo, error: redact(err) });
     }
   }
-  return { status: "cut", trainIds, lanes, baseSha, deferred: plan.deferred.map((c) => c.id) };
+  return {
+    status: "cut",
+    trainIds,
+    lanes,
+    baseSha,
+    deferred: plan.deferred.map((c) => c.id),
+    speculative: cap.speculative,
+    groupSeq,
+    slots,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -660,13 +722,38 @@ async function otherSide(db: Db, repo: string, earlier: Intent[], files: string[
   return "trunk";
 }
 
-// Build every forming train of the repo as one stacked group. Retry-safe:
-// commits are deterministic, so a re-run reproduces the same heads.
+// Build every forming group of the repo, in chain order, each as one
+// stacked group on the chain head, then dispatch CI for the new lane
+// heads. Retry-safe: commits are deterministic, so a re-run reproduces
+// the same heads.
 export async function buildTrains(deps: TrainDeps, repo: string): Promise<BuildResult> {
-  const active = await activeTrains(deps.db, repo);
-  const forming = active.filter((t) => t.state === "forming");
-  if (!forming.length) return { status: "none" };
-  if (forming.length !== active.length) return { status: "busy" };
+  let first: BuildResult | null = null;
+  const lanes: BuiltLane[] = [];
+  for (let k = 0; k <= MAX_SPECULATION_DEPTH; k++) {
+    const out = await buildGroup(deps, repo);
+    if (!first) first = out;
+    if (out.status !== "built") break;
+    lanes.push(...out.lanes);
+  }
+  // Only the builder that built dispatches (checkTrains covers misses).
+  if (!first || first.status !== "built") return first ?? { status: "none" };
+  const dispatched = await dispatchTrains(deps, repo);
+  return { status: "built", baseSha: first.baseSha, lanes, dispatched };
+}
+
+// Build the first forming group of the chain. Every group ahead of it
+// must be built (verifying); the group's first lane is stacked on the
+// last of their heads — the speculative head — or on main when nothing
+// is ahead (the chain root).
+async function buildGroup(deps: TrainDeps, repo: string): Promise<BuildResult> {
+  const groups = groupTrains(await activeTrains(deps.db, repo));
+  const gi = groups.findIndex((g) => g.some((t) => t.state === "forming"));
+  if (gi < 0) return { status: "none" };
+  const ahead = groups.slice(0, gi).flat();
+  if (ahead.some((t) => t.state !== "verifying")) return { status: "busy" };
+  const forming = groups[gi];
+  if (forming.some((t) => t.state !== "forming")) return { status: "busy" };
+  const parent = ahead.length ? ahead[ahead.length - 1] : null;
   // Lane 0's conditional claim is the group lock: only one builder wins.
   if (!(await transitionTrain(deps.db, forming[0].id, "forming", "merging"))) return { status: "busy" };
   for (const t of forming.slice(1)) await transitionTrain(deps.db, t.id, "forming", "merging");
@@ -693,25 +780,53 @@ export async function buildTrains(deps: TrainDeps, repo: string): Promise<BuildR
 
   let baseSha: string;
   try {
-    const head = await fetchCovering(ctx, ctx.trunkUrl, ctx.readToken, "main", allBases);
-    if (!head) throw new Error("trunk main not found");
-    baseSha = head;
+    const mainHead = await fetchCovering(ctx, ctx.trunkUrl, ctx.readToken, "main", allBases);
+    if (!mainHead) throw new Error("trunk main not found");
+    if (parent) {
+      // Speculative: stack on the in-flight chain head (its lane ref
+      // carries the whole chain down to main).
+      await fetchCovering(ctx, ctx.trunkUrl, ctx.readToken, `refs/heads/${laneRef(parent.lane)}`, [parent.headSha]);
+      if (!(await hasCommit(ctx, parent.headSha))) throw new Error(`speculative base ${parent.headSha.slice(0, 12)} not fetchable`);
+      baseSha = parent.headSha;
+    } else {
+      baseSha = mainHead;
+    }
   } catch (err) {
     for (const t of group) await abortTrain(deps.db, t, `fetch trunk failed: ${redact(err)}`);
     return { status: "failed", detail: redact(err) };
   }
-  for (const t of group) await setTrainBase(deps.db, t.id, baseSha);
+  // The pool is pre-created at bootstrap; the Worker never creates a
+  // ref (spike S5). Unknown = the listing failed: push and let a missing
+  // ref surface as a push error instead.
+  let laneRefs: Set<string> | null = null;
+  try {
+    const refs = await deps.git.listServerRefs({
+      http: deps.http,
+      url: ctx.trunkUrl,
+      prefix: `refs/heads/${LANE_REF_PREFIX}`,
+      onAuth: () => ({ username: "x", password: ctx.readToken }),
+    });
+    laneRefs = new Set(refs.map((r) => r.ref));
+  } catch {
+    laneRefs = null;
+  }
 
   let head = baseSha;
   const lanes: BuiltLane[] = [];
   const mergedSoFar: Intent[] = [];
   let broken: string | null = null;
   for (const t of group) {
+    const ref = `refs/heads/${laneRef(t.lane)}`;
+    if (!broken && laneRefs && !laneRefs.has(ref)) {
+      broken = `lane ref ${laneRef(t.lane)} missing: bootstrap the lane-ref pool (scripts/artifacts-mirror.mjs lanes)`;
+      log("warn", "lane ref missing", { repo, ref });
+    }
     if (broken) {
       await abortTrain(deps.db, t, broken);
       lanes.push({ trainId: t.id, lane: t.lane, head: null, merged: [], conflicts: [], requeued: t.intentIds, mergeMs: 0 });
       continue;
     }
+    await setTrainBase(deps.db, t.id, head);
     const started = Date.now();
     const timestamp = trainTimestamp(t.createdAt);
     const built: BuiltLane = { trainId: t.id, lane: t.lane, head: null, merged: [], conflicts: [], requeued: [], mergeMs: 0 };
@@ -790,7 +905,7 @@ export async function buildTrains(deps: TrainDeps, repo: string): Promise<BuildR
       // dispatch a duplicate run for the lane push.
       await claimWebhookDelivery(deps.db, artifactsDeliveryId(deps.namespace, repo, head));
       await deps.git.writeRef({ fs: ctx.fs, gitdir: GITDIR, ref: "refs/heads/lane", value: head, force: true });
-      await pushRef(ctx, "refs/heads/lane", `refs/heads/${laneRef(t.lane)}`, true);
+      await pushRef(ctx, "refs/heads/lane", ref, true);
     } catch (err) {
       broken = `lane push failed: ${redact(err)}`;
       await abortTrain(deps.db, { ...t, intentIds: built.merged }, broken);
@@ -803,8 +918,7 @@ export async function buildTrains(deps: TrainDeps, repo: string): Promise<BuildR
     built.head = head;
     lanes.push(built);
   }
-  const dispatched = await dispatchTrains(deps, repo);
-  return { status: "built", baseSha, lanes, dispatched };
+  return { status: "built", baseSha, lanes, dispatched: 0 };
 }
 
 // Dispatch CI for verifying lanes that have no run yet (idempotent: the
@@ -853,6 +967,8 @@ export type CheckResult =
   | { status: "idle" | "building" | "waiting" }
   | { status: "retry"; detail: string }
   | { status: "rebuild"; detail: string; requeued: string[] }
+  // A green prefix of the chain landed; lanes behind it still verifying.
+  | { status: "progress"; mainSha: string; landed: string[]; requeued: string[] }
   | {
       status: "decided";
       mainSha: string;
@@ -939,20 +1055,39 @@ export function routeLine(risk: number, policy: ForgePolicy, route: LandingRoute
   return `risk ${risk} ${cmp} ${policy.autoLandMaxRisk} → ${decision}${detail ? ` (${detail})` : ""}`;
 }
 
+// Observe the speculative chain (every active lane, chain order): land
+// its longest contiguous green prefix with one CAS push of main, bisect
+// the first red lane and invalidate every lane behind it (any group).
+// Lanes not yet built count as pending. Idempotent: a retry after a
+// crash sees main already at the target and finishes the transitions.
 export async function checkTrains(deps: TrainDeps, repo: string): Promise<CheckResult> {
   let active = await activeTrains(deps.db, repo);
   if (!active.length) return { status: "idle" };
-  if (active.some((t) => t.state !== "verifying")) return { status: "building" };
-  if (active.some((t) => !t.runId)) {
+  if (active.some((t) => t.state === "verifying" && !t.runId)) {
     await dispatchTrains(deps, repo);
     active = await activeTrains(deps.db, repo);
     if (!active.length) return { status: "idle" };
-    if (active.some((t) => !t.runId)) return { status: "waiting" };
+  }
+  // Built lanes form the chain's prefix (groups build in order).
+  let builtCount = active.findIndex((t) => t.state !== "verifying");
+  if (builtCount < 0) builtCount = active.length;
+  if (builtCount === 0) return { status: "building" };
+  // Contiguity: a lane not stacked on the lane before it (that lane was
+  // aborted by a sweep or failed dispatch) would land unverified commits;
+  // invalidate it and everything behind it.
+  const brk = chainBreak(active.slice(0, builtCount));
+  if (brk !== null) {
+    const requeued: string[] = [];
+    for (const t of active.slice(brk)) {
+      await abortTrain(deps.db, t, "chain broken: the lane it was stacked on left the chain; rebuild");
+      requeued.push(...t.intentIds);
+    }
+    return { status: "rebuild", detail: "chain broken", requeued };
   }
   const outcomes: LaneOutcome[] = [];
-  for (const t of active) outcomes.push(await laneOutcome(deps, t));
-  const d = decideStack(outcomes);
-  if (d.waiting) return { status: "waiting" };
+  for (let i = 0; i < active.length; i++) outcomes.push(i < builtCount ? await laneOutcome(deps, active[i]) : "pending");
+  const d = decideChain(outcomes);
+  if (d.waiting && d.landThrough < 0) return { status: "waiting" };
   const expected = active[0].baseSha;
   let mainSha = expected;
   const out = { landed: [] as string[], failed: [] as string[], requeued: [] as string[], bisected: [] as string[] };
@@ -984,9 +1119,13 @@ export async function checkTrains(deps: TrainDeps, repo: string): Promise<CheckR
       }
     }
   }
+  if (d.waiting) return { status: "progress", mainSha, landed: out.landed, requeued: [] };
+  // Invalidate every lane behind the red one, in any descendant group:
+  // its head contains the red lane's changes. Requeued without blame.
+  const redId = d.redLane === null ? "" : active[d.redLane].id.slice(0, 8);
   for (const j of d.requeueLanes) {
     const t = active[j];
-    await abortTrain(deps.db, t, `stacked on red lane ${d.redLane}`);
+    await abortTrain(deps.db, t, `stacked on red lane ${d.redLane} (train ${redId}); rebuild`);
     out.requeued.push(...t.intentIds);
   }
   if (d.redLane !== null) {
@@ -1002,13 +1141,18 @@ export async function checkTrains(deps: TrainDeps, repo: string): Promise<CheckR
     } else if ("halves" in step) {
       await transitionTrain(deps.db, red.id, "verifying", "bisected");
       const halves = step.halves;
-      for (let h = 0; h < halves.length; h++) {
+      // Children form a new group at the chain head (everything behind
+      // the red lane was just invalidated), on the new main.
+      const groupSeq = await nextGroupSeq(deps.db, repo);
+      const used = (await activeTrains(deps.db, repo)).map((t) => t.lane);
+      const childSlots = freeSlots(used, MAX_LANE_REFS, halves.length);
+      for (let h = 0; h < halves.length && h < childSlots.length; h++) {
         const ids: string[] = [];
         for (const id of halves[h]) {
           if (await transitionIntent(deps.db, id, "in_train", "bisected", { trainId: null }, "train")) ids.push(id);
         }
         if (!ids.length) continue;
-        const child = await createTrain(deps.db, { repo, lane: h, baseSha: mainSha, intentIds: ids, parentTrainId: red.id });
+        const child = await createTrain(deps.db, { repo, lane: childSlots[h], baseSha: mainSha, intentIds: ids, parentTrainId: red.id, groupSeq });
         const joined: string[] = [];
         for (const id of ids) {
           if (
@@ -1197,6 +1341,15 @@ export async function sweepStaleTrains(deps: TrainDeps, repo: string, nowMs = Da
   return swept;
 }
 
+// Keep the pipeline full: cut a group (the chain root, or a speculative
+// group when a speculation level and lane refs are free) and build every
+// forming group. Idempotent; safe to call on every poll.
+export async function pumpRepo(deps: TrainDeps, repo: string): Promise<{ cut: CutResult; build: BuildResult | null }> {
+  const cut = await cutTrain(deps, repo);
+  const forming = (await activeTrains(deps.db, repo)).some((t) => t.state === "forming");
+  return { cut, build: forming ? await buildTrains(deps, repo) : null };
+}
+
 export interface AdvanceResult {
   cut: CutResult | null;
   build: BuildResult | null;
@@ -1211,13 +1364,10 @@ export interface AdvanceResult {
 export async function advanceRepo(deps: TrainDeps, repo: string): Promise<AdvanceResult> {
   const out: AdvanceResult = { cut: null, build: null, check: null, notes: 0, revoked: 0 };
   await sweepStaleTrains(deps, repo);
-  let active = await activeTrains(deps.db, repo);
-  if (!active.length) {
-    out.cut = await cutTrain(deps, repo);
-    active = await activeTrains(deps.db, repo);
-  }
-  if (active.some((t) => t.state === "forming")) out.build = await buildTrains(deps, repo);
-  else if (active.length) out.check = await checkTrains(deps, repo);
+  const pumped = await pumpRepo(deps, repo);
+  out.cut = pumped.cut;
+  out.build = pumped.build;
+  if ((await activeTrains(deps.db, repo)).some((t) => t.state === "verifying")) out.check = await checkTrains(deps, repo);
   out.notes = (await writeNotes(deps, repo)).written;
   out.revoked = (await revokeLandedTokens(deps, repo)).revoked;
   return out;

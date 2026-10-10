@@ -190,6 +190,9 @@ export interface Train {
   runId: string | null;
   state: TrainState;
   parentTrainId: string | null;
+  // Speculation: the group this train was cut in. Active trains form one
+  // chain ordered by (groupSeq, lane); 0 = rows from before speculation.
+  groupSeq: number;
   createdAt: string;
   updatedAt: string;
 }

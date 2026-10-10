@@ -30,6 +30,7 @@ import {
   type TrainGit,
 } from "./train";
 import { DEFAULT_POLICY } from "./intents-core";
+import { laneRefPool } from "./train-core";
 import { gitFixture, sqliteDb, type GitFixture } from "./testing/forge-fixture";
 
 const REPO = "trunk";
@@ -69,7 +70,7 @@ async function harness(): Promise<Harness> {
   for (const f of ["a", "b", "c", "d", "e"]) seed[`src/${f}.ts`] = lines(f);
   const main = fx.createRepo(REPO, seed);
   // Lane refs exist up front (spike S5: never create refs from the Worker).
-  for (let i = 0; i < 8; i++) fx.sh(["--git-dir", `${fx.root}/${REPO}.git`, "update-ref", `refs/heads/forge/lane-${i}`, main]);
+  for (const ref of laneRefPool()) fx.sh(["--git-dir", `${fx.root}/${REPO}.git`, "update-ref", ref, main]);
 
   const runs = new Map<string, { sha: string; status: string }>();
   const dispatched: TrainDispatchInput[] = [];
@@ -368,13 +369,116 @@ describe("trains: merger end-to-end (isomorphic-git + MemoryFS + git http-backen
     expect(await cutTrain({ ...h.deps, loadPipeline: async () => null }, REPO)).toEqual({ status: "no-pipeline" });
   });
 
-  it("serializes: one active train group per repo; a lost build race is busy", async () => {
+  it("speculation_depth 1 serializes groups; a lost build race is busy", async () => {
+    h.policyText.value = "lanes: { speculation_depth: 1 }\n";
     await h.ready({ title: "a", paths: ["src/a.ts"], files: { "src/a.ts": "x\n" } });
     await cutTrain(h.deps, REPO);
+    await h.ready({ title: "b", paths: ["src/b.ts"], files: { "src/b.ts": "y\n" } });
     expect((await cutTrain(h.deps, REPO)).status).toBe("busy");
     const [one, two] = await Promise.all([buildTrains(h.deps, REPO), buildTrains(h.deps, REPO)]);
     expect([one.status, two.status].sort()).toEqual(["built", "busy"]);
     expect(h.dispatched.length).toBe(1);
+  });
+
+  it("speculative: group 2 is built on in-flight group 1's head and lands right after it", async () => {
+    const a = await h.ready({ title: "a2", paths: ["src/a.ts"], files: { "src/a.ts": withLine(lines("a"), 2, "a2 by A") } });
+    const c1 = await cutTrain(h.deps, REPO);
+    expect(c1).toMatchObject({ status: "cut", speculative: false, slots: [0] });
+    const g1 = (await buildTrains(h.deps, REPO)) as Extract<BuildResult, { status: "built" }>;
+    const h1 = g1.lanes[0].head ?? "";
+    // b overlaps a (same file): it stacks on a's in-flight head instead of waiting
+    const b = await h.ready({ title: "a9", paths: ["src/a.ts"], files: { "src/a.ts": withLine(lines("a"), 9, "a9 by B") }, agent: "agent-b" });
+    const c2 = await cutTrain(h.deps, REPO);
+    expect(c2).toMatchObject({ status: "cut", speculative: true, slots: [1], lanes: [[b]] });
+    const g2 = (await buildTrains(h.deps, REPO)) as Extract<BuildResult, { status: "built" }>;
+    expect(g2.status).toBe("built");
+    const h2 = g2.lanes[0].head ?? "";
+    expect(h.fx.log(REPO, h2).slice(0, 2)).toEqual([h2, h1]);
+    expect(h.fx.head(REPO, "forge/lane-1")).toBe(h2);
+    expect(h.dispatched.map((d) => d.sha)).toEqual([h1, h2]);
+    expect(h.fx.show(REPO, h2, "src/a.ts")).toContain("a9 by B");
+    // group 2 finishes first: nothing lands until group 1 is green
+    h.runs.forEach((r) => {
+      if (r.sha === h2) r.status = "success";
+    });
+    expect(await checkTrains(h.deps, REPO)).toEqual({ status: "waiting" });
+    h.completeCi();
+    expect(await checkTrains(h.deps, REPO)).toMatchObject({ status: "decided", landed: [a, b] });
+    // one CAS push covers both groups; main = exactly the verified h2
+    expect(h.mainPushes).toEqual([h2]);
+    expect(h.fx.head(REPO)).toBe(h2);
+    expect((await getIntent(h.db, b))?.landedSha).toBe(h2);
+  });
+
+  it("speculative: group 1 lands while group 2 is still verifying, then group 2 lands right after", async () => {
+    const a = await h.ready({ title: "a", paths: ["src/a.ts"], files: { "src/a.ts": withLine(lines("a"), 1, "a ok") } });
+    await cutTrain(h.deps, REPO);
+    await buildTrains(h.deps, REPO);
+    h.completeCi();
+    const b = await h.ready({ title: "b", paths: ["src/b.ts"], files: { "src/b.ts": withLine(lines("b"), 1, "b ok") } });
+    const cut = await cutTrain(h.deps, REPO);
+    expect(cut).toMatchObject({ status: "cut", speculative: true });
+    await buildTrains(h.deps, REPO);
+    const prog = await checkTrains(h.deps, REPO);
+    expect(prog).toMatchObject({ status: "progress", landed: [a] });
+    const [h1, h2] = h.dispatched.map((d) => d.sha);
+    expect(h.fx.head(REPO)).toBe(h1);
+    h.completeCi();
+    expect(await checkTrains(h.deps, REPO)).toMatchObject({ status: "decided", landed: [b] });
+    expect(h.mainPushes).toEqual([h1, h2]);
+  });
+
+  it("speculative: group 1 red invalidates group 2, which is rebuilt on the new main without blame", async () => {
+    const a = await h.ready({ title: "bad a", paths: ["src/a.ts"], files: { "src/a.ts": withLine(lines("a"), 1, "a BUG") } });
+    await cutTrain(h.deps, REPO);
+    const g1 = (await buildTrains(h.deps, REPO)) as Extract<BuildResult, { status: "built" }>;
+    const b = await h.ready({ title: "b", paths: ["src/b.ts"], files: { "src/b.ts": withLine(lines("b"), 1, "b ok") } });
+    await cutTrain(h.deps, REPO);
+    const g2 = (await buildTrains(h.deps, REPO)) as Extract<BuildResult, { status: "built" }>;
+    const specHead = g2.lanes[0].head ?? "";
+    expect(h.fx.log(REPO, specHead)[1]).toBe(g1.lanes[0].head);
+    h.completeCi(); // both red: g2's head contains a's BUG
+    expect(await checkTrains(h.deps, REPO)).toMatchObject({ status: "decided", landed: [], failed: [a], requeued: [b] });
+    const bi = await getIntent(h.db, b);
+    expect(bi?.state).toBe("ready");
+    expect((await listForgeLedger(h.db, "intent", b)).some((r) => r.kind === "culprit")).toBe(false);
+    await settle();
+    const landed = await getIntent(h.db, b);
+    expect(landed?.state).toBe("landed");
+    expect(landed?.landedSha).not.toBe(specHead);
+    expect(h.fx.log(REPO)).not.toContain(g1.lanes[0].head);
+    expect(h.fx.show(REPO, "main", "src/a.ts")).not.toContain("BUG");
+    expect(h.mainPushes.length).toBe(1);
+  });
+
+  it("speculative: a lane that loses the lane it was stacked on is invalidated (chain broken), never landed", async () => {
+    await h.ready({ title: "a", paths: ["src/a.ts"], files: { "src/a.ts": withLine(lines("a"), 1, "a ok") } });
+    const c1 = await cutTrain(h.deps, REPO);
+    await buildTrains(h.deps, REPO);
+    const b = await h.ready({ title: "b", paths: ["src/b.ts"], files: { "src/b.ts": withLine(lines("b"), 1, "b ok") } });
+    await cutTrain(h.deps, REPO);
+    await buildTrains(h.deps, REPO);
+    h.completeCi();
+    // group 1 vanishes (e.g. a stale sweep aborted it)
+    await h.db.prepare("UPDATE trains SET state = 'aborted' WHERE id = ?").bind(c1.status === "cut" ? c1.trainIds[0] : "").run();
+    // b is now the chain's first lane but sits on a's head, not main: the
+    // CAS against its base refuses, and it is rebuilt.
+    expect(await checkTrains(h.deps, REPO)).toMatchObject({ status: "rebuild", requeued: [b] });
+    expect(h.mainPushes).toEqual([]);
+    expect((await getIntent(h.db, b))?.state).toBe("ready");
+  });
+
+  it("never creates a lane ref: a missing pool ref aborts the lane and requeues it", async () => {
+    h.fx.sh(["--git-dir", `${h.fx.root}/${REPO}.git`, "update-ref", "-d", "refs/heads/forge/lane-0"]);
+    const a = await h.ready({ title: "a", paths: ["src/a.ts"], files: { "src/a.ts": "x\n" } });
+    await cutTrain(h.deps, REPO);
+    const built = await buildTrains(h.deps, REPO);
+    expect(built.status).toBe("built");
+    expect(h.dispatched).toEqual([]);
+    expect(h.fx.head(REPO, "forge/lane-0")).toBeNull();
+    expect((await getIntent(h.db, a))?.state).toBe("ready");
+    const reason = (await h.db.prepare("SELECT body FROM forge_ledger WHERE kind = 'abort_reason'").bind().first<{ body: string }>())?.body;
+    expect(reason).toMatch(/lane ref forge\/lane-0 missing/);
   });
 
   it("routeLine renders the policy decision", () => {
