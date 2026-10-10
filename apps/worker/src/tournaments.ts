@@ -5,7 +5,8 @@
 // Push subscriptions are repo-scoped and not CLI-provisionable, so
 // dynamic forks poll instead of subscribing: the same dispatch core as
 // artifacts-push.ts, driven by head changes rather than events.
-import { type Db, claimWebhookDelivery, getRun, isTerminal, nowIso } from "./db";
+import { type Db, claimWebhookDelivery, getRun, isTerminal, nowIso, repoAllowSql } from "./db";
+import { reposAllow } from "./tokens";
 import {
   ARTIFACTS_EVENT,
   artifactsDeliveryId,
@@ -362,10 +363,54 @@ export interface TournamentBoard {
   ledger: LedgerRow[];
 }
 
-export async function listTournaments(db: Db, limit = 20): Promise<TournamentRow[]> {
+// Tournaments are repo-scoped by their source as `namespace/name` (the
+// same key the create route and repo browsing check).
+export function tournamentRepoKey(namespace: string, sourceRepo: string): string {
+  return `${namespace}/${sourceRepo}`;
+}
+
+export function tournamentAllowed(allowedRepos: string[], namespace: string, sourceRepo: string): boolean {
+  return reposAllow(allowedRepos, tournamentRepoKey(namespace, sourceRepo));
+}
+
+// Translate a token allowlist (`ns/name`, `org/*`) into source_repo
+// names under the bound namespace: null = every source, [] = none.
+export function allowedTournamentSources(allowedRepos: string[], namespace: string): string[] | null {
+  if (allowedRepos.length === 0) return null;
+  const ns = namespace.toLowerCase();
+  const names: string[] = [];
+  for (const entry of allowedRepos) {
+    const lower = entry.toLowerCase();
+    if (lower.endsWith("/*")) {
+      if (lower.slice(0, -2) === ns) return null;
+      continue;
+    }
+    const slash = lower.indexOf("/");
+    if (slash > 0 && lower.slice(0, slash) === ns) names.push(entry.slice(slash + 1));
+  }
+  return names;
+}
+
+export async function listTournaments(
+  db: Db,
+  limit = 20,
+  scope: { repos: string[]; namespace: string } = { repos: [], namespace: "" },
+): Promise<TournamentRow[]> {
+  const bounded = Math.min(Math.max(limit, 1), 100);
+  const sources = allowedTournamentSources(scope.repos, scope.namespace);
+  if (sources === null) {
+    const res = await db
+      .prepare("SELECT * FROM tournaments ORDER BY created_at DESC LIMIT ?")
+      .bind(bounded)
+      .all<TournamentRow>();
+    return res.results;
+  }
+  // Allowlists are short; cap the IN list under D1's 100-bind limit.
+  const filter = repoAllowSql(sources.slice(0, 90), "source_repo");
+  if (!filter.clause) return [];
   const res = await db
-    .prepare("SELECT * FROM tournaments ORDER BY created_at DESC LIMIT ?")
-    .bind(Math.min(Math.max(limit, 1), 100))
+    .prepare(`SELECT * FROM tournaments WHERE ${filter.clause} ORDER BY created_at DESC LIMIT ?`)
+    .bind(...filter.binds, bounded)
     .all<TournamentRow>();
   return res.results;
 }

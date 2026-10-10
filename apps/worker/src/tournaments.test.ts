@@ -8,7 +8,9 @@ import {
   forkHead,
   forkNameFor,
   getAttemptRace,
+  allowedTournamentSources,
   getTournamentBoard,
+  listTournaments,
   pollTournamentAttempts,
   validateTournamentClaim,
   validateTournamentCreate,
@@ -431,5 +433,26 @@ describe("appendLedger + getTournamentBoard", () => {
     await db.prepare("UPDATE attempts SET run_id = ? WHERE tournament_id = ?").bind("run-9", tid).run();
     expect(await getAttemptRace(db, "run-9")).toEqual({ tournament_id: tid, agent: "a1", verdict_rank: null });
     expect(await getAttemptRace(db, "other")).toBeNull();
+  });
+});
+
+describe("tournament repo scope", () => {
+  it("translates token allowlists into source names", () => {
+    expect(allowedTournamentSources([], "ns")).toBeNull();
+    expect(allowedTournamentSources(["ns/*"], "ns")).toBeNull();
+    expect(allowedTournamentSources(["NS/*"], "ns")).toBeNull();
+    expect(allowedTournamentSources(["ns/a", "other/b", "org/*"], "ns")).toEqual(["a"]);
+    expect(allowedTournamentSources(["other/*"], "ns")).toEqual([]);
+  });
+
+  it("lists only in-scope tournaments", async () => {
+    const db = sqliteDb();
+    await createTournament(db, { intent: "one", sourceRepo: "alpha" });
+    await createTournament(db, { intent: "two", sourceRepo: "beta" });
+    expect((await listTournaments(db, 20)).map((t) => t.source_repo).sort()).toEqual(["alpha", "beta"]);
+    const scoped = await listTournaments(db, 20, { repos: ["ns/alpha"], namespace: "ns" });
+    expect(scoped.map((t) => t.source_repo)).toEqual(["alpha"]);
+    expect(await listTournaments(db, 20, { repos: ["elsewhere/*"], namespace: "ns" })).toEqual([]);
+    expect(await listTournaments(db, 20, { repos: ["ns/*"], namespace: "ns" })).toHaveLength(2);
   });
 });
