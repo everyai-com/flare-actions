@@ -301,7 +301,7 @@ import { buildMcpServer, mcpDiscovery } from "./mcp";
 import { forgeDepsFromEnv, handleForgeRequest } from "./forge-routes";
 import { forgeAdaptersFromEnv } from "./forge-adapters";
 import { listAppRepos, loadSetupFacts, setupSteps } from "./setup";
-import { runnerScript } from "./runner-script";
+import { resolveRunnerRef, runnerScript } from "./runner-script";
 import {
   describeScope,
   handleAuthorizeGet,
@@ -2498,10 +2498,12 @@ export default {
       // The API serves its own contract (generated module, CI-synced)
       // plus an interactive Redoc reference over it.
       // One-line runner setup for the dashboard's "Use my computer":
-      // curl -fsSL <origin>/runner.sh | sh -s <PAIR-CODE>. Public — the
-      // single-use pairing code (an argument) is the only secret.
+      // curl -fsSL <origin>/runner.sh | FLARE_PAIR_CODE=<CODE> sh. Public:
+      // the single-use pairing code (environment, never argv) is the
+      // only secret, and the runner checkout is pinned to a tag/commit.
       if (request.method === "GET" && url.pathname === "/runner.sh") {
-        const script = runnerScript(url.origin);
+        const fleetVersion = await getSetting(env.DB, SETTING_KEYS.runnerVersion).catch(() => null);
+        const script = runnerScript(url.origin, resolveRunnerRef(env.FLARE_RUNNER_REF, fleetVersion));
         if (!script) return json({ error: "unsupported origin" }, 400);
         return new Response(script, {
           headers: { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "public, max-age=300" },
