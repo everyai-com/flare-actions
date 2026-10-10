@@ -1,0 +1,7 @@
+# Forge policy for this trunk (COMPETITION-PLAN.md §3.4). Read by the
+# coordinator at declare time and by the train at land time.
+protected: [ "src/auth/**", "migrations/**" ]   # intents here stop at awaiting_plan
+auto_land_max_risk: 30                            # 0-100
+audit_sample: 0.05                                # fraction of auto-landed routed to humans
+lanes: { max_per_train: 50, max_parallel: 8 }
+replay: { max_attempts: 2, race_k: 3 }            # race_k>1 = resolution tournament
