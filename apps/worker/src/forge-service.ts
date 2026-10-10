@@ -1703,6 +1703,8 @@ export async function snapshotOp(deps: ForgeServiceDeps, p: ForgePrincipal, args
     // `head` is { sha, at } (dashboard); `headSha` keeps the plain sha.
     head: { sha: snap.head, at: null },
     headSha: snap.head,
+    // Root-level files live in the "(root)" cell (the map's name for it).
+    cells: snap.cells.map((c) => (c.path === "/" ? { ...c, path: "(root)" } : c)),
     intents: snap.intents.map((i) => ({
       ...i,
       footprint: { ...i.footprint, declared: i.footprint.paths, actual: i.actualFootprint?.paths ?? [], drift: i.actualFootprint ? driftPaths(i.footprint, i.actualFootprint) : [] },
