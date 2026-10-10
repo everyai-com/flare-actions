@@ -5,7 +5,11 @@ jobs:
   verify:
     steps:
       - run: node --version && npm --version
-      - run: npm ci
+      # Seats showed npm ci hanging silently to the 10m step cap: log
+      # HTTP progress so a stall is diagnosable, skip audit/fund round
+      # trips, and allow a cold cache more room.
+      - run: npm ci --prefer-offline --no-audit --no-fund --loglevel=http
+        timeout-minutes: 20
       - run: npm run types
       - run: npm run typecheck
       - run: npm test
