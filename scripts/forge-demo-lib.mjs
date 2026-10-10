@@ -435,7 +435,7 @@ export function realAgentPrompt({ repo, agent, goal, goalId, target, others, cli
 // ---------------------------------------------------------------------------
 
 export const STAGES = [
-  { n: 1, beat: "1:15 Goal -> plan", title: "goals seeded, plans proposed", shows: "3 goals, 13 declared intents; g3-api-key-rotation waits at awaiting_plan (src/auth/** is protected)" },
+  { n: 1, beat: "1:15 Goal -> plan", title: "goals seeded, plans proposed", shows: "3 goals; the 7 intents no stage-2 agent owns are declared (stage 2 agents declare theirs live, so overlaps appear on camera); g3-api-key-rotation waits at awaiting_plan (src/auth/** is protected)" },
   { n: 2, beat: "2:00 Q1 awareness", title: "6 agents mid-work with overlaps", shows: "6 scripted agents claimed + pushed: src/index.ts overlap (metrics x rate-limit), logging.ts overlap (request-id x log-latency), drift on one agent; nothing ready yet" },
   { n: 3, beat: "3:15 Q2 trains", title: "train with lanes, bisect in flight", shows: "the 6 plus 6 green intents marked ready: one train, parallel lanes; the semantic pair turns a lane red and bisect starts" },
   { n: 4, beat: "3:15 Q2 conflicts", title: "conflict replay", shows: "the logging.ts conflict opens; a scripted resolver claims it, replays g3-log-latency on g1-request-id, resolves; it rides the next train" },
