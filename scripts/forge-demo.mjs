@@ -127,6 +127,11 @@ export function bootstrapTrunk(o, log = console.log) {
   log(`  repo ${o.namespace}/${o.repo} ${created ? "created" : "exists"} (${remote})`);
 
   const token = artifactsToken(o.namespace, o.repo, "write", 3600);
+  return { remote, created, ...pushTrunk(o, remote, token, created, log) };
+}
+
+/** Push main (if absent), lane refs and the notes ref to `remote` with the git CLI. */
+export function pushTrunk(o, remote, token, created, log = console.log) {
   const work = mkdtempSync(join(tmpdir(), "forge-demo-trunk-"));
   try {
     const heads = git(["ls-remote", remote], { token, allowFail: true });
@@ -168,7 +173,7 @@ export function bootstrapTrunk(o, log = console.log) {
       git(["push", "-q", remote, `${NOTES_REF}:${NOTES_REF}`], { cwd: work, token });
       log(`  created ${NOTES_REF} (empty note on ${root.slice(0, 12)})`);
     } else log(`  ${NOTES_REF} exists`);
-    return { remote, mainSha, created };
+    return { mainSha };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
