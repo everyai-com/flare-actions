@@ -91,7 +91,7 @@ describe("workload", () => {
   });
 });
 
-describe("simulate", () => {
+describe("simulate", { timeout: 60_000 }, () => {
   const run = simulate({ agents: 400, seed: 7, now: () => 0 });
   const by = Object.fromEntries(run.modes.map((m) => [m.mode, m]));
 

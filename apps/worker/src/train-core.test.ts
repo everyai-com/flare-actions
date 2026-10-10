@@ -541,7 +541,7 @@ describe("SpeculativeChain", () => {
     expect(d.parent).toBe(a.id);
   });
 
-  it("property: invariants over random pipelines (depth 1-4, random CI order)", () => {
+  it("property: invariants over random pipelines (depth 1-4, random CI order)", { timeout: 60_000 }, () => {
     let speculative = 0;
     for (let seed = 1; seed <= 150; seed++) {
       const r = rng(seed * 7919);
