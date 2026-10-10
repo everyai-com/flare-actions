@@ -253,7 +253,7 @@ export class FlareForge {
   inbox(repo: string): Promise<ForgeJson & { groups: ForgeJson[]; metrics: ForgeJson }> {
     return this.req("inbox", "GET", `/v1/forge/inbox${this.q({ repo })}`);
   }
-  snapshot(repo: string): Promise<ForgeJson & { counters: Record<string, number>; cells: ForgeJson[]; head: string }> {
+  snapshot(repo: string): Promise<ForgeJson & { counters: Record<string, number>; cells: ForgeJson[]; head: { sha: string; at: string | null }; headSha: string }> {
     return this.req("snapshot", "GET", `/v1/forge/snapshot${this.q({ repo })}`);
   }
   why(repo: string, path: string, line?: number): Promise<ForgeJson & { chain: Array<{ kind: string; id: string; text: string }>; exact: boolean }> {

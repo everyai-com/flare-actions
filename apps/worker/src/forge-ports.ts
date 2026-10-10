@@ -136,7 +136,9 @@ export interface ForgeSnapshot {
   edges: SnapshotEdge[];
   // Coordinator op version at snapshot time (feed deltas with ver <= it
   // are stale); null on the D1 fallback.
-  ver: number | null;
+  ver: number | null;  // Live intents (≤ 500) and overlap pairs as the dashboard reads them.
+  intents: SnapshotIntent[];
+  overlaps: Array<{ a: string; b: string; paths: string[]; state: "overlap" }>;
 }
 
 export interface SnapshotEdge {
@@ -445,6 +447,39 @@ export function buildSnapshot(input: {
     head: input.head,
     edges,
     ver: input.ver ?? null,
+    intents: input.intents.slice(0, 500).map(snapIntent),
+    overlaps: edges.map((e) => ({ a: e.a, b: e.b, paths: [...new Set(e.pairs.flatMap((x) => [x.a, x.b]))].slice(0, 20), state: "overlap" as const })),
+  };
+}
+
+// The Live map's intent list (dashboard dots, table view, tooltips).
+export interface SnapshotIntent {
+  id: string;
+  goalId: string | null;
+  title: string;
+  agent: string;
+  state: IntentState;
+  risk: number;
+  footprint: { paths: string[] };
+  actualFootprint: { paths: string[] } | null;
+  leaseExpiresAt: string | null;
+  headSha: string;
+  path: string;
+}
+
+function snapIntent(i: Intent): SnapshotIntent {
+  return {
+    id: i.id,
+    goalId: i.goalId,
+    title: i.title,
+    agent: i.agent,
+    state: i.state,
+    risk: i.risk,
+    footprint: { paths: i.footprint.paths },
+    actualFootprint: i.actualFootprint ? { paths: i.actualFootprint.paths } : null,
+    leaseExpiresAt: i.leaseExpiresAt,
+    headSha: i.headSha,
+    path: heldFootprint(i).paths[0] ?? "",
   };
 }
 

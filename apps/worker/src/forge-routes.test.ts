@@ -271,7 +271,8 @@ describe("forge routes: the agent workflow (declare -> claim -> push -> ready)",
     expect((near.body.intents as Array<{ intentId: string; matchedPaths: string[] }>).map((i) => i.intentId)).toEqual([aId]);
     const snap = await h.call("GET", "/v1/forge/snapshot?repo=demo");
     expect(rec(snap.body.counters)).toMatchObject({ intents: 2, overlaps_caught: 1, main_red_minutes: 0, agents: 1 });
-    expect(snap.body.head).toBe(sha("0"));
+    expect(snap.body.head).toEqual({ sha: sha("0"), at: null });
+    expect(snap.body.headSha).toBe(sha("0"));
     expect((snap.body.cells as Array<{ path: string; state: string }>).find((x) => x.path === "src/api")?.state).toBe("overlap");
     expect((await h.call("GET", "/v1/forge/live?repo=demo")).body.counters).toEqual(snap.body.counters);
     const why = await h.call("GET", "/v1/forge/why?repo=demo&path=src/api/cache.ts&line=3");
@@ -328,12 +329,13 @@ describe("forge routes: conflicts, trains, fork sessions, feed", () => {
     await h.call("POST", `/v1/forge/intents/${bId}/push`, { sha: sha("2"), agent: "beta" });
     await h.call("POST", `/v1/forge/intents/${bId}/ready`, { agent: "beta" });
     expect(await transitionIntent(h.db, bId, "ready", "conflicted")).toBe(true);
-    const conflict = await openConflict(h.db, { repo: "demo", intentA: rec(a.intent).id as string, intentB: bId, files: ["src/api/a.ts"] });
+    // Train convention: intent_a = the dropped intent (b here), intent_b = the other side.
+    const conflict = await openConflict(h.db, { repo: "demo", intentA: bId, intentB: rec(a.intent).id as string, files: ["src/api/a.ts"] });
 
     const list = await h.call("GET", "/v1/forge/conflicts?repo=demo&state=open");
     expect(steps(list.body)[0]).toMatchObject({ tool: "claim_conflict", args: { conflictId: conflict.id } });
     const got = await h.call("GET", `/v1/forge/conflicts/${conflict.id}`);
-    expect(rec(got.body.b).id).toBe(bId);
+    expect(rec(got.body.a).id).toBe(bId);
 
     const claimed = await h.call("POST", `/v1/forge/conflicts/${conflict.id}/claim`, { agent: "fixer" });
     expect(claimed.status).toBe(200);
@@ -378,9 +380,15 @@ describe("forge routes: conflicts, trains, fork sessions, feed", () => {
     expect(fresh.agent).toBe("beta");
     expect(rec(fresh.footprint).paths).toEqual(["src/lib/**", "src/lib/x.ts"]);
     const source = rec(f.body.source);
-    expect(source).toMatchObject({ intentId: srcId, headSha: sha("4"), readToken: `tok-read-${String(c.body.forkRepo)}` });
-    expect(String(source.fetchCommand)).toContain("$FLARE_SOURCE_TOKEN");
+    // session.ts forkSession: the source fork (code + flare/session) is
+    // copied into s-<intent>-<agent>-<rand> with a write token on the copy.
+    const session = rec(f.body.session);
+    expect(String(session.forkRepo)).toMatch(/^s-[0-9a-f]+-beta-/);
+    expect(session).toMatchObject({ branch: "flare/session", tokenEnv: "FLARE_SESSION_TOKEN", tokenScope: `write:${String(session.forkRepo)}` });
+    expect(String(session.token)).toBeTruthy();
+    expect(source).toMatchObject({ intentId: srcId, headSha: sha("4"), readToken: null });
     expect(steps(f.body)[0]).toMatchObject({ tool: "claim_intent", args: { intentId: fresh.id } });
+    expect(String(rec(steps(f.body)[1].args).command)).toContain("$FLARE_SESSION_TOKEN");
   });
 
   it("abandons an owned intent", async () => {

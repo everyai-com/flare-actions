@@ -329,10 +329,11 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       const out = await d.forge().inbox(repo);
       emit(d, "inbox", out, () => {
         const m = out.metrics as Record<string, unknown>;
-        d.out(`needs you ${String(m.needs_you)} · audit sample ${String(m.sample)} · auto ${String(m.auto)}`);
-        for (const g of out.groups as Array<{ goal: { id: string; text: string } | null; items: Array<{ intent: { id: string; title: string; state: string }; bucket: string; risk: number; reason: string }> }>) {
+        const sample = typeof m.sample === "object" && m.sample !== null ? (m.sample as { count?: unknown }).count : m.sample;
+        d.out(`needs you ${String(m.needs_you)} · audit sample ${String(sample)} · auto ${String(m.auto)}`);
+        for (const g of out.groups as Array<{ goal: { id: string; text: string } | null; items: Array<{ intent: { id: string; title: string; state: string }; bucket: string; risk: number; reason: string; why?: string }> }>) {
           d.out(`STORY ${g.goal ? `${g.goal.id} "${g.goal.text.slice(0, 80)}"` : "(no goal)"}`);
-          for (const it of g.items) d.out(`  ${String(it.risk).padStart(3)} ${it.bucket.padEnd(9)} ${it.intent.id} ${it.intent.title} (${it.intent.state}) — ${it.reason}`);
+          for (const it of g.items) d.out(`  ${String(it.risk).padStart(3)} ${it.bucket.padEnd(9)} ${it.intent.id} ${it.intent.title} (${it.intent.state}) — ${it.why ?? it.reason}`);
         }
       });
       return 0;
@@ -423,7 +424,8 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       emit(d, "snapshot", out, () => {
         d.out(Object.entries(out.counters).map(([k, v]) => `${k} ${v}`).join(" · "));
         for (const c of out.cells as Array<{ path: string; state: string; intents: string[] }>) d.out(`  ${c.path.padEnd(28)} ${c.state.padEnd(13)} ${c.intents.length} intent(s)`);
-        d.out(`main ${out.head.slice(0, 12) || "-"}`);
+        const head = typeof out.headSha === "string" ? out.headSha : typeof out.head === "string" ? out.head : "";
+        d.out(`main ${head.slice(0, 12) || "-"}`);
       });
       return 0;
     }

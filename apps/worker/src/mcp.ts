@@ -83,6 +83,11 @@ export const MCP_TOOL_RISK: Record<string, McpToolRisk> = {
   why: "read",
   fork_session: "contained-write",
   forge_snapshot: "read",
+  // Human tier: the reviewer's Inbox buttons. Admin tokens only (the ops
+  // refuse anything else); agents must not call them.
+  approve_plan: "contained-write",
+  send_back: "contained-write",
+  review_sample: "contained-write",
 };
 
 export interface McpToolDef {
@@ -182,6 +187,18 @@ const FORGE_TOOL_SCHEMAS = {
   }),
   fork_session: z.object({ intentId: z.string().describe("The intent whose work you continue (required)").optional(), agent: forgeAgent, confirm: forgeConfirm }),
   forge_snapshot: z.object({ repo: forgeRepo }),
+  approve_plan: z.object({ intentId: forgeIntent, confirm: forgeConfirm }),
+  send_back: z.object({
+    intentId: forgeIntent,
+    reason: z.string().describe("One-line reason the owner sees (required, ≤500 chars)").optional(),
+    confirm: forgeConfirm,
+  }),
+  review_sample: z.object({
+    intentId: forgeIntent,
+    decision: z.enum(["agree", "disagree"]).describe("agree = looks good (default); disagree needs a reason").optional(),
+    reason: z.string().describe("Why you disagree (required for disagree, ≤500 chars)").optional(),
+    confirm: forgeConfirm,
+  }),
 };
 
 const TOOL_SCHEMAS = {
@@ -320,6 +337,21 @@ export const FORGE_TOOLS: McpToolDef[] = [
     name: "forge_snapshot",
     description:
       "Read-only: the Live map for a repo — counters (agents, intents, overlaps caught, conflicts open, landed today, main red minutes), directory cells with intents/overlaps/conflicts/protected flags, one dot per live intent, the train track and trunk head. Same JSON as GET /v1/forge/snapshot.",
+  },
+  {
+    name: "approve_plan",
+    description:
+      "HUMAN REVIEWER ONLY (admin token): approve the plan of an intent whose footprint touches a protected path (awaiting_plan -> draft, claimable). Agents must not call this; wait for a human (read_inbox). Same as POST /v1/forge/intents/:id/approve-plan.",
+  },
+  {
+    name: "send_back",
+    description:
+      "HUMAN REVIEWER ONLY (admin token): return an intent to its owner with a required one-line reason (mailbox note + ledger review.sent_back; a ready intent goes back to working). Agents must not call this; use send_note to talk to another agent. Same as POST /v1/forge/intents/:id/send-back.",
+  },
+  {
+    name: "review_sample",
+    description:
+      "HUMAN REVIEWER ONLY (admin token): answer an audit-sample story: decision agree (ledger review.sampled_ok) or disagree with a reason (review.disagreed + note to the owner). Feeds the inbox disagreement rate. Agents must not call this. Same as POST /v1/forge/intents/:id/review.",
   },
 ];
 
@@ -515,6 +547,12 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
   if (tier !== "read") {
     const body = res.body as { error?: unknown; result?: { isError?: boolean } } | undefined;
     const outcome = body?.error || body?.result?.isError ? "error" : "ok";
+    // Forge verbs write their own semantic `forge.*` row on success
+    // (forge-service auditWrite: actor, repo, intent) — the row audit
+    // readers key on, identical for REST and MCP. Skip the generic
+    // duplicate then (also keeps lease heartbeats out of the log); keep
+    // it for failures, which forge-service does not audit.
+    if (outcome === "ok" && Object.hasOwn(FORGE_MCP_OPS, name)) return res;
     await audit(deps.db, deps.agent ?? "mcp", `mcp.${name}`, `${outcome} ${auditTarget(name, args, deps.agent)}`).catch(() => undefined);
   }
   return res;

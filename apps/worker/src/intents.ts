@@ -801,7 +801,7 @@ export interface RecordPushResult {
 // Conditional on the pushing agent still owning a pushable state.
 export async function recordPush(
   db: Db,
-  input: { id: string; agent: string; headSha: string; actualFootprint: unknown; policy?: ForgePolicy },
+  input: { id: string; agent: string; headSha: string; actualFootprint: unknown; policy?: ForgePolicy; truncated?: boolean },
 ): Promise<RecordPushResult | ForgeError> {
   const sha = validateSha(input.headSha);
   if (!sha.ok) return { error: "invalid-sha", message: sha.error };
@@ -817,7 +817,7 @@ export async function recordPush(
   // replaying stays replaying (a resolution push); everything else works.
   const to: IntentState = from === "replaying" ? "replaying" : "working";
   const policy = input.policy ?? DEFAULT_POLICY;
-  const scored = scoreRisk({ footprint: current.footprint, actualFootprint: actual.value, policy });
+  const scored = scoreRisk({ footprint: current.footprint, actualFootprint: actual.value, policy, truncated: input.truncated === true });
   const ok = await changed(
     db
       .prepare(

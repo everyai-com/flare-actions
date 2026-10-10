@@ -879,6 +879,8 @@ export interface ReportPushInput {
   headSha: string;
   actualFootprint: unknown;
   policy?: ForgePolicy;
+  // Changed-file list hit a cap: scored fail-closed (truncated_footprint).
+  truncated?: boolean;
   source?: "agent" | "trigger";
 }
 
@@ -1162,7 +1164,7 @@ export async function reportPush(
     if (!current) return err("not-found", "intent not found");
     agent = current.agent;
   }
-  const res = await recordPush(deps.db, { id, agent, headSha: sha, actualFootprint: input.actualFootprint, policy: input.policy });
+  const res = await recordPush(deps.db, { id, agent, headSha: sha, actualFootprint: input.actualFootprint, policy: input.policy, truncated: input.truncated === true });
   if (isForgeError(res)) return err(res.error, res.message);
   if (res.intent.repo !== deps.repo) return err("wrong-repo", `intent belongs to ${res.intent.repo}`);
   return applyPush(deps, res.intent, sha, { drift: res.drift, risk: res.risk, riskTerms: res.riskTerms, source: input.source ?? "agent" });
