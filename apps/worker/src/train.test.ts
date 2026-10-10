@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import git from "isomorphic-git";
 import type { Db } from "./db";
-import { declareIntent, getConflict, getIntent, listConflicts, listForgeLedger } from "./intents";
+import { appendForgeLedger, declareIntent, getConflict, getIntent, listConflicts, listForgeLedger } from "./intents";
 import { intentForkName, parseTrailers } from "./intents-core";
 import { MemoryFS } from "./memory-fs";
 import {
@@ -362,6 +362,23 @@ describe("trains: merger end-to-end (isomorphic-git + MemoryFS + git http-backen
     expect((await getIntent(h.db, a))?.state).toBe("landed");
     const routed = (await listForgeLedger(h.db, "intent", a)).find((r) => r.kind === "routed");
     expect(routed?.body).toMatch(/^risk \d+ > 0 → approved/);
+  });
+
+  it("long ledgers: approvals and train commits past the 200 oldest rows still count (review #12)", async () => {
+    h.policyText.value = "auto_land_max_risk: 0\n";
+    const a = await h.ready({ title: "risky", paths: ["src/a.ts"], files: { "src/a.ts": withLine(lines("a"), 2, "risky") } });
+    for (let i = 0; i < 230; i++) await appendForgeLedger(h.db, { repo: REPO, subjectKind: "intent", subjectId: a, kind: "noise", body: `n${i}`, actor: "t" });
+    expect(await approveLanding(h.deps, a, "alice")).toBe(true);
+    expect(await enqueueReady(h.deps, a, { cut: false })).toMatchObject({ route: "human", held: false });
+    const cut = await cutTrain(h.deps, REPO);
+    expect(cut.status).toBe("cut");
+    await settle();
+    const landed = await getIntent(h.db, a);
+    expect(landed?.state).toBe("landed");
+    const detail = await getTrainDetail(h.deps, landed?.trainId ?? "");
+    expect(detail?.intents[0].commit).toBe(landed?.landedSha);
+    const routed = await h.db.prepare("SELECT body FROM forge_ledger WHERE subject_id = ? AND kind = 'routed'").bind(a).first<{ body: string }>();
+    expect(routed?.body).toMatch(/→ approved/);
   });
 
   it("refuses to cut without a pipeline (nothing can verify, nothing lands)", async () => {

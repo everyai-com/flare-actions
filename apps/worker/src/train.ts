@@ -236,9 +236,13 @@ async function stampRun(db: Db, id: string, runId: string): Promise<boolean> {
   );
 }
 
-async function ledgerKinds(db: Db, intentId: string): Promise<Set<string>> {
-  const rows = await listForgeLedger(db, "intent", intentId, 200);
-  return new Set(rows.map((r) => r.kind));
+// Targeted EXISTS reads: an intent with a long ledger (many requeues,
+// replays) must never hide a land approval or an llm_replay term behind
+// a window of its oldest rows.
+async function ledgerKinds(db: Db, intentId: string, kinds: readonly string[] = ["llm_replay", "land_approved"]): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const k of kinds) if (await hasLedger(db, intentId, k)) out.add(k);
+  return out;
 }
 
 async function hasLedger(db: Db, intentId: string, kind: string): Promise<boolean> {
@@ -249,17 +253,23 @@ async function hasLedger(db: Db, intentId: string, kind: string): Promise<boolea
   return !!row;
 }
 
+// The newest ledger body of one kind for an intent (null = none).
+async function latestLedgerBody(db: Db, intentId: string, kind: string, bodyPrefix = ""): Promise<string | null> {
+  const row = await db
+    .prepare(
+      "SELECT body FROM forge_ledger WHERE subject_kind = 'intent' AND subject_id = ? AND kind = ? AND substr(body, 1, ?) = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+    )
+    .bind(intentId, kind, bodyPrefix.length, bodyPrefix)
+    .first<{ body: string }>();
+  return row ? row.body : null;
+}
+
 // The squashed commit an intent got in a train (ledger "train_commit",
 // body "<trainId> <sha>"; latest wins).
 async function trainCommitFor(db: Db, intentId: string, trainId: string): Promise<string | null> {
-  const rows = await listForgeLedger(db, "intent", intentId, 200);
-  let sha: string | null = null;
-  for (const r of rows) {
-    if (r.kind !== "train_commit") continue;
-    const [tid, s] = r.body.split(" ");
-    if (tid === trainId && s) sha = s;
-  }
-  return sha;
+  const body = await latestLedgerBody(db, intentId, "train_commit", `${trainId} `);
+  const sha = body ? body.slice(trainId.length + 1).trim() : "";
+  return sha || null;
 }
 
 // Requeue without blame: in_train -> ready, clearing the train link. The
@@ -1198,7 +1208,8 @@ export async function buildWhyNote(db: Db, intent: Intent): Promise<WhyNote | nu
   if (!intent.landedSha || !intent.trainId) return null;
   const train = await getTrain(db, intent.trainId);
   const goal = intent.goalId ? await getGoal(db, intent.goalId) : null;
-  const routed = (await listForgeLedger(db, "intent", intent.id, 200)).filter((r) => r.kind === "routed").pop();
+  const routedBody = await latestLedgerBody(db, intent.id, "routed");
+  const routed = routedBody === null ? undefined : { body: routedBody };
   const decisionWord = /→ (\w+)/.exec(routed?.body ?? "")?.[1] ?? "auto";
   const decision: WhyNote["review"]["decision"] =
     decisionWord === "approved" || decisionWord === "audit" || decisionWord === "human" ? decisionWord : "auto";
