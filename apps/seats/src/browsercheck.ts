@@ -92,7 +92,7 @@ export async function runBrowserCheck(
           throw new Error(`malformed action of kind ${JSON.stringify(action.kind)}`);
         }
       } catch (err) {
-        throw new Error(`${label} failed: ${err instanceof Error ? err.message : String(err)}`);
+        throw new Error(`${label} failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
       }
     }
     const title = await page.title();

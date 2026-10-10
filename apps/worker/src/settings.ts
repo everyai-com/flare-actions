@@ -357,7 +357,14 @@ export function validateRunnerVersion(version: unknown): string | null {
 // the default group. GitHub names are free text; Flare allows 1-100
 // printable chars. Empty clears (default group).
 export function validateGithubRunnerGroupName(name: unknown): string | null {
-  if (typeof name !== "string" || !/^[^\x00-\x1f\x7f]{1,100}$/.test(name.trim())) {
+  if (typeof name !== "string") return "runner group must be 1-100 printable characters";
+  const trimmed = name.trim();
+  // Char-code scan (not a regex) so linters need no control-char exemption.
+  const printable = [...trimmed].every((ch) => {
+    const code = ch.charCodeAt(0);
+    return code > 0x1f && code !== 0x7f;
+  });
+  if (trimmed.length < 1 || trimmed.length > 100 || !printable) {
     return "runner group must be 1-100 printable characters";
   }
   return null;
