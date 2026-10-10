@@ -27,14 +27,15 @@ import {
   type ForgePolicy,
   type Footprint,
   type LandingRoute,
-} from "./intents-core";
+} from "./intents-core.ts";
 
 // Lanes push to fixed, pre-existing refs that are force-updated per train
 // (spike S5: isomorphic-git pushing a NEW ref uploads the whole history;
-// updating an existing ref sends only the delta). The pool is sized for
-// speculation_depth x max_parallel (default 4 x 8 = 32) and is created
-// once at repo bootstrap; the Worker never creates a ref. A train holds
-// its slot (its `lane` column) until it leaves the active set.
+// updating an existing ref sends only the delta). The pool (32 refs) is
+// created once at repo bootstrap; the Worker never creates a ref. The
+// chain uses up to speculation_depth x max_parallel of the first 24
+// (default 3 x 8), bisect probes the top 8. A train holds its slot (its
+// `lane` column) until it leaves the active set.
 export const MAX_LANE_REFS = 32;
 export const LANE_REF_PREFIX = "forge/lane-";
 
@@ -94,10 +95,23 @@ export function effectiveSpeculationDepth(policy: ForgePolicy): number {
   return Number.isFinite(d) ? Math.max(1, Math.min(MAX_SPECULATION_DEPTH, d)) : 1;
 }
 
-// Lane slots usable at once across every in-flight group: depth x
-// max_parallel, capped by the ref pool.
+// The top PROBE_SLOTS refs of the pool are reserved for bisect probes
+// (off-chain, see SpeculativeChain); the chain uses the rest.
+export const PROBE_SLOTS = 8;
+export const CHAIN_SLOTS = MAX_LANE_REFS - PROBE_SLOTS;
+
+// Lane slots the chain may use at once across every in-flight group:
+// depth x max_parallel, capped by the chain's share of the ref pool.
 export function lanePoolSize(policy: ForgePolicy): number {
-  return Math.max(1, Math.min(MAX_LANE_REFS, effectiveMaxParallel(policy) * effectiveSpeculationDepth(policy)));
+  return Math.max(1, Math.min(CHAIN_SLOTS, effectiveMaxParallel(policy) * effectiveSpeculationDepth(policy)));
+}
+
+// Free probe slots (the reserved top of the pool), highest first.
+export function freeProbeSlots(used: readonly number[], want: number): number[] {
+  const taken = new Set(used);
+  const out: number[] = [];
+  for (let s = MAX_LANE_REFS - 1; s >= CHAIN_SLOTS && out.length < want; s--) if (!taken.has(s)) out.push(s);
+  return out;
 }
 
 // The lowest `want` slots in [0, pool) not held by an active train,
@@ -290,9 +304,25 @@ export interface ChainLane<T> {
   items: T[];
   outcome: LaneOutcome;
   parent: number;
-  // Bisect bookkeeping: depth below the lane first cut, and that lane's
-  // size (culprit isolation is bounded by ceil(log2 rootSize)).
-  bisectDepth: number;
+}
+
+// A bisect probe: a subset of a red lane, built on main OFF the chain and
+// CI-verified as that exact SHA. Probes never land: they only name the
+// culprit (a red probe of one intent) and clear the innocents (a green
+// probe), who go back to the front of the queue and land through the
+// chain. Off-chain bisection never blocks the pipeline, and the work
+// behind a red lane is rebuilt without the red lane at once instead of
+// being stacked on bisect children that hold the culprit (in the
+// simulator this was the dominant cost of in-chain bisection).
+export interface ChainProbe<T> {
+  id: number;
+  // -1 = waiting for a free probe slot.
+  slot: number;
+  items: T[];
+  outcome: LaneOutcome;
+  // Depth below the red lane, and that lane's size: culprit isolation
+  // is bounded by ceil(log2 rootSize) probe rounds.
+  depth: number;
   rootSize: number;
 }
 
@@ -300,14 +330,21 @@ export interface ChainStep<T> {
   // Lanes landed by this step, in order; main now points at the last.
   landed: ChainLane<T>[];
   red: ChainLane<T> | null;
-  // A red single-intent lane names its culprit.
+  // A red single-intent lane names its culprit directly.
   culprit: T | null;
   // Lanes behind the red lane (any group): requeued without blame.
   invalidated: ChainLane<T>[];
-  // Bisect children of the red lane: a new group at the chain head
-  // (left stacked under right).
-  children: ChainLane<T>[];
+  // Bisect probes for a red lane of more than one intent.
+  probes: ChainProbe<T>[];
   waiting: boolean;
+}
+
+export interface ProbeStep<T> {
+  // Green probe: innocent, requeued without blame.
+  cleared: T[];
+  culprit: T | null;
+  // Red probe of more than one intent: its halves.
+  probes: ChainProbe<T>[];
 }
 
 // The speculative pipeline the Worker runs over D1 rows, as a pure,
@@ -318,6 +355,7 @@ export interface ChainStep<T> {
 export class SpeculativeChain<T> {
   readonly policy: ForgePolicy;
   lanes: ChainLane<T>[] = [];
+  probes: ChainProbe<T>[] = [];
   // Lane id main points at (-1 = initial main).
   tip = -1;
   unverifiedLands = 0;
@@ -332,8 +370,12 @@ export class SpeculativeChain<T> {
     return new Set(this.lanes.map((l) => l.group)).size;
   }
 
+  private usedSlots(): number[] {
+    return [...this.lanes.map((l) => l.slot), ...this.probes.filter((p) => p.slot >= 0).map((p) => p.slot)];
+  }
+
   capacity(): CutCapacity {
-    return cutCapacity(this.policy, this.groups, this.lanes.map((l) => l.slot));
+    return cutCapacity(this.policy, this.groups, this.usedSlots());
   }
 
   private head(): number {
@@ -342,24 +384,13 @@ export class SpeculativeChain<T> {
 
   // Append a group on the chain head. Lanes past the free slots are not
   // added (callers plan with capacity().slots.length).
-  addGroup(itemLanes: readonly T[][], bisectOf: ChainLane<T> | null = null): ChainLane<T>[] {
+  addGroup(itemLanes: readonly T[][]): ChainLane<T>[] {
     const lanesIn = itemLanes.filter((l) => l.length > 0);
-    const slots = bisectOf
-      ? freeSlots(this.lanes.map((l) => l.slot), MAX_LANE_REFS, lanesIn.length)
-      : this.capacity().slots;
+    const slots = this.capacity().slots;
     const group = this.nextGroup++;
     const out: ChainLane<T>[] = [];
     for (let i = 0; i < lanesIn.length && i < slots.length; i++) {
-      const lane: ChainLane<T> = {
-        id: this.nextId++,
-        group,
-        slot: slots[i],
-        items: [...lanesIn[i]],
-        outcome: "pending",
-        parent: this.head(),
-        bisectDepth: bisectOf ? bisectOf.bisectDepth + 1 : 0,
-        rootSize: bisectOf ? bisectOf.rootSize : lanesIn[i].length,
-      };
+      const lane: ChainLane<T> = { id: this.nextId++, group, slot: slots[i], items: [...lanesIn[i]], outcome: "pending", parent: this.head() };
       this.lanes.push(lane);
       out.push(lane);
     }
@@ -368,6 +399,10 @@ export class SpeculativeChain<T> {
 
   get(id: number): ChainLane<T> | null {
     return this.lanes.find((l) => l.id === id) ?? null;
+  }
+
+  getProbe(id: number): ChainProbe<T> | null {
+    return this.probes.find((p) => p.id === id) ?? null;
   }
 
   // Items ahead of (and including) lane `id` that are still unlanded:
@@ -398,11 +433,41 @@ export class SpeculativeChain<T> {
     if (lane) lane.outcome = outcome;
   }
 
-  // Apply decideChain: land the green prefix (CAS-checked), bisect the
-  // first red lane, invalidate everything behind it.
+  setProbeOutcome(id: number, outcome: LaneOutcome): void {
+    const p = this.getProbe(id);
+    if (p) p.outcome = outcome;
+  }
+
+  private spawnProbes(halves: readonly T[][], depth: number, rootSize: number): ChainProbe<T>[] {
+    const out: ChainProbe<T>[] = [];
+    for (const items of halves) {
+      if (!items.length) continue;
+      const p: ChainProbe<T> = { id: this.nextId++, slot: -1, items: [...items], outcome: "pending", depth, rootSize };
+      this.probes.push(p);
+      out.push(p);
+    }
+    return out;
+  }
+
+  // Give waiting probes free probe slots (oldest first); returns the
+  // probes that can now be built and verified.
+  startProbes(): ChainProbe<T>[] {
+    const waiting = this.probes.filter((p) => p.slot < 0);
+    const slots = freeProbeSlots(this.usedSlots(), waiting.length);
+    const out: ChainProbe<T>[] = [];
+    for (let i = 0; i < slots.length; i++) {
+      waiting[i].slot = slots[i];
+      out.push(waiting[i]);
+    }
+    return out;
+  }
+
+  // Apply decideChain: land the green prefix (CAS-checked), take the
+  // first red lane off the chain (culprit, or bisect probes) and
+  // invalidate everything behind it.
   decide(): ChainStep<T> {
     const d = decideChain(this.lanes.map((l) => l.outcome));
-    const step: ChainStep<T> = { landed: [], red: null, culprit: null, invalidated: [], children: [], waiting: d.waiting };
+    const step: ChainStep<T> = { landed: [], red: null, culprit: null, invalidated: [], probes: [], waiting: d.waiting };
     for (let i = 0; i <= d.landThrough; i++) {
       const lane = this.lanes[i];
       if (lane.outcome !== "green") continue;
@@ -421,8 +486,25 @@ export class SpeculativeChain<T> {
     this.lanes = [];
     const b = bisectStep(red.items);
     if ("culprit" in b) step.culprit = b.culprit;
-    else if ("halves" in b) step.children = this.addGroup(b.halves, red);
+    else if ("halves" in b) step.probes = this.spawnProbes(b.halves, 1, red.items.length);
     return step;
+  }
+
+  // Decide one finished probe: green clears its intents, red names the
+  // culprit or splits again.
+  decideProbe(id: number): ProbeStep<T> {
+    const out: ProbeStep<T> = { cleared: [], culprit: null, probes: [] };
+    const p = this.getProbe(id);
+    if (!p || (p.outcome !== "green" && p.outcome !== "red")) return out;
+    this.probes = this.probes.filter((x) => x.id !== id);
+    if (p.outcome === "green") {
+      out.cleared = p.items;
+      return out;
+    }
+    const b = bisectStep(p.items);
+    if ("culprit" in b) out.culprit = b.culprit;
+    else if ("halves" in b) out.probes = this.spawnProbes(b.halves, p.depth + 1, p.rootSize);
+    return out;
   }
 }
 

@@ -216,7 +216,7 @@ replay: { max_attempts: 2, race_k: 3 }
         protected: ["migrations/**", "src/auth/**"],
         autoLandMaxRisk: 30,
         auditSample: 0.05,
-        lanes: { maxPerTrain: 50, maxParallel: 8, speculationDepth: 4 },
+        lanes: { maxPerTrain: 50, maxParallel: 8, speculationDepth: 3 },
         replay: { maxAttempts: 2, raceK: 3 },
       },
     });

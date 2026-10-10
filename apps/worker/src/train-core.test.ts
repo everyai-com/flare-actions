@@ -16,6 +16,9 @@ import {
   lanePoolSize,
   laneRefPool,
   SpeculativeChain,
+  CHAIN_SLOTS,
+  PROBE_SLOTS,
+  freeProbeSlots,
   FETCH_DEPTHS,
   landingGate,
   laneRef,
@@ -315,12 +318,15 @@ describe("bounds", () => {
 });
 
 describe("speculation capacity", () => {
-  it("pool = depth x max_parallel, capped by the ref pool", () => {
-    expect(lanePoolSize(DEFAULT_POLICY)).toBe(32);
+  it("chain pool = depth x max_parallel, capped by the chain's 24 refs; probes own the top 8", () => {
+    expect(CHAIN_SLOTS + PROBE_SLOTS).toBe(MAX_LANE_REFS);
+    expect(lanePoolSize(DEFAULT_POLICY)).toBe(24);
     expect(lanePoolSize(policy({ maxParallel: 8, speculationDepth: 1 }))).toBe(8);
-    expect(lanePoolSize(policy({ maxParallel: 32, speculationDepth: 4 }))).toBe(32);
+    expect(lanePoolSize(policy({ maxParallel: 32, speculationDepth: 4 }))).toBe(24);
     expect(effectiveSpeculationDepth(policy({ speculationDepth: 0 }))).toBe(1);
     expect(effectiveSpeculationDepth(policy({ speculationDepth: 99 }))).toBe(8);
+    expect(freeProbeSlots([31, 29], 3)).toEqual([30, 28, 27]);
+    expect(freeProbeSlots([24, 25, 26, 27, 28, 29, 30, 31], 1)).toEqual([]);
   });
 
   it("free slots are the lowest unused, ascending", () => {
@@ -369,8 +375,8 @@ describe("decideChain", () => {
 });
 
 // Random speculative pipelines: cut whenever capacity allows, finish CI
-// in random order (red iff the lane's head contains a culprit), decide
-// after every result. Checks every invariant at every step.
+// (lanes and probes) in random order (red iff the head holds a culprit),
+// decide after every result. Checks every invariant at every step.
 function runPipeline(seed: number, p: ForgePolicy, n: number, culpritRate: number): { maxGroups: number; speculativeLands: number } {
   const r = rng(seed);
   const ids = Array.from({ length: n }, (_, i) => `i${String(i).padStart(4, "0")}`);
@@ -381,9 +387,11 @@ function runPipeline(seed: number, p: ForgePolicy, n: number, culpritRate: numbe
   const landed: string[] = [];
   const failed: string[] = [];
   const seenLanded = new Set<string>();
+  // every id is in exactly one place: queue, a chain lane, a probe, landed, failed
+  const where = (): string[] => [...queue, ...chain.lanes.flatMap((l) => l.items), ...chain.probes.flatMap((x) => x.items), ...landed, ...failed].sort();
   let maxGroups = 0;
   let speculativeLands = 0;
-  for (let guard = 0; guard < 20000 && (queue.length || chain.lanes.length); guard++) {
+  for (let guard = 0; guard < 50000 && (queue.length || chain.lanes.length || chain.probes.length); guard++) {
     for (;;) {
       const cap = chain.capacity();
       if (!cap.slots.length || !queue.length) break;
@@ -392,14 +400,38 @@ function runPipeline(seed: number, p: ForgePolicy, n: number, culpritRate: numbe
       expect(added.length).toBe(plan.lanes.length);
       queue = plan.deferred.map((c) => c.id);
     }
+    chain.startProbes();
     maxGroups = Math.max(maxGroups, chain.groups);
+    expect(where()).toEqual(ids);
     expect(chain.groups).toBeLessThanOrEqual(effectiveSpeculationDepth(p));
-    expect(new Set(chain.lanes.map((l) => l.slot)).size).toBe(chain.lanes.length);
+    const slots = [...chain.lanes.map((l) => l.slot), ...chain.probes.filter((x) => x.slot >= 0).map((x) => x.slot)];
+    expect(new Set(slots).size).toBe(slots.length);
+    for (const l of chain.lanes) expect(l.slot).toBeLessThan(CHAIN_SLOTS);
+    for (const x of chain.probes) if (x.slot >= 0) expect(x.slot).toBeGreaterThanOrEqual(CHAIN_SLOTS);
     // the chain is linear: every lane is stacked on the one before it
     chain.lanes.forEach((l, i) => expect(l.parent).toBe(i === 0 ? chain.tip : chain.lanes[i - 1].id));
-    const pending = chain.lanes.filter((l) => l.outcome === "pending");
+    const pending = [
+      ...chain.lanes.filter((l) => l.outcome === "pending").map((l) => ({ lane: true, id: l.id })),
+      ...chain.probes.filter((x) => x.slot >= 0 && x.outcome === "pending").map((x) => ({ lane: false, id: x.id })),
+    ];
     if (!pending.length) break;
     const pick = pending[Math.floor(r() * pending.length)];
+    if (!pick.lane) {
+      const probe = chain.getProbe(pick.id);
+      const red = (probe?.items ?? []).some((x) => culprits.has(x));
+      chain.setProbeOutcome(pick.id, red ? "red" : "green");
+      const out = chain.decideProbe(pick.id);
+      for (const x of out.cleared) expect(culprits.has(x)).toBe(false);
+      for (const c of out.probes) expect(c.depth).toBeLessThanOrEqual(maxBisectRounds(c.rootSize));
+      if (out.culprit !== null) {
+        expect(culprits.has(out.culprit)).toBe(true);
+        expect((probe?.depth ?? 0)).toBeLessThanOrEqual(maxBisectRounds(probe?.rootSize ?? 1));
+        failed.push(out.culprit);
+      }
+      // cleared innocents go back to the front of the line
+      queue = [...out.cleared, ...queue].sort();
+      continue;
+    }
     chain.setOutcome(pick.id, chain.prefixItems(pick.id).some((x) => culprits.has(x)) ? "red" : "green");
     const before = [...chain.lanes];
     const step = chain.decide();
@@ -420,13 +452,13 @@ function runPipeline(seed: number, p: ForgePolicy, n: number, culpritRate: numbe
       expect(ri).toBe(step.landed.length);
       // invalidation cascades to every lane behind the red one, any group
       expect(step.invalidated).toEqual(before.slice(ri + 1));
+      expect(chain.lanes).toEqual([]);
       expect(step.red.items.some((x) => culprits.has(x))).toBe(true);
       if (step.culprit !== null) {
         expect(culprits.has(step.culprit)).toBe(true);
-        expect(step.red.bisectDepth).toBeLessThanOrEqual(maxBisectRounds(step.red.rootSize));
         failed.push(step.culprit);
       }
-      for (const c of step.children) expect(c.bisectDepth).toBeLessThanOrEqual(maxBisectRounds(c.rootSize));
+      expect(step.probes.flatMap((x) => x.items).sort()).toEqual(step.culprit === null ? [...step.red.items].sort() : []);
       // requeued without blame, keeping their place in line
       queue = [...step.invalidated.flatMap((l) => l.items), ...queue].sort();
     }
@@ -434,6 +466,7 @@ function runPipeline(seed: number, p: ForgePolicy, n: number, culpritRate: numbe
   expect(chain.unverifiedLands).toBe(0);
   expect(queue).toEqual([]);
   expect(chain.lanes).toEqual([]);
+  expect(chain.probes).toEqual([]);
   // nothing lost, nothing double-landed, only culprits fail
   expect([...failed].sort()).toEqual([...culprits].sort());
   expect([...landed].sort()).toEqual(ids.filter((x) => !culprits.has(x)));
@@ -459,7 +492,7 @@ describe("SpeculativeChain", () => {
     expect(c.unverifiedLands).toBe(0);
   });
 
-  it("group 1 red: descendants are invalidated (requeued without blame) and the red lane bisects", () => {
+  it("group 1 red: descendants are invalidated without blame; the red lane bisects off-chain", () => {
     const c = new SpeculativeChain<string>(policy({ maxParallel: 1, speculationDepth: 3 }));
     const [g1] = c.addGroup([["a", "bad"]]);
     const [g2] = c.addGroup([["c"]]);
@@ -471,11 +504,33 @@ describe("SpeculativeChain", () => {
     const step = c.decide();
     expect(step.red?.id).toBe(g1.id);
     expect(step.invalidated.map((l: ChainLane<string>) => l.items)).toEqual([["c"], ["d"]]);
-    expect(step.children.map((l) => l.items)).toEqual([["a"], ["bad"]]);
-    expect(step.children[0].parent).toBe(-1); // rebuilt on main
-    // the requeued work is rebuilt speculatively on the bisect children
+    expect(step.probes.map((x) => x.items)).toEqual([["a"], ["bad"]]);
+    expect(c.lanes).toEqual([]);
+    // the requeued work is rebuilt on main at once, without the red lane
     const [g4] = c.addGroup([["c", "d"]]);
-    expect(g4.parent).toBe(step.children[1].id);
+    expect(g4.parent).toBe(-1);
+    const started = c.startProbes();
+    expect(started.map((x) => x.slot)).toEqual([31, 30]);
+    c.setProbeOutcome(started[0].id, "green");
+    expect(c.decideProbe(started[0].id)).toEqual({ cleared: ["a"], culprit: null, probes: [] });
+    c.setProbeOutcome(started[1].id, "red");
+    expect(c.decideProbe(started[1].id)).toEqual({ cleared: [], culprit: "bad", probes: [] });
+  });
+
+  it("probes wait for a free probe slot", () => {
+    const c = new SpeculativeChain<string>(policy({ maxParallel: 8, speculationDepth: 1 }));
+    for (let k = 0; k < 5; k++) {
+      const [lane] = c.addGroup([[`x${k}`, `y${k}`]]);
+      c.setOutcome(lane.id, "red");
+      c.decide();
+    }
+    expect(c.probes.length).toBe(10);
+    expect(c.startProbes().length).toBe(PROBE_SLOTS);
+    expect(c.startProbes().length).toBe(0);
+    const first = c.probes[0];
+    c.setProbeOutcome(first.id, "green");
+    c.decideProbe(first.id);
+    expect(c.startProbes().length).toBe(1);
   });
 
   it("dropping an emptied lane re-points the lanes stacked on it", () => {
@@ -500,24 +555,24 @@ describe("SpeculativeChain", () => {
     expect(speculative).toBeGreaterThan(0);
   });
 
-  it("property: a single culprit is isolated within ceil(log2 n) bisect rounds under speculation", () => {
+  it("property: a single culprit is isolated within ceil(log2 n) probe rounds after its red lane", () => {
     for (let n = 2; n <= 33; n++) {
       for (let k = 0; k < n; k += 3) {
         const chain = new SpeculativeChain<string>(policy({ maxParallel: 1, speculationDepth: 3 }));
         const ids = Array.from({ length: n }, (_, i) => `x${i}`);
-        chain.addGroup([ids]);
+        const [lane] = chain.addGroup([ids]);
         chain.addGroup([["after"]]);
+        chain.setOutcome(lane.id, "red");
+        chain.decide();
         let rounds = 0;
         let culprit: string | null = null;
-        for (let guard = 0; guard < 100 && chain.lanes.length && culprit === null; guard++) {
-          for (const l of chain.lanes) if (l.outcome === "pending") chain.setOutcome(l.id, chain.prefixItems(l.id).includes(ids[k]) ? "red" : "green");
-          const step = chain.decide();
-          if (step.red) rounds++;
-          culprit = step.culprit;
+        for (let guard = 0; guard < 100 && chain.probes.length && culprit === null; guard++) {
+          rounds++;
+          for (const x of chain.startProbes()) chain.setProbeOutcome(x.id, x.items.includes(ids[k]) ? "red" : "green");
+          for (const x of [...chain.probes]) if (x.outcome !== "pending") culprit = chain.decideProbe(x.id).culprit ?? culprit;
         }
         expect(culprit).toBe(ids[k]);
-        // round 1 is the original lane; the rest are bisect rounds
-        expect(rounds - 1).toBeLessThanOrEqual(maxBisectRounds(n));
+        expect(rounds).toBeLessThanOrEqual(maxBisectRounds(n));
       }
     }
   });

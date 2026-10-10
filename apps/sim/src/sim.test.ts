@@ -131,6 +131,18 @@ describe("simulate", () => {
     expect(f.humanReviewMin).toBeLessThan(by.baseline.humanReviewMin);
   });
 
+  it("every mode lands only exact verified states: no integration red, no unverified landing", () => {
+    for (const m of run.modes) {
+      expect(m.unverifiedLandings).toBe(0);
+      expect(m.mainRedIntegrationMin).toBe(0);
+    }
+  });
+
+  it("Forge speculates (groups cut on in-flight groups); trains-only (depth 1) never does", () => {
+    expect(by.trains.speculativeGroups).toBe(0);
+    expect(by.forge.speculativeGroups).toBeGreaterThan(0);
+  });
+
   it("trains out-ship the serial queue", () => {
     expect(by.trains.landedPerMin).toBeGreaterThan(by.baseline.landedPerMin);
     expect(by.forge.landedPerMin).toBeGreaterThan(by.baseline.landedPerMin);
@@ -145,7 +157,8 @@ describe("simulate", () => {
     });
     for (const m of quiet.modes) {
       expect(m.abandoned).toBe(0);
-      expect(m.brokenMainMin).toBe(0);
+      expect(m.escapedDefectMin).toBe(0);
+      expect(m.mainRedIntegrationMin).toBe(0);
       expect(m.flakeReruns).toBe(0);
     }
   });
