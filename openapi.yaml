@@ -4389,9 +4389,23 @@ paths:
         - forge
       operationId: forgePlanGoal
       summary: Record a goal and get a planning scaffold (plan_goal)
+      description: |-
+        Without `plan`, proposals come from paths named in the goal text.
+        With `plan=1` (query) or `plan: true` (body) and Workers AI bound,
+        the planner splits the goal into 3-12 intents grounded in the
+        trunk tree, with `after` edges for unavoidable overlaps. Planner
+        misses degrade to the heuristic scaffold (never a 5xx); `planner`
+        says which one answered.
       security:
         - bearerAuth: []
         - cookieAuth: []
+      parameters:
+        - name: plan
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['1', 'true']
       requestBody:
         required: true
         content:
@@ -4407,6 +4421,8 @@ paths:
                 text:
                   type: string
                   maxLength: 4000
+                plan:
+                  type: boolean
       responses:
         '201':
           description: Goal + proposals + nearby live intents
@@ -4427,6 +4443,21 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/ForgeLiveIntent'
+                  planner:
+                    type: object
+                    description: Present only when `plan` was requested.
+                    required:
+                      - used
+                    properties:
+                      used:
+                        type: boolean
+                      model:
+                        type: string
+                      dropped:
+                        type: integer
+                        description: Model proposals rejected by validation/grounding.
+                      reason:
+                        type: string
                   nextSteps:
                     $ref: '#/components/schemas/ForgeNextSteps'
         '400':

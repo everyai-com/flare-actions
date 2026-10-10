@@ -299,6 +299,7 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import type { OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
 import { buildMcpServer, mcpDiscovery } from "./mcp";
 import { forgeDepsFromEnv, handleForgeRequest } from "./forge-routes";
+import { forgeAdaptersFromEnv } from "./forge-adapters";
 import {
   describeScope,
   handleAuthorizeGet,
@@ -513,7 +514,7 @@ async function serveMcpRequest(
         return { timedOut: out ? out.timedOut : true };
       },
       digestRun: async (runId) => buildRunDigest(env.DB, runId),
-      forge: forgeDepsFromEnv(env),
+      forge: forgeDepsFromEnv(env, forgeAdaptersFromEnv(env, ctx ? { waitUntil: (p) => ctx.waitUntil(p) } : {})),
       actor: props.actor,
     }),
   );
@@ -2818,7 +2819,12 @@ export default {
         return json(tick);
       }
       // Flare Forge (intent-native git): every /v1/forge/* route.
-      const forgeResponse = await handleForgeRequest(request, url, forgeDepsFromEnv(env), () => authIdentity(request, env));
+      const forgeResponse = await handleForgeRequest(
+        request,
+        url,
+        forgeDepsFromEnv(env, forgeAdaptersFromEnv(env, { waitUntil: (p) => ctx.waitUntil(p) })),
+        () => authIdentity(request, env),
+      );
       if (forgeResponse) return forgeResponse;
       // Forge repository browsing over the ARTIFACTS namespace.
       // Token-scoped per repo like tournament sources (`namespace/name`).

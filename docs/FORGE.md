@@ -416,6 +416,15 @@ classes plus the Worker-side helpers), `forge-push.ts` and
 `FORGE_PUSH` (Workflow `flare-forge-push`). The DO bindings are in both
 the top-level and `previews` blocks of `wrangler.jsonc`.
 
+Wiring: `forgeAdaptersFromEnv` (`forge-adapters.ts`) plugs the real
+adapters into `forgeDepsFromEnv` for both REST and MCP — the
+coordinator DO when `COORDINATOR` is bound, exact `why` and the train
+port when `ARTIFACTS` is bound, the live feed when `FORGE_FEED` is
+bound, and the Workers AI goal planner (`plan_goal` with `plan: true`,
+`POST /v1/forge/goals?plan=1`, `flare forge goal --plan`) when `AI` is
+bound. Each missing binding, and every failed adapter call, degrades to
+the D1 fallback (`"source": "d1"` in snapshots) rather than a 5xx.
+
 ### RPC (`coordinatorFor(env, repo)`)
 
 Stream B mounts these behind its auth. The facade binds `repo`, and

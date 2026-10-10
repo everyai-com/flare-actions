@@ -83,6 +83,7 @@ import {
   type TrainPort,
   type WhyPort,
 } from "./forge-ports";
+import type { GoalPlanner } from "./forge-planner";
 import { tournamentAllowed } from "./tournaments";
 import { changedFiles } from "./verdict";
 
@@ -121,6 +122,8 @@ export interface ForgeServiceDeps {
   why: WhyPort;
   trains: TrainPort;
   feed: FeedPort | null;
+  // AI goal planner for `plan_goal` with `plan: true` (null = heuristic only).
+  planner: GoalPlanner | null;
   loadPolicy(repo: string): Promise<{ policy: ForgePolicy; warning: string | null }>;
   trunkHead(repo: string): Promise<string>;
 }
@@ -148,6 +151,7 @@ export function forgeServiceDeps(input: {
   why?: WhyPort;
   trains?: TrainPort;
   feed?: FeedPort | null;
+  planner?: GoalPlanner | null;
 }): ForgeServiceDeps {
   const artifacts = input.artifacts ?? null;
   return {
@@ -159,6 +163,7 @@ export function forgeServiceDeps(input: {
     why: input.why ?? d1Why(input.db),
     trains: input.trains ?? d1Trains(input.db),
     feed: input.feed ?? null,
+    planner: input.planner ?? null,
     // `.flare/policy.yml` from trunk; missing = default, invalid =
     // default plus a warning surfaced to the agent (never a 500).
     async loadPolicy(repo) {
@@ -463,9 +468,24 @@ export function extractPaths(text: string): string[] {
   return [...out].sort();
 }
 
+function wantsPlan(v: unknown): boolean {
+  return v === true || v === 1 || v === "1" || v === "true";
+}
+
+interface GoalProposal {
+  title: string;
+  footprint: string[];
+  reasoning: string;
+  accept: string;
+  // Indexes of earlier proposals this one must land after (AI plans only).
+  after?: number[];
+}
+
 // plan_goal: record the human's goal and hand back a planning scaffold
 // (paths named in the goal, live intents already near them, and the
-// declare_intent call to make per unit of change).
+// declare_intent call to make per unit of change). With `plan: true` and
+// a planner wired (Workers AI), the proposals are a grounded 3-12 intent
+// split instead; any planner miss degrades to the heuristic, never a 500.
 export async function planGoal(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
   const denied = needWrite(p, "plan_goal");
   if (denied) return denied;
@@ -474,17 +494,49 @@ export async function planGoal(deps: ForgeServiceDeps, p: ForgePrincipal, args: 
   const goal = await createGoal(deps.db, { repo: r.repo, text: typeof args.text === "string" ? args.text : "", createdBy: p.actor });
   if (isForgeError(goal)) return fromForgeError(goal);
   await auditWrite(deps, p, "goal.create", `${r.repo} ${goal.id}`);
-  const paths = extractPaths(goal.text);
+  let planned: GoalProposal[] | null = null;
+  let planner: Record<string, unknown> | undefined;
+  if (wantsPlan(args.plan)) {
+    if (!deps.planner) {
+      planner = { used: false, reason: "no planner on this deployment (needs the AI binding); heuristic scaffold returned" };
+    } else {
+      try {
+        const { policy } = await deps.loadPolicy(r.repo);
+        const out = await deps.planner({ repo: r.repo, goal: goal.text, policy });
+        if (out) {
+          planned = out.intents.map((i) => ({ title: i.title, footprint: i.footprint, reasoning: i.reasoning, accept: i.accept, after: i.after }));
+          planner = { used: true, model: out.model, dropped: out.dropped };
+        } else {
+          planner = { used: false, reason: "planner returned no valid intents; heuristic scaffold returned" };
+        }
+      } catch (err) {
+        console.log(JSON.stringify({ level: "warn", msg: "forge planner failed", repo: r.repo, error: String(err instanceof Error ? err.message : err).slice(0, 200) }));
+        planner = { used: false, reason: "planner failed; heuristic scaffold returned" };
+      }
+    }
+  }
+  const paths = planned ? [...new Set(planned.flatMap((pr) => pr.footprint))].slice(0, 20) : extractPaths(goal.text);
   const nearby = paths.length ? await deps.coordinator.whatsHappening(r.repo, { paths, limit: 20 }) : [];
   const title = goal.text.split("\n")[0].slice(0, LIMITS.title).trim();
-  const proposals = paths.length
-    ? [{ title: title.length >= LIMITS.titleMin ? title : `Work on ${paths[0]}`, footprint: paths, reasoning: goal.text.slice(0, 1000), accept: "" }]
-    : [];
+  const proposals: GoalProposal[] =
+    planned ??
+    (paths.length
+      ? [{ title: title.length >= LIMITS.titleMin ? title : `Work on ${paths[0]}`, footprint: paths, reasoning: goal.text.slice(0, 1000), accept: "" }]
+      : []);
   const steps: NextStep[] = proposals.length
     ? proposals.map((pr) => ({
         tool: "declare_intent",
-        args: { repo: r.repo, goalId: goal.id, title: pr.title, footprint: pr.footprint, reasoning: "<why this change>", accept: "<command that proves it, e.g. npm test>" },
-        why: "declare one intent per independent unit of change; overlaps come back before any code is written",
+        args: {
+          repo: r.repo,
+          goalId: goal.id,
+          title: pr.title,
+          footprint: pr.footprint,
+          reasoning: planned ? pr.reasoning : "<why this change>",
+          accept: planned && pr.accept ? pr.accept : "<command that proves it, e.g. npm test>",
+        },
+        why: pr.after?.length
+          ? `declare after proposal(s) ${pr.after.join(", ")} land — the planner found an unavoidable overlap`
+          : "declare one intent per independent unit of change; overlaps come back before any code is written",
       }))
     : [
         {
@@ -496,7 +548,7 @@ export async function planGoal(deps: ForgeServiceDeps, p: ForgePrincipal, args: 
   if (nearby.length) {
     steps.unshift({ tool: "whats_happening", args: { repo: r.repo, paths }, why: `${nearby.length} live intent(s) already touch these paths; read them before splitting the work` });
   }
-  return ok({ goal, proposals, nearby, nextSteps: steps }, 201);
+  return ok({ goal, proposals, nearby, ...(planner ? { planner } : {}), nextSteps: steps }, 201);
 }
 
 export async function listGoalsOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
