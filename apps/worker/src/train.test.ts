@@ -540,6 +540,33 @@ describe("trains: merger end-to-end (isomorphic-git + MemoryFS + git http-backen
     expect(h.mainPushes).toEqual([]);
   });
 
+  it("bisect probes run off the chain in the reserved slots and never land; the chain keeps moving", async () => {
+    const ids: string[] = [];
+    for (const f of ["a", "b"]) ids.push(await h.ready({ title: `p${f}`, paths: ["src/**"], files: { [`src/${f}.ts`]: withLine(lines(f), 5, f === "b" ? "b BUG" : "a ok") } }));
+    await cutTrain(h.deps, REPO);
+    await buildTrains(h.deps, REPO);
+    // c is cut speculatively on the red lane and gets invalidated with it
+    const c = await h.ready({ title: "pc", paths: ["src/c.ts"], files: { "src/c.ts": withLine(lines("c"), 5, "c ok") } });
+    await cutTrain(h.deps, REPO);
+    await buildTrains(h.deps, REPO);
+    h.completeCi();
+    expect(await checkTrains(h.deps, REPO)).toMatchObject({ status: "decided", landed: [], requeued: [c] });
+    // c is rebuilt on main right away, alongside the probes
+    const before = h.dispatched.length;
+    await advanceRepo(h.deps, REPO);
+    const fresh = h.dispatched.slice(before);
+    const probeRefs = fresh.filter((d) => /forge\/lane-(2[4-9]|3[01])$/.test(d.ref));
+    expect(probeRefs.map((d) => d.ref).sort()).toEqual(["refs/heads/forge/lane-30", "refs/heads/forge/lane-31"]);
+    expect(fresh.some((d) => d.ref === "refs/heads/forge/lane-0")).toBe(true);
+    h.completeCi();
+    await settle();
+    expect((await getIntent(h.db, ids[1]))?.state).toBe("failed");
+    expect((await getIntent(h.db, ids[0]))?.state).toBe("landed");
+    expect((await getIntent(h.db, c))?.state).toBe("landed");
+    for (const d of probeRefs) expect(h.mainPushes).not.toContain(d.sha);
+    expect(h.fx.show(REPO, "main", "src/b.ts")).not.toContain("BUG");
+  });
+
   it("never creates a lane ref: a missing pool ref aborts the lane and requeues it", async () => {
     h.fx.sh(["--git-dir", `${h.fx.root}/${REPO}.git`, "update-ref", "-d", "refs/heads/forge/lane-0"]);
     const a = await h.ready({ title: "a", paths: ["src/a.ts"], files: { "src/a.ts": "x\n" } });

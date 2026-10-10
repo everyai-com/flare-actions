@@ -70,7 +70,7 @@ import {
   chainBreak,
   cutCapacity,
   decideChain,
-  freeSlots,
+  freeProbeSlots,
   landingGate,
   laneRef,
   LANE_REF_PREFIX,
@@ -203,6 +203,20 @@ export async function activeTrains(db: Db, repo: string): Promise<Train[]> {
     .bind(repo)
     .all<TrainRow>();
   return res.results.map(toTrain);
+}
+
+// Bisect probes (rows with a parent train) live off the chain: built on
+// main, verified, never landed. Everything else is the chain.
+export function isProbe(t: Train): boolean {
+  return t.parentTrainId !== null;
+}
+
+export function chainOf(trains: readonly Train[]): Train[] {
+  return trains.filter((t) => !isProbe(t));
+}
+
+export function probesOf(trains: readonly Train[]): Train[] {
+  return trains.filter(isProbe);
 }
 
 // Split chain-ordered trains into their groups (same groupSeq).
@@ -564,7 +578,7 @@ export async function cutTrain(deps: TrainDeps, repo: string): Promise<CutResult
   if (!validateRepo(repo)) return { status: "invalid-repo" };
   const active = await activeTrains(deps.db, repo);
   const policy = await loadPolicy(deps, repo);
-  const cap = cutCapacity(policy, groupTrains(active).length, active.map((t) => t.lane));
+  const cap = cutCapacity(policy, groupTrains(chainOf(active)).length, active.map((t) => t.lane));
   if (!cap.slots.length) return { status: "busy", trainIds: active.map((t) => t.id) };
   const rows = await deps.db
     .prepare("SELECT * FROM intents WHERE repo = ? AND state = 'ready' ORDER BY updated_at ASC, id ASC LIMIT 500")
@@ -746,10 +760,12 @@ export async function buildTrains(deps: TrainDeps, repo: string): Promise<BuildR
     if (out.status !== "built") break;
     lanes.push(...out.lanes);
   }
+  const probes = await buildProbes(deps, repo);
+  lanes.push(...probes);
   // Only the builder that built dispatches (checkTrains covers misses).
-  if (!first || first.status !== "built") return first ?? { status: "none" };
+  if ((!first || first.status !== "built") && !probes.length) return first ?? { status: "none" };
   const dispatched = await dispatchTrains(deps, repo);
-  return { status: "built", baseSha: first.baseSha, lanes, dispatched };
+  return { status: "built", baseSha: first?.status === "built" ? first.baseSha : "", lanes, dispatched };
 }
 
 // Build the first forming group of the chain. Every group ahead of it
@@ -757,14 +773,48 @@ export async function buildTrains(deps: TrainDeps, repo: string): Promise<BuildR
 // last of their heads — the speculative head — or on main when nothing
 // is ahead (the chain root).
 async function buildGroup(deps: TrainDeps, repo: string): Promise<BuildResult> {
-  const groups = groupTrains(await activeTrains(deps.db, repo));
+  const groups = groupTrains(chainOf(await activeTrains(deps.db, repo)));
   const gi = groups.findIndex((g) => g.some((t) => t.state === "forming"));
   if (gi < 0) return { status: "none" };
   const ahead = groups.slice(0, gi).flat();
   if (ahead.some((t) => t.state !== "verifying")) return { status: "busy" };
   const forming = groups[gi];
   if (forming.some((t) => t.state !== "forming")) return { status: "busy" };
-  const parent = ahead.length ? ahead[ahead.length - 1] : null;
+  return buildStack(deps, repo, forming, ahead.length ? ahead[ahead.length - 1] : null);
+}
+
+// Off-chain bisect probes: each forming probe takes a free probe slot
+// (the reserved top of the pool) and is built alone on main. Probes
+// without a free slot wait (stay forming) for the next pass.
+async function buildProbes(deps: TrainDeps, repo: string): Promise<BuiltLane[]> {
+  const active = await activeTrains(deps.db, repo);
+  const forming = probesOf(active).filter((t) => t.state === "forming");
+  if (!forming.length) return [];
+  const free = freeProbeSlots(
+    active.map((t) => t.lane).filter((l) => l >= 0),
+    forming.filter((t) => t.lane < 0).length,
+  );
+  const out: BuiltLane[] = [];
+  for (const t of forming) {
+    let slot = t.lane;
+    if (slot < 0) {
+      const next = free.shift();
+      if (next === undefined) break;
+      const claimed = await changed(
+        deps.db.prepare("UPDATE trains SET lane = ?, updated_at = ? WHERE id = ? AND state = 'forming' AND lane = -1").bind(next, nowIso(), t.id),
+      );
+      if (!claimed) continue;
+      slot = next;
+    }
+    const built = await buildStack(deps, repo, [{ ...t, lane: slot }], null);
+    if (built.status === "built") out.push(...built.lanes);
+  }
+  return out;
+}
+
+// Build `forming` (one group, or one probe) as a stack on `parent`'s
+// head, or on main when parent is null.
+async function buildStack(deps: TrainDeps, repo: string, forming: Train[], parent: Train | null): Promise<BuildResult> {
   // Lane 0's conditional claim is the group lock: only one builder wins.
   if (!(await transitionTrain(deps.db, forming[0].id, "forming", "merging"))) return { status: "busy" };
   for (const t of forming.slice(1)) await transitionTrain(deps.db, t.id, "forming", "merging");
@@ -934,29 +984,26 @@ async function buildGroup(deps: TrainDeps, repo: string): Promise<BuildResult> {
 
 // Dispatch CI for verifying lanes that have no run yet (idempotent: the
 // run id is stamped conditionally). A lane that cannot dispatch is
-// aborted with every lane stacked on it.
+// aborted with every lane stacked on it; a probe that cannot dispatch is
+// aborted alone (its intents requeue).
 export async function dispatchTrains(deps: TrainDeps, repo: string): Promise<number> {
-  const trains = (await activeTrains(deps.db, repo)).filter((t) => t.state === "verifying");
+  const active = (await activeTrains(deps.db, repo)).filter((t) => t.state === "verifying");
+  const chain = chainOf(active);
   let dispatched = 0;
-  let broken: string | null = null;
   // The pipeline comes from TRUNK (the chain root's base = main when the
-  // chain was built), never from the lane head: a lane head carries the
-  // intents' changes, and an intent that rewrote flare.yml to `echo ok`
-  // must not get to choose the CI that verifies it.
-  const trunkSha = trains.length ? trains[0].baseSha : "";
-  let pipeline: string | null | undefined;
-  for (const t of trains) {
-    if (broken) {
-      await abortTrain(deps.db, t, broken);
-      continue;
-    }
-    if (t.runId) continue;
-    if (pipeline === undefined) pipeline = await loadPipelineAt(deps, repo, trunkSha);
-    if (!pipeline || !deps.dispatch) {
-      broken = pipeline ? "no dispatcher" : "no pipeline on trunk";
-      await abortTrain(deps.db, t, broken);
-      continue;
-    }
+  // chain was built; a probe's base is main), never from the lane head: a
+  // lane head carries the intents' changes, and an intent that rewrote
+  // flare.yml to `echo ok` must not get to choose the CI that verifies it.
+  const pipelines = new Map<string, string | null>();
+  const pipelineAt = async (sha: string): Promise<string | null> => {
+    if (!pipelines.has(sha)) pipelines.set(sha, await loadPipelineAt(deps, repo, sha));
+    return pipelines.get(sha) ?? null;
+  };
+  // null = dispatched or already running; else the reason it could not.
+  const dispatchOne = async (t: Train, trunkSha: string): Promise<string | null> => {
+    if (t.runId) return null;
+    const pipeline = await pipelineAt(trunkSha);
+    if (!pipeline || !deps.dispatch) return pipeline ? "no dispatcher" : "no pipeline on trunk";
     try {
       const out = await deps.dispatch({
         repo: `${deps.namespace}/${repo}`,
@@ -968,10 +1015,20 @@ export async function dispatchTrains(deps: TrainDeps, repo: string): Promise<num
         priority: TRAIN_RUN_PRIORITY,
       });
       if (await stampRun(deps.db, t.id, out.runId)) dispatched += 1;
+      return null;
     } catch (err) {
-      broken = `dispatch failed: ${redact(err)}`;
-      await abortTrain(deps.db, t, broken);
+      return `dispatch failed: ${redact(err)}`;
     }
+  };
+  let broken: string | null = null;
+  const root = chain.length ? chain[0].baseSha : "";
+  for (const t of chain) {
+    if (!broken) broken = await dispatchOne(t, root);
+    if (broken) await abortTrain(deps.db, t, broken);
+  }
+  for (const t of probesOf(active)) {
+    const failed = await dispatchOne(t, t.baseSha);
+    if (failed) await abortTrain(deps.db, t, failed);
   }
   return dispatched;
 }
@@ -1090,23 +1147,107 @@ export function routeLine(risk: number, policy: ForgePolicy, route: LandingRoute
   return `risk ${risk} ${cmp} ${policy.autoLandMaxRisk} → ${decision}${detail ? ` (${detail})` : ""}`;
 }
 
-// Observe the speculative chain (every active lane, chain order): land
-// its longest contiguous green prefix with one CAS push of main, bisect
-// the first red lane and invalidate every lane behind it (any group).
-// Lanes not yet built count as pending. Idempotent: a retry after a
-// crash sees main already at the target and finishes the transitions.
-export async function checkTrains(deps: TrainDeps, repo: string): Promise<CheckResult> {
-  let active = await activeTrains(deps.db, repo);
-  if (!active.length) return { status: "idle" };
-  if (active.some((t) => t.state === "verifying" && !t.runId)) {
-    await dispatchTrains(deps, repo);
-    active = await activeTrains(deps.db, repo);
-    if (!active.length) return { status: "idle" };
+// A red lane or probe: one intent is the culprit; more are split into
+// two off-chain probes on main. Every transition is checked: when two
+// executors decide the same red train, only the one that wins the train
+// transition acts on it.
+async function splitRed(
+  deps: TrainDeps,
+  repo: string,
+  red: Train,
+  baseSha: string,
+  out: { failed: string[]; bisected: string[] },
+): Promise<void> {
+  const step = bisectStep(red.intentIds);
+  const evidence = `run ${red.runId ?? "?"} red on ${red.headSha.slice(0, 12)}`;
+  if ("culprit" in step) {
+    if (!(await transitionTrain(deps.db, red.id, "verifying", "failed"))) return;
+    if (await transitionIntent(deps.db, step.culprit, "in_train", "failed", { trainId: null }, "train")) {
+      await appendForgeLedger(deps.db, { repo, subjectKind: "intent", subjectId: step.culprit, kind: "culprit", body: `${evidence} (train ${red.id})`, actor: "train" });
+      out.failed.push(step.culprit);
+    }
+    return;
   }
+  if (!("halves" in step)) return;
+  if (!(await transitionTrain(deps.db, red.id, "verifying", "bisected"))) return;
+  // Probes get a lane slot when they are built (lane -1 = unassigned).
+  const made: string[] = [];
+  for (const half of step.halves) {
+    const ids: string[] = [];
+    for (const id of half) {
+      if (await transitionIntent(deps.db, id, "in_train", "bisected", { trainId: null }, "train")) ids.push(id);
+    }
+    if (!ids.length) continue;
+    const child = await createTrain(deps.db, { repo, lane: -1, baseSha, intentIds: ids, parentTrainId: red.id });
+    const joined: string[] = [];
+    for (const id of ids) {
+      if (
+        (await transitionIntent(deps.db, id, "bisected", "ready", {}, "train")) &&
+        (await transitionIntent(deps.db, id, "ready", "in_train", { trainId: child.id }, "train"))
+      ) {
+        joined.push(id);
+      }
+    }
+    if (joined.length !== ids.length) await setTrainIntents(deps.db, child.id, joined);
+    if (!joined.length) await transitionTrain(deps.db, child.id, "forming", "aborted");
+    else made.push(child.id);
+  }
+  out.bisected.push(...made);
+  await appendForgeLedger(deps.db, { repo, subjectKind: "train", subjectId: red.id, kind: "bisect", body: `${evidence}; probes ${made.join(", ")}`, actor: "train" });
+}
+
+// Decide finished probes: green = innocent (requeued without blame, it
+// lands through the chain), red = culprit or split again.
+async function checkProbes(
+  deps: TrainDeps,
+  repo: string,
+  probes: readonly Train[],
+  out: { failed: string[]; requeued: string[]; bisected: string[] },
+): Promise<number> {
+  let decided = 0;
+  for (const t of probes) {
+    if (t.state !== "verifying" || !t.runId) continue;
+    const o = await laneOutcome(deps, t);
+    if (o === "pending") continue;
+    decided += 1;
+    if (o === "green") {
+      if (!(await transitionTrain(deps.db, t.id, "verifying", "aborted"))) continue;
+      await appendForgeLedger(deps.db, { repo, subjectKind: "train", subjectId: t.id, kind: "probe_green", body: `run ${t.runId} green on ${t.headSha.slice(0, 12)}: innocent, requeued`, actor: "train" });
+      for (const id of t.intentIds) {
+        const i = await getIntent(deps.db, id);
+        if (i?.state === "in_train" && i.trainId === t.id && (await requeueIntent(deps.db, id, `cleared by bisect probe ${t.id.slice(0, 8)}`))) out.requeued.push(id);
+      }
+      continue;
+    }
+    await splitRed(deps, repo, t, t.baseSha, out);
+  }
+  return decided;
+}
+
+// Observe the speculative chain (every active chain lane, chain order):
+// land its longest contiguous green prefix with one CAS push of main,
+// take the first red lane off the chain (culprit, or off-chain bisect
+// probes) and invalidate every lane behind it (any group). Lanes not yet
+// built count as pending. Probes are decided alongside. Idempotent: a
+// retry after a crash sees main already at the target and finishes the
+// transitions.
+export async function checkTrains(deps: TrainDeps, repo: string): Promise<CheckResult> {
+  let all = await activeTrains(deps.db, repo);
+  if (!all.length) return { status: "idle" };
+  if (all.some((t) => t.state === "verifying" && !t.runId)) {
+    await dispatchTrains(deps, repo);
+    all = await activeTrains(deps.db, repo);
+    if (!all.length) return { status: "idle" };
+  }
+  const out = { landed: [] as string[], failed: [] as string[], requeued: [] as string[], bisected: [] as string[] };
+  const probesDecided = await checkProbes(deps, repo, probesOf(all), out);
+  const active = chainOf(all);
+  const idleChain = (): CheckResult =>
+    probesDecided ? { status: "progress", mainSha: "", landed: [], requeued: out.requeued } : { status: active.length ? "building" : "waiting" };
   // Built lanes form the chain's prefix (groups build in order).
   let builtCount = active.findIndex((t) => t.state !== "verifying");
   if (builtCount < 0) builtCount = active.length;
-  if (builtCount === 0) return { status: "building" };
+  if (builtCount === 0) return idleChain();
   // Contiguity: a lane not stacked on the lane before it (that lane was
   // aborted by a sweep or failed dispatch) would land unverified commits;
   // invalidate it and everything behind it.
@@ -1122,10 +1263,9 @@ export async function checkTrains(deps: TrainDeps, repo: string): Promise<CheckR
   const outcomes: LaneOutcome[] = [];
   for (let i = 0; i < active.length; i++) outcomes.push(i < builtCount ? await laneOutcome(deps, active[i]) : "pending");
   const d = decideChain(outcomes);
-  if (d.waiting && d.landThrough < 0) return { status: "waiting" };
+  if (d.waiting && d.landThrough < 0) return probesDecided ? idleChain() : { status: "waiting" };
   const expected = active[0].baseSha;
   let mainSha = expected;
-  const out = { landed: [] as string[], failed: [] as string[], requeued: [] as string[], bisected: [] as string[] };
   const policy = await loadPolicy(deps, repo);
   // Landing gate, re-evaluated now (policy or risk may have changed since
   // the cut): a lane holding an intent that needs a human landing
@@ -1139,8 +1279,7 @@ export async function checkTrains(deps: TrainDeps, repo: string): Promise<CheckR
     if (landed.status === "retry") return { status: "retry", detail: landed.detail };
     if (landed.status === "moved") {
       // Someone moved main under a green train: its SHA was never
-      // verified on the new main, so rebuild from scratch (bounded by
-      // the caller's round budget).
+      // verified on the new main, so rebuild the chain from scratch.
       const requeued: string[] = [];
       for (const t of active) {
         await abortTrain(deps.db, t, `main moved to ${String(landed.mainSha).slice(0, 12)}; rebuild`);
@@ -1166,58 +1305,17 @@ export async function checkTrains(deps: TrainDeps, repo: string): Promise<CheckR
     }
     return { status: "decided", mainSha, ...out };
   }
-  if (d.waiting) return { status: "progress", mainSha, landed: out.landed, requeued: [] };
+  if (d.waiting) return { status: "progress", mainSha, landed: out.landed, requeued: out.requeued };
   // Invalidate every lane behind the red one, in any descendant group:
-  // its head contains the red lane's changes. Requeued without blame.
+  // its head contains the red lane's changes. Requeued without blame and
+  // rebuilt on main at once, without the red lane.
   const redId = d.redLane === null ? "" : active[d.redLane].id.slice(0, 8);
   for (const j of d.requeueLanes) {
     const t = active[j];
     await abortTrain(deps.db, t, `stacked on red lane ${d.redLane} (train ${redId}); rebuild`);
     out.requeued.push(...t.intentIds);
   }
-  if (d.redLane !== null) {
-    const red = active[d.redLane];
-    const step = bisectStep(red.intentIds);
-    const evidence = `run ${red.runId ?? "?"} red on ${red.headSha.slice(0, 12)}`;
-    // Every transition is checked: when two executors decide the same red
-    // lane, only the one that wins the train transition acts on it.
-    if ("culprit" in step) {
-      if (!(await transitionTrain(deps.db, red.id, "verifying", "failed"))) return { status: "decided", mainSha, ...out };
-      if (await transitionIntent(deps.db, step.culprit, "in_train", "failed", { trainId: null }, "train")) {
-        await appendForgeLedger(deps.db, { repo, subjectKind: "intent", subjectId: step.culprit, kind: "culprit", body: `${evidence} (train ${red.id})`, actor: "train" });
-        out.failed.push(step.culprit);
-      }
-    } else if ("halves" in step) {
-      if (!(await transitionTrain(deps.db, red.id, "verifying", "bisected"))) return { status: "decided", mainSha, ...out };
-      const halves = step.halves;
-      // Children form a new group at the chain head (everything behind
-      // the red lane was just invalidated), on the new main.
-      const groupSeq = await nextGroupSeq(deps.db, repo);
-      const used = (await activeTrains(deps.db, repo)).map((t) => t.lane);
-      const childSlots = freeSlots(used, MAX_LANE_REFS, halves.length);
-      for (let h = 0; h < halves.length && h < childSlots.length; h++) {
-        const ids: string[] = [];
-        for (const id of halves[h]) {
-          if (await transitionIntent(deps.db, id, "in_train", "bisected", { trainId: null }, "train")) ids.push(id);
-        }
-        if (!ids.length) continue;
-        const child = await createTrain(deps.db, { repo, lane: childSlots[h], baseSha: mainSha, intentIds: ids, parentTrainId: red.id, groupSeq });
-        const joined: string[] = [];
-        for (const id of ids) {
-          if (
-            (await transitionIntent(deps.db, id, "bisected", "ready", {}, "train")) &&
-            (await transitionIntent(deps.db, id, "ready", "in_train", { trainId: child.id }, "train"))
-          ) {
-            joined.push(id);
-          }
-        }
-        if (joined.length !== ids.length) await setTrainIntents(deps.db, child.id, joined);
-        if (!joined.length) await transitionTrain(deps.db, child.id, "forming", "aborted");
-        else out.bisected.push(child.id);
-      }
-      await appendForgeLedger(deps.db, { repo, subjectKind: "train", subjectId: red.id, kind: "bisect", body: `${evidence}; children ${out.bisected.join(", ")}`, actor: "train" });
-    }
-  }
+  if (d.redLane !== null) await splitRed(deps, repo, active[d.redLane], mainSha, out);
   return { status: "decided", mainSha, ...out };
 }
 

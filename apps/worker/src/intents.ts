@@ -953,7 +953,8 @@ export async function createTrain(
   const row: TrainRow = {
     id: crypto.randomUUID(),
     repo: input.repo,
-    lane: Math.max(0, Math.floor(input.lane)),
+    // -1 = no lane-ref slot yet (a bisect probe waiting for one).
+    lane: Math.max(-1, Math.floor(input.lane)),
     base_sha: input.baseSha,
     head_sha: "",
     intents_json: JSON.stringify(input.intentIds.slice(0, 500)),
