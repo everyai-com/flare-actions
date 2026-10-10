@@ -422,11 +422,11 @@ function bench() {
 
 function plannerProposals() {
   return [
-    { title: "Add token-bucket limiter to /checkout", footprint: ["src/middleware/**"] },
-    { title: "Retry 429 in the API client", footprint: ["src/lib/client.ts", "src/middleware/index.ts"] },
-    { title: "Gate /admin behind SSO", footprint: ["src/auth/**"] },
-    { title: "Tests for the limiter", footprint: ["test/ratelimit.test.ts"] },
-    { title: "Document the rate limit", footprint: ["docs/rate-limit.md"] },
+    { title: "Answer GET /books with an ETag and 304 on match", footprint: ["src/routes/books.ts", "src/lib/http.ts"] },
+    { title: "Send Cache-Control on catalog reads", footprint: ["src/lib/http.ts", "src/routes/authors.ts"] },
+    { title: "Require an API key for POST /authors", footprint: ["src/auth/**", "src/routes/authors.ts"] },
+    { title: "Tests for conditional GET", footprint: ["test/etag.test.ts"] },
+    { title: "Document the caching headers", footprint: ["README.md"] },
   ];
 }
 

@@ -186,7 +186,7 @@ a.fx-idchip { cursor: pointer; }
 .fx-risk.med { color: var(--risk-med); border-color: var(--risk-med); background: var(--tint-overlap); }
 .fx-risk.high { color: var(--risk-high); border-color: var(--risk-high); background: var(--tint-conflict); }
 .fx-term { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px; border-radius: 4px; background: var(--hover); border: 1px solid var(--line); font: 500 12px var(--mono); color: var(--soft); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.fx-term .w { font-weight: 700; }
+.fx-term .w { font-weight: 700; white-space: nowrap; flex: none; }
 .fx-term .w.low { color: var(--risk-low); } .fx-term .w.med { color: var(--risk-med); } .fx-term .w.high { color: var(--risk-high); }
 .fx-mono-av { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--hover); font: 700 10px var(--mono); color: var(--soft); flex: none; }
 .fx-mono-av::after { content: ""; position: absolute; right: -1px; bottom: -1px; width: 7px; height: 7px; border-radius: 999px; background: var(--av-dot, transparent); box-shadow: 0 0 0 1.5px var(--card); }
@@ -352,11 +352,12 @@ button kbd { margin-left: 6px; }
 .fx-bars { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; padding: 14px; }
 .fx-bar-m h4 { margin: 0 0 6px; font: var(--t-micro); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
 .fx-bar-r { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 6px; align-items: center; font: 500 11.5px var(--mono); color: var(--muted); margin: 3px 0; }
-.fx-bar-t { height: 16px; background: var(--hover); border-radius: 3px; position: relative; }
-.fx-bar-f { height: 100%; border-radius: 3px; background: var(--faint); }
+.fx-bar-t { display: block; height: 16px; background: var(--hover); border-radius: 3px; position: relative; }
+.fx-bar-f { display: block; height: 100%; border-radius: 3px; background: var(--faint); }
 .fx-bar-f.fx { background: var(--ink); }
 .fx-bar-v { position: absolute; left: 6px; top: 0; line-height: 16px; font: 600 11px var(--mono); color: var(--card); mix-blend-mode: normal; }
 .fx-bar-t .fx-bar-v.out { left: auto; right: 6px; color: var(--soft); }
+.fx-bar-f:not(.fx) + .fx-bar-v { color: var(--ink); }
 .fx-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 440px; max-width: 100vw; z-index: 45; background: var(--card); border-left: 1px solid var(--line-strong); box-shadow: var(--shadow); display: flex; flex-direction: column; animation: tFadeIn 140ms ease; }
 .fx-drawer[hidden] { display: none; }
 .fx-drawer-h { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
@@ -400,7 +401,9 @@ button kbd { margin-left: 6px; }
 .fx-fpchip.prot { border-color: var(--st-human); color: var(--st-human); }
 .fx-fpchip button { padding: 0 5px; min-height: 0; height: 18px; background: transparent; color: var(--muted); border: none; font-size: 12px; }
 .fx-prop .ix { font: 600 12px var(--mono); color: var(--muted); }
-.fx-prop .needs { font: 600 12px var(--mono); color: var(--st-human); }
+.fx-prop .needs { font: 600 12px var(--mono); color: var(--muted); }
+.fx-prop .needs.on { color: var(--st-human); }
+.fx-prop .fx-risk { justify-self: start; }
 .fx-prop .del { padding: 4px 8px; background: transparent; color: var(--muted); border: 1px solid var(--line); }
 .fx-prophead { display: grid; grid-template-columns: 22px minmax(180px, 1.2fr) minmax(200px, 1.4fr) 48px 80px 32px; gap: 8px; font: var(--t-micro); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); padding: 10px 0 4px; }
 .fx-warn { margin: 8px 0 0; padding: 6px 10px; border-radius: 6px; background: var(--tint-overlap); color: var(--soft); font: 500 12.5px var(--mono); }
@@ -411,7 +414,7 @@ button kbd { margin-left: 6px; }
 .pal-row .pal-desc { color: var(--muted); font-size: 12px; flex: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pal-row .pal-key { flex: none; }
 #paletteFoot .pal-mcp { margin-left: auto; font-family: var(--mono); color: var(--soft); }
-.fx-agent-row { display: grid; grid-template-columns: 26px 64px 104px minmax(0, 1fr) 150px 70px 70px; gap: 10px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.fx-agent-row { display: grid; grid-template-columns: 26px 64px 104px minmax(0, 1fr) 220px 70px 70px; gap: 10px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .fx-agent-row.h { font: var(--t-micro); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
 .fx-lease { display: inline-flex; align-items: center; gap: 6px; font: 500 12px var(--mono); color: var(--muted); }
 .fx-ring { width: 14px; height: 14px; border-radius: 999px; background: conic-gradient(var(--st-working) calc(var(--p, 0) * 1%), var(--line-strong) 0); flex: none; }
@@ -568,7 +571,7 @@ export const FORGE_OVERLAYS_HTML = String.raw`
 <div class="fx-modal-h"><h2 id="fxComposerTitle">New goal</h2><button class="ghost fx-tb" id="fxComposerClose" type="button" aria-label="Close composer">esc</button></div>
 <div class="fx-modal-b">
 <label class="field" for="fxGoalText"><span>What should change?</span></label>
-<textarea id="fxGoalText" rows="3" maxlength="4000" placeholder="Checkout gets hammered by bots. Cap requests per IP and make the client retry 429s." style="font-family: inherit; font-size: 14px;"></textarea>
+<textarea id="fxGoalText" rows="3" maxlength="4000" placeholder="Let clients cache catalog reads (ETag and Cache-Control), and require an API key for author writes." style="font-family: inherit; font-size: 14px;"></textarea>
 <div class="fx-actions"><button id="fxPlanBtn" type="button" data-action="plan_goal">Plan <kbd>⌘↵</kbd></button><span class="muted" id="fxPlannerNote" style="align-self:center;font-size:12.5px">planner proposes intents; you edit them before launch</span></div>
 <div id="fxProposals"></div>
 </div>

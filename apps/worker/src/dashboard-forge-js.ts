@@ -1326,8 +1326,8 @@ export const FORGE_JS = String.raw`
         ops.push({ op: "upsert", kind: "train", id: next.id, fields: next });
       }
     }
-    if (rng() < 0.3) ops.push({ op: "upsert", kind: "counters", fields: { overlaps_caught: (s.counters.overlaps_caught || 0) + 1 } });
-    ops.push({ op: "upsert", kind: "counters", fields: { intents: Math.max(0, (s.counters.intents || 0) + Math.round(rng() * 6 - 3)) } });
+    if (rng() < 0.25) ops.push({ op: "upsert", kind: "counters", fields: { overlaps_caught: (s.counters.overlaps_caught || 0) + 1 } });
+    if (FX.sim.t % 5 === 0) ops.push({ op: "upsert", kind: "counters", fields: { intents: Math.max(0, (s.counters.intents || 0) + Math.round(rng() * 6 - 3)) } });
     for (var k = 0; k < 3; k++) {
       var c = s.cells[Math.floor(rng() * s.cells.length)];
       if (c && c.agents > 200) ops.push({ op: "upsert", kind: "cell", id: c.path, fields: { agents: c.agents + Math.round(rng() * 8 - 4) } });
@@ -1775,6 +1775,13 @@ export const FORGE_JS = String.raw`
     fxSkeleton(box, 5);
     var repo = FX.repo;
     var goal = FX.route.q.get("goal") || "";
+    // #/intents?compose=1[&text=...] opens the goal composer: a stable URL
+    // for agents and for the video's goal-to-plan beat.
+    if (FX.route.q.get("compose") === "1" && document.getElementById("fxComposerOverlay").hidden) {
+      var pre = FX.route.q.get("text");
+      fxOpenComposer();
+      if (pre) { document.getElementById("fxGoalText").value = pre; fxPlan(); }
+    }
     fxLoad("/v1/forge/intents?repo=" + encodeURIComponent(repo) + (goal ? "&goal=" + encodeURIComponent(goal) : ""), fxFxIntents, "intents").then(function (d) {
       fxRenderNotice("intents");
       var intents = fxArr(d, "intents").map(fxNormIntent);
@@ -1805,7 +1812,7 @@ export const FORGE_JS = String.raw`
           li.addEventListener("keydown", function (ev) { if (ev.key === "Enter") fxNav("#/intents/" + i.id); });
           ul.appendChild(li);
         });
-        var head = [h("span", { text: (g ? g.id + " · " : "") + list.length + " intents · " + landed + " landed" })];
+        var head = [g ? fxLink(g.id) : null, h("span", { cls: "fx-path", text: "" + list.length + " intents · " + landed + " landed" })];
         var sec = fxPanel("Goal", [h("p", { cls: "fx-pad", style: "margin:0;padding-bottom:4px;font-size:14px;font-weight:500", text: g ? g.text : "Intents without a goal" }), ul], head);
         sec.setAttribute("data-kind", "goal"); sec.setAttribute("data-id", gid);
         sec.style.marginBottom = "12px";
@@ -2403,7 +2410,7 @@ export const FORGE_JS = String.raw`
       add.addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); var v = add.value.trim().replace(/^\.?\/+/, ""); if (v && p.footprint.indexOf(v) < 0) { p.footprint.push(v); fxRenderProposals(); var again = box.querySelectorAll(".fps input")[idx]; if (again) again.focus(); } } });
       fps.appendChild(add);
       var del = h("button", { type: "button", cls: "del", "aria-label": "Delete intent " + (idx + 1), text: "✕", on: { click: function () { props.splice(idx, 1); fxRenderProposals(); } } });
-      box.appendChild(h("div", { cls: "fx-prop", "data-kind": "proposal", "data-id": String(idx + 1), "data-risk": rk.risk }, [h("span", { cls: "ix", text: String(idx + 1) }), title, fps, fxRisk(rk.risk), h("span", { cls: "needs", text: rk.protected.length ? "! plan" : "—" }), del]));
+      box.appendChild(h("div", { cls: "fx-prop", "data-kind": "proposal", "data-id": String(idx + 1), "data-risk": rk.risk }, [h("span", { cls: "ix", text: String(idx + 1) }), title, fps, fxRisk(rk.risk), h("span", { cls: "needs" + (rk.protected.length ? " on" : ""), text: rk.protected.length ? "! plan" : "—" }), del]));
     });
     var dl = h("datalist", { id: "fxPathList" });
     var seen = {};
