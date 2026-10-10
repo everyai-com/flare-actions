@@ -364,6 +364,38 @@ describe("trains: merger end-to-end (isomorphic-git + MemoryFS + git http-backen
     expect(routed?.body).toMatch(/^risk \d+ > 0 → approved/);
   });
 
+  it("landing gate is enforced before main moves: an intent that became human-routed does not land (review #11)", async () => {
+    const a = await h.ready({ title: "a", paths: ["src/a.ts"], files: { "src/a.ts": withLine(lines("a"), 2, "a2") } });
+    const b = await h.ready({ title: "b", paths: ["src/b.ts"], files: { "src/b.ts": withLine(lines("b"), 2, "b2") } });
+    await cutTrain(h.deps, REPO);
+    await buildTrains(h.deps, REPO);
+    h.completeCi();
+    // policy tightened while CI ran: every change now needs a human
+    h.policyText.value = "auto_land_max_risk: 0\n";
+    expect(await checkTrains(h.deps, REPO)).toMatchObject({ status: "decided", landed: [], requeued: [a, b] });
+    expect(h.mainPushes).toEqual([]);
+    expect((await getIntent(h.db, a))?.state).toBe("ready");
+    expect(await cutTrain(h.deps, REPO)).toEqual({ status: "idle" }); // held until approved
+    expect(await approveLanding(h.deps, a, "alice")).toBe(true);
+    await settle();
+    expect((await getIntent(h.db, a))?.state).toBe("landed");
+    expect((await getIntent(h.db, b))?.state).toBe("ready");
+  });
+
+  it("two executors deciding the same red lane bisect it once (review #13)", async () => {
+    const ids: string[] = [];
+    for (const f of ["a", "b", "c", "d"]) ids.push(await h.ready({ title: `t${f}`, paths: ["src/**"], files: { [`src/${f}.ts`]: withLine(lines(f), 4, f === "b" ? "b BUG" : `${f} ok`) } }));
+    await cutTrain(h.deps, REPO);
+    await buildTrains(h.deps, REPO);
+    h.completeCi();
+    await Promise.all([checkTrains(h.deps, REPO), checkTrains(h.deps, REPO)]);
+    const kids = await h.db.prepare("SELECT COUNT(*) AS n FROM trains WHERE parent_train_id IS NOT NULL").bind().first<{ n: number }>();
+    expect(kids?.n).toBe(2);
+    await settle();
+    expect((await getIntent(h.db, ids[1]))?.state).toBe("failed");
+    for (const id of [ids[0], ids[2], ids[3]]) expect((await getIntent(h.db, id))?.state).toBe("landed");
+  });
+
   it("long ledgers: approvals and train commits past the 200 oldest rows still count (review #12)", async () => {
     h.policyText.value = "auto_land_max_risk: 0\n";
     const a = await h.ready({ title: "risky", paths: ["src/a.ts"], files: { "src/a.ts": withLine(lines("a"), 2, "risky") } });

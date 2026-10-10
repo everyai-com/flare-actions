@@ -1031,9 +1031,8 @@ async function fastForwardMain(deps: TrainDeps, repo: string, expected: string, 
   }
 }
 
-async function landIntent(deps: TrainDeps, policy: ForgePolicy, train: Train, intentId: string, runId: string): Promise<boolean> {
-  const intent = await getIntent(deps.db, intentId);
-  if (!intent || intent.state !== "in_train" || intent.trainId !== train.id) return false;
+// The landing gate as of now (risk re-scored with every known term).
+async function gateFor(deps: TrainDeps, policy: ForgePolicy, intent: Intent): Promise<{ scored: ReturnType<typeof scoreRisk>; gate: ReturnType<typeof landingGate>; kinds: Set<string> }> {
   const kinds = await ledgerKinds(deps.db, intent.id);
   const scored = scoreRisk({
     footprint: intent.footprint,
@@ -1041,7 +1040,26 @@ async function landIntent(deps: TrainDeps, policy: ForgePolicy, train: Train, in
     policy,
     llmReplay: kinds.has("llm_replay"),
   });
-  const gate = landingGate(scored.risk, policy, intent.id, kinds.has("land_approved"));
+  return { scored, gate: landingGate(scored.risk, policy, intent.id, kinds.has("land_approved")), kinds };
+}
+
+// First lane at or before `through` holding an intent the gate now holds
+// for a human (-1 = none). Checked BEFORE main moves: once a commit is on
+// main it has landed, so a held intent must never reach the push.
+async function firstGatedLane(deps: TrainDeps, policy: ForgePolicy, lanes: readonly Train[], through: number): Promise<number> {
+  for (let i = 0; i <= through && i < lanes.length; i++) {
+    for (const id of lanes[i].intentIds) {
+      const intent = await getIntent(deps.db, id);
+      if (intent && (await gateFor(deps, policy, intent)).gate.held) return i;
+    }
+  }
+  return -1;
+}
+
+async function landIntent(deps: TrainDeps, policy: ForgePolicy, train: Train, intentId: string, runId: string): Promise<boolean> {
+  const intent = await getIntent(deps.db, intentId);
+  if (!intent || intent.state !== "in_train" || intent.trainId !== train.id) return false;
+  const { scored, gate, kinds } = await gateFor(deps, policy, intent);
   const commit = (await trainCommitFor(deps.db, intent.id, train.id)) ?? train.headSha;
   // The policy line goes in *before* the landed transition so the why
   // chain's review is the routing decision, not the state change.
@@ -1108,9 +1126,14 @@ export async function checkTrains(deps: TrainDeps, repo: string): Promise<CheckR
   let mainSha = expected;
   const out = { landed: [] as string[], failed: [] as string[], requeued: [] as string[], bisected: [] as string[] };
   const policy = await loadPolicy(deps, repo);
+  // Landing gate, re-evaluated now (policy or risk may have changed since
+  // the cut): a lane holding an intent that needs a human landing
+  // approval does not land; it and every lane behind it are requeued.
+  const gated = await firstGatedLane(deps, policy, active, d.landThrough);
+  const landThrough = gated >= 0 ? gated - 1 : d.landThrough;
 
-  if (d.landThrough >= 0) {
-    const top = active[d.landThrough];
+  if (landThrough >= 0) {
+    const top = active[landThrough];
     const landed = await fastForwardMain(deps, repo, expected, top.headSha, top.lane);
     if (landed.status === "retry") return { status: "retry", detail: landed.detail };
     if (landed.status === "moved") {
@@ -1128,12 +1151,19 @@ export async function checkTrains(deps: TrainDeps, repo: string): Promise<CheckR
       return { status: "rebuild", detail: "main moved", requeued };
     }
     mainSha = landed.mainSha;
-    for (let i = 0; i <= d.landThrough; i++) {
+    for (let i = 0; i <= landThrough; i++) {
       const t = active[i];
       if (await transitionTrain(deps.db, t.id, "verifying", "landed")) {
         for (const id of t.intentIds) if (await landIntent(deps, policy, t, id, t.runId ?? "")) out.landed.push(id);
       }
     }
+  }
+  if (gated >= 0) {
+    for (const t of active.slice(gated)) {
+      await abortTrain(deps.db, t, `landing gate: lane ${gated} holds an intent that needs human landing approval`);
+      out.requeued.push(...t.intentIds);
+    }
+    return { status: "decided", mainSha, ...out };
   }
   if (d.waiting) return { status: "progress", mainSha, landed: out.landed, requeued: [] };
   // Invalidate every lane behind the red one, in any descendant group:
@@ -1148,14 +1178,16 @@ export async function checkTrains(deps: TrainDeps, repo: string): Promise<CheckR
     const red = active[d.redLane];
     const step = bisectStep(red.intentIds);
     const evidence = `run ${red.runId ?? "?"} red on ${red.headSha.slice(0, 12)}`;
+    // Every transition is checked: when two executors decide the same red
+    // lane, only the one that wins the train transition acts on it.
     if ("culprit" in step) {
-      await transitionTrain(deps.db, red.id, "verifying", "failed");
+      if (!(await transitionTrain(deps.db, red.id, "verifying", "failed"))) return { status: "decided", mainSha, ...out };
       if (await transitionIntent(deps.db, step.culprit, "in_train", "failed", { trainId: null }, "train")) {
         await appendForgeLedger(deps.db, { repo, subjectKind: "intent", subjectId: step.culprit, kind: "culprit", body: `${evidence} (train ${red.id})`, actor: "train" });
         out.failed.push(step.culprit);
       }
     } else if ("halves" in step) {
-      await transitionTrain(deps.db, red.id, "verifying", "bisected");
+      if (!(await transitionTrain(deps.db, red.id, "verifying", "bisected"))) return { status: "decided", mainSha, ...out };
       const halves = step.halves;
       // Children form a new group at the chain head (everything behind
       // the red lane was just invalidated), on the new main.
