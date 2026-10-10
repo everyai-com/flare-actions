@@ -108,7 +108,7 @@ function splitLines(text: string): string[] {
 // Longest-common-subsequence matching (base index -> other index),
 // with common prefix/suffix trimmed first. Bounded by MAX_MERGE_LINES.
 function lcsMap(a: string[], b: string[]): Array<number | undefined> {
-  const map: Array<number | undefined> = new Array(a.length).fill(undefined);
+  const map: Array<number | undefined> = Array.from({ length: a.length }, () => undefined);
   let pre = 0;
   while (pre < a.length && pre < b.length && a[pre] === b[pre]) {
     map[pre] = pre;
