@@ -35,13 +35,13 @@
 | Wiring extras: index sync, train conflict ports, approve-landing, session routes, `/llms.txt`, audit dedupe, dashboard↔API contract | 🔄 in progress | Server-side only |
 | Speculative stacked trains + honest benchmark rerun | 🔄 in progress | Fixes the throughput plateau the sim exposed at ≥10k agents |
 | `forge:demo`, `forge:agents`, `forge:director`, DEMO.md | 🔄 in progress | |
-| UX polish (demo-link redirect, judge CTA, master–detail lists, hot-cell sizing, agent rail, guided tour) | 🔄 in progress | From the integrator's hands-on review, 2026-10-10 |
+| UX polish (demo-link redirect, judge CTA, master–detail lists, hot-cell sizing, agent rail, guided tour) | ✅ merged | From the integrator's hands-on review, 2026-10-10 |
 | Adversarial review of the whole branch | 🔄 in progress | Findings will be fixed before staging |
 | Demo tooling: `forge:demo`, `forge:agents`, `forge:director`, DEMO.md | ✅ merged | Dry-run verified. First live run happens on staging, never prod |
-| Review fixes: 2 critical, 6 high, 8 medium, 4 low | 🔄 in progress | Split across the wiring, trains and hardening agents, one regression test each |
+| Review fixes: 2 critical, 6 high, 8 medium, 4 low | 🔄 partly merged | Hardening set (#3, #4, #5, #10, #14, #15, #17, #19, #20) merged. Service (#1, #2, #7, #8, #9, #16) and train (#6, #11–#13) fixes in flight |
 | **Judge instance**: public read-only spectator view, swarm loop, read-only public MCP | 🔄 in progress | From the strategic review: the single URL that serves all three criteria |
-| **Forge-first identity**: README, fold Tournaments into "resolution races", retire old video scripts | 🔄 in progress | |
-| Publishable CLI (`npx …`), `cli forge init` scaffolding (AGENTS.md + `.mcp.json`) | 🔄 in progress | **User** runs `npm publish` |
+| **Forge-first identity**: README, fold Tournaments into "resolution races", retire old video scripts | ✅ merged | |
+| Publishable CLI (`npx flare-forge`), `cli forge init` scaffolding (AGENTS.md + `.mcp.json`) | ✅ merged | **User** runs `npm login && npm publish --workspace apps/cli`. Note: npm `flare` is an unrelated package, so docs now say `npx flare-forge` |
 | Staging deploy and live run with real Claude Code agents | ⏳ next | First measured number: the baseline-vs-Forge table at 1k |
 | Cold-start check (8.6 s first hit observed on staging) | ⏳ | Measure after staging deploy |
 | Dogfooding: mirror this repo into Artifacts and run `flare why` on a line of Forge itself | ⏳ after staging | |
