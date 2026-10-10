@@ -4,8 +4,16 @@ import {
   agentIdentity,
   auditRoll,
   bisectStep,
+  chainBreak,
+  cutCapacity,
+  decideChain,
   decideStack,
   effectiveMaxParallel,
+  effectiveSpeculationDepth,
+  freeSlots,
+  lanePoolSize,
+  laneRefPool,
+  SpeculativeChain,
   FETCH_DEPTHS,
   landingGate,
   laneRef,
@@ -19,6 +27,7 @@ import {
   simulateTrain,
   squashMessage,
   trainTimestamp,
+  type ChainLane,
   type LaneOutcome,
   type TrainCandidate,
 } from "./train-core";
@@ -47,7 +56,10 @@ describe("lane refs", () => {
   it("names fixed, bounded refs", () => {
     expect(laneRef(0)).toBe("forge/lane-0");
     expect(laneRef(7)).toBe("forge/lane-7");
+    expect(laneRef(31)).toBe("forge/lane-31");
     expect(laneRef(99)).toBe(`forge/lane-${MAX_LANE_REFS - 1}`);
+    expect(laneRefPool().length).toBe(32);
+    expect(laneRefPool()[0]).toBe("refs/heads/forge/lane-0");
     expect(laneRef(-3)).toBe("forge/lane-0");
   });
 
@@ -89,12 +101,19 @@ describe("planTrain", () => {
     expect(plan.deferred).toEqual([]);
   });
 
-  it("defers past max_per_train and past max_parallel lanes, never drops", () => {
+  it("packs components into max_parallel lanes, defers past max_per_train, never drops", () => {
     const items = Array.from({ length: 10 }, (_, i) => cand(`i${i}`, [`f${i}`], `t${i}`));
     const plan = planTrain(items, policy({ maxPerTrain: 6, maxParallel: 4 }));
-    expect(plan.lanes.length).toBe(4);
-    expect(plan.lanes.flat().map((c) => c.id)).toEqual(["i0", "i1", "i2", "i3"]);
-    expect(plan.deferred.map((c) => c.id)).toEqual(["i4", "i5", "i6", "i7", "i8", "i9"]);
+    expect(plan.lanes.map((l) => l.map((c) => c.id))).toEqual([["i0", "i4"], ["i1", "i5"], ["i2"], ["i3"]]);
+    expect(plan.deferred.map((c) => c.id)).toEqual(["i6", "i7", "i8", "i9"]);
+  });
+
+  it("honors a lane cap from free slots (0 = defer everything)", () => {
+    const items = Array.from({ length: 5 }, (_, i) => cand(`i${i}`, [`f${i}`], `t${i}`));
+    expect(planTrain(items, DEFAULT_POLICY, { maxLanes: 2 }).lanes.map((l) => l.length)).toEqual([3, 2]);
+    const none = planTrain(items, DEFAULT_POLICY, { maxLanes: 0 });
+    expect(none.lanes).toEqual([]);
+    expect(none.deferred.length).toBe(5);
   });
 
   it("property: lanes are pairwise disjoint, within caps, and partition the input", () => {
@@ -285,5 +304,214 @@ describe("bounds", () => {
 
   it("round budget covers a full bisect plus rebuilds", () => {
     expect(maxTrainRounds(DEFAULT_POLICY)).toBe(maxBisectRounds(50) + 5);
+  });
+});
+
+describe("speculation capacity", () => {
+  it("pool = depth x max_parallel, capped by the ref pool", () => {
+    expect(lanePoolSize(DEFAULT_POLICY)).toBe(32);
+    expect(lanePoolSize(policy({ maxParallel: 8, speculationDepth: 1 }))).toBe(8);
+    expect(lanePoolSize(policy({ maxParallel: 32, speculationDepth: 4 }))).toBe(32);
+    expect(effectiveSpeculationDepth(policy({ speculationDepth: 0 }))).toBe(1);
+    expect(effectiveSpeculationDepth(policy({ speculationDepth: 99 }))).toBe(8);
+  });
+
+  it("free slots are the lowest unused, ascending", () => {
+    expect(freeSlots([0, 2], 6, 3)).toEqual([1, 3, 4]);
+    expect(freeSlots([0, 1, 2], 3, 2)).toEqual([]);
+  });
+
+  it("a cut needs a free speculation level and a free ref", () => {
+    const p = policy({ maxParallel: 2, speculationDepth: 2 });
+    expect(cutCapacity(p, 0, [])).toEqual({ slots: [0, 1], speculative: false });
+    expect(cutCapacity(p, 1, [0, 1])).toEqual({ slots: [2, 3], speculative: true });
+    expect(cutCapacity(p, 2, [0, 1, 2, 3]).slots).toEqual([]);
+    expect(cutCapacity(policy({ speculationDepth: 1 }), 1, [0]).slots).toEqual([]);
+  });
+});
+
+describe("decideChain", () => {
+  it("lands the green prefix while lanes behind are pending", () => {
+    expect(decideChain(["green", "green", "pending", "green"])).toEqual({ waiting: true, landThrough: 1, redLane: null, requeueLanes: [] });
+    expect(decideStack(["green", "green", "pending", "green"])).toEqual({ waiting: true, landThrough: -1, redLane: null, requeueLanes: [] });
+  });
+
+  it("exhaustive over 5 lanes: prefix-only landing, red invalidates everything behind", () => {
+    const vals: LaneOutcome[] = ["green", "red", "pending", "empty"];
+    for (let code = 0; code < 4 ** 5; code++) {
+      const o = [0, 1, 2, 3, 4].map((i) => vals[Math.floor(code / 4 ** i) % 4]);
+      const d = decideChain(o);
+      const firstBad = o.findIndex((x) => x === "red" || x === "pending");
+      const limit = firstBad === -1 ? o.length : firstBad;
+      for (let i = 0; i <= d.landThrough; i++) expect(o[i] === "green" || o[i] === "empty").toBe(true);
+      expect(d.landThrough).toBeLessThan(limit);
+      expect(d.landThrough).toBe(o.slice(0, limit).lastIndexOf("green"));
+      if (d.waiting) expect(o[firstBad]).toBe("pending");
+      if (d.redLane !== null) {
+        expect(d.redLane).toBe(firstBad);
+        expect(d.requeueLanes).toEqual(o.map((x, j) => (j > firstBad && x !== "empty" ? j : -1)).filter((j) => j >= 0));
+      }
+    }
+  });
+
+  it("chainBreak finds the first lane not stacked on its predecessor", () => {
+    expect(chainBreak([])).toBeNull();
+    expect(chainBreak([{ baseSha: "m", headSha: "a" }, { baseSha: "A", headSha: "b" }])).toBeNull();
+    expect(chainBreak([{ baseSha: "m", headSha: "a" }, { baseSha: "a", headSha: "b" }, { baseSha: "x", headSha: "c" }])).toBe(2);
+  });
+});
+
+// Random speculative pipelines: cut whenever capacity allows, finish CI
+// in random order (red iff the lane's head contains a culprit), decide
+// after every result. Checks every invariant at every step.
+function runPipeline(seed: number, p: ForgePolicy, n: number, culpritRate: number): { maxGroups: number; speculativeLands: number } {
+  const r = rng(seed);
+  const ids = Array.from({ length: n }, (_, i) => `i${String(i).padStart(4, "0")}`);
+  const fp = new Map(ids.map((id) => [id, [`f${Math.floor(r() * 12)}.ts`]]));
+  const culprits = new Set(ids.filter(() => r() < culpritRate));
+  const chain = new SpeculativeChain<string>(p);
+  let queue = [...ids];
+  const landed: string[] = [];
+  const failed: string[] = [];
+  const seenLanded = new Set<string>();
+  let maxGroups = 0;
+  let speculativeLands = 0;
+  for (let guard = 0; guard < 20000 && (queue.length || chain.lanes.length); guard++) {
+    for (;;) {
+      const cap = chain.capacity();
+      if (!cap.slots.length || !queue.length) break;
+      const plan = planTrain(queue.map((id) => cand(id, fp.get(id) ?? [], id)), p, { maxLanes: cap.slots.length });
+      const added = chain.addGroup(plan.lanes.map((l) => l.map((c) => c.id)));
+      expect(added.length).toBe(plan.lanes.length);
+      queue = plan.deferred.map((c) => c.id);
+    }
+    maxGroups = Math.max(maxGroups, chain.groups);
+    expect(chain.groups).toBeLessThanOrEqual(effectiveSpeculationDepth(p));
+    expect(new Set(chain.lanes.map((l) => l.slot)).size).toBe(chain.lanes.length);
+    // the chain is linear: every lane is stacked on the one before it
+    chain.lanes.forEach((l, i) => expect(l.parent).toBe(i === 0 ? chain.tip : chain.lanes[i - 1].id));
+    const pending = chain.lanes.filter((l) => l.outcome === "pending");
+    if (!pending.length) break;
+    const pick = pending[Math.floor(r() * pending.length)];
+    chain.setOutcome(pick.id, chain.prefixItems(pick.id).some((x) => culprits.has(x)) ? "red" : "green");
+    const before = [...chain.lanes];
+    const step = chain.decide();
+    // landed lanes: a contiguous green prefix of the chain, culprit-free
+    step.landed.forEach((l, i) => {
+      expect(l).toBe(before[i]);
+      expect(l.outcome).toBe("green");
+      if (l.group !== before[0].group) speculativeLands++;
+      for (const x of l.items) {
+        expect(culprits.has(x)).toBe(false);
+        expect(seenLanded.has(x)).toBe(false);
+        seenLanded.add(x);
+        landed.push(x);
+      }
+    });
+    if (step.red) {
+      const ri = before.indexOf(step.red);
+      expect(ri).toBe(step.landed.length);
+      // invalidation cascades to every lane behind the red one, any group
+      expect(step.invalidated).toEqual(before.slice(ri + 1));
+      expect(step.red.items.some((x) => culprits.has(x))).toBe(true);
+      if (step.culprit !== null) {
+        expect(culprits.has(step.culprit)).toBe(true);
+        expect(step.red.bisectDepth).toBeLessThanOrEqual(maxBisectRounds(step.red.rootSize));
+        failed.push(step.culprit);
+      }
+      for (const c of step.children) expect(c.bisectDepth).toBeLessThanOrEqual(maxBisectRounds(c.rootSize));
+      // requeued without blame, keeping their place in line
+      queue = [...step.invalidated.flatMap((l) => l.items), ...queue].sort();
+    }
+  }
+  expect(chain.unverifiedLands).toBe(0);
+  expect(queue).toEqual([]);
+  expect(chain.lanes).toEqual([]);
+  // nothing lost, nothing double-landed, only culprits fail
+  expect([...failed].sort()).toEqual([...culprits].sort());
+  expect([...landed].sort()).toEqual(ids.filter((x) => !culprits.has(x)));
+  return { maxGroups, speculativeLands };
+}
+
+describe("SpeculativeChain", () => {
+  it("group 2 is cut on in-flight group 1 and lands right after it", () => {
+    const p = policy({ maxParallel: 2, speculationDepth: 2 });
+    const c = new SpeculativeChain<string>(p);
+    const g1 = c.addGroup([["a"], ["b"]]);
+    const g2 = c.addGroup([["c"]]);
+    expect(g2[0].parent).toBe(g1[1].id);
+    expect(g2[0].slot).toBe(2);
+    expect(c.capacity().slots).toEqual([]);
+    c.setOutcome(g2[0].id, "green");
+    expect(c.decide()).toMatchObject({ landed: [], waiting: true });
+    c.setOutcome(g1[0].id, "green");
+    expect(c.decide().landed.map((l) => l.items)).toEqual([["a"]]);
+    c.setOutcome(g1[1].id, "green");
+    expect(c.decide().landed.map((l) => l.items)).toEqual([["b"], ["c"]]);
+    expect(c.tip).toBe(g2[0].id);
+    expect(c.unverifiedLands).toBe(0);
+  });
+
+  it("group 1 red: descendants are invalidated (requeued without blame) and the red lane bisects", () => {
+    const c = new SpeculativeChain<string>(policy({ maxParallel: 1, speculationDepth: 3 }));
+    const [g1] = c.addGroup([["a", "bad"]]);
+    const [g2] = c.addGroup([["c"]]);
+    const [g3] = c.addGroup([["d"]]);
+    c.setOutcome(g3.id, "red"); // its head contains g1's culprit
+    c.setOutcome(g2.id, "red");
+    expect(c.decide().waiting).toBe(true);
+    c.setOutcome(g1.id, "red");
+    const step = c.decide();
+    expect(step.red?.id).toBe(g1.id);
+    expect(step.invalidated.map((l: ChainLane<string>) => l.items)).toEqual([["c"], ["d"]]);
+    expect(step.children.map((l) => l.items)).toEqual([["a"], ["bad"]]);
+    expect(step.children[0].parent).toBe(-1); // rebuilt on main
+    // the requeued work is rebuilt speculatively on the bisect children
+    const [g4] = c.addGroup([["c", "d"]]);
+    expect(g4.parent).toBe(step.children[1].id);
+  });
+
+  it("dropping an emptied lane re-points the lanes stacked on it", () => {
+    const c = new SpeculativeChain<string>(policy({ maxParallel: 3, speculationDepth: 1 }));
+    const [a, b, d] = c.addGroup([["a"], ["b"], ["d"]]);
+    c.dropItems(b.id, () => true);
+    expect(c.lanes.map((l) => l.id)).toEqual([a.id, d.id]);
+    expect(d.parent).toBe(a.id);
+  });
+
+  it("property: invariants over random pipelines (depth 1-4, random CI order)", () => {
+    let speculative = 0;
+    for (let seed = 1; seed <= 150; seed++) {
+      const r = rng(seed * 7919);
+      const p = policy({ maxParallel: 1 + Math.floor(r() * 4), maxPerTrain: 2 + Math.floor(r() * 12), speculationDepth: 1 + Math.floor(r() * 4) });
+      const out = runPipeline(seed, p, 10 + Math.floor(r() * 70), r() * 0.2);
+      if (effectiveSpeculationDepth(p) === 1) expect(out.maxGroups).toBeLessThanOrEqual(1);
+      speculative += out.speculativeLands;
+    }
+    // speculation actually happened: lanes of a descendant group landed
+    // in the same step as their ancestors
+    expect(speculative).toBeGreaterThan(0);
+  });
+
+  it("property: a single culprit is isolated within ceil(log2 n) bisect rounds under speculation", () => {
+    for (let n = 2; n <= 33; n++) {
+      for (let k = 0; k < n; k += 3) {
+        const chain = new SpeculativeChain<string>(policy({ maxParallel: 1, speculationDepth: 3 }));
+        const ids = Array.from({ length: n }, (_, i) => `x${i}`);
+        chain.addGroup([ids]);
+        chain.addGroup([["after"]]);
+        let rounds = 0;
+        let culprit: string | null = null;
+        for (let guard = 0; guard < 100 && chain.lanes.length && culprit === null; guard++) {
+          for (const l of chain.lanes) if (l.outcome === "pending") chain.setOutcome(l.id, chain.prefixItems(l.id).includes(ids[k]) ? "red" : "green");
+          const step = chain.decide();
+          if (step.red) rounds++;
+          culprit = step.culprit;
+        }
+        expect(culprit).toBe(ids[k]);
+        // round 1 is the original lane; the rest are bisect rounds
+        expect(rounds - 1).toBeLessThanOrEqual(maxBisectRounds(n));
+      }
+    }
   });
 });
