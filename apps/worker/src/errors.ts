@@ -33,6 +33,20 @@ export const ERROR_CODES = [
   "plan_limit_exceeded",
   "hosted_only",
   "topup_invalid",
+  "forge_not_found",
+  "intent_not_claimable",
+  "not_owner",
+  "not_pushable",
+  "not_ready",
+  "stale_state",
+  "goal_closed",
+  "lease_lost",
+  "fork_failed",
+  "push_unverified",
+  "artifacts_unconfigured",
+  "conflict_not_claimable",
+  "admin_required",
+  "not_implemented",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -66,6 +80,20 @@ export const ERROR_HINTS: Record<ErrorCode, string> = {
   plan_limit_exceeded: "raise the concurrent-runner cap in Flare Cloud billing, or wait for running jobs to drain",
   hosted_only: "that surface runs on Flare Cloud only (FLARE_CLOUD=1) — self-hosted deploys stay free and unlimited",
   topup_invalid: "top-up links are single-use and expire — ask an admin for a fresh link",
+  forge_not_found: "list what exists with whats_happening (MCP) or GET /v1/forge/intents?repo=<repo>, then retry with that id",
+  intent_not_claimable: "only draft or expired intents can be claimed — call whats_happening, then declare_intent for new work or fork_session to continue someone else's",
+  not_owner: "another agent owns this intent — send_note to its owner, or fork_session to continue the work on your own fork",
+  not_pushable: "the intent is not in a pushable state (claimed, working, ready, replaying) — read it with GET /v1/forge/intents/<id> and follow its nextSteps",
+  not_ready: "push first: git push to the fork, then report_push, then mark_ready",
+  stale_state: "the intent changed concurrently — re-read it (GET /v1/forge/intents/<id>) and retry the step",
+  goal_closed: "the goal is done or abandoned — plan_goal a new goal, or declare the intent without goalId",
+  lease_lost: "your lease lapsed or the intent moved on — claim_intent again (expired intents are re-claimable) or fork_session",
+  fork_failed: "Artifacts could not fork or mint a fork token — retry in a few seconds; the claim was released",
+  push_unverified: "the sha is not on the intent's fork yet — run the pushCommand from claim_intent (or `flare forge push`), then retry",
+  artifacts_unconfigured: "bind the ARTIFACTS namespace in wrangler.jsonc (see docs/FORGE.md); forge claims need Artifacts forks",
+  conflict_not_claimable: "the conflict is already claimed, resolved, or out of replay attempts — list open ones with GET /v1/forge/conflicts?repo=<repo>&state=open",
+  admin_required: "plan approval is a human decision — an admin approves it in the dashboard Inbox (or with an admin token)",
+  not_implemented: "that forge capability is not wired on this deployment yet — use the suggested fallback in the error message",
 };
 
 export interface ApiErrorBody {
