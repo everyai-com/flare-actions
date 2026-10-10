@@ -111,6 +111,15 @@ describe("resolveTournament + resolvePass", () => {
     await seedDecided(db, "t2");
     expect(await resolveTournament(db, "t2")).toEqual({ status: "skipped", reason: "already" });
   });
+  it("concurrent resolves write one decision and one ledger row", async () => {
+    const db = sqliteDb();
+    await seedVerifying(db, "t1", true);
+    const outs = await Promise.all([resolveTournament(db, "t1"), resolveTournament(db, "t1"), resolveTournament(db, "t1")]);
+    expect(outs.filter((o) => o.status === "resolved")).toHaveLength(1);
+    expect(outs.filter((o) => o.status === "skipped")).toHaveLength(2);
+    const kinds = await db.prepare("SELECT kind FROM ledger WHERE tournament_id = 't1'").bind().all<{ kind: string }>();
+    expect(kinds.results.map((r) => r.kind)).toEqual(["resolved"]);
+  });
   it("resolvePass resolves each ready tournament once", async () => {
     const db = sqliteDb();
     await seedVerifying(db, "t1", true);

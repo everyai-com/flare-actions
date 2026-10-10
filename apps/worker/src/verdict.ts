@@ -238,14 +238,15 @@ export type VerdictOutcome =
   | { status: "decided"; winnerAttemptId: string; ranking: string[]; rationale: string; model: string }
   | { status: "skipped"; reason: "not-ready" | "already" | "no-attempts" };
 
+// Pure read: collisions are computed here but written only by the
+// caller that wins the verdict INSERT, so concurrent or retried ticks
+// cannot duplicate collision ledger rows.
 async function runRadar(
-  db: Db,
   artifacts: TournamentArtifacts | null,
-  tournamentId: string,
   baseSha: string,
   attempts: { id: string; agent: string; fork_repo: string; last_seen_sha: string }[],
-): Promise<void> {
-  if (!artifacts || !baseSha || attempts.length < 2) return;
+): Promise<string[]> {
+  if (!artifacts || !baseSha || attempts.length < 2) return [];
   const changedByAgent: { agent: string; changed: string[] }[] = [];
   for (const a of attempts) {
     if (!a.last_seen_sha) continue;
@@ -256,9 +257,7 @@ async function runRadar(
       // One unreadable fork must not stall the radar.
     }
   }
-  for (const c of detectCollisions(changedByAgent)) {
-    await appendLedger(db, tournamentId, "collision", `${c.agents[0]} x ${c.agents[1]}: ${c.paths.join(", ").slice(0, 500)}`);
-  }
+  return detectCollisions(changedByAgent).map((c) => `${c.agents[0]} x ${c.agents[1]}: ${c.paths.join(", ").slice(0, 500)}`);
 }
 
 // Eligible when every attempt is terminal, or the oldest activity is
@@ -287,7 +286,7 @@ export async function composeVerdict(
   const oldestActive = Math.min(...attempts.results.map((a) => Date.parse(a.updated_at) || nowMs));
   const expired = nowMs - oldestActive > VERDICT_TIMEOUT_MS && evidence.some((e) => e.terminal);
   if (!allTerminal && !expired) return { status: "skipped", reason: "not-ready" };
-  await runRadar(db, deps.artifacts, tournamentId, tournament.base_sha, attempts.results);
+  const collisions = await runRadar(deps.artifacts, tournament.base_sha, attempts.results);
   const ranked = rankEvidence(evidence);
   const { rationale, model } = await aiRationale(deps.ai, deps.gatewayId, deps.model, tournament.intent, ranked);
   const ranking = ranked.map((r) => r.attemptId);
@@ -300,6 +299,8 @@ export async function composeVerdict(
   } catch {
     return { status: "skipped", reason: "already" };
   }
+  // Only the tick that won the verdict row records the radar.
+  for (const body of collisions) await appendLedger(db, tournamentId, "collision", body);
   for (let i = 0; i < ranking.length; i++) {
     await db.prepare("UPDATE attempts SET verdict_rank = ? WHERE id = ?").bind(i + 1, ranking[i]).run();
   }

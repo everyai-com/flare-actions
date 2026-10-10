@@ -265,6 +265,30 @@ describe("composeVerdict", () => {
     expect(kinds.results).toHaveLength(1);
     expect(kinds.results[0].body).toContain("shared.ts");
   });
+  it("concurrent verdict ticks record the radar once", async () => {
+    const db = sqliteDb();
+    const base = "b".repeat(40);
+    const tid = await seedTournament(db, { baseSha: base });
+    await seedRun(db, "run-a", "success", 0);
+    await seedRun(db, "run-b", "success", 0);
+    const h1 = "1".repeat(40);
+    const h2 = "2".repeat(40);
+    await seedAttempt(db, tid, "a1", { run: "run-a", fork: "f1", sha: h1 });
+    await seedAttempt(db, tid, "a2", { run: "run-b", fork: "f2", sha: h2 });
+    const merged: FakeStore = {
+      commits: new Map([[base, "tb"], [h1, "t1"], [h2, "t2"]]),
+      trees: new Map([
+        ["tb", [{ name: "shared.ts", mode: "100644", hash: "o" }]],
+        ["t1", [{ name: "shared.ts", mode: "100644", hash: "n1" }]],
+        ["t2", [{ name: "shared.ts", mode: "100644", hash: "n2" }]],
+      ]),
+    };
+    const deps = { artifacts: fakeArtifacts({ f1: merged, f2: merged }) };
+    const outs = await Promise.all([composeVerdict(db, deps, tid), composeVerdict(db, deps, tid)]);
+    expect(outs.filter((o) => o.status === "decided")).toHaveLength(1);
+    const rows = await db.prepare("SELECT kind FROM ledger WHERE tournament_id = ? AND kind IN ('collision', 'verdict')").bind(tid).all<{ kind: string }>();
+    expect(rows.results.map((r) => r.kind).sort()).toEqual(["collision", "verdict"]);
+  });
 });
 
 describe("verdictPass", () => {
