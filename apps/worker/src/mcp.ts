@@ -115,6 +115,7 @@ const FORGE_TOOL_SCHEMAS = {
   plan_goal: z.object({
     repo: forgeRepo,
     text: z.string().describe("The human's goal in their own words (required, ≤4000 chars)").optional(),
+    plan: z.boolean().describe("AI planning over the trunk tree (default true; false = heuristic scaffold only)").optional(),
     confirm: forgeConfirm,
   }),
   declare_intent: z.object({
@@ -254,7 +255,7 @@ const FORGE_LOOP = "Forge loop: whats_happening → declare_intent → claim_int
 export const FORGE_TOOLS: McpToolDef[] = [
   {
     name: "plan_goal",
-    description: `Record a human's goal (the "why" every line traces back to) and get a planning scaffold: paths named in the goal, live intents already near them, and the declare_intent calls to make (one per independent unit of change). Call first when you are handed a new task. Returns {goal, proposals, nearby, nextSteps}. Needs run scope. ${FORGE_LOOP}`,
+    description: `Record a human's goal (the "why" every line traces back to) and get a plan: 3-12 proposed intents (title, reasoning, footprint grounded in the trunk tree, accept check, after: [earlier proposal indexes] for unavoidable overlaps) from Workers AI, falling back to a heuristic scaffold (paths named in the goal); live intents already near them; and the declare_intent calls to make. Call first when you are handed a new task. Returns {goal, proposals, planner: {source: ai|heuristic, model}, nearby, nextSteps}. Needs run scope. ${FORGE_LOOP}`,
   },
   {
     name: "declare_intent",
@@ -514,6 +515,12 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
   if (tier !== "read") {
     const body = res.body as { error?: unknown; result?: { isError?: boolean } } | undefined;
     const outcome = body?.error || body?.result?.isError ? "error" : "ok";
+    // Forge verbs write their own semantic `forge.*` row on success
+    // (forge-service auditWrite: actor, repo, intent) — the row audit
+    // readers key on, identical for REST and MCP. Skip the generic
+    // duplicate then (also keeps lease heartbeats out of the log); keep
+    // it for failures, which forge-service does not audit.
+    if (outcome === "ok" && Object.hasOwn(FORGE_MCP_OPS, name)) return res;
     await audit(deps.db, deps.agent ?? "mcp", `mcp.${name}`, `${outcome} ${auditTarget(name, args, deps.agent)}`).catch(() => undefined);
   }
   return res;

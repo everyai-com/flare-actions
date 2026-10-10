@@ -107,6 +107,7 @@ import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
 import { DASHBOARD_HTML } from "./dashboard";
 import { apiDocsPage } from "./apidocs";
+import { LLMS_TXT } from "./llms-txt";
 import { OPENAPI_YAML } from "./openapi-spec";
 import { ensureSchema } from "./schema";
 import {
@@ -513,7 +514,7 @@ async function serveMcpRequest(
         return { timedOut: out ? out.timedOut : true };
       },
       digestRun: async (runId) => buildRunDigest(env.DB, runId),
-      forge: forgeDepsFromEnv(env),
+      forge: forgeDepsFromEnv(env, ctx ? { ctx } : {}),
       actor: props.actor,
     }),
   );
@@ -2499,7 +2500,14 @@ export default {
       if (request.method === "POST" && url.pathname === "/webhooks/github") {
         return await handleWebhook(request, env, ctx);
       }
-      if (request.method === "GET" && url.pathname === "/mcp") {
+      // Agent index (llms.txt convention; generated module, CI-synced).
+      if (request.method === "GET" && url.pathname === "/llms.txt") {
+        return new Response(LLMS_TXT, {
+          headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=3600" },
+        });
+      }
+      // MCP discovery: same document as GET /mcp, at a well-known path.
+      if (request.method === "GET" && (url.pathname === "/mcp" || url.pathname === "/.well-known/mcp.json")) {
         return json(mcpDiscovery());
       }
       // MCP OAuth: the app-owned consent page. Per-request server
@@ -2818,7 +2826,7 @@ export default {
         return json(tick);
       }
       // Flare Forge (intent-native git): every /v1/forge/* route.
-      const forgeResponse = await handleForgeRequest(request, url, forgeDepsFromEnv(env), () => authIdentity(request, env));
+      const forgeResponse = await handleForgeRequest(request, url, forgeDepsFromEnv(env, { ctx }), () => authIdentity(request, env));
       if (forgeResponse) return forgeResponse;
       // Forge repository browsing over the ARTIFACTS namespace.
       // Token-scoped per repo like tournament sources (`namespace/name`).

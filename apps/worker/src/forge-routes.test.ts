@@ -330,9 +330,15 @@ describe("forge routes: conflicts, trains, fork sessions, feed", () => {
     expect(fresh.agent).toBe("beta");
     expect(rec(fresh.footprint).paths).toEqual(["src/lib/**", "src/lib/x.ts"]);
     const source = rec(f.body.source);
-    expect(source).toMatchObject({ intentId: srcId, headSha: sha("4"), readToken: `tok-read-${String(c.body.forkRepo)}` });
-    expect(String(source.fetchCommand)).toContain("$FLARE_SOURCE_TOKEN");
+    // session.ts forkSession: the source fork (code + flare/session) is
+    // copied into s-<intent>-<agent>-<rand> with a write token on the copy.
+    const session = rec(f.body.session);
+    expect(String(session.forkRepo)).toMatch(/^s-[0-9a-f]+-beta-/);
+    expect(session).toMatchObject({ branch: "flare/session", tokenEnv: "FLARE_SESSION_TOKEN", tokenScope: `write:${String(session.forkRepo)}` });
+    expect(String(session.token)).toBeTruthy();
+    expect(source).toMatchObject({ intentId: srcId, headSha: sha("4"), readToken: null });
     expect(steps(f.body)[0]).toMatchObject({ tool: "claim_intent", args: { intentId: fresh.id } });
+    expect(String(rec(steps(f.body)[1].args).command)).toContain("$FLARE_SESSION_TOKEN");
   });
 
   it("abandons an owned intent", async () => {

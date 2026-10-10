@@ -83,6 +83,8 @@ import {
   type TrainPort,
   type WhyPort,
 } from "./forge-ports";
+import type { GoalPlanner, PlannedIntent } from "./forge-planner";
+import { forkSession, readSession, SESSION_DEFAULT_STEPS, SESSION_MAX_STEPS, type SessionArtifacts } from "./session";
 import { tournamentAllowed } from "./tournaments";
 import { changedFiles } from "./verdict";
 
@@ -121,6 +123,12 @@ export interface ForgeServiceDeps {
   why: WhyPort;
   trains: TrainPort;
   feed: FeedPort | null;
+  // AI goal planner (plan_goal / POST /v1/forge/goals?plan=1); null =
+  // the heuristic scaffold only.
+  planner: GoalPlanner | null;
+  // Background work (coordinator index sync) outlives the response when
+  // set; unset = awaited inline (tests, MCP without ctx).
+  waitUntil: ((p: Promise<unknown>) => void) | null;
   loadPolicy(repo: string): Promise<{ policy: ForgePolicy; warning: string | null }>;
   trunkHead(repo: string): Promise<string>;
 }
@@ -148,6 +156,8 @@ export function forgeServiceDeps(input: {
   why?: WhyPort;
   trains?: TrainPort;
   feed?: FeedPort | null;
+  planner?: GoalPlanner | null;
+  waitUntil?: ((p: Promise<unknown>) => void) | null;
 }): ForgeServiceDeps {
   const artifacts = input.artifacts ?? null;
   return {
@@ -159,6 +169,8 @@ export function forgeServiceDeps(input: {
     why: input.why ?? d1Why(input.db),
     trains: input.trains ?? d1Trains(input.db),
     feed: input.feed ?? null,
+    planner: input.planner ?? null,
+    waitUntil: input.waitUntil ?? null,
     // `.flare/policy.yml` from trunk; missing = default, invalid =
     // default plus a warning surfaced to the agent (never a 500).
     async loadPolicy(repo) {
@@ -307,6 +319,16 @@ async function loadIntent(deps: ForgeServiceDeps, p: ForgePrincipal, v: unknown,
   // Out-of-scope ids answer like unknown ids (no existence oracle).
   if (!intent || !allowed(deps, p, intent.repo)) return forgeFail("forge_not_found", "intent not found");
   return intent;
+}
+
+// Keep the Coordinator's hot index in step with a D1 state change made
+// here (claim, ready, plan/landing approval, conflicts). Best effort:
+// background when the runtime gives us waitUntil, never a failure.
+async function syncIndex(deps: ForgeServiceDeps, repo: string, intentId: string): Promise<void> {
+  if (!deps.coordinator.sync) return;
+  const job = deps.coordinator.sync(repo, intentId).catch(() => undefined);
+  if (deps.waitUntil) deps.waitUntil(job);
+  else await job;
 }
 
 async function auditWrite(deps: ForgeServiceDeps, p: ForgePrincipal, action: string, target: string): Promise<void> {
@@ -463,9 +485,23 @@ export function extractPaths(text: string): string[] {
   return [...out].sort();
 }
 
-// plan_goal: record the human's goal and hand back a planning scaffold
-// (paths named in the goal, live intents already near them, and the
-// declare_intent call to make per unit of change).
+// plan_goal: record the human's goal and hand back a planning scaffold.
+// With `plan` (REST `?plan=1`, MCP default) and an AI planner, the
+// proposals are 3-12 intents grounded in the trunk tree with `after`
+// edges for unavoidable overlaps; otherwise (or on any planner failure)
+// the heuristic: paths named in the goal, as one proposal.
+export interface GoalProposal {
+  title: string;
+  footprint: string[];
+  reasoning: string;
+  accept: string;
+  after: number[];
+}
+
+function truthy(v: unknown): boolean {
+  return v === true || v === 1 || v === "1" || v === "true" || v === "yes";
+}
+
 export async function planGoal(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
   const denied = needWrite(p, "plan_goal");
   if (denied) return denied;
@@ -474,17 +510,55 @@ export async function planGoal(deps: ForgeServiceDeps, p: ForgePrincipal, args: 
   const goal = await createGoal(deps.db, { repo: r.repo, text: typeof args.text === "string" ? args.text : "", createdBy: p.actor });
   if (isForgeError(goal)) return fromForgeError(goal);
   await auditWrite(deps, p, "goal.create", `${r.repo} ${goal.id}`);
-  const paths = extractPaths(goal.text);
-  const nearby = paths.length ? await deps.coordinator.whatsHappening(r.repo, { paths, limit: 20 }) : [];
-  const title = goal.text.split("\n")[0].slice(0, LIMITS.title).trim();
-  const proposals = paths.length
-    ? [{ title: title.length >= LIMITS.titleMin ? title : `Work on ${paths[0]}`, footprint: paths, reasoning: goal.text.slice(0, 1000), accept: "" }]
-    : [];
+  let proposals: GoalProposal[] = [];
+  let planner: { source: "ai" | "heuristic"; model: string | null; dropped: number; note: string | null } = {
+    source: "heuristic",
+    model: null,
+    dropped: 0,
+    note: null,
+  };
+  if (truthy(args.plan)) {
+    if (!deps.planner) {
+      planner.note = "AI planner unavailable on this deployment (no AI binding); heuristic proposals";
+    } else {
+      try {
+        const { policy } = await deps.loadPolicy(r.repo);
+        const planned = await deps.planner({ repo: r.repo, goal: goal.text, policy });
+        if (planned) {
+          proposals = planned.intents.map((x: PlannedIntent) => ({ ...x }));
+          planner = { source: "ai", model: planned.model, dropped: planned.dropped, note: null };
+        } else {
+          planner.note = "AI planner returned no valid intents; heuristic proposals";
+        }
+      } catch (err) {
+        console.log(JSON.stringify({ level: "warn", msg: "forge planner failed", repo: r.repo, error: String(err instanceof Error ? err.message : err).slice(0, 200) }));
+        planner.note = "AI planner failed; heuristic proposals";
+      }
+    }
+  }
+  const named = extractPaths(goal.text);
+  if (planner.source === "heuristic") {
+    const title = goal.text.split("\n")[0].slice(0, LIMITS.title).trim();
+    proposals = named.length
+      ? [{ title: title.length >= LIMITS.titleMin ? title : `Work on ${named[0]}`, footprint: named, reasoning: goal.text.slice(0, 1000), accept: "", after: [] }]
+      : [];
+  }
+  const nearPaths = [...new Set([...named, ...proposals.flatMap((x) => x.footprint)])].slice(0, 50);
+  const nearby = nearPaths.length ? await deps.coordinator.whatsHappening(r.repo, { paths: nearPaths, limit: 20 }) : [];
   const steps: NextStep[] = proposals.length
-    ? proposals.map((pr) => ({
+    ? proposals.map((pr, i) => ({
         tool: "declare_intent",
-        args: { repo: r.repo, goalId: goal.id, title: pr.title, footprint: pr.footprint, reasoning: "<why this change>", accept: "<command that proves it, e.g. npm test>" },
-        why: "declare one intent per independent unit of change; overlaps come back before any code is written",
+        args: {
+          repo: r.repo,
+          goalId: goal.id,
+          title: pr.title,
+          footprint: pr.footprint,
+          reasoning: planner.source === "ai" ? pr.reasoning : "<why this change>",
+          accept: pr.accept || "<command that proves it, e.g. npm test>",
+        },
+        why: pr.after.length
+          ? `proposal ${i}: declare after proposal(s) ${pr.after.join(", ")} land (their footprints overlap); overlaps come back before any code is written`
+          : "declare one intent per independent unit of change; overlaps come back before any code is written",
       }))
     : [
         {
@@ -494,9 +568,9 @@ export async function planGoal(deps: ForgeServiceDeps, p: ForgePrincipal, args: 
         },
       ];
   if (nearby.length) {
-    steps.unshift({ tool: "whats_happening", args: { repo: r.repo, paths }, why: `${nearby.length} live intent(s) already touch these paths; read them before splitting the work` });
+    steps.unshift({ tool: "whats_happening", args: { repo: r.repo, paths: nearPaths.slice(0, 20) }, why: `${nearby.length} live intent(s) already touch these paths; read them before splitting the work` });
   }
-  return ok({ goal, proposals, nearby, nextSteps: steps }, 201);
+  return ok({ goal, proposals, planner, nearby, nextSteps: steps }, 201);
 }
 
 export async function listGoalsOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
@@ -674,6 +748,7 @@ export async function claimOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: F
     }
   }
   await auditWrite(deps, p, "intent.claim", `${current.repo} ${current.id} ${who.agent} -> ${out.forkRepo}`);
+  await syncIndex(deps, current.repo, current.id);
   const remote = forkRemote(deps, out.forkRepo, out.remote);
   const cmds = gitCommands(out.forkRepo, remote);
   const trailerFields = { goal: out.intent.goalId ?? "", intent: out.intent.id, agent: who.agent, session: out.forkRepo };
@@ -834,13 +909,14 @@ export async function markReadyOp(deps: ForgeServiceDeps, p: ForgePrincipal, arg
   const { policy } = await deps.loadPolicy(intent.repo);
   const outcome = await deps.trains.markReady(intent.repo, ready, policy);
   await auditWrite(deps, p, "intent.ready", `${intent.repo} ${intent.id} route=${outcome.route}`);
+  await syncIndex(deps, intent.repo, intent.id);
   const inbox = await deliver(deps, intent.id);
   return ok({
     intent: ready,
     risk: { score: ready.risk, terms: riskView(ready.riskTerms) },
     route: outcome.route,
     policy: { autoLandMaxRisk: policy.autoLandMaxRisk, auditSample: policy.auditSample },
-    train: { queued: outcome.queued, trainId: outcome.trainId, position: outcome.position, note: outcome.note },
+    train: { queued: outcome.queued, held: outcome.held ?? false, trainId: outcome.trainId, position: outcome.position, note: outcome.note },
     inbox,
     mailboxNotice: inbox.length ? MAILBOX_NOTICE : undefined,
     nextSteps: [
@@ -864,8 +940,32 @@ export async function approvePlanOp(deps: ForgeServiceDeps, p: ForgePrincipal, a
   const done = await approvePlan(deps.db, intent.id, p.actor);
   if (!done) return forgeFail("stale_state", `intent is ${intent.state}, not awaiting_plan`);
   await auditWrite(deps, p, "intent.approve_plan", `${intent.repo} ${intent.id}`);
+  await syncIndex(deps, intent.repo, intent.id);
   const fresh = (await getIntent(deps.db, intent.id)) ?? intent;
   return ok({ intent: fresh, nextSteps: nextStepsFor(fresh) });
+}
+
+// approve_landing (human/admin): a ready intent routed `human` (risk
+// above policy) may ride trains from now on, still CI-gated.
+export async function approveLandingOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
+  if (!p.isAdmin) return forgeFail("admin_required", "landing approval needs an admin");
+  const intent = await loadIntent(deps, p, args.intentId);
+  if (isOutcome(intent)) return intent;
+  if (!deps.trains.approveLanding) {
+    return forgeFail("not_implemented", "trains are not wired on this deployment", "ready intents wait in ready until the train runner is connected");
+  }
+  if (intent.state !== "ready") return forgeFail("stale_state", `intent is ${intent.state}, not ready`);
+  const done = await deps.trains.approveLanding(intent.id, p.actor);
+  if (!done) return forgeFail("stale_state", `intent is ${intent.state}; landing not approved`);
+  await auditWrite(deps, p, "intent.approve_landing", `${intent.repo} ${intent.id}`);
+  await syncIndex(deps, intent.repo, intent.id);
+  const fresh = (await getIntent(deps.db, intent.id)) ?? intent;
+  return ok({
+    intent: fresh,
+    landingApproved: true,
+    note: "approved: the intent rides the next train and lands only when CI verifies the exact SHA",
+    nextSteps: [{ tool: "read_inbox", args: { repo: intent.repo }, why: "watch it land (or pick the next needs-you story)" }],
+  });
 }
 
 export async function abandonOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
@@ -926,6 +1026,8 @@ export interface InboxItem {
   terms: Array<{ term: string; weight: number; detail: string }>;
   evidence: { headSha: string; trainId: string | null; landedSha: string | null };
   reason: string;
+  approve: { kind: "plan" | "landing"; endpoint: string } | null;
+  landingApproved: boolean;
 }
 
 // The human review queue (FORGE-UX §5.2): stories grouped by goal,
@@ -942,6 +1044,15 @@ export async function storyInboxOp(deps: ForgeServiceDeps, p: ForgePrincipal, ar
     )
     .bind(r.repo, ...INBOX_STATES, today)
     .all<IntentRow>();
+  const readyIds = res.results.filter((x) => x.state === "ready").map((x) => x.id).slice(0, 90);
+  const approvedLanding = new Set<string>();
+  if (readyIds.length) {
+    const rows = await deps.db
+      .prepare(`SELECT subject_id FROM forge_ledger WHERE subject_kind = 'intent' AND kind = 'land_approved' AND subject_id IN (${readyIds.map(() => "?").join(", ")})`)
+      .bind(...readyIds)
+      .all<{ subject_id: string }>();
+    for (const row of rows.results) approvedLanding.add(row.subject_id);
+  }
   const items: Array<InboxItem & { goalId: string | null }> = res.results.map((row) => {
     const it = toIntent(row);
     const route = routeLanding(it.risk, policy, auditRoll(it.id));
@@ -963,6 +1074,14 @@ export async function storyInboxOp(deps: ForgeServiceDeps, p: ForgePrincipal, ar
       terms: riskView(it.riskTerms),
       evidence: { headSha: it.headSha, trainId: it.trainId, landedSha: it.landedSha },
       reason,
+      // What a human can do here (dashboard buttons).
+      approve:
+        it.state === "awaiting_plan"
+          ? { kind: "plan", endpoint: `/v1/forge/intents/${it.id}/approve-plan` }
+          : it.state === "ready" && route === "human" && !approvedLanding.has(it.id)
+            ? { kind: "landing", endpoint: `/v1/forge/intents/${it.id}/approve-landing` }
+            : null,
+      landingApproved: approvedLanding.has(it.id),
     };
   });
   items.sort(
@@ -1129,6 +1248,7 @@ export async function claimConflictOp(deps: ForgeServiceDeps, p: ForgePrincipal,
   if (isOutcome(who)) return who;
   const c = await loadConflict(deps, p, args.conflictId);
   if (isOutcome(c)) return c;
+  if (deps.trains.claimConflict) return claimConflictViaTrains(deps, p, c.conflict, who.agent);
   const { policy } = await deps.loadPolicy(c.conflict.repo);
   const won = await claimConflict(deps.db, c.conflict.id, who.agent, policy.replay.maxAttempts);
   if (!won) return forgeFail("conflict_not_claimable", `conflict is ${c.conflict.state} (attempts ${c.conflict.attempts}/${policy.replay.maxAttempts})`);
@@ -1174,6 +1294,7 @@ export async function resolveConflictOp(deps: ForgeServiceDeps, p: ForgePrincipa
   if (isOutcome(who)) return who;
   const c = await loadConflict(deps, p, args.conflictId);
   if (isOutcome(c)) return c;
+  if (deps.trains.resolveConflict) return resolveConflictViaTrains(deps, p, c.conflict, who.agent, sha.value, args.forkRepo);
   const b = await getIntent(deps.db, c.conflict.intentB);
   if (b?.forkRepo && deps.artifacts) {
     const exists = await forkHasCommit(deps, b.forkRepo, sha.value);
@@ -1194,6 +1315,111 @@ export async function resolveConflictOp(deps: ForgeServiceDeps, p: ForgePrincipa
     intent: b ? { id: b.id, state: requeued ? "ready" : b.state } : null,
     note: "the resolution lands only through a train verified by CI (invariant 4)",
     nextSteps: b ? [{ tool: "read_inbox", args: { intentId: b.id }, why: "watch the replayed intent ride the next train" }] : [],
+  });
+}
+
+// Train-stream conflicts (train.ts): intent_a is the intent the train
+// dropped; the resolver rebuilds it on current trunk in a fresh replay
+// fork `r-<conflict>-<n>` (fork-scoped token, never trunk), then
+// resolve_conflict re-enters it as ready through enqueueReady.
+type ConflictRow = NonNullable<Awaited<ReturnType<typeof getConflict>>>;
+
+async function claimConflictViaTrains(deps: ForgeServiceDeps, p: ForgePrincipal, conflict: ConflictRow, agent: string): Promise<ForgeOutcome> {
+  const claim = deps.trains.claimConflict;
+  if (!claim) return forgeFail("not_implemented", "trains are not wired");
+  const out = await claim(conflict.id, agent);
+  if ("error" in out) {
+    return out.error === "not-found" ? forgeFail("forge_not_found", out.message) : forgeFail("conflict_not_claimable", out.message);
+  }
+  await auditWrite(deps, p, "conflict.claim", `${conflict.repo} ${conflict.id} ${agent}`);
+  await syncIndex(deps, conflict.repo, out.intent.id);
+  const other = out.conflict.intentB && out.conflict.intentB !== "trunk" ? await getIntent(deps.db, out.conflict.intentB) : null;
+  // Push target: the fresh replay fork; else the dropped intent's fork.
+  const target = out.replayFork ?? out.intent.forkRepo;
+  const minted = target ? await mintForkToken(deps, target, "write") : null;
+  const remote = target ? forkRemote(deps, target, minted?.remote ?? "") : "";
+  const cmds = target ? gitCommands(target, remote) : null;
+  const trailerFields = { goal: out.intent.goalId ?? "", intent: out.intent.id, agent, session: out.intent.forkRepo ?? "" };
+  return ok({
+    conflict: out.conflict,
+    intent: { ...intentSummary(out.intent), reasoning: out.intent.reasoning, footprint: out.intent.footprint.paths },
+    other: other ? { ...intentSummary(other), reasoning: other.reasoning, footprint: other.footprint.paths } : out.conflict.intentB === "trunk" ? "trunk" : null,
+    files: out.conflict.files,
+    replay: target
+      ? {
+          intentId: out.intent.id,
+          forkRepo: target,
+          freshFork: out.replayFork !== null,
+          forkRemote: remote,
+          token: minted?.token ?? null,
+          tokenScope: `write:${target}`,
+          tokenExpiresAt: minted?.expiresAt ?? null,
+          tokenEnv: "FLARE_FORK_TOKEN",
+          cloneCommand: cmds?.cloneCommand ?? "",
+          pushCommand: cmds?.pushCommand ?? "",
+          sourceHead: out.intent.headSha,
+          trailers: formatTrailers(trailerFields),
+        }
+      : null,
+    nextSteps: [
+      {
+        tool: "shell",
+        args: { command: cmds?.cloneCommand ?? "" },
+        why: out.replayFork
+          ? "the replay fork starts at current trunk: re-derive the dropped intent's change on it (its original head is in the intent's own fork), don't hunk-merge"
+          : "clone the intent's fork and rebuild its change on the current trunk",
+      },
+      {
+        tool: "resolve_conflict",
+        args: { conflictId: out.conflict.id, sha: "<replayed sha>", ...(target ? { forkRepo: target } : {}) },
+        why: "after pushing the replay: the intent re-enters ready and rides the next train through CI",
+      },
+    ],
+  });
+}
+
+async function resolveConflictViaTrains(
+  deps: ForgeServiceDeps,
+  p: ForgePrincipal,
+  conflict: ConflictRow,
+  agent: string,
+  sha: string,
+  forkArg: unknown,
+): Promise<ForgeOutcome> {
+  const resolve = deps.trains.resolveConflict;
+  if (!resolve) return forgeFail("not_implemented", "trains are not wired");
+  const intent = await getIntent(deps.db, conflict.intentA);
+  let forkRepo: string | undefined;
+  if (forkArg !== undefined && forkArg !== null && forkArg !== "") {
+    if (typeof forkArg !== "string" || !/^[a-zA-Z0-9][\w.-]{0,99}$/.test(forkArg)) return forgeFail("invalid_request", "forkRepo is not a valid repo name");
+    // Only this conflict's replay forks or the intent's own fork.
+    const prefix = `r-${conflict.id.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 12)}-`;
+    if (!forkArg.startsWith(prefix) && forkArg !== intent?.forkRepo) return forgeFail("invalid_request", `forkRepo must be ${prefix}<n> or the intent's fork`);
+    forkRepo = forkArg === intent?.forkRepo ? undefined : forkArg;
+  }
+  const verifyOn = forkRepo ?? intent?.forkRepo ?? null;
+  if (verifyOn && deps.artifacts) {
+    const exists = await forkHasCommit(deps, verifyOn, sha);
+    if (!exists) return forgeFail("push_unverified", `${sha.slice(0, 12)} is not on fork ${verifyOn}`);
+  }
+  const out = await resolve(conflict.id, agent, sha, { forkRepo });
+  if ("error" in out) {
+    return out.error === "not-found"
+      ? forgeFail("forge_not_found", out.message)
+      : out.error === "conflict"
+        ? forgeFail("stale_state", out.message)
+        : forgeFail("conflict_not_claimable", out.message, "claim_conflict first; only the claiming agent can resolve");
+  }
+  await auditWrite(deps, p, "conflict.resolve", `${conflict.repo} ${conflict.id} ${sha}`);
+  if (out.intent) await syncIndex(deps, conflict.repo, out.intent.id);
+  return ok({
+    conflictId: conflict.id,
+    state: out.conflict.state,
+    resolutionSha: sha,
+    intent: out.intent ? { id: out.intent.id, state: out.intent.state, forkRepo: out.intent.forkRepo } : null,
+    enqueue: out.enqueue,
+    note: out.note,
+    nextSteps: out.intent ? [{ tool: "read_inbox", args: { intentId: out.intent.id }, why: "watch the replayed intent ride the next train" }] : [],
   });
 }
 
@@ -1222,6 +1448,10 @@ export async function getTrainOp(deps: ForgeServiceDeps, p: ForgePrincipal, args
   if (!id || id.length > 64) return forgeFail("invalid_request", "trainId is required");
   const train: Train | null = await deps.trains.getTrain(id);
   if (!train || !allowed(deps, p, train.repo)) return forgeFail("forge_not_found", "train not found");
+  if (deps.trains.getTrainDetail) {
+    const detail = await deps.trains.getTrainDetail(id);
+    if (detail) return ok({ ...detail, train });
+  }
   const ledger = await listForgeLedger(deps.db, "train", train.id, 100);
   return ok({ train, ledger: ledger.map((l) => ({ kind: l.kind, body: l.body, actor: l.actor, at: l.created_at })) });
 }
@@ -1280,14 +1510,36 @@ export async function forkSessionOp(deps: ForgeServiceDeps, p: ForgePrincipal, a
   await appendForgeLedger(deps.db, { repo: source.repo, subjectKind: "intent", subjectId: source.id, kind: "session_forked", body: out.intent.id, actor: who.agent });
   await appendForgeLedger(deps.db, { repo: source.repo, subjectKind: "intent", subjectId: out.intent.id, kind: "forked_from", body: source.id, actor: who.agent });
   await auditWrite(deps, p, "intent.fork_session", `${source.repo} ${source.id} -> ${out.intent.id}`);
-  // Read-only token on the source fork so the new agent can fetch the
-  // pushed work (a fork token, never trunk).
-  const minted = source.forkRepo ? await mintForkToken(deps, source.forkRepo, "read") : null;
+  // Session fork (session.ts): the source fork with every branch (code,
+  // flare/session plan + log, notes) copied into `s-<intent>-<agent>-<rand>`
+  // with a 1 h write token on that copy only (never trunk). Falls back
+  // to a read token on the source fork when the fork can't be made.
+  let session: Record<string, unknown> | null = null;
+  if (source.forkRepo && deps.artifacts) {
+    const forked = await forkSession({ db: deps.db, artifacts: deps.artifacts }, { intentId: source.id, agent: who.agent });
+    if (!isForgeError(forked)) {
+      const sRemote = forkRemote(deps, forked.forkRepo, forked.remote);
+      const sUrl = sRemote ? withCreds(sRemote).replace("$FLARE_FORK_TOKEN", "$FLARE_SESSION_TOKEN") : "";
+      session = {
+        forkRepo: forked.forkRepo,
+        remote: sRemote,
+        branch: forked.branch,
+        token: forked.token,
+        tokenScope: `write:${forked.forkRepo}`,
+        tokenEnv: "FLARE_SESSION_TOKEN",
+        tokenExpiresAt: forked.tokenExpiresAt,
+        fetchCommand: sUrl ? `git fetch "${sUrl}" main ${forked.branch}:${forked.branch}` : "",
+      };
+    }
+  }
+  const minted = source.forkRepo && !session ? await mintForkToken(deps, source.forkRepo, "read") : null;
   const remote = source.forkRepo ? forkRemote(deps, source.forkRepo, minted?.remote ?? "") : "";
-  const fetchUrl = remote ? withCreds(remote).replace("$FLARE_FORK_TOKEN", "$FLARE_SOURCE_TOKEN") : "";
+  const fetchUrl = remote && minted ? withCreds(remote).replace("$FLARE_FORK_TOKEN", "$FLARE_SOURCE_TOKEN") : "";
+  const sessionFetch = typeof session?.fetchCommand === "string" ? session.fetchCommand : "";
   return ok(
     {
       intent: out.intent,
+      session,
       source: {
         intentId: source.id,
         state: source.state,
@@ -1302,12 +1554,51 @@ export async function forkSessionOp(deps: ForgeServiceDeps, p: ForgePrincipal, a
       },
       nextSteps: [
         { tool: "claim_intent", args: { intentId: out.intent.id }, why: "claim the new intent: you get your own fork + write token" },
-        { tool: "shell", args: { command: fetchUrl ? `git fetch "${fetchUrl}" main` : "" }, why: "pull the previous agent's pushed work into your clone, then continue" },
+        sessionFetch
+          ? { tool: "shell", args: { command: sessionFetch }, why: "pull the previous agent's work and its flare/session (plan.md + log.jsonl) from your session fork, then continue" }
+          : { tool: "shell", args: { command: fetchUrl ? `git fetch "${fetchUrl}" main` : "" }, why: "pull the previous agent's pushed work into your clone, then continue" },
         ...(source.agent ? [{ tool: "send_note", args: { toIntent: source.id, fromIntent: out.intent.id, text: "I'm continuing this work on a forked session." }, why: "tell the original owner" }] : []),
       ],
     },
     201,
   );
+}
+
+// GET /v1/forge/intents/:id/session: the intent fork's flare/session
+// (plan.md + log.jsonl steps) for the dashboard session timeline.
+export async function sessionOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
+  const intent = await loadIntent(deps, p, args.intentId);
+  if (isOutcome(intent)) return intent;
+  const limit = intArg(args.limit, SESSION_DEFAULT_STEPS, 1, SESSION_MAX_STEPS);
+  if (limit === null) return forgeFail("invalid_request", `limit must be an integer 1-${SESSION_MAX_STEPS}`);
+  if (!intent.forkRepo) {
+    return ok({ intentId: intent.id, forkRepo: null, session: null, note: "intent never claimed: no fork, no session yet" });
+  }
+  const artifacts = deps.artifacts;
+  if (!artifacts) return forgeFail("artifacts_unconfigured", "artifacts not configured");
+  // The binding's log() carries committedAt; the forge handle type
+  // only promises hash, so read it defensively.
+  const sessionArtifacts: SessionArtifacts = {
+    async get(name) {
+      const h = await artifacts.get(name);
+      return {
+        readFile: (a) => h.readFile(a),
+        log: async (o) =>
+          (await h.log(o)).map((c) => {
+            const at: unknown = (c as { committedAt?: unknown }).committedAt;
+            return { hash: c.hash, committedAt: typeof at === "number" ? at : 0 };
+          }),
+        [Symbol.dispose]: () => disposeHandle(h),
+      };
+    },
+  };
+  const view = await readSession({ artifacts: sessionArtifacts }, intent.forkRepo, { limit });
+  return ok({
+    intentId: intent.id,
+    forkRepo: intent.forkRepo,
+    session: view,
+    note: view ? null : "no flare/session branch on the fork yet (the agent writes it with appendSessionStep / writeSessionPlan)",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1317,7 +1608,8 @@ export async function forkSessionOp(deps: ForgeServiceDeps, p: ForgePrincipal, a
 export type ForgeOp = (deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs) => Promise<ForgeOutcome>;
 
 export const FORGE_MCP_OPS: Record<string, ForgeOp> = {
-  plan_goal: planGoal,
+  // MCP plans with AI by default (pass plan: false for the scaffold).
+  plan_goal: (deps, p, args) => planGoal(deps, p, { plan: true, ...args }),
   declare_intent: declareOp,
   whats_happening: whatsHappeningOp,
   claim_intent: claimOp,

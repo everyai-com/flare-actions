@@ -5,11 +5,16 @@
 // serializes `{ ...data }` or `{ error, code, hint }`. Route literals and
 // regexes follow index.ts conventions so scripts/check-openapi.mjs sees
 // them. Runtime-free: tests call handleForgeRequest with fakes.
+import { getSetting } from "./db";
 import { apiError } from "./errors";
+import { doCoordinatorPort, feedPort, trainPort, whyPort } from "./forge-adapters";
+import { aiGoalPlanner, type GoalPlanner } from "./forge-planner";
+import { SETTING_KEYS } from "./settings";
 import type { WorkerEnv } from "./env";
 import type { ForgeArtifacts } from "./intents";
 import {
   abandonOp,
+  approveLandingOp,
   approvePlanOp,
   claimConflictOp,
   claimOp,
@@ -31,6 +36,7 @@ import {
   reportPushOp,
   resolveConflictOp,
   sendNoteOp,
+  sessionOp,
   snapshotOp,
   storyInboxOp,
   whatsHappeningOp,
@@ -49,22 +55,41 @@ export interface ForgeIdentity {
   repos: string[];
 }
 
-// Integration seam: stream A/C/D adapters plug in here (unset = D1).
+// Integration seam: explicit adapters win; otherwise the real ports are
+// used whenever their bindings exist (forge-adapters.ts), and each port
+// degrades to its D1 fallback per call when they don't.
 export interface ForgeAdapters {
   coordinator?: ForgeCoordinatorPort;
   why?: WhyPort;
   trains?: TrainPort;
   feed?: FeedPort | null;
+  planner?: GoalPlanner | null;
+  // Request context: background coordinator syncs ride waitUntil.
+  ctx?: { waitUntil(p: Promise<unknown>): void };
 }
 
 export function forgeDepsFromEnv(env: WorkerEnv, adapters: ForgeAdapters = {}): ForgeServiceDeps {
   const artifacts: ForgeArtifacts | null = env.ARTIFACTS ?? null;
+  const ctx = adapters.ctx;
+  const waitUntil = ctx ? (p: Promise<unknown>) => ctx.waitUntil(p) : null;
   return forgeServiceDeps({
     db: env.DB,
     artifacts,
     namespace: env.ARTIFACTS_NAMESPACE ?? "",
     accountId: env.ARTIFACTS_ACCOUNT_ID ?? "",
-    ...adapters,
+    coordinator: adapters.coordinator ?? doCoordinatorPort(env, { waitUntil: waitUntil ?? undefined }),
+    why: adapters.why ?? whyPort(env),
+    trains: adapters.trains ?? trainPort(env),
+    feed: adapters.feed !== undefined ? adapters.feed : feedPort(env),
+    planner:
+      adapters.planner !== undefined
+        ? adapters.planner
+        : aiGoalPlanner({
+            ai: env.AI ?? null,
+            artifacts,
+            gatewayId: async () => env.AI_GATEWAY_ID ?? (await getSetting(env.DB, SETTING_KEYS.aiGatewayId)) ?? undefined,
+          }),
+    waitUntil,
   });
 }
 
@@ -119,7 +144,11 @@ export async function handleForgeRequest(
     respond(await op(deps, p, { ...(await bodyArgs(request)), ...extra }));
 
   // --- goals ---------------------------------------------------------------
-  if (method === "POST" && url.pathname === "/v1/forge/goals") return write(planGoal);
+  if (method === "POST" && url.pathname === "/v1/forge/goals") {
+    // `?plan=1` asks the AI planner for grounded proposals.
+    const plan = url.searchParams.get("plan");
+    return write(planGoal, plan !== null ? { plan } : {});
+  }
   if (method === "GET" && url.pathname === "/v1/forge/goals") return read(listGoalsOp);
   const goalMatch = /^\/v1\/forge\/goals\/([^/]+)$/.exec(url.pathname);
   if (goalMatch && method === "GET") return read(getGoalOp, { goalId: goalMatch[1] });
@@ -139,6 +168,10 @@ export async function handleForgeRequest(
   if (readyMatch && method === "POST") return write(markReadyOp, { intentId: readyMatch[1] });
   const approveMatch = /^\/v1\/forge\/intents\/([^/]+)\/approve-plan$/.exec(url.pathname);
   if (approveMatch && method === "POST") return write(approvePlanOp, { intentId: approveMatch[1] });
+  const approveLandingMatch = /^\/v1\/forge\/intents\/([^/]+)\/approve-landing$/.exec(url.pathname);
+  if (approveLandingMatch && method === "POST") return write(approveLandingOp, { intentId: approveLandingMatch[1] });
+  const sessionMatch = /^\/v1\/forge\/intents\/([^/]+)\/session$/.exec(url.pathname);
+  if (sessionMatch && method === "GET") return read(sessionOp, { intentId: sessionMatch[1] });
   const abandonMatch = /^\/v1\/forge\/intents\/([^/]+)\/abandon$/.exec(url.pathname);
   if (abandonMatch && method === "POST") return write(abandonOp, { intentId: abandonMatch[1] });
   const forkMatch = /^\/v1\/forge\/intents\/([^/]+)\/fork-session$/.exec(url.pathname);
