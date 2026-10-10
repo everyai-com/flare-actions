@@ -3664,6 +3664,93 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /v1/setup:
+    get:
+      tags: [admin]
+      operationId: getSetup
+      summary: Guided setup state for the dashboard Home screen
+      description: |-
+        Which setup steps are done (account, GitHub, repos, first run,
+        first green run), the next one, the repos the GitHub App can see
+        (pick-list for dispatch; null when unknown), and whether queued
+        jobs have waited 90s+ for a machine. Runs and repos are scoped to
+        the token's repo allowlist. GitHub lookups are best-effort.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Setup state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [steps, done, total, complete, next, waitingForComputer, githubConnected, runs, passed, admin]
+                properties:
+                  steps:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, done]
+                      properties:
+                        id:
+                          type: string
+                          enum: [account, github, repos, first_run, green]
+                        done:
+                          type: boolean
+                  done:
+                    type: integer
+                  total:
+                    type: integer
+                  complete:
+                    type: boolean
+                  next:
+                    type: string
+                    nullable: true
+                  waitingForComputer:
+                    type: boolean
+                  githubConnected:
+                    type: boolean
+                  installUrl:
+                    type: string
+                    nullable: true
+                  repos:
+                    type: array
+                    nullable: true
+                    items:
+                      type: object
+                      required: [fullName, defaultBranch, private]
+                      properties:
+                        fullName:
+                          type: string
+                        defaultBranch:
+                          type: string
+                        private:
+                          type: boolean
+                  runs:
+                    type: integer
+                  passed:
+                    type: integer
+                  latest:
+                    type: object
+                    nullable: true
+                    properties:
+                      id:
+                        type: string
+                      repo:
+                        type: string
+                      branch:
+                        type: string
+                      status:
+                        type: string
+                      createdAt:
+                        type: string
+                  executorSeen:
+                    type: boolean
+                  admin:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/admin/status:
     get:
       tags: [admin]
@@ -4348,6 +4435,27 @@ paths:
             text/html:
               schema:
                 type: string
+  /runner.sh:
+    get:
+      tags: [admin]
+      operationId: runnerSetupScript
+      summary: One-line runner setup script
+      description: |-
+        `curl -fsSL <origin>/runner.sh | sh -s <PAIR-CODE> [name]` turns
+        this computer into a runner: checks git and Node.js 22.6+, clones
+        or updates the runner, pairs with the single-use code from
+        `POST /v1/admin/pair-codes`, and starts polling. Without a code it
+        restarts an already-paired runner. Carries no secrets.
+      security: []
+      responses:
+        '200':
+          description: POSIX shell script
+          content:
+            text/x-shellscript:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
   /openapi.yaml:
     get:
       tags: [admin]

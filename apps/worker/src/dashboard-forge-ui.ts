@@ -504,7 +504,7 @@ const NAV_BTN = (id: string, tab: string, icon: string, label: string, badge = "
   `<button id="${id}" class="side-link" data-tab="${tab}" type="button">${icon}<span>${label}</span>${badge}</button>`;
 
 export const FORGE_NAV_HTML =
-  '<div class="side-group">Forge</div>' +
+  '<div class="side-group">Agent forge</div>' +
   NAV_BTN("tabLive", "live", FORGE_ICONS.live, "Live") +
   NAV_BTN("tabInbox", "inbox", FORGE_ICONS.inbox, "Inbox", '<span class="fx-badge" id="fxBadgeInbox" hidden></span>') +
   NAV_BTN("tabIntents", "intents", FORGE_ICONS.intents, "Intents") +

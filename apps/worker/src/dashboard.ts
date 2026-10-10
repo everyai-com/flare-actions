@@ -63,6 +63,8 @@ body.app nav.side-nav { display: flex; }
 .side-link svg { flex: none; opacity: 0.85; }
 .side-link:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
 .side-link.active { background: var(--hover); color: var(--ink); border-color: var(--line); }
+body:not(.app) #paletteBtn { display: none; }
+body:not(.app) header { display: none; }
 .side-group { font-size: 11px; font-weight: 600; color: var(--faint); padding: 10px 10px 2px; }
 .side-nav .side-group:first-child { padding-top: 2px; }
 .side-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 12px 8px 0; border-top: 1px solid var(--line); overflow: hidden; }
@@ -156,7 +158,7 @@ header h1.brand-head { display: flex; align-items: center; gap: 8px; }
 code.token { display: block; background: #101214; border: 1px solid var(--line); color: #d0d4dd; padding: 12px; border-radius: 8px; word-break: break-all; font-size: 12.5px; }
 form.inline { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 form.inline input { flex: 1; min-width: 180px; }
-.auth-card { padding: 28px; }
+.auth-card { padding: 32px 28px; max-width: 480px; margin: 6vh auto 0; }
 .auth-narrow { max-width: 420px; margin: 0 auto; }
 .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .brand-mark { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 6px; background: var(--accent); color: #000; font-weight: 800; font-size: 16px; }
@@ -165,7 +167,7 @@ form.inline input { flex: 1; min-width: 180px; }
 #emailBox h2, #connectBox h2 { margin: 0 0 4px; font-size: 16px; }
 .auth-form { display: flex; flex-direction: column; gap: 12px; margin: 12px 0 4px; }
 .field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; }
-.field[hidden], form.inline[hidden] { display: none; }
+.field[hidden], form.inline[hidden], form.auth-form[hidden] { display: none; }
 .field input { width: 100%; }
 .btn-block { width: 100%; padding: 10px; }
 .btn-github { background: transparent; color: var(--ink); border: 1px solid var(--line-strong); cursor: pointer; border-radius: 6px; font: inherit; padding: 10px; }
@@ -253,6 +255,65 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
 #toasts { position: fixed; left: 16px; bottom: 16px; z-index: 60; display: flex; flex-direction: column; gap: 8px; max-width: min(360px, calc(100vw - 32px)); }
 .toast { background: var(--card); border: 1px solid var(--line-strong); border-radius: 8px; padding: 10px 14px; font-size: 13px; box-shadow: 0 12px 32px rgba(0,0,0,0.45); animation: tRise 160ms ease; }
 .toast.err { border-color: #7f1d1d; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.home h2 { font-size: 24px; letter-spacing: -0.02em; margin: 0 0 6px; }
+.home-lead { color: var(--soft); font-size: 15px; line-height: 1.55; margin: 0 0 18px; max-width: 60ch; }
+.home-progress { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; }
+.home-bar { flex: 1; max-width: 320px; height: 8px; border-radius: 999px; background: var(--hover); border: 1px solid var(--line); overflow: hidden; }
+.home-bar span { display: block; height: 100%; width: 0; background: var(--ok, #16a34a); border-radius: 999px; transition: width 300ms ease; }
+.home-progress-text { color: var(--muted); font-size: 13px; font-weight: 600; }
+.home-steps { list-style: none; margin: 0 0 20px; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.home-step { display: flex; gap: 14px; align-items: flex-start; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.home-step.current { border-color: var(--line-strong); box-shadow: 0 0 0 3px var(--hover); }
+.home-step.done { opacity: 0.75; padding: 8px 16px; align-items: center; }
+.home-step.done .home-dot { width: 22px; height: 22px; font-size: 12px; }
+.home-step.done .home-step-title { font-size: 13.5px; font-weight: 600; margin: 0; }
+.home-dot { flex: none; width: 30px; height: 30px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; border: 2px solid var(--line-strong); color: var(--muted); }
+.home-step.done .home-dot { background: var(--ok, #16a34a); border-color: transparent; color: #fff; }
+.home-step.current .home-dot { border-color: var(--ink); color: var(--ink); }
+.home-step-body { flex: 1; min-width: 0; }
+.home-step-title { font-weight: 700; font-size: 15px; margin: 2px 0 2px; }
+.home-step-text { color: var(--muted); margin: 0 0 8px; font-size: 13.5px; line-height: 1.5; }
+.home-step.done .home-step-text { margin: 0; }
+.home-step-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+button.home-btn, a.home-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 8px 18px; font-size: 14px; font-weight: 600; border-radius: 8px; text-decoration: none; background: var(--accent); color: var(--accent-fg, #000); border: 1px solid transparent; }
+a.home-btn:hover, button.home-btn:hover { background: var(--accent-hover); }
+.home-alert { border: 1px solid var(--warn, #b45309); border-radius: 10px; padding: 14px 16px; margin: 0 0 18px; background: var(--tint-overlap, rgba(251,191,36,0.12)); }
+.home-alert h3 { margin: 0 0 6px; font-size: 15px; }
+.home-alert p { margin: 0 0 8px; }
+.home-cmd { display: flex; gap: 8px; align-items: stretch; margin: 6px 0; }
+.home-cmd code { flex: 1; min-width: 0; padding: 10px 12px; border-radius: 8px; background: var(--code-bg); color: var(--code-ink); font-size: 12.5px; overflow-x: auto; white-space: nowrap; }
+.home-verdict { display: flex; gap: 14px; align-items: center; padding: 18px; border-radius: 12px; border: 1px solid var(--line-strong); margin: 0 0 18px; flex-wrap: wrap; }
+.home-verdict .big { font-size: 34px; line-height: 1; }
+.home-verdict .what { flex: 1; min-width: 200px; }
+.home-verdict .what strong { display: block; font-size: 18px; letter-spacing: -0.01em; }
+.home-verdict .what span { color: var(--muted); font-size: 13px; }
+.home-verdict.ok { border-color: var(--ok, #16a34a); background: var(--tint-landed, rgba(74,222,128,0.12)); }
+.home-verdict.bad { border-color: var(--danger, #dc2626); background: var(--tint-conflict, rgba(248,113,113,0.12)); }
+.home-verdict.busy { border-color: var(--info, #2563eb); background: var(--tint-working, rgba(125,180,247,0.12)); }
+.home-sub { font-size: 14px; margin: 18px 0 8px; }
+#runDetail { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.run-summary { margin: 4px 0 16px; align-items: flex-start; }
+.run-summary .big { font-size: 26px; }
+.run-summary-line { margin: 6px 0 0; font-size: 13px; color: var(--soft); white-space: pre-wrap; overflow-wrap: anywhere; }
+.run-summary-line code { font-size: 12.5px; }
+.home-runs { list-style: none; margin: 0 0 8px; padding: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.home-runs li { border-top: 1px solid var(--line); }
+.home-runs li:first-child { border-top: none; }
+.home-runs button { display: flex; gap: 12px; align-items: center; width: 100%; padding: 10px 14px; background: transparent; color: var(--ink); border: none; border-radius: 0; text-align: left; font-weight: 500; }
+.home-runs button:hover { background: var(--hover); }
+.home-runs .icon { flex: none; width: 22px; text-align: center; }
+.home-runs .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-runs .word { flex: none; font-size: 12.5px; font-weight: 600; }
+.home-runs .when { flex: none; color: var(--muted); font-size: 12px; }
+.home-run-form { display: flex; gap: 8px; flex-wrap: wrap; }
+.home-run-form select, .home-run-form input { flex: 1; min-width: 200px; min-height: 40px; font-size: 14px; }
+.home-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 22px 0 0; }
+.home-card { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; text-align: left; padding: 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); font-weight: 400; }
+.home-card:hover { border-color: var(--line-strong); background: var(--hover); }
+.home-card[hidden] { display: none; }
+.home-card strong { font-size: 14px; }
+.home-card span { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 @media (max-width: 640px) {
   html, body { overflow-x: hidden; }
   .wrap { padding: 12px 12px 32px; }
@@ -291,11 +352,12 @@ ${FORGE_CSS}</style>
 <header>
 <h1 class="brand-head"><span class="brand-mark">F</span><span>Flare Actions</span></h1>
 <nav class="side-nav" id="sideNav" aria-label="Primary">
+<button id="tabHome" class="side-link" data-tab="home" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.2 8 2.5l5.5 4.7V13a.5.5 0 0 1-.5.5H9.6V10H6.4v3.5H3a.5.5 0 0 1-.5-.5z"/></svg><span>Home</span></button>
 ${FORGE_NAV_HTML}
 <div class="side-group">Code</div>
 <button id="tabRepos" class="side-link" data-tab="repos" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5 8 2l5 2.5v7L8 14l-5-2.5z"/><path d="M3 4.5 8 7l5-2.5M8 7v7"/></svg><span>Repositories</span></button>
 <button id="tabTournaments" class="side-link" data-tab="tournaments" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.8" r="3.2"/><path d="M6.2 8.4 5.2 13.8 8 12.2l2.8 1.6-1-5.4"/></svg><span>Races</span></button>
-<div class="side-group">CI</div>
+<div class="side-group">Your tests</div>
 <button id="tabRuns" class="side-link" data-tab="runs" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6.6 5.4 11 8l-4.4 2.6z" fill="currentColor" stroke="none"/></svg><span>Runs</span></button>
 <button id="tabMerge" class="side-link" data-tab="merge" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="8" r="1.7"/><path d="M4 5.7v4.6M5.6 4.6c2.8.3 2.4 3.4 4.7 3.4"/></svg><span>Merge queue</span></button>
 <div class="side-group">Manage</div>
@@ -313,8 +375,8 @@ ${FORGE_NAV_BENCH_HTML}
 <p class="muted" id="emailDesc">Welcome back.</p>
 <form id="emailForm" class="auth-form">
 <label class="field"><span>Email</span><input id="emailInput" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254"></label>
-<label class="field"><span>Password</span><input id="emailPw" type="password" placeholder="Password" autocomplete="current-password"></label>
-<label class="field" id="emailPw2Wrap" hidden><span>Confirm password</span><input id="emailPw2" type="password" placeholder="Confirm password" autocomplete="new-password"></label>
+<label class="field"><span>Password</span><input id="emailPw" type="password" placeholder="At least 8 characters" autocomplete="current-password"></label>
+<label class="field" id="emailPw2Wrap" hidden><span>Type the password again</span><input id="emailPw2" type="password" placeholder="Same password again" autocomplete="new-password"></label>
 <div id="tsEmail"></div>
 <button type="submit" id="emailBtn" class="btn-block">Log in</button>
 </form>
@@ -322,8 +384,8 @@ ${FORGE_NAV_BENCH_HTML}
 <p class="muted"><button id="forgotBtn" class="ghost" type="button">Forgot password?</button></p>
 <p class="muted"><button id="registerToggleBtn" class="ghost" type="button" hidden>No account? Create one</button></p>
 <form id="magicForm" class="auth-form">
-<label class="field">Email a login link instead<input id="magicEmail" type="email" autocomplete="email" maxlength="254"></label>
-<button type="submit" class="btn-block">Email me a link</button>
+<label class="field">No password? Get a login link by email<input id="magicEmail" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254"></label>
+<button type="submit" class="btn-block ghost">Email me a link</button>
 </form>
 <p id="magicOk"></p>
 <p id="magicErr" class="err"></p>
@@ -407,7 +469,50 @@ ${FORGE_NAV_BENCH_HTML}
 </div>
 </section>
 <section id="appPane" hidden>
-<section id="runsPane" class="card">
+<section id="homePane" class="card home" hidden aria-labelledby="homeTitle">
+<div class="home-hero">
+<h2 id="homeTitle">Welcome to Flare 👋</h2>
+<p class="home-lead" id="homeLead">Flare checks your code for you. Every time you save your work to GitHub, Flare runs your tests and tells you if anything broke.</p>
+</div>
+<div id="homeSetup" hidden>
+<div class="home-progress" aria-hidden="true"><span class="home-bar"><span id="homeBarFill"></span></span><span id="homeProgressText" class="home-progress-text"></span></div>
+<ol class="home-steps" id="homeSteps" aria-label="Setup steps"></ol>
+</div>
+<div id="homeWaiting" class="home-alert" role="status" hidden>
+<h3>⏳ Your tests are waiting for a computer</h3>
+<p>Flare needs a computer to run your tests. You can use the one you're on right now — it takes one command.</p>
+<p><button id="homePairBtn" type="button" class="home-btn">Use my computer</button></p>
+<div id="homePairBox" hidden>
+<p class="muted">1. Open the Terminal app (Mac or Linux). 2. Paste this line and press Enter. 3. Keep the window open while your tests run.</p>
+<div class="home-cmd"><code id="homePairCmd"></code><button id="homePairCopy" type="button" class="ghost">Copy</button></div>
+<p class="muted">It checks for git and Node.js and tells you what to install if one is missing. The code works once and expires in 10 minutes. Next time, run the same line without the code to start again.</p>
+</div>
+<p id="homePairErr" class="err"></p>
+</div>
+<div id="homeStatus" hidden>
+<div class="home-verdict" id="homeVerdict"></div>
+<h3 class="home-sub">Latest runs</h3>
+<ul class="home-runs" id="homeRuns"></ul>
+<p><button id="homeAllRuns" type="button" class="ghost">See all runs →</button></p>
+</div>
+<div class="home-run-now" id="homeRunNow" hidden>
+<h3 class="home-sub">Run my tests now</h3>
+<form id="homeRunForm" class="home-run-form">
+<label class="sr" for="homeRepo">Project</label>
+<select id="homeRepo" aria-label="Project"></select>
+<input id="homeRepoText" placeholder="owner/repo" maxlength="100" aria-label="Project (owner/repo)" hidden>
+<button type="submit" class="home-btn">▶ Run tests</button>
+</form>
+<p id="homeRunMsg" class="muted"></p>
+</div>
+<div class="home-cards">
+<button type="button" class="home-card" id="homeCardRuns"><strong>📋 All runs</strong><span>Every test run, newest first, with logs and the reason anything failed.</span></button>
+<button type="button" class="home-card" id="homeCardRaces"><strong>🏁 Agent races</strong><span>Give one task to several AI agents and let real tests pick the winner.</span></button>
+<button type="button" class="home-card" id="homeCardInvite" hidden><strong>👋 Invite a teammate</strong><span>Send a link so a friend can see your runs.</span></button>
+</div>
+<p id="homeErr" class="err"></p>
+</section>
+<section id="runsPane" class="card" hidden>
 <div id="connectBanner" hidden>
 <h2>Finish setup</h2>
 <p class="muted">Connect GitHub to run pushes from your repos — one click, then install the App.</p>
@@ -674,7 +779,10 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     if (cls) td.className = cls;
     tr.appendChild(td); body.appendChild(tr);
   }
-  function pill(status) { var s = el("span", status); s.className = "pill " + status; return s; }
+  // Plain words for run/job statuses; anything else (tournament states,
+  // custom strings) shows as-is. The raw value stays in class + tooltip.
+  var PILL_WORDS = { success: "passed", failure: "failed", error: "couldn't run", running: "running", queued: "waiting", blocked: "waiting", cancelled: "stopped", skipped: "skipped" };
+  function pill(status) { var s = el("span", PILL_WORDS[status] || status); s.className = "pill " + status; s.title = status; return s; }
 
   // Turnstile widgets render lazily per auth pane (the site key arrives
   // with /v1/admin/status, and hidden panes break widget execution).
@@ -769,10 +877,17 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     resetPane.hidden = true; resetConfirmPane.hidden = true; magicConfirmPane.hidden = true;
     authPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = ""; document.body.classList.remove("app");
     document.getElementById("emailPw2Wrap").hidden = st.claimed;
-    document.getElementById("emailBtn").textContent = st.claimed ? "Log in" : "Create admin account";
-    document.getElementById("emailTitle").textContent = st.claimed ? "Log in with email" : "Create admin account";
-    document.getElementById("emailDesc").textContent = st.claimed ? "Welcome back." : "First account claims admin.";
-    document.getElementById("connectBox").hidden = st.githubConnected;
+    document.getElementById("emailBtn").textContent = st.claimed ? "Log in" : "Create my account";
+    document.getElementById("emailTitle").textContent = st.claimed ? "Log in" : "Welcome! Let's set up Flare";
+    document.getElementById("emailDesc").textContent = st.claimed
+      ? "Welcome back 👋"
+      : "Step 1 of 2: make your account. You'll be the owner of this Flare. Next, you'll connect GitHub.";
+    // First run is account-only: no reset or magic link for an account
+    // that doesn't exist yet, and GitHub connects from Home once signed in.
+    document.getElementById("forgotBtn").hidden = !st.claimed;
+    document.getElementById("magicForm").hidden = !st.claimed;
+    document.getElementById("githubBox").hidden = !st.claimed;
+    document.getElementById("connectBox").hidden = true;
     document.getElementById("breakGlassBox").hidden = !st.breakGlass;
     var openReg = st.claimed && st.openRegistration;
     emailMode = "login";
@@ -796,21 +911,20 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     resetPane.hidden = true; resetConfirmPane.hidden = true; magicConfirmPane.hidden = true;
     authPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false; document.body.classList.add("app");
     document.getElementById("connectBanner").hidden = !(admin && !githubConnected);
-    userLabel.textContent = actor ? actor + " " : "";
+    // "email:pat@x" / "github:pat" are API actor ids; people read a name.
+    userLabel.textContent = actor ? String(actor).replace(/^email:/, "").replace(/^github:/, "@") + " " : "";
+    userLabel.title = actor || "";
     tabSettings.hidden = !admin;
-    if (!admin) selectTab("runs");
+    if (!admin) selectTab("home");
     var justInstalled = null;
     try { justInstalled = sessionStorage.getItem("flare-installed"); sessionStorage.removeItem("flare-installed"); } catch (e) {}
     var notice = document.getElementById("installNotice");
+    notice.hidden = true;
+    fxStartForge();
     if (justInstalled && admin) {
-      if (justInstalled === "update") document.getElementById("installNoticeTitle").textContent = "GitHub App updated";
-      notice.hidden = false;
-      selectTab("runs");
-    } else {
-      notice.hidden = true;
-      fxStartForge();
-      if (!applyHashRoute()) palGoTab("live");
-    }
+      toast(justInstalled === "update" ? "GitHub App updated ✓" : "GitHub is connected 🎉 Next: pick the projects to test.");
+      palGoTab("home");
+    } else if (!applyHashRoute()) palGoTab("home");
   }
   function api(path, opts) {
     opts = opts || {};
@@ -1160,7 +1274,209 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   var reposPane = document.getElementById("reposPane");
   var mergePane = document.getElementById("mergePane");
   var settingsPane = document.getElementById("settingsPane");
+  var tabHome = document.getElementById("tabHome");
+  var homePane = document.getElementById("homePane");
+  // ---------- Home: guided setup + plain-language status ----------
+  // Words a newcomer understands for every run status.
+  var FRIENDLY = {
+    success: ["✅", "Passed"], failure: ["❌", "Failed"], error: ["⚠️", "Couldn't run"],
+    running: ["⏳", "Running"], queued: ["🕐", "Waiting"], blocked: ["🕐", "Waiting"],
+    cancelled: ["⏹️", "Stopped"], skipped: ["➖", "Skipped"]
+  };
+  function friendly(status) { return FRIENDLY[status] || ["•", status || "unknown"]; }
+  var STEP_COPY = {
+    account: ["Make your account", ""],
+    github: ["Connect GitHub", "So Flare can see your code. One click, and GitHub asks you to confirm."],
+    repos: ["Pick the projects to test", "Choose which GitHub repos Flare should watch. You can change this any time."],
+    first_run: ["Run your tests for the first time", "Press the button below — or just push code to GitHub and Flare starts on its own."],
+    green: ["Get your first green check", "When your tests pass you'll see ✅ here and on GitHub. If they fail, Flare shows exactly what broke."]
+  };
+  var homeState = null, homeRuns = [], homeTimer = null;
+  function homeStepActions(id, st, box) {
+    if (id === "github") {
+      if (!st.admin) { box.appendChild(el("span", "Ask the person who set up Flare to connect GitHub.")); return; }
+      var b = el("button", "Connect GitHub"); b.type = "button"; b.className = "home-btn";
+      b.addEventListener("click", function () { startConnect(document.getElementById("homeErr")); });
+      box.appendChild(b);
+    } else if (id === "repos") {
+      if (st.installUrl) {
+        var a = el("a", "Choose repos on GitHub ↗"); a.href = st.installUrl; a.target = "_blank"; a.rel = "noopener"; a.className = "home-btn";
+        box.appendChild(a);
+      }
+      var again = el("button", "I've done it — check again"); again.type = "button"; again.className = "ghost";
+      again.addEventListener("click", function () { loadHome(); });
+      box.appendChild(again);
+    } else if (id === "first_run") {
+      var go = el("button", "▶ Run my tests"); go.type = "button"; go.className = "home-btn";
+      go.addEventListener("click", function () { var f = document.getElementById("homeRepo"); document.getElementById("homeRunNow").scrollIntoView({ behavior: "smooth", block: "center" }); if (f && !f.hidden) f.focus(); });
+      box.appendChild(go);
+    } else if (id === "green" && st.latest && (st.latest.status === "failure" || st.latest.status === "error")) {
+      var see = el("button", "See what broke"); see.type = "button"; see.className = "home-btn";
+      see.addEventListener("click", function () { selectTab("runs"); loadRuns(); loadRun(st.latest.id, true); });
+      box.appendChild(see);
+      box.appendChild(el("span", "Failing at first is normal — the details tell you what to fix."));
+    }
+  }
+  function renderHomeSteps(st) {
+    var list = document.getElementById("homeSteps");
+    list.textContent = "";
+    st.steps.forEach(function (step, i) {
+      var copy = STEP_COPY[step.id] || [step.id, ""];
+      var current = step.id === st.next;
+      var li = el("li"); li.className = "home-step" + (step.done ? " done" : "") + (current ? " current" : "");
+      if (current) li.setAttribute("aria-current", "step");
+      var dot = el("span", step.done ? "✓" : String(i + 1)); dot.className = "home-dot"; dot.setAttribute("aria-hidden", "true");
+      li.appendChild(dot);
+      var body = el("div"); body.className = "home-step-body";
+      var title = el("p", copy[0] + (step.done ? " — done" : "")); title.className = "home-step-title";
+      body.appendChild(title);
+      if (!step.done) { var t = el("p", copy[1]); t.className = "home-step-text"; body.appendChild(t); }
+      if (current) { var acts = el("div"); acts.className = "home-step-actions"; homeStepActions(step.id, st, acts); body.appendChild(acts); }
+      li.appendChild(body);
+      list.appendChild(li);
+    });
+    document.getElementById("homeBarFill").style.width = Math.round((st.done / st.total) * 100) + "%";
+    document.getElementById("homeProgressText").textContent = st.done + " of " + st.total + " done";
+  }
+  function renderHomeRepos(st) {
+    var box = document.getElementById("homeRunNow");
+    var sel = document.getElementById("homeRepo");
+    var txt = document.getElementById("homeRepoText");
+    var canRun = st.admin && (st.githubConnected || st.runs > 0);
+    box.hidden = !canRun;
+    if (!canRun) return;
+    var prev = sel.value;
+    sel.textContent = "";
+    var repos = st.repos || [];
+    repos.forEach(function (r) {
+      var o = el("option", r.fullName + (r.private ? " 🔒" : ""));
+      o.value = r.fullName; o.setAttribute("data-branch", r.defaultBranch || "main");
+      sel.appendChild(o);
+    });
+    sel.hidden = repos.length === 0;
+    txt.hidden = repos.length > 0;
+    if (prev) sel.value = prev;
+  }
+  function renderHomeStatus(st) {
+    var box = document.getElementById("homeStatus");
+    box.hidden = st.runs === 0;
+    if (box.hidden) return;
+    var v = document.getElementById("homeVerdict");
+    v.textContent = "";
+    var latest = st.latest;
+    var f = friendly(latest ? latest.status : "");
+    var cls = "home-verdict", head = "", sub = "";
+    if (latest && latest.status === "success") { cls += " ok"; head = "All good! Your latest tests passed."; }
+    else if (latest && (latest.status === "failure" || latest.status === "error")) { cls += " bad"; head = "Something broke in " + latest.repo + "."; }
+    else if (latest && latest.status === "running") { cls += " busy"; head = "Running your tests right now…"; }
+    else if (latest && (latest.status === "queued" || latest.status === "blocked")) { cls += " busy"; head = st.waitingForComputer ? "Waiting for a computer to start your tests…" : "Starting your tests…"; }
+    else { head = "Latest run: " + f[1]; }
+    if (latest) sub = latest.repo + (latest.branch ? " · " + latest.branch : "") + " · " + fmtAgo(latest.createdAt);
+    v.className = cls;
+    var big = el("span", f[0]); big.className = "big"; big.setAttribute("aria-hidden", "true");
+    var what = el("div"); what.className = "what";
+    what.appendChild(el("strong", head)); what.appendChild(el("span", sub));
+    v.appendChild(big); v.appendChild(what);
+    if (latest) {
+      var open = el("button", latest.status === "failure" || latest.status === "error" ? "See what broke" : "Open");
+      open.type = "button"; open.className = latest.status === "failure" || latest.status === "error" ? "home-btn" : "ghost";
+      open.addEventListener("click", function () { selectTab("runs"); loadRuns(); loadRun(latest.id, true); });
+      v.appendChild(open);
+    }
+    var list = document.getElementById("homeRuns");
+    list.textContent = "";
+    homeRuns.slice(0, 5).forEach(function (r) {
+      var fr = friendly(r.status);
+      var li = el("li"); var b = el("button"); b.type = "button";
+      var ic = el("span", fr[0]); ic.className = "icon"; ic.setAttribute("aria-hidden", "true");
+      var nm = el("span", (r.repo || "local upload") + (r.branch ? " · " + r.branch : "") + " @ " + String(r.sha || "").slice(0, 7)); nm.className = "name";
+      var wd = el("span", fr[1]); wd.className = "word";
+      var wh = el("span", fmtAgo(r.created_at)); wh.className = "when";
+      b.appendChild(ic); b.appendChild(nm); b.appendChild(wd); b.appendChild(wh);
+      b.setAttribute("aria-label", fr[1] + ": " + nm.textContent + ", " + wh.textContent);
+      b.addEventListener("click", function () { selectTab("runs"); loadRuns(); loadRun(r.id, true); });
+      li.appendChild(b); list.appendChild(li);
+    });
+  }
+  function renderHome(st) {
+    homeState = st;
+    document.getElementById("homeErr").textContent = "";
+    document.getElementById("homeTitle").textContent = st.complete ? "Your projects" : "Welcome to Flare 👋";
+    document.getElementById("homeLead").textContent = st.complete
+      ? "Flare runs your tests every time you push to GitHub. Here's how things look right now."
+      : "Flare checks your code for you. Every time you save your work to GitHub, Flare runs your tests and tells you if anything broke. Let's get you set up — it takes about two minutes.";
+    document.getElementById("homeSetup").hidden = st.complete;
+    if (!st.complete) renderHomeSteps(st);
+    document.getElementById("homeWaiting").hidden = !(st.waitingForComputer && st.admin);
+    renderHomeRepos(st);
+    renderHomeStatus(st);
+    document.getElementById("homeCardInvite").hidden = !st.admin;
+  }
+  function loadHome() {
+    return Promise.all([
+      api("/v1/setup"),
+      api("/v1/runs?limit=5").then(function (d) { return d.runs || []; }, function () { return []; })
+    ]).then(function (out) { homeRuns = out[1]; renderHome(out[0]); })
+      .catch(function (e) { if (String(e && e.message) !== "unauthorized") document.getElementById("homeErr").textContent = "Couldn't load your setup — try refreshing the page."; });
+  }
+  function startHomePoll() {
+    if (homeTimer) return;
+    homeTimer = setInterval(function () { if (!document.hidden && !homePane.hidden) loadHome(); }, 10000);
+  }
+  document.getElementById("homeRunForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var msg = document.getElementById("homeRunMsg");
+    var sel = document.getElementById("homeRepo");
+    var repo = "", branch = "main";
+    if (!sel.hidden && sel.value) { repo = sel.value; var opt = sel.options[sel.selectedIndex]; branch = (opt && opt.getAttribute("data-branch")) || "main"; }
+    else repo = document.getElementById("homeRepoText").value.trim();
+    if (!repo) { msg.textContent = "Pick a project first."; return; }
+    msg.textContent = "Starting your tests…";
+    api("/v1/runs/dispatch", { method: "POST", body: JSON.stringify({ repo: repo, sha: branch }) })
+      .then(function () { msg.textContent = "Started! Watch it below — this page updates by itself."; toast("Tests started for " + repo); return loadHome(); })
+      .catch(function (e) { msg.textContent = "Couldn't start the tests: " + (e.message || "error") + ". Does the repo have a flare.yml or a .github/workflows file?"; });
+  });
+  document.getElementById("homePairBtn").addEventListener("click", function () {
+    var err = document.getElementById("homePairErr");
+    err.textContent = "";
+    api("/v1/admin/pair-codes", { method: "POST", body: JSON.stringify({}) })
+      .then(function (data) {
+        document.getElementById("homePairCmd").textContent =
+          "curl -fsSL " + window.location.origin + "/runner.sh | sh -s " + data.code;
+        document.getElementById("homePairBox").hidden = false;
+      })
+      .catch(function () { err.textContent = "Couldn't make a setup code. Only the owner (admin) can do this."; });
+  });
+  document.getElementById("homePairCopy").addEventListener("click", function () { copyText(document.getElementById("homePairCmd").textContent, this); });
+  document.getElementById("homeAllRuns").addEventListener("click", function () { selectTab("runs"); loadRuns(); });
+  document.getElementById("homeCardRuns").addEventListener("click", function () { selectTab("runs"); loadRuns(); });
+  document.getElementById("homeCardRaces").addEventListener("click", function () { selectTab("tournaments"); loadTournaments(); });
+  document.getElementById("homeCardInvite").addEventListener("click", function () { palGoTab("settings"); setTimeout(function () { var i = document.getElementById("inviteEmail") || document.querySelector("#teamPane input[type=email]"); if (i) { i.scrollIntoView({ behavior: "smooth", block: "center" }); i.focus(); } }, 300); });
+  tabHome.addEventListener("click", function () { palGoTab("home"); });
+  var NAV_HINTS = {
+    home: "Start here: setup steps and how your tests are doing",
+    live: "Agent forge: a live map of which AI agents are working on which files",
+    inbox: "Agent forge: changes that need a human to look at them",
+    intents: "Agent forge: every planned change, who's doing it, and why",
+    trains: "Agent forge: groups of changes being tested together before they land",
+    conflicts: "Agent forge: places where two changes clash, and how they get fixed",
+    agents: "Agent forge: the AI agents connected right now",
+    repos: "Browse the code in your forge repositories",
+    tournaments: "Give one task to several AI agents; real tests pick the winner",
+    runs: "Every test run, newest first, with logs and why anything failed",
+    merge: "Changes waiting to be merged after their tests pass",
+    settings: "Accounts, access tokens, runners and other options"
+  };
+  (function () {
+    var links = document.querySelectorAll(".side-link[data-tab]");
+    for (var i = 0; i < links.length; i++) {
+      var hint = NAV_HINTS[links[i].getAttribute("data-tab")];
+      if (hint) links[i].title = hint;
+    }
+  })();
   function selectTab(name) {
+    tabHome.className = "side-link" + (name === "home" ? " active" : "");
+    homePane.hidden = name !== "home";
     tabRuns.className = "side-link" + (name === "runs" ? " active" : "");
     tabTournaments.className = "side-link" + (name === "tournaments" ? " active" : "");
     tabRepos.className = "side-link" + (name === "repos" ? " active" : "");
@@ -1174,7 +1490,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     teamPane.hidden = name !== "settings";
     currentTab = name;
     document.title = (TAB_TITLES[name] || "Dashboard") + " · Flare Actions";
-    var panes = { runs: runsPane, tournaments: tournamentsPane, repos: reposPane, merge: mergePane, settings: settingsPane };
+    var panes = { home: homePane, runs: runsPane, tournaments: tournamentsPane, repos: reposPane, merge: mergePane, settings: settingsPane };
     if (panes[name]) {
       panes[name].classList.remove("pane-enter");
       void panes[name].offsetWidth;
@@ -2109,6 +2425,46 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     if (!pills.length) return true;
     return !!TERMINAL[pills[0].textContent || ""];
   }
+  // One plain-language box above the technical details: what happened,
+  // which command failed, and the AI's suggested fix when there is one.
+  function failedStepOf(job) {
+    try {
+      var parsed = job.result ? JSON.parse(job.result) : null;
+      var steps = (parsed && parsed.steps) || [];
+      for (var i = 0; i < steps.length; i++) if (steps[i].exitCode !== 0) return steps[i];
+    } catch (e) {}
+    return null;
+  }
+  function runSummaryBox(run, jobs) {
+    var box = el("div"); box.className = "home-verdict run-summary";
+    var icon = "•", headText = "", lines = [];
+    if (run.status === "success") { box.className += " ok"; icon = "✅"; headText = "Everything passed."; }
+    else if (run.status === "failure" || run.status === "error") {
+      box.className += " bad"; icon = "❌"; headText = "This run failed. Here's what went wrong:";
+      var bad = null;
+      for (var i = 0; i < jobs.length; i++) if (jobs[i].status === "failure" || jobs[i].status === "error") { bad = jobs[i]; break; }
+      if (bad) {
+        var step = failedStepOf(bad);
+        if (step) lines.push(["Failed step", (step.command || "").slice(0, 200) + (step.exitCode === 124 ? " (took too long)" : "")]);
+        else lines.push(["Failed job", bad.name || bad.id]);
+        if (bad.triage) lines.push(["💡 Try this", String(bad.triage).slice(0, 600)]);
+        else lines.push(["Next", "Open the job's log below and look for the first red error line."]);
+      }
+    } else if (run.status === "running") { box.className += " busy"; icon = "⏳"; headText = "Your tests are running right now. This page updates by itself."; }
+    else if (run.status === "queued" || run.status === "blocked") { box.className += " busy"; icon = "🕐"; headText = "Waiting for a computer to pick this up. If it waits a long time, go Home and press “Use my computer”."; }
+    else { headText = "Status: " + (PILL_WORDS[run.status] || run.status); }
+    var big = el("span", icon); big.className = "big"; big.setAttribute("aria-hidden", "true");
+    var what = el("div"); what.className = "what";
+    what.appendChild(el("strong", headText));
+    lines.forEach(function (l) {
+      var p = el("p"); p.className = "run-summary-line";
+      var k = el("b", l[0] + ": "); p.appendChild(k);
+      var v = el(l[0] === "Failed step" ? "code" : "span", l[1]); p.appendChild(v);
+      what.appendChild(p);
+    });
+    box.appendChild(big); box.appendChild(what);
+    return box;
+  }
   function loadRun(id, scroll) {
     api("/v1/runs/" + encodeURIComponent(id)).then(function (data) {
       var box = document.getElementById("runDetail");
@@ -2123,6 +2479,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       head.appendChild(el("span", " "));
       head.appendChild(pill(data.run.status));
       box.appendChild(head);
+      box.appendChild(runSummaryBox(data.run, data.jobs || []));
       if (data.race && data.race.tournament_id) {
         var raceLine = el("p"); raceLine.className = "t-crumb";
         raceLine.appendChild(el("span", "Verifying " + (data.race.agent || "an agent") + " in race "));
@@ -2432,9 +2789,8 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     var name = document.getElementById("pairName").value.trim();
     api("/v1/admin/pair-codes", { method: "POST", body: JSON.stringify({}) })
       .then(function (data) {
-        var cmd = "FLARE_ACTIONS_URL=" + window.location.origin +
-          " npm run runner -- --pair " + data.code +
-          (name ? " --pair-name " + name : "");
+        var safeName = /^[A-Za-z0-9._-]{1,64}$/.test(name) ? name : "";
+        var cmd = "curl -fsSL " + window.location.origin + "/runner.sh | sh -s " + data.code + (safeName ? " " + safeName : "");
         document.getElementById("pairCmd").textContent = cmd;
         document.getElementById("pairBox").hidden = false;
         document.getElementById("pairName").value = "";
@@ -2661,7 +3017,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   });
 
   var currentTab = "tournaments";
-  var TAB_TITLES = { runs: "Runs", tournaments: "Races", repos: "Repositories", merge: "Merge queue", settings: "Settings" };
+  var TAB_TITLES = { home: "Home", runs: "Runs", tournaments: "Races", repos: "Repositories", merge: "Merge queue", settings: "Settings" };
   function toast(msg, isErr) {
     var box = document.getElementById("toasts");
     var t = el("div", msg);
@@ -2691,7 +3047,8 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       return;
     }
     selectTab(name);
-    if (name === "runs") loadRuns();
+    if (name === "home") { loadHome(); startHomePoll(); }
+    else if (name === "runs") loadRuns();
     else if (name === "tournaments") loadTournaments();
     else if (name === "repos") loadRepos();
     else if (name === "merge") openMergeQueue();
@@ -2728,7 +3085,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   var palOpen = false, palItems = [], palActive = 0;
   function palCommands() {
     var cmds = [];
-    ["tournaments", "repos", "merge", "runs", "settings"].forEach(function (name) {
+    ["home", "tournaments", "repos", "merge", "runs", "settings"].forEach(function (name) {
       if (FX.anon) return;
       if (!isAdmin && name === "settings") return;
       cmds.push({ group: "Go to", label: "Go to " + TAB_TITLES[name], run: (function (n) { return function () { palGoTab(n); }; })(name) });
