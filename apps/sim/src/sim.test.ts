@@ -171,5 +171,6 @@ describe("simulate", () => {
     const table = formatTable(doc);
     expect(table.split("\n")[0]).toContain("SIMULATED");
     expect(formatMarkdown(doc).split("\n")).toHaveLength(5);
+    expect(doc.modes[2].metrics.time_to_80pct_landed_min).not.toBeNull();
   });
 });

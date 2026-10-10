@@ -11,6 +11,7 @@ export interface BenchMetrics {
   changes_per_min: number;
   median_declare_to_land_min: number | null;
   p95_declare_to_land_min: number | null;
+  time_to_80pct_landed_min: number | null;
   makespan_min: number;
   conflicts_hit: number;
   conflicts_avoided: number;
@@ -61,6 +62,7 @@ export function toBenchMetrics(m: ModeMetrics): BenchMetrics {
     changes_per_min: r2(m.landedPerMin),
     median_declare_to_land_min: finiteOrNull(m.declareToLandP50Min),
     p95_declare_to_land_min: finiteOrNull(m.declareToLandP95Min),
+    time_to_80pct_landed_min: finiteOrNull(m.timeTo80PctMin),
     makespan_min: r2(m.makespanMin),
     conflicts_hit: m.conflictsEncountered,
     conflicts_avoided: m.conflictsAvoided,
@@ -127,6 +129,7 @@ const COLUMNS = [
   "Landed",
   "Abandoned",
   "Changes/min",
+  "80% landed by",
   "p50 declare->land",
   "p95",
   "Conflicts hit / avoided",
@@ -144,6 +147,7 @@ export function tableRows(doc: BenchDoc): string[][] {
       formatInt(m.landed),
       formatInt(m.abandoned),
       m.changes_per_min.toFixed(2),
+      formatMinutes(m.time_to_80pct_landed_min),
       formatMinutes(m.median_declare_to_land_min),
       formatMinutes(m.p95_declare_to_land_min),
       `${formatInt(m.conflicts_hit)} / ${formatInt(m.conflicts_avoided)}`,

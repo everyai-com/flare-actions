@@ -67,6 +67,10 @@ export interface ModeMetrics {
   landedPerMin: number;
   declareToLandP50Min: number;
   declareToLandP95Min: number;
+  // Minutes from the first declare until 80% of ALL agents' intents had
+  // landed (NaN if fewer than 80% ever land). Throughput without the
+  // long tail of stragglers that `landedPerMin` includes.
+  timeTo80PctMin: number;
   conflictsEncountered: number;
   conflictsAvoided: number;
   stackedIntents: number;
@@ -265,6 +269,7 @@ class Sim {
       landedPerMin: 0,
       declareToLandP50Min: Number.NaN,
       declareToLandP95Min: Number.NaN,
+      timeTo80PctMin: Number.NaN,
       conflictsEncountered: 0,
       conflictsAvoided: 0,
       stackedIntents: 0,
@@ -928,12 +933,14 @@ class Sim {
   private finish(): ModeMetrics {
     const m = this.m;
     const lat: number[] = [];
+    const landTimes: number[] = [];
     let first = Infinity;
     let last = 0;
     for (const it of this.items) {
       if (it.w.declareAt < first) first = it.w.declareAt;
       if (it.status === "landed") {
         lat.push(it.landedAt - it.w.declareAt);
+        landTimes.push(it.landedAt);
         if (it.landedAt > last) last = it.landedAt;
       }
     }
@@ -941,6 +948,9 @@ class Sim {
     m.declareToLandP50Min = percentile(lat, 0.5);
     m.declareToLandP95Min = percentile(lat, 0.95);
     m.makespanMin = lat.length ? last - first : 0;
+    landTimes.sort((a, b) => a - b);
+    const need = Math.ceil(0.8 * this.items.length);
+    if (need > 0 && landTimes.length >= need) m.timeTo80PctMin = landTimes[need - 1] - first;
     m.landedPerMin = m.makespanMin > 0 ? m.landed / m.makespanMin : 0;
     m.brokenMainMin = unionLength(this.redIntervals);
     if (m.artifactsOps !== null) m.artifactsDollars = (m.artifactsOps / 1000) * this.c.dollarsPer1kOps;
