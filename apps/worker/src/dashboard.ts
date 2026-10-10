@@ -1469,7 +1469,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     api("/v1/admin/pair-codes", { method: "POST", body: JSON.stringify({}) })
       .then(function (data) {
         document.getElementById("homePairCmd").textContent =
-          "curl -fsSL " + window.location.origin + "/runner.sh | sh -s " + data.code;
+          "curl -fsSL " + window.location.origin + "/runner.sh | FLARE_PAIR_CODE=" + data.code + " sh";
         document.getElementById("homePairBox").hidden = false;
       })
       .catch(function () { err.textContent = "Couldn't make a setup code. Only the owner (admin) can do this."; });
@@ -2817,7 +2817,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     api("/v1/admin/pair-codes", { method: "POST", body: JSON.stringify({}) })
       .then(function (data) {
         var safeName = /^[A-Za-z0-9._-]{1,64}$/.test(name) ? name : "";
-        var cmd = "curl -fsSL " + window.location.origin + "/runner.sh | sh -s " + data.code + (safeName ? " " + safeName : "");
+        var cmd = "curl -fsSL " + window.location.origin + "/runner.sh | FLARE_PAIR_CODE=" + data.code + (safeName ? " FLARE_PAIR_NAME=" + safeName : "") + " sh";
         document.getElementById("pairCmd").textContent = cmd;
         document.getElementById("pairBox").hidden = false;
         document.getElementById("pairName").value = "";

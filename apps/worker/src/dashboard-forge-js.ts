@@ -12,7 +12,7 @@ export const FORGE_JS = String.raw`
   var FX_SCREENS = { live: "Live", inbox: "Inbox", intents: "Intents", trains: "Trains", conflicts: "Conflicts", agents: "Agents", bench: "Bench", why: "Why" };
   var FX_TONE = { working: "working", claimed: "working", replaying: "working", draft: "idle", expired: "idle", abandoned: "idle", awaiting_plan: "human", ready: "train", in_train: "train", landed: "landed", conflicted: "conflict", failed: "conflict", bisected: "conflict", forming: "train", merging: "train", verifying: "train", aborted: "idle", open: "conflict", resolved: "landed", success: "landed", failure: "conflict", running: "train", pending: "idle", queued: "idle", error: "conflict", cancelled: "idle", skipped: "idle", overlap: "overlap" };
   var FX_GLYPH = { working: "●", overlap: "◐", conflict: "✕", landed: "✓", train: "▶", human: "!", idle: "○" };
-  var FX_TERM_LABEL = { protected_path: "protected", footprint_size: "size", drift: "drift", llm_replay: "LLM replay", weak_evidence: "weak CI", reviewer_disagrees: "reviewer disagrees" };
+  var FX_TERM_LABEL = { protected_path: "protected", footprint_size: "size", drift: "drift", llm_replay: "LLM replay", weak_evidence: "weak CI", reviewer_disagrees: "reviewer disagrees", truncated_footprint: "footprint truncated — routed to a human" };
   var FX_REST = {
     approve_plan: { m: "POST", p: "/v1/forge/intents/:id/approve" },
     send_back: { m: "POST", p: "/v1/forge/intents/:id/send-back" },

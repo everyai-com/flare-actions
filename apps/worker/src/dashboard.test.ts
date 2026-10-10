@@ -97,7 +97,8 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("pairCmd");
     expect(DASHBOARD_HTML).toContain("copyPairBtn");
     expect(DASHBOARD_HTML).toContain("/v1/admin/pair-codes");
-    expect(DASHBOARD_HTML).toContain("/runner.sh | sh -s ");
+    expect(DASHBOARD_HTML).toContain("/runner.sh | FLARE_PAIR_CODE=");
+    expect(DASHBOARD_HTML).not.toContain("/runner.sh | sh -s ");
   });
 
   it("renders the savings counter strip", () => {

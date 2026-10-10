@@ -163,6 +163,7 @@ describe("forge dashboard", () => {
     expect(FORGE_JS).toContain('op.kind === "edge"');
     expect(FORGE_JS).toContain('kind: "edge"');
     expect(FORGE_JS).toContain('label: "Main red (integration)"');
+    expect(FORGE_JS).toContain('truncated_footprint: "footprint truncated — routed to a human"');
     expect(FORGE_JS).toContain("main only moves to a SHA CI verified green as that exact SHA");
   });
 
