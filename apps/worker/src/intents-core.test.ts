@@ -216,7 +216,7 @@ replay: { max_attempts: 2, race_k: 3 }
         protected: ["migrations/**", "src/auth/**"],
         autoLandMaxRisk: 30,
         auditSample: 0.05,
-        lanes: { maxPerTrain: 50, maxParallel: 8 },
+        lanes: { maxPerTrain: 50, maxParallel: 8, speculationDepth: 4 },
         replay: { maxAttempts: 2, raceK: 3 },
       },
     });
@@ -227,6 +227,10 @@ replay: { max_attempts: 2, race_k: 3 }
     expect(parsePolicy("auto_land_max_risk: 101").ok).toBe(false);
     expect(parsePolicy("audit_sample: 2").ok).toBe(false);
     expect(parsePolicy("lanes: { max_lanes: 3 }").ok).toBe(false);
+    expect(parsePolicy("lanes: { speculation_depth: 0 }").ok).toBe(false);
+    expect(parsePolicy("lanes: { speculation_depth: 9 }").ok).toBe(false);
+    const spec = parsePolicy("lanes: { speculation_depth: 1 }");
+    expect(spec.ok && spec.value.lanes).toEqual({ maxPerTrain: 50, maxParallel: 8, speculationDepth: 1 });
     expect(parsePolicy("- a").ok).toBe(false);
     expect(parsePolicy("protected: [../x]").ok).toBe(false);
     expect(parsePolicy("a: [").ok).toBe(false);
