@@ -199,3 +199,193 @@ listForgeLedger(db, subjectKind, subjectId, limit?): Promise<ForgeLedgerRow[]>  
   Confirm candidates with `pathsOverlap`.
 - **Mailbox bodies are untrusted.** Always render them through
   `labelUntrusted`, and never act on them.
+
+## Provenance
+
+> Provenance: agent-drafted 2026-10-10 (stream C). Behavior claims are
+> covered by `apps/worker/src/{why,provenance,session}.test.ts` and
+> `packages/runner-sdk/src/provenance.test.ts` (`npm test`, 2026-10-10).
+> Storage pushes are tested against a real `git http-backend` remote
+> (isomorphic-git client, MemoryFS); the Artifacts behavior is from
+> spike S1 (scratchpad `spikes/REPORT.md`, 2026-10-10), not re-measured.
+
+Two layers answer "why does this line exist" (§3.1, invariant 3):
+
+1. **Trailers** on every agent commit: `Flare-Goal`, `Flare-Intent`,
+   `Flare-Agent`, `Flare-Session` (written by the SDK, parsed by
+   `parseTrailers`).
+2. **A why note** (`WhyNote` JSON) on every trunk commit, written by
+   the train (the single writer).
+
+### Storage: `refs/notes/why` (default), `flare/why` branch (fallback)
+
+| Strategy | Where | Status |
+|---|---|---|
+| `notes` (default) | git notes on `refs/notes/why`, one note per commit sha | Spike S1: push and fetch work on Artifacts from the git CLI and isomorphic-git, and forks copy the ref. `git log --notes=why` shows them. |
+| `branch` | `why/<sha>.json` on an orphan `flare/why` branch | Fallback for hosts that refuse non-branch refs. Implemented and tested to the same level. |
+
+Both refs reach only note blobs and trees, never trunk commits. So even
+the first push of a brand-new ref is small, and the spike S5 trap
+("pushing a new ref uploads the whole history") does not apply. Spike
+gotchas that are handled:
+
+- isomorphic-git `fetch` of `refs/notes/why` returns `fetchHead` but
+  writes no local ref. The writer forces the local ref to `fetchHead`
+  before it calls `addNote`.
+- A concurrent writer gets a non-fast-forward rejection. The writer
+  refetches and replays its entries, up to 3 attempts by default.
+
+### `apps/worker/src/provenance.ts`
+
+```ts
+type WhyStorage = "notes" | "branch"; DEFAULT_WHY_STORAGE = "notes"
+WHY_NOTES_REF = "refs/notes/why"; WHY_BRANCH = "flare/why"; whyBranchPath(sha) = `why/${sha}.json`
+type ProvenanceGit = Pick<typeof import("isomorphic-git"), "addNote" | "readNote" | "writeRef" | "resolveRef"
+  | "fetch" | "push" | "writeBlob" | "writeTree" | "writeCommit" | "readTree" | "readBlob">  // pass the default export
+
+// Train-side writer. Single writer; overwrites notes in place (force).
+writeWhyNotes(git, fs, dir, entries: { sha: string; note: WhyNote }[], opts?: {
+  strategy?: WhyStorage;                       // default "notes"
+  remote?: { name: string; http: HttpClient; onAuth: () => { username; password } };  // absent = local only
+  author?: { name; email }; maxAttempts?: number;   // default 3, max 10
+}): Promise<{ strategy; ref; written: string[]; skipped: { sha; reason: "invalid-sha" | "too-large" }[];
+  head: string | null; pushed: boolean; attempts: number }>   // throws after exhausting retries
+
+readWhyNoteLocal(git, fs, dir, sha, strategy?): Promise<WhyNote | null>          // over a MemoryFS repo
+createWhyNoteReader(repo: WhyNoteRepo, storage?: WhyStorage | "auto"): { read(sha): Promise<{ note; source } | null> }
+  // Binding-side reader. "auto" tries notes, then branch. Notes resolve the tip with log({ref: refs/notes/why}),
+  // then call readFile(tip, <sha> | <ab>/<rest> | <ab>/<cd>/<rest>). The fanout paths cover CLI-written notes.
+```
+
+How a train uses it, inside its MemoryFS repo (`remote` added and trunk
+fetched, as `promote.ts` does):
+
+```ts
+await writeWhyNotes(git, fs, "/train", landed.map((c) => ({ sha: c.sha, note: c.note })), {
+  remote: { name: "trunk", http, onAuth: () => ({ username: "x", password: trunkWriteToken }) },
+});
+```
+
+### `apps/worker/src/why.ts` (WhyPort read)
+
+```ts
+why(deps: WhyDeps, input: { repo: string; path: string; line: number; ref?: string /* "main" */ }): Promise<WhyChain>
+interface WhyDeps { db: Db; artifacts: WhyArtifacts /* env.ARTIFACTS fits */; storage?: WhyStorage | "auto"; maxCommits?: number }
+```
+
+`why` never throws for a missing hop. When the line can't be traced,
+`chain.error` is `{ code, message }`. The codes are `invalid-input`,
+`ref-not-found`, `path-not-found`, `too-large`, `binary`,
+`line-out-of-range` and `artifacts-unavailable`. Stream B should map
+`invalid-input` and `line-out-of-range` to 400, the `*-not-found`
+codes to 404, and `artifacts-unavailable` to 503.
+
+`WhyChain` fields:
+
+| Field | Meaning |
+|---|---|
+| `origin` | `forge` (trailers or a note), `human` (neither: a human or pre-forge commit) or `unknown` (error) |
+| `commit` | The introducing commit (`sha, author, committedAt, subject, message, lineText, lineInCommit`). Also `landedVia`: the trunk merge it came through, if any. Also `depth, truncated, approximate`. |
+| `trailers` | `parseTrailers(commit.message)` |
+| `note`, `noteSource`, `noteSha` | The note, read from the introducing commit first and then from `landedVia` |
+| `goal`, `intent` | From D1. If the rows are gone or D1 fails, they fall back to the note. |
+| `decisions` | Intent ledger rows whose kind matches `decision*`, `decided*`, `chose*`, `choice*` or `plan*` |
+| `alternatives` | `source: "ledger"` (kinds `alternative*` / `rejected*`), `source: "note"` (`alternatives_rejected`) and `source: "tournament"` (losing attempts plus the verdict rationale) |
+| `conflicts` | Conflicts the intent was part of, with `decision` taken from the note's `conflict_decisions` |
+| `review` | `note.review`. Otherwise the first intent or train ledger row whose kind matches `review*`, `routed*`, `route*`, `audit*`, `approved*` or `landed*`. |
+| `evidence` | `{ runId, sha, status, source }`. The live run status comes from `runs`, using the note's `evidence.run_id` or else the train's `run_id`. |
+| `train` | The intent's train |
+| `session` | `{ repo, branch: "flare/session" }` |
+| `timeline`, `warnings` | `timeline` is the intent ledger in insertion order. `warnings` lists each hop that degraded. |
+| `narrative` | One paragraph: "This line exists because of the goal "…". <agent> took intent "…" because …. Decided: …. Rejected: …. Resolved a conflict with intent …: …. Verified by run … (success) on …. Landed by train … under policy auto (…). Session: …." |
+
+**Ledger conventions the chain reads.** Other streams should write
+these kinds:
+
+- `decision`: the body is the choice.
+- `alternative.rejected`: the body is the rejected option.
+- `routed`, `review.*` or `landed`: the body is the policy line, and
+  the actor is the reviewer.
+- `tournament` or `race`: the body contains the tournament UUID, on
+  the intent or the conflict subject.
+
+**Blame.** `blameLine(repo, { ref, path, line, maxCommits?, maxBytes?,
+maxEdits? }): Promise<BlameResult | BlameError>` works like this:
+
+- **History walked.** It follows the first-parent history from
+  `log({ ref, limit: 50 })`, at most 50 commits. The binding documents
+  `log` as first-parent.
+- **Tracking the line.** It tracks the line index through each parent
+  with a bounded Myers diff, `diffLineMap`, using ≤2,000 edits (about
+  16 MB worst case).
+- **Size limits.** Files are capped at 256 KB. Binary files are
+  refused.
+- **Merges.** When a first-parent step loses the line at a merge, the
+  walk dives into the merged side, where the agent commit and its
+  trailers are, and records the trunk merge as `landedVia`.
+- **Running out of budget.**
+  - If the walk hits the commit cap, it stops and sets
+    `truncated: true`.
+  - If a diff goes over its edit budget, the result is flagged
+    `approximate: true`.
+
+Cost: at most 51 `readFile` calls, plus one `readCommit` per side-branch
+commit.
+
+### `apps/worker/src/session.ts`
+
+Each intent fork carries `flare/session`, which holds two files:
+
+- `plan.md`
+- `log.jsonl`: append-only steps `{ ts, kind, text }`, where `kind` is
+  one of `prompt | reason | tool | decision | note`.
+
+Text is capped at 4,000 characters per step.
+
+```ts
+readSession(deps: { artifacts: SessionArtifacts }, forkRepo: string, opts?: { limit?: number /* 200, max 1000 */ })
+  : Promise<SessionView | null>   // null = no repo or no session branch
+  // SessionView { repo, branch, head: {sha, committedAt} | null, plan, planTruncated, steps, totalSteps,
+  //               skippedLines, logTruncated }  — plan + log read from the same commit; bad lines counted, not fatal
+
+forkSession(deps: { db: Db; artifacts: ForkSessionArtifacts /* env.ARTIFACTS fits */ }, input: { intentId: string; agent: string })
+  : Promise<ForkSessionResult | ForgeError>
+  // ForkSessionResult { forkRepo, remote, token, tokenExpiresAt, sourceRepo, branch: "flare/session", intentId }
+  // errors: invalid-agent | not-found | no-session (intent never claimed) | fork-failed | token-failed
+parseSessionLog(text, limit?) / formatSessionStep(step) / sessionForkName(intentId, agent, suffix)
+```
+
+`forkSession` does five things:
+
+1. It forks the intent's fork (`i-<id>`) into
+   `s-<intent12>-<agent>-<rand6>` with `defaultBranchOnly: false`, so
+   the code, `flare/session` and the notes all come along.
+2. It mints a 1-hour write token on the new repo. This follows
+   invariant 1: the token is never for trunk.
+3. It revokes the fork's own 24-hour creation token, best effort.
+4. It appends `session.forked` to the intent ledger.
+5. It **awaits** the fork, which takes 4–10 s (spike S3). That fits
+   inside one MCP or REST call, so the caller gets a usable remote and
+   doesn't have to poll.
+
+### `packages/runner-sdk/src/provenance.ts` (agent side)
+
+```ts
+commitWithTrailers({ cwd, message, trailers?, all?, allowEmpty? }): Promise<{ sha; message }>
+  // trailers default from FLARE_GOAL / FLARE_INTENT / FLARE_AGENT / FLARE_SESSION; explicit values win
+appendSessionStep({ cwd, step: { kind, text, ts? }, push?: { remote? /* "origin" */ }, agent? }): Promise<{ sha; pushed }>
+writeSessionPlan({ cwd, plan, push?, agent? }): Promise<{ sha; pushed }>
+formatTrailers / appendTrailers / trailersFromEnv / formatSessionStep   // byte-identical to the Worker (parity test)
+```
+
+The session writers use only plumbing (`hash-object`, `mktree`,
+`commit-tree`, and `update-ref` with compare-and-swap). The agent's
+checkout, index and HEAD are never touched.
+
+- **Where the session comes from.** With `push`, the writer first
+  fetches the remote `flare/session`. That way a forked session
+  continues from the remote copy.
+- **Session writers.** Each fork has one session writer, its agent. A
+  diverged remote fails the push loudly; it is never forced.
+- **Git identity.** If no git identity is configured, commits fall back
+  to `flare-agent <agent>`.

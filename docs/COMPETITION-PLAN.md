@@ -384,6 +384,18 @@ judges read code:
 | S6 | Does `fork()` return a usable write token? | `createToken('write', 3600)` at claim time |
 | S7 | Seat CI wall time for the demo repo, warm | Pick a smaller test suite; pre-warm the seats |
 
+**Results (measured 2026-10-10, throwaway namespace `flare-spike`, since deleted).** S1–S6 all came back YES.
+
+| # | Result | Consequence |
+|---|---|---|
+| S1 | Notes push and fetch work with both the git CLI and isomorphic-git. Gotcha: isomorphic-git needs a `writeRef` after fetching notes. Forks copy notes. | Notes are the primary why store. |
+| S2 | Force push and ref delete are allowed. | Trains may force-update refs. |
+| S3 | A fork takes 4–10 s, is clonable immediately, and the time doesn't depend on repo size. 10 parallel forks finish in 5 s. Copy-on-write is unknowable. | Fork on demand, and delete forks after landing. |
+| S4 | The namespace-wide `repo.pushed` **Workflow trigger** fires about 3 s after a push, including for new forks. It also fires for notes refs, so the handler must filter by ref. | It becomes the primary push signal. |
+| S5 | isomorphic-git merges on memfs: a clean merge takes 62 ms, a conflict throws in 63 ms, and peak RSS stays under 270 MB. **Trap:** pushing a *new* ref uploads the full history (14 s), while pushing to an existing ref takes 2.2 s. | Trains force-update fixed lane refs `forge/lane-N`. |
+| S6 | `fork()` returns a 24 h write token. `createToken` works. A read token gets a 403 on push. | Covered. |
+| S7 | Not measured yet. | Still open. |
+
 ### 8.3 Streams (disjoint ownership)
 
 | Stream | Owns | Done means |

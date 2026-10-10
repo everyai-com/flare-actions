@@ -83,6 +83,25 @@ export { convertActionsWorkflow, isImportSuccess, mapRunsOn, sanitizeCacheKey } 
 export type { ImportFailure, ImportResult, ImportSuccess } from "./importActions.ts";
 export { getTemplate, listTemplateMeta, TEMPLATES, templateIds } from "./templates.ts";
 export type { PipelineTemplate, TemplateMeta } from "./templates.ts";
+export {
+  appendSessionStep,
+  appendTrailers,
+  commitWithTrailers,
+  formatSessionStep,
+  formatTrailers,
+  SESSION_BRANCH,
+  SESSION_STEP_KINDS,
+  trailersFromEnv,
+  writeSessionPlan,
+} from "./provenance.ts";
+export type {
+  CommitWithTrailersOptions,
+  ProvenanceTrailers,
+  SessionStepInput,
+  SessionStepKind,
+  SessionWriteOptions,
+  SessionWriteResult,
+} from "./provenance.ts";
 
 // Loads repo-root `.env` (written by `npm run setup`) into process.env.
 // Explicit environment variables always win. No dependencies, no-op if absent.

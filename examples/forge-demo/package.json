@@ -1,0 +1,16 @@
+{
+  "name": "forge-demo-bookshelf",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bookshelf API: the demo trunk that Flare Forge agents change concurrently",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "verify": "node scripts/verify-scenarios.mjs",
+    "apply": "node agents/apply.mjs"
+  }
+}

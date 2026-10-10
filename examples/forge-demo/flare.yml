@@ -1,0 +1,9 @@
+# Bookshelf CI: zero-install. Node >= 22.18 strips TypeScript types natively
+# and ships a test runner, so there is no npm install step and the whole
+# pipeline runs in seconds. Trains run this on the exact combined SHA.
+jobs:
+  test:
+    timeout-minutes: 5
+    steps:
+      - run: node --version
+      - run: node --test "test/**/*.test.ts"
