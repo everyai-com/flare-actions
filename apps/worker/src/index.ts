@@ -263,6 +263,7 @@ import {
 import git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
 import { MemoryFS } from "./memory-fs";
+import { registerTrainDispatch, runTrainTick } from "./train-workflow";
 import { cronMatches, validateCron } from "./cron";
 import { reportJobCheck } from "./checks";
 import {
@@ -2441,6 +2442,16 @@ async function runMergeQueueTick(
     return { started: 0, landed: 0, failed: 0, requeued: 0 };
   }
 }
+
+// Forge trains (train-workflow.ts): the Workflow class is a main-module
+// export, and trains dispatch CI through the same dispatchRun + seat
+// wake path as every other run.
+export { TrainWorkflow } from "./train-workflow";
+registerTrainDispatch(async (env, input) => {
+  const out = await dispatchRun(env, input);
+  for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
+  return { runId: out.runId };
+});
 
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
@@ -4906,6 +4917,12 @@ export default {
       const mq = await runMergeQueueTick(env, ctx);
       if (mq.started > 0 || mq.landed > 0 || mq.failed > 0 || mq.requeued > 0) {
         log("info", "merge queue tick finished", { ...mq });
+      }
+      try {
+        const trains = await runTrainTick(env);
+        if (trains.cut > 0 || trains.advanced > 0) log("info", "forge train tick finished", { ...trains });
+      } catch (err) {
+        log("warn", "forge train tick failed", { error: String(err) });
       }
     } catch (err) {
       log("error", "scheduled handler failed", { error: String(err) });
