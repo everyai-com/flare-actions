@@ -89,6 +89,10 @@ tbody tr.clickable:hover, .run-row:hover, .run-row.selected { background: var(--
 .fx-spark polyline { fill: none; stroke: var(--soft); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .fx-counters.stale .fx-cval { color: var(--muted); }
 .fx-live-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 12px; align-items: start; }
+html.ui-simple #fxLive[data-live-empty="1"] .fx-big3,
+html.ui-simple #fxLive[data-live-empty="1"] .fx-skey,
+html.ui-simple #fxLive[data-live-empty="1"] #fxRailCol { display: none; }
+html.ui-simple #fxLive[data-live-empty="1"] .fx-live-grid { grid-template-columns: minmax(0, 1fr); }
 .fx-panel { background: var(--card); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
 .fx-panel-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); font: var(--t-micro); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); min-height: 36px; }
 .fx-panel-head .fx-path { font: 500 12px var(--mono); text-transform: none; letter-spacing: 0; color: var(--soft); }
@@ -523,6 +527,75 @@ a.home-forge:hover { border-color: var(--st-train); }
 .fx-tourbtn { white-space: nowrap; }
 .fx-flash { animation: fxFlash 600ms ease-out; }
 @keyframes fxFlash { from { background-color: var(--tint-working); } to { background-color: transparent; } }
+/* Simple mode (docs/UX-BUDGET.md): html.ui-simple. Pro extras hide
+   until "Show more" (#forgePane.fx-more); Pro-only views never show. */
+html:not(.ui-simple) .fx-simple-only { display: none !important; }
+.ui-simple #forgePane:not(.fx-more) .fx-pro-only, .ui-simple .fx-pro-view { display: none !important; }
+.ui-simple .fx-empty .fx-code, .ui-simple .fx-md-foot, .ui-simple .fx-mgroup .mono { display: none; }
+.ui-simple .fx-mrow .fx-idchip, .ui-simple .fx-mrow .fx-sha { display: none; }
+.ui-simple .fx-mrow:hover .fx-idchip, .ui-simple .fx-mrow:focus-within .fx-idchip, .ui-simple .fx-mrow.sel .fx-idchip { display: inline-flex; }
+.fx-sh-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin: 0 0 12px; }
+.fx-sh-h { margin: 0; font-size: 22px; line-height: 28px; font-weight: 650; letter-spacing: -0.01em; }
+.fx-sh-p { margin: 0; color: var(--soft); font-size: 14px; line-height: 20px; }
+.fx-big3 { list-style: none; margin: 0 0 10px; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.fx-big { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 12px 16px; background: var(--card); border: 1px solid var(--line); border-top: 3px solid var(--st-working); border-radius: 10px; }
+.fx-big[data-tone="overlap"] { border-top-color: var(--st-overlap); }
+.fx-big[data-tone="landed"] { border-top-color: var(--st-landed); }
+.fx-big .v { font-size: 34px; line-height: 38px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.fx-big .l { font-size: 13.5px; color: var(--soft); }
+.fx-skey { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 0 0 12px; font-size: 12.5px; color: var(--soft); }
+.fx-main-ok { font-size: 13.5px; font-weight: 600; }
+.fx-main-ok.ok { color: var(--st-landed); }
+.fx-main-ok.bad { color: var(--st-conflict); }
+.fx-land { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.fx-land li { display: flex; gap: 8px; align-items: baseline; min-width: 0; font-size: 13px; }
+.fx-land .s { flex: none; font-weight: 600; white-space: nowrap; }
+.fx-land .t { min-width: 0; color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fx-iq { max-width: 640px; }
+.fx-qcard { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--st-human); border-radius: 12px; padding: 18px 20px; }
+.fx-qcard[data-bucket="sample"] { border-left-color: var(--st-overlap); }
+.fx-qtop { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12.5px; color: var(--muted); }
+.fx-qrisk { font-weight: 600; }
+.fx-qrisk.low { color: var(--risk-low); }
+.fx-qrisk.med { color: var(--risk-med); }
+.fx-qrisk.high { color: var(--risk-high); }
+.fx-qh { margin: 0 0 6px; font-size: 22px; line-height: 28px; font-weight: 650; }
+.fx-qtitle { margin: 0 0 12px; font-size: 15px; line-height: 22px; }
+.fx-qev { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 6px; font-size: 13.5px; color: var(--soft); }
+.fx-qev li { overflow-wrap: anywhere; }
+.fx-qacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.fx-qacts button { min-height: 40px; padding: 8px 18px; font-size: 14px; }
+.fx-qacts .sendback { display: flex; gap: 8px; flex: 1 1 100%; }
+.fx-qacts .sendback input { flex: 1 1 auto; min-width: 0; }
+a.fx-btn-primary { display: inline-flex; align-items: center; min-height: 36px; padding: 8px 16px; border-radius: 6px; background: var(--accent); color: var(--accent-fg); font-size: 13.5px; font-weight: 600; text-decoration: none; }
+a.fx-btn-primary:hover { background: var(--accent-hover); }
+.fx-empty-simple .fx-actions { align-items: center; gap: 14px; }
+.fx-acard { max-width: 760px; }
+.fx-acard > summary { list-style: revert; }
+.fx-alist { list-style: none; margin: 0; padding: 0; max-width: 760px; }
+.fx-arow-s { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.fx-arow-s:last-child { border-bottom: none; }
+.fx-arow-s .n { font-weight: 600; font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-arow-s > span:nth-child(3) { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.fx-arow-s .d { grid-column: 2 / -1; font-size: 13px; color: var(--soft); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-meaning { margin: 0 0 6px; font-size: 15px; font-weight: 600; color: var(--st-landed); }
+.fx-quest { list-style: none; margin: 0; padding: 0; counter-reset: q; display: grid; gap: 16px; }
+.fx-quest > li { counter-increment: q; position: relative; padding-left: 38px; }
+.fx-quest > li::before { content: counter(q); position: absolute; left: 0; top: 0; width: 26px; height: 26px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font: 700 13px var(--mono); border: 1px solid var(--line-strong); color: var(--soft); }
+.fx-quest > li[data-state="done"]::before { content: "✓"; background: var(--st-landed); border-color: var(--st-landed); color: var(--accent-fg); }
+.fx-quest .q { margin: 2px 0 8px; font-size: 14px; font-weight: 600; }
+.fx-quest-st { margin: 8px 0 0; font-size: 13.5px; font-weight: 600; }
+.fx-quest-st.wait { color: var(--muted); }
+.fx-quest-st.ok { color: var(--st-landed); }
+.fx-dot.fx-pulse .fx-dot-core { animation: fxPop 0.6s ease-out 3; box-shadow: 0 0 0 3px var(--card), 0 0 0 7px var(--st-overlap); }
+@keyframes fxPop { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.7); } }
+.fx-main-rule.fx-pulse { animation: fxGlow 1.2s ease-out 2; }
+@keyframes fxGlow { 0%, 100% { box-shadow: none; } 50% { box-shadow: 0 0 0 3px var(--tint-landed), 0 0 18px var(--st-landed); } }
+@media (max-width: 640px) {
+  .fx-big .v { font-size: 26px; line-height: 30px; }
+  .fx-big { padding: 10px 12px; }
+  .fx-sh-h, .fx-qh { font-size: 19px; line-height: 24px; }
+}
 @media (prefers-reduced-motion: reduce) {
   .fx-dot, .fx-cell, .fx-counter, .fx-row { transition: none; }
   .fx-dot .fx-dot-core, .fx-livebadge::before { animation: none !important; }
@@ -531,6 +604,7 @@ a.home-forge:hover { border-color: var(--st-train); }
   .fx-drawer, .fx-modal, .fx-bulk, .fx-tour { animation: none; }
   .fx-tour-ring { transition: none; }
   .fx-landing { display: none; }
+  .fx-main-rule.fx-pulse { animation: none; }
 }
 body.fx-stagemode header { width: 60px; padding: 14px 8px; }
 body.fx-stagemode header h1.brand-head span:last-child, body.fx-stagemode .side-link span:not(.fx-badge), body.fx-stagemode .side-group, body.fx-stagemode .side-foot { display: none; }
@@ -611,41 +685,51 @@ body.fx-stagemode .fx-live-grid { grid-template-columns: minmax(0, 1fr) 380px; }
 }
 `;
 
-const NAV_BTN = (id: string, tab: string, icon: string, label: string, badge = "") =>
-  `<button id="${id}" class="side-link" data-tab="${tab}" type="button">${icon}<span>${label}</span>${badge}</button>`;
+// Nav buttons carry both labels: Pro words, and the plain Simple-mode
+// word (docs/UX-BUDGET.md). CSS on <html class="ui-simple|ui-pro"> shows
+// one; ids, data-tab, and data-* stay precise for agents and tests.
+// `primary` marks the five Simple-mode nav items (data-simple-nav).
+const NAV_BTN = (id: string, tab: string, icon: string, label: string, badge = "", simple = "", primary = false) =>
+  `<button id="${id}" class="side-link" data-tab="${tab}" type="button"${primary ? ' data-simple-nav="primary"' : ""}>${icon}` +
+  (simple && simple !== label
+    ? `<span class="pro-only">${label}</span><span class="simple-only" data-simple="label">${simple}</span>`
+    : `<span>${label}</span>`) +
+  `${badge}</button>`;
 
 export const FORGE_NAV_HTML =
   '<div class="side-group">Agent forge</div>' +
-  NAV_BTN("tabLive", "live", FORGE_ICONS.live, "Live") +
-  NAV_BTN("tabInbox", "inbox", FORGE_ICONS.inbox, "Inbox", '<span class="fx-badge" id="fxBadgeInbox" hidden></span>') +
-  NAV_BTN("tabIntents", "intents", FORGE_ICONS.intents, "Intents") +
-  NAV_BTN("tabTrains", "trains", FORGE_ICONS.trains, "Trains") +
-  NAV_BTN("tabConflicts", "conflicts", FORGE_ICONS.conflicts, "Conflicts", '<span class="fx-badge conflict" id="fxBadgeConflicts" hidden></span>') +
-  NAV_BTN("tabAgents", "agents", FORGE_ICONS.agents, "Agents");
+  NAV_BTN("tabLive", "live", FORGE_ICONS.live, "Live", "", "Agents", true) +
+  NAV_BTN("tabInbox", "inbox", FORGE_ICONS.inbox, "Inbox", '<span class="fx-badge" id="fxBadgeInbox" hidden></span>', "Needs you") +
+  NAV_BTN("tabIntents", "intents", FORGE_ICONS.intents, "Intents", "", "Plans") +
+  NAV_BTN("tabTrains", "trains", FORGE_ICONS.trains, "Trains", "", "Landings") +
+  NAV_BTN("tabConflicts", "conflicts", FORGE_ICONS.conflicts, "Conflicts", '<span class="fx-badge conflict" id="fxBadgeConflicts" hidden></span>', "Clashes") +
+  NAV_BTN("tabAgents", "agents", FORGE_ICONS.agents, "Agents", "", "Agent list");
 
-export const FORGE_NAV_BENCH_HTML = NAV_BTN("tabBench", "bench", FORGE_ICONS.bench, "Bench").replace("<button ", "<button hidden ");
+export const FORGE_NAV_BENCH_HTML = NAV_BTN("tabBench", "bench", FORGE_ICONS.bench, "Bench", "", "Speed test").replace("<button ", "<button hidden ");
 
 export const FORGE_PANE_HTML = String.raw`
 <section id="forgePane" class="fx-root" hidden aria-label="Forge">
 <div class="fx-bar" role="toolbar" aria-label="Forge toolbar">
 <nav class="fx-crumbs" id="fxCrumbs" aria-label="Breadcrumb"></nav>
 <label><span class="sr">Repository</span><select id="fxRepo" aria-label="Repository"></select></label>
-<span class="fx-demo-tag" id="fxDemoTag" hidden title="Fixture data: not measurements">Demo data</span>
+<span class="fx-demo-tag fx-pro-only" id="fxDemoTag" hidden title="Fixture data: not measurements">Demo data</span>
 <button class="ghost fx-tb fx-tourbtn" id="fxTourBtn" type="button" data-action="tour_start" hidden>Take the tour</button>
+<button class="ghost fx-tb fx-simple-only" id="fxMoreBtn" type="button" aria-expanded="false" aria-controls="forgePane">Show more</button>
 <span class="fx-spacer"></span>
-<span class="fx-livebadge" id="fxLiveBadge" data-state="off" role="status">offline</span>
+<span class="fx-livebadge fx-pro-only" id="fxLiveBadge" data-state="off" role="status">offline</span>
 <button class="ghost fx-tb" id="fxPauseBtn" type="button" data-action="pause_live" aria-pressed="false" aria-keyshortcuts="p">Pause <kbd>p</kbd></button>
-<button class="ghost fx-tb" id="fxThemeBtn" type="button" data-action="toggle_theme" aria-label="Toggle light or dark theme">Theme</button>
-<button class="ghost fx-tb" id="fxStageBtn" type="button" data-action="stage_mode" aria-pressed="false" aria-keyshortcuts="Shift+S">Stage <kbd>⇧S</kbd></button>
-<a class="fx-json" id="fxJsonLink" href="/v1/forge/snapshot" target="_blank" rel="noopener" data-action="copy_json_url" title="Open this screen's JSON (shift-click copies the URL)">{} JSON</a>
-<button class="ghost fx-tb" id="fxKeysBtn" type="button" data-action="show_shortcuts" aria-label="Keyboard shortcuts" aria-keyshortcuts="?">?</button>
+<button class="ghost fx-tb fx-pro-only" id="fxThemeBtn" type="button" data-action="toggle_theme" aria-label="Toggle light or dark theme">Theme</button>
+<button class="ghost fx-tb fx-pro-only" id="fxStageBtn" type="button" data-action="stage_mode" aria-pressed="false" aria-keyshortcuts="Shift+S">Stage <kbd>⇧S</kbd></button>
+<a class="fx-json fx-pro-only" id="fxJsonLink" href="/v1/forge/snapshot" target="_blank" rel="noopener" data-action="copy_json_url" title="Open this screen's JSON (shift-click copies the URL)">{} JSON</a>
+<button class="ghost fx-tb fx-pro-only" id="fxKeysBtn" type="button" data-action="show_shortcuts" aria-label="Keyboard shortcuts" aria-keyshortcuts="?">?</button>
 </div>
 <div class="fx-notice" id="fxNotice" hidden></div>
 <div class="fx-screen" id="fxLive" data-screen="live" hidden>
-<ul class="fx-counters" id="fxLiveCounters" aria-label="Live counters"></ul>
+<div class="fx-simple-only" id="fxLiveSimple" role="region" aria-label="At a glance"></div>
+<ul class="fx-counters fx-pro-only" id="fxLiveCounters" aria-label="Live counters"></ul>
 <div class="fx-live-grid">
 <div class="fx-panel" role="region" aria-label="Live map">
-<div class="fx-panel-head"><span>Repository map</span><span class="fx-path" id="fxMapPath"></span><span class="fx-spacer"></span><button class="ghost" id="fxClearPath" type="button" hidden>Clear filter</button><button class="ghost" id="fxTableBtn" type="button" data-action="view_as_table" aria-pressed="false" aria-keyshortcuts="t">View as table <kbd>t</kbd></button></div>
+<div class="fx-panel-head"><span id="fxMapTitle">Repository map</span><span class="fx-path" id="fxMapPath"></span><span class="fx-spacer"></span><button class="ghost" id="fxClearPath" type="button" hidden>Clear filter</button><button class="ghost fx-pro-only" id="fxTableBtn" type="button" data-action="view_as_table" aria-pressed="false" aria-keyshortcuts="t">View as table <kbd>t</kbd></button></div>
 <div class="fx-map" id="fxMap" role="img" aria-label="Live map: repository paths sized by file count, one dot per active intent" aria-describedby="fxLiveTableWrap"></div>
 <div class="fx-table-twin" id="fxLiveTableWrap" hidden><div class="table-scroll"><table id="fxLiveTable"><caption class="sr">Live map as a table: paths, intents, owners, state, overlaps</caption><thead><tr><th scope="col">Path</th><th scope="col">Files</th><th scope="col">Intents</th><th scope="col">Owners</th><th scope="col">State</th><th scope="col">Overlaps with</th></tr></thead><tbody></tbody></table></div></div>
 </div>
@@ -654,17 +738,18 @@ export const FORGE_PANE_HTML = String.raw`
 <aside class="fx-panel fx-rail" id="fxTrack" aria-label="Train track into main"></aside>
 </div>
 </div>
-<div class="fx-legend" id="fxLegend" aria-label="Legend"></div>
+<div class="fx-legend fx-pro-only" id="fxLegend" aria-label="Legend"></div>
 </div>
 <div class="fx-screen" id="fxInbox" data-screen="inbox" hidden>
-<ul class="fx-counters" id="fxInboxCounters" aria-label="Review counters"></ul>
-<div class="fx-inbox-grid">
+<div class="fx-simple-only fx-iq" id="fxInboxSimple" role="region" aria-label="Needs you"></div>
+<ul class="fx-counters fx-pro-view" id="fxInboxCounters" aria-label="Review counters"></ul>
+<div class="fx-inbox-grid fx-pro-view">
 <nav class="fx-panel fx-filters" id="fxInboxFilters" aria-label="Inbox filters"></nav>
 <div id="fxStories" role="region" aria-label="Stories"></div>
 <aside class="fx-panel fx-detail" id="fxInboxDetail" aria-label="Detail"></aside>
 </div>
-<p class="fx-foot" id="fxInboxFoot"></p>
-<div class="fx-bulk" id="fxBulk" role="region" aria-label="Bulk actions" hidden></div>
+<p class="fx-foot fx-pro-view" id="fxInboxFoot"></p>
+<div class="fx-bulk fx-pro-view" id="fxBulk" role="region" aria-label="Bulk actions" hidden></div>
 </div>
 <div class="fx-screen" id="fxIntents" data-screen="intents" hidden></div>
 <div class="fx-screen" id="fxTrains" data-screen="trains" hidden></div>

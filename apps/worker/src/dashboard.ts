@@ -1,5 +1,6 @@
 import { FORGE_CSS, FORGE_NAV_HTML, FORGE_NAV_BENCH_HTML, FORGE_PANE_HTML, FORGE_OVERLAYS_HTML, FORGE_AUTH_DEMO_HTML, FORGE_HOME_CARD_HTML } from "./dashboard-forge-ui";
 import { FORGE_JS } from "./dashboard-forge-js";
+import { NEXT_MOVE_JS } from "./next-move";
 import { forgeFixturesJson } from "./forge-fixtures";
 
 // Every data-action in the dashboard is either an MCP tool name (agents
@@ -44,6 +45,12 @@ export const DASHBOARD_UI_ACTIONS = [
   "tour_skip",
   "explore_demo",
   "open_repo",
+  // Simple/Pro modes (docs/UX-BUDGET.md)
+  "toggle_mode",
+  "toggle_more",
+  "show_more",
+  "open_section",
+  "next_move",
 ] as const;
 
 // GET / -> /dashboard keeping the query string: ?demo=1, ?stage=1 and
@@ -61,6 +68,18 @@ export const DASHBOARD_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script id="uiModeScript">
+/* ui-mode: Simple (default) or Pro, set before first paint. ?mode= overrides and persists. */
+(function () {
+  var m = "simple";
+  try {
+    var q = new URLSearchParams(location.search).get("mode");
+    if (q === "pro" || q === "simple") { m = q; localStorage.setItem("flare-ui-mode", q); }
+    else if (localStorage.getItem("flare-ui-mode") === "pro") m = "pro";
+  } catch (e) { /* storage blocked: stay Simple */ }
+  document.documentElement.classList.add(m === "pro" ? "ui-pro" : "ui-simple");
+})();
+</script>
 <meta name="description" content="Flare Actions dashboard: agent tournaments, CI runs, merge queue, and settings.">
 <meta name="theme-color" content="#0a0a0a">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23fafafa'/%3E%3Ctext x='16' y='23' font-family='system-ui,sans-serif' font-size='19' font-weight='800' fill='black' text-anchor='middle'%3EF%3C/text%3E%3C/svg%3E">
@@ -371,30 +390,148 @@ a.home-btn:hover, button.home-btn:hover { background: var(--accent-hover); }
   details.step summary { overflow-wrap: anywhere; }
   pre.log { white-space: pre-wrap; overflow-wrap: anywhere; }
 }
-${FORGE_CSS}</style>
+${FORGE_CSS}
+/* ---------- Simple / Pro modes (docs/UX-BUDGET.md) ----------
+   <html> carries ui-simple or ui-pro from the head script. Pro is the
+   full dashboard; Simple hides what is over the cognitive-load budget.
+   .simple-only / .pro-only swap copy; .simple-more (and the ids below)
+   hide behind a pane's "Show more" (section.card.more-open). */
+html:not(.ui-simple) .simple-only { display: none !important; }
+html.ui-simple .pro-only { display: none !important; }
+html.ui-simple kbd { display: none !important; }
+html[data-tab="home"] #nextMoveChip { display: none !important; }
+@media (max-width: 720px) { #nextMoveChip { display: none !important; } }
+html.ui-simple .side-group { display: none; }
+html.ui-simple nav.side-nav > * { order: 7; }
+html.ui-simple #tabHome { order: 1; }
+html.ui-simple #tabRuns { order: 2; }
+html.ui-simple #tabLive { order: 3; }
+html.ui-simple #tabRepos { order: 4; }
+html.ui-simple #tabSettings { order: 5; }
+html.ui-simple #navMoreBtn { order: 6; }
+html.ui-simple nav.side-nav > .side-link:not([data-simple-nav]) { display: none; }
+html.ui-simple nav.side-nav.more-open > .side-link:not([data-simple-nav]) { display: flex; }
+html.ui-simple .side-link { font-size: 14px; }
+.side-more { color: var(--faint); }
+.side-more .more-caret { margin-left: auto; font-size: 11px; }
+.mode-btn { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px; font-size: 12px; white-space: nowrap; flex: none; }
+.mode-btn span { color: var(--muted); font-weight: 500; }
+.mode-btn .mode-arrow { color: var(--faint); }
+html.ui-simple .mode-btn .mode-s, html:not(.ui-simple) .mode-btn .mode-p { color: var(--ink); font-weight: 700; }
+html.ui-simple section.card:not(.more-open) .simple-more,
+html.ui-simple section.card:not(.more-open) #homeAgent,
+html.ui-simple section.card:not(.more-open) .home-cards,
+html.ui-simple section.card:not(.more-open) #homeCardForge,
+html.ui-simple section.card:not(.more-open) #usageStrip,
+html.ui-simple section.card:not(.more-open) #cacheStatsStrip,
+html.ui-simple section.card:not(.more-open) #cacheBox,
+html.ui-simple section.card:not(.more-open) #dispatchBox,
+html.ui-simple section.card:not(.more-open) #runsFilterForm,
+html.ui-simple section.card:not(.more-open) #runsCount,
+html.ui-simple section.card:not(.more-open) #bottlenecksBox { display: none !important; }
+html.ui-simple #homeSetup, html.ui-simple #homeWaiting, html.ui-simple #homeStatus, html.ui-simple #homeRunNow,
+html.ui-simple .settings-jump, html.ui-simple #reposPane > h2 + p.muted,
+html.ui-simple #setTokens, html.ui-simple #setTokens + p.muted, html.ui-simple #setRunner, html.ui-simple #setRunner + p.muted,
+html.ui-simple #setPeople, html.ui-simple #setWebhook, html.ui-simple #setNotify, html.ui-simple #setGithub { display: none !important; }
+html.ui-simple .home h2 { font-size: 28px; }
+html.ui-simple .home-lead { font-size: 16px; }
+.more-row { margin: 14px 0 0; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+button.linkish { background: transparent; border: none; color: var(--accent-ink); padding: 6px 2px; font-size: 14px; font-weight: 600; }
+button.linkish:hover:not(:disabled) { background: transparent; text-decoration: underline; }
+.quest { border: 1px solid var(--line-strong); border-radius: 14px; padding: 18px; margin: 0 0 16px; background: var(--card); }
+.quest-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 12px; }
+.quest-level { font-size: 13px; font-weight: 700; color: var(--soft); letter-spacing: 0.02em; }
+.quest-map { display: flex; align-items: center; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.quest-map li { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 999px; font-size: 13px; }
+.quest-map li.done { font-size: 17px; }
+.quest-map li.now { border: 2px solid var(--ink); color: var(--ink); font-weight: 700; font-size: 12px; }
+.quest-map li.locked::before { content: ""; width: 8px; height: 8px; border-radius: 999px; background: var(--faint); }
+.quest-name { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 4px; }
+.quest-text { color: var(--soft); font-size: 15px; margin: 0 0 14px; max-width: 52ch; }
+.quest-act { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.quest-act select, .quest-act input { min-height: 40px; font-size: 14px; flex: 1 1 200px; max-width: 360px; }
+.quest-msg { margin: 10px 0 0; color: var(--muted); font-size: 13.5px; min-height: 1em; }
+.quest-cmd { margin: 12px 0 0; }
+.quest-cmd p { margin: 0 0 6px; color: var(--soft); font-size: 13.5px; }
+.health .home-verdict { padding: 22px; }
+.health .home-verdict .big { font-size: 44px; }
+.health .home-verdict .what strong { font-size: 24px; }
+.health-streak { font-size: 15px; font-weight: 600; margin: 0 0 10px; }
+.badges { display: flex; gap: 8px; flex-wrap: wrap; list-style: none; margin: 0 0 6px; padding: 0; }
+.badges li { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line-strong); font-size: 12.5px; font-weight: 600; color: var(--soft); }
+.runs-verdict { margin: 0 0 14px; }
+.runs-verdict .home-verdict { margin: 0; }
+.acc-h { margin: 0 !important; }
+.acc-h:first-child + h2 { margin-top: 0; }
+.acc-btn { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 12px 14px; margin: 6px 0 0; text-align: left; background: transparent; color: var(--ink); border: 1px solid var(--line); border-radius: 10px; font-size: 15px; font-weight: 600; }
+.acc-btn:hover:not(:disabled) { background: var(--hover); }
+.acc-btn::after { content: "▸"; margin-left: auto; color: var(--muted); }
+.acc-btn[aria-expanded="true"] { border-color: var(--line-strong); background: var(--hover); }
+.acc-btn[aria-expanded="true"]::after { content: "▾"; }
+html.ui-simple [data-sec]:not(.sec-open) { display: none !important; }
+html.ui-simple [data-sec].sec-open { margin-left: 4px; }
+details.simple-all { margin: 14px 0; border: 1px solid var(--line); border-radius: 10px; padding: 4px 12px 10px; }
+details.simple-all > summary { cursor: pointer; padding: 8px 0; font-weight: 600; color: var(--accent-ink); }
+.next-chip { display: flex; align-items: center; gap: 4px; width: 100%; margin: 10px 0 0; padding: 9px 10px; border-radius: 8px; background: var(--hover); color: var(--ink); border: 1px solid var(--line-strong); font-size: 13px; font-weight: 600; text-align: left; overflow: hidden; }
+.next-chip:hover:not(:disabled) { background: var(--line); }
+.next-chip .next-k { color: var(--accent-ink); flex: none; }
+.next-chip #nextMoveLabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.auth-meaning { margin: 4px 0 10px; }
+.auth-meaning h2 { font-size: 15px; font-weight: 600; margin: 6px 0 4px; color: var(--soft, #666); }
+/* Simple budget: one headline (the form's), one way in, the rest on ask. */
+html.ui-simple #authPane:not(.auth-more) #magicForm,
+html.ui-simple #authPane:not(.auth-more) #forgotBtn,
+html.ui-simple #authPane #authDemo,
+html.ui-simple #authPane #emailDesc { display: none !important; }
+html.ui-simple #authPane.auth-more #authMoreRow { display: none !important; }
+.auth-meaning p { margin: 0 0 6px; }
+.everywhere { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 14px 0; }
+.everywhere h3 { margin: 0 0 4px; }
+.everywhere p { margin: 0 0 8px; color: var(--soft); }
+.confetti { position: fixed; inset: 0; pointer-events: none; z-index: 70; overflow: hidden; }
+.confetti span { position: absolute; top: -14px; width: 8px; height: 13px; border-radius: 2px; animation: flConfetti 900ms ease-in forwards; }
+@keyframes flConfetti { to { transform: translate(var(--dx, 0px), 105vh) rotate(560deg); opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .confetti { display: none; } }
+@media (max-width: 900px) {
+  .next-chip { width: auto; max-width: 160px; margin: 0; flex: none; padding: 6px 8px; }
+  .side-more .more-caret { margin-left: 4px; }
+  .mode-btn { height: 32px; }
+}
+@media (max-width: 640px) {
+  .mode-btn .mode-arrow { display: none; }
+  .health .home-verdict .what strong { font-size: 20px; }
+}
+</style>
 </head>
 <body>
 <header>
 <h1 class="brand-head"><span class="brand-mark">F</span><span>Flare Actions</span></h1>
 <nav class="side-nav" id="sideNav" aria-label="Primary">
-<button id="tabHome" class="side-link" data-tab="home" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.2 8 2.5l5.5 4.7V13a.5.5 0 0 1-.5.5H9.6V10H6.4v3.5H3a.5.5 0 0 1-.5-.5z"/></svg><span>Home</span></button>
+<button id="tabHome" class="side-link" data-tab="home" type="button" data-simple-nav="primary"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.2 8 2.5l5.5 4.7V13a.5.5 0 0 1-.5.5H9.6V10H6.4v3.5H3a.5.5 0 0 1-.5-.5z"/></svg><span data-simple="label">Home</span></button>
 ${FORGE_NAV_HTML}
 <div class="side-group">Flare CI</div>
-<button id="tabRuns" class="side-link" data-tab="runs" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6.6 5.4 11 8l-4.4 2.6z" fill="currentColor" stroke="none"/></svg><span>Runs</span></button>
-<button id="tabMerge" class="side-link" data-tab="merge" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="8" r="1.7"/><path d="M4 5.7v4.6M5.6 4.6c2.8.3 2.4 3.4 4.7 3.4"/></svg><span>Merge queue</span></button>
+<button id="tabRuns" class="side-link" data-tab="runs" type="button" data-simple-nav="primary"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6.6 5.4 11 8l-4.4 2.6z" fill="currentColor" stroke="none"/></svg><span class="pro-only">Runs</span><span class="simple-only" data-simple="label">Checks</span></button>
+<button id="tabMerge" class="side-link" data-tab="merge" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="8" r="1.7"/><path d="M4 5.7v4.6M5.6 4.6c2.8.3 2.4 3.4 4.7 3.4"/></svg><span class="pro-only">Merge queue</span><span class="simple-only" data-simple="label">Waiting to land</span></button>
 <div class="side-group">Code</div>
-<button id="tabRepos" class="side-link" data-tab="repos" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5 8 2l5 2.5v7L8 14l-5-2.5z"/><path d="M3 4.5 8 7l5-2.5M8 7v7"/></svg><span>Repositories</span></button>
+<button id="tabRepos" class="side-link" data-tab="repos" type="button" data-simple-nav="primary"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5 8 2l5 2.5v7L8 14l-5-2.5z"/><path d="M3 4.5 8 7l5-2.5M8 7v7"/></svg><span class="pro-only">Repositories</span><span class="simple-only" data-simple="label">Projects</span></button>
 <button id="tabTournaments" class="side-link" data-tab="tournaments" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.8" r="3.2"/><path d="M6.2 8.4 5.2 13.8 8 12.2l2.8 1.6-1-5.4"/></svg><span>Races</span></button>
 <div class="side-group">Manage</div>
-<button id="tabSettings" class="side-link" data-tab="settings" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.5h12M2 10.5h12"/><circle cx="10" cy="5.5" r="1.8" style="fill:var(--sidebar)"/><circle cx="6" cy="10.5" r="1.8" style="fill:var(--sidebar)"/></svg><span>Settings</span></button>
+<button id="tabSettings" class="side-link" data-tab="settings" type="button" data-simple-nav="primary"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.5h12M2 10.5h12"/><circle cx="10" cy="5.5" r="1.8" style="fill:var(--sidebar)"/><circle cx="6" cy="10.5" r="1.8" style="fill:var(--sidebar)"/></svg><span data-simple="label">Settings</span></button>
 ${FORGE_NAV_BENCH_HTML}
+<button id="navMoreBtn" class="side-link side-more simple-only" type="button" data-simple-nav="more" data-action="toggle_more" aria-expanded="false" aria-controls="sideNav"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg><span id="navMoreLabel" data-simple="label">More</span><span class="more-caret" aria-hidden="true">▾</span></button>
 </nav>
-<div class="side-foot"><span id="userLabel" class="muted"></span> <button id="paletteBtn" class="ghost" type="button" aria-label="Open command palette">⌘K</button> <button id="logoutBtn" class="ghost" hidden>Log out</button></div>
+<button id="nextMoveChip" class="next-chip simple-only" type="button" data-action="next_move" hidden><span class="next-k" data-simple="label">Next:</span> <span id="nextMoveLabel"></span></button>
+<div class="side-foot"><span id="userLabel" class="muted"></span> <button id="paletteBtn" class="ghost" type="button" aria-label="Open command palette">⌘K</button> <button id="modeBtn" class="ghost mode-btn" type="button" role="switch" aria-checked="false" aria-label="Pro mode" data-action="toggle_mode" title="Simple shows less. Pro shows every detail."><span class="mode-s">Simple</span><span class="mode-arrow" aria-hidden="true">⇄</span><span class="mode-p">Pro</span></button> <button id="logoutBtn" class="ghost" hidden>Log out</button></div>
 </header>
 <main><div class="wrap">
 <section id="authPane" class="card auth-card" hidden>
 <div class="auth-narrow">
 <div class="brand"><span class="brand-mark">F</span><span class="brand-name">Flare Actions</span></div>
+<div class="auth-meaning simple-only">
+<h2 data-simple="head">Your code, always checked</h2>
+<p class="muted" data-simple="text">Your AI agents work together without breaking each other's code.</p>
+<p><a href="/dashboard?demo=1&amp;tour=1#/live" data-action="explore_demo" data-simple="label">👀 Curious? Watch agents work live</a></p>
+</div>
 <div id="emailBox">
 <h2 id="emailTitle">Log in with email</h2>
 <p class="muted" id="emailDesc">Welcome back.</p>
@@ -407,6 +544,7 @@ ${FORGE_NAV_BENCH_HTML}
 </form>
 <p id="emailErr" class="err"></p>
 <p class="muted"><button id="forgotBtn" class="ghost" type="button">Forgot password?</button></p>
+<p class="muted simple-only" id="authMoreRow"><button id="authMoreBtn" class="ghost" type="button" data-action="show_more" data-simple="label">Other ways to log in</button></p>
 <p class="muted"><button id="registerToggleBtn" class="ghost" type="button" hidden>No account? Create one</button></p>
 <form id="magicForm" class="auth-form">
 <label class="field">No password? Get a login link by email<input id="magicEmail" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254"></label>
@@ -500,6 +638,8 @@ ${FORGE_AUTH_DEMO_HTML}
 <h2 id="homeTitle">Welcome to Flare 👋</h2>
 <p class="home-lead" id="homeLead">Flare checks your code for you. Every time you save your work to GitHub, Flare runs your tests and tells you if anything broke.</p>
 </div>
+<div id="homeQuest" class="quest simple-only" hidden></div>
+<div id="homeHealth" class="health simple-only" hidden></div>
 <div id="homeSetup" hidden>
 <div class="home-progress" aria-hidden="true"><span class="home-bar"><span id="homeBarFill"></span></span><span id="homeProgressText" class="home-progress-text"></span></div>
 <ol class="home-steps" id="homeSteps" aria-label="Setup steps"></ol>
@@ -531,6 +671,7 @@ ${FORGE_AUTH_DEMO_HTML}
 </form>
 <p id="homeRunMsg" class="muted"></p>
 </div>
+<p class="more-row simple-only"><button id="homeMoreBtn" type="button" class="linkish" data-action="show_more" data-more-for="homePane" aria-expanded="false" data-simple="label">Show more</button><button id="homeAgentLink" type="button" class="linkish" data-action="show_more" data-more-for="homePane" data-simple="label">🤖 Using an AI agent?</button></p>
 ${FORGE_HOME_CARD_HTML}
 <div class="home-agent" id="homeAgent">
 <h3 class="home-sub">🤖 Using an AI coding agent?</h3>
@@ -556,7 +697,8 @@ ${FORGE_HOME_CARD_HTML}
 <p>Push to a connected repo to trigger your first run.</p>
 <p><button id="installNoticeBtn" class="ghost">Got it</button></p>
 </div>
-<h2>Runs</h2>
+<h2><span class="pro-only">Runs</span><span class="simple-only" data-simple="head">Checks</span></h2>
+<div id="runsVerdict" class="runs-verdict simple-only" role="status" hidden></div>
 <p id="usageStrip" class="muted"></p>
 <p id="cacheStatsStrip" class="muted"></p>
 <details id="cacheBox" hidden>
@@ -583,6 +725,7 @@ ${FORGE_HOME_CARD_HTML}
 <form id="runsFilterForm" class="inline"><input id="runsFilter" placeholder="Filter by repo, branch, commit, status…" maxlength="64" aria-label="Filter runs"></form>
 <p class="muted" id="runsCount"></p>
 <div id="runsList"></div>
+<p class="more-row simple-only"><button id="runsMoreBtn" type="button" class="linkish" data-action="show_more" data-more-for="runsPane" aria-expanded="false" data-simple="label">Show more</button></p>
 <details id="bottlenecksBox" hidden>
 <summary>Slowest checks (last 14 days)</summary>
 <div id="bottlenecksBody" class="muted"></div>
@@ -590,6 +733,7 @@ ${FORGE_HOME_CARD_HTML}
 <div id="runDetail" hidden></div>
 </section>
 <section id="teamPane" class="card" hidden>
+<h2 class="simple-only" data-simple="head">Settings</h2>
 <nav class="settings-jump" aria-label="Settings sections">
 <button type="button" class="ghost" data-jump="setTokens">Tokens</button>
 <button type="button" class="ghost" data-jump="setRunner">Runners</button>
@@ -598,13 +742,15 @@ ${FORGE_HOME_CARD_HTML}
 <button type="button" class="ghost" data-jump="setNotify">Notifications</button>
 <button type="button" class="ghost" data-jump="setGithub">GitHub App</button>
 </nav>
+<h2 class="acc-h simple-only"><button type="button" class="acc-btn" data-action="open_section" data-sec-target="setTokens" aria-expanded="false" data-simple="label">🔑 Keys for computers and agents</button></h2>
 <h2 id="setTokens">Access tokens</h2>
 <p class="muted">Issue tokens for runners and teammates. Runner tokens can pull jobs and update status; readonly tokens can only view runs. Revoked tokens stop working immediately.</p>
+<p class="muted simple-only" data-simple="text">A key lets a computer or an agent use Flare. You see each key once.</p>
 <form id="tokenForm" class="inline">
-<input id="tokenName" placeholder="Token name, e.g. ci-laptop" maxlength="64">
-<select id="tokenScope"><option value="runner">runner</option><option value="readonly">readonly</option><option value="admin">admin</option></select>
-<input id="tokenRepos" placeholder="optional: owner/repo, org/* (blank = all repos)" maxlength="2000">
-<button type="submit">Create token</button>
+<input id="tokenName" placeholder="Name, e.g. my-laptop" maxlength="64">
+<select id="tokenScope" class="pro-only"><option value="runner">runner</option><option value="readonly">readonly</option><option value="admin">admin</option></select>
+<input id="tokenRepos" class="pro-only" placeholder="optional: owner/repo, org/* (blank = all repos)" maxlength="2000">
+<button type="submit"><span class="pro-only">Create token</span><span class="simple-only" data-simple="label">Make a key</span></button>
 </form>
 <p id="tokenErr" class="err"></p>
 <div id="newTokenBox" hidden>
@@ -612,9 +758,11 @@ ${FORGE_HOME_CARD_HTML}
 <code class="token" id="newTokenVal"></code>
 <p><button id="copyTokenBtn" class="ghost" type="button">Copy</button></p>
 </div>
-<div class="table-scroll"><table><thead><tr><th>Name</th><th>Scopes</th><th>Repos</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody id="tokensBody"></tbody></table></div>
+<div class="table-scroll"><table><thead><tr><th>Name</th><th><span class="pro-only">Scopes</span><span class="simple-only" data-simple="label">Can do</span></th><th><span class="pro-only">Repos</span><span class="simple-only" data-simple="label">Projects</span></th><th>Created</th><th>Status</th><th></th></tr></thead><tbody id="tokensBody"></tbody></table></div>
+<h2 class="acc-h simple-only"><button type="button" class="acc-btn" data-action="open_section" data-sec-target="setRunner" aria-expanded="false" data-simple="label">💻 Add a computer</button></h2>
 <h2 id="setRunner">Pair a runner</h2>
 <p class="muted">Zero-config machines: mint a code, paste one command on the fresh box, and it exchanges the code for a runner token and starts polling. Single use, expires in 10 minutes.</p>
+<p class="muted simple-only" data-simple="text">Make a code, then paste one line on the other computer. The code works once.</p>
 <form id="pairForm" class="inline">
 <input id="pairName" placeholder="Runner name, e.g. ci-metal-01" maxlength="64">
 <button type="submit">Create pairing code</button>
@@ -625,7 +773,9 @@ ${FORGE_HOME_CARD_HTML}
 <code class="token" id="pairCmd"></code>
 <p><button id="copyPairBtn" class="ghost" type="button">Copy</button></p>
 </div>
+<h2 class="acc-h simple-only"><button type="button" class="acc-btn" data-action="open_section" data-sec-target="setPeople" aria-expanded="false" data-simple="label">👋 People</button></h2>
 <h2 id="setPeople">GitHub users</h2>
+<p class="muted simple-only" data-simple="text">Let friends see your checks. Invite links work once.</p>
 <p class="muted" id="usersInfo"></p>
 <form id="userForm" class="inline">
 <input id="userLogin" placeholder="GitHub username" maxlength="39">
@@ -650,7 +800,9 @@ ${FORGE_HOME_CARD_HTML}
 <div class="table-scroll"><table><thead><tr><th>Email</th><th>Expires</th></tr></thead><tbody id="invitesBody"></tbody></table></div>
 </section>
 <section id="settingsPane" class="card" hidden>
+<h2 class="acc-h simple-only"><button type="button" class="acc-btn" data-action="open_section" data-sec-target="setWebhook" aria-expanded="false" data-simple="label">🔒 Secret for GitHub</button></h2>
 <h2 id="setWebhook">Webhook &amp; admin</h2>
+<p class="muted simple-only" data-simple="text">GitHub uses this secret to talk to Flare safely.</p>
 <p class="muted" id="settingsInfo"></p>
 <form id="webhookForm" class="inline">
 <input id="webhookInput" placeholder="GitHub webhook secret (16+ characters)">
@@ -663,7 +815,9 @@ ${FORGE_HOME_CARD_HTML}
 <p class="muted">Repos without a <span class="mono">flare.yml</span> run their existing <span class="mono">.github/workflows</span> files as-is: matching <span class="mono">on:</span> triggers, run steps, matrices, needs, cache, and artifacts translate automatically, and anything unsupported is dropped with a note in the worker log instead of being guessed at. Each run is tagged in the list with which pipeline ran. <a href="https://github.com/everyai-com/flare-actions/blob/main/docs/GITHUB-ACTIONS-COMPAT.md" target="_blank" rel="noopener">Support matrix</a></p>
 <p class="muted">No GitHub App? For public repos, add a plain repo webhook pointing at <span class="mono">https://&lt;this-worker&gt;/webhooks/github</span> with the secret above and pushes become runs. The App adds private repos, commit statuses, check runs, PR comments, and GitHub login.</p>
 </details>
+<h2 class="acc-h simple-only"><button type="button" class="acc-btn" data-action="open_section" data-sec-target="setNotify" aria-expanded="false" data-simple="label">🔔 Alerts</button></h2>
 <h2 id="setNotify">Run notifications</h2>
+<p class="muted simple-only" data-simple="text">Get a message when a check finishes.</p>
 <p class="muted" id="notifyInfo"></p>
 <form id="notifyForm" class="inline">
 <input id="notifyFromInput" placeholder="Sender email, e.g. ci@example.com" maxlength="254">
@@ -679,7 +833,9 @@ ${FORGE_HOME_CARD_HTML}
 <p class="muted" id="notifyWebhookInfo"></p>
 <p id="notifyWebhookErr" class="err"></p>
 <p id="notifyWebhookOk"></p>
+<h2 class="acc-h simple-only"><button type="button" class="acc-btn" data-action="open_section" data-sec-target="setGithub" aria-expanded="false" data-simple="label">🐙 Connect GitHub</button></h2>
 <h2 id="setGithub">GitHub App</h2>
+<p class="muted simple-only" data-simple="text">Connect GitHub so Flare can see your code.</p>
 <p class="muted" id="githubInfo"></p>
 <form id="githubForm" class="inline">
 <button type="submit">Connect GitHub</button>
@@ -711,8 +867,9 @@ ${FORGE_HOME_CARD_HTML}
 </div>
 </section>
 <section id="reposPane" class="card" hidden>
-<h2>Repositories</h2>
+<h2><span class="pro-only">Repositories</span><span class="simple-only" data-simple="head">Projects</span></h2>
 <p class="muted">Every codebase lives in one place. Open a repo to browse files and history — or race agents on it.</p>
+<p class="muted simple-only" data-simple="text">Open a project to see its files and checks.</p>
 <p id="reposErr" class="err"></p>
 <div id="reposList"></div>
 <div id="repoDetail" hidden>
@@ -823,6 +980,236 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   // custom strings) shows as-is. The raw value stays in class + tooltip.
   var PILL_WORDS = { success: "passed", failure: "failed", error: "couldn't run", running: "running", queued: "waiting", blocked: "waiting", cancelled: "stopped", skipped: "skipped" };
   function pill(status) { var s = el("span", PILL_WORDS[status] || status); s.className = "pill " + status; s.title = status; return s; }
+
+  // ---------- Simple / Pro modes (docs/UX-BUDGET.md) ----------
+  // The head script put ui-simple or ui-pro on <html> before first paint.
+  // Simple-mode renderers branch on uiSimple(); Pro code paths are the
+  // untouched originals. All Simple copy lives in SC so ux-budget.test.ts
+  // can hold it to the budget: h_ = headline (<= 6 words), l_ = label
+  // (<= 6 words), t_ = sentences (<= 15 words each), no jargon.
+  function uiSimple() { return document.documentElement.classList.contains("ui-simple"); }
+  // simple-copy:start
+  var SC = {
+    h_quest: "Let's set up Flare ⭐",
+    t_quest: "Finish five short levels. Then Flare checks your code for you.",
+    h_health: "Is my code OK?",
+    t_health: "Flare checks your code every time you push to GitHub.",
+    l_level: "Level {n} of 5",
+    l_levels: "Your levels",
+    l_lvl_account: "Make your account",
+    l_lvl_github: "Connect GitHub",
+    l_lvl_repos: "Pick a project",
+    l_lvl_first_run: "Run your first check",
+    l_lvl_green: "Get a green check",
+    l_lvl_done: "Level {n} done",
+    l_lvl_now: "Level {n}, you are here",
+    l_lvl_locked: "Level {n}, locked",
+    t_lvl_github: "Flare needs to see your code. GitHub asks you to say yes.",
+    t_lvl_github_ask: "Ask the person who set up Flare to connect GitHub.",
+    t_lvl_repos: "Choose which projects Flare should check. You can change this later.",
+    t_lvl_first_run: "Press the button. Flare checks your code and shows the result.",
+    t_lvl_first_run_push: "Push code to GitHub. Flare starts a check by itself.",
+    t_lvl_green: "A green check means your code passed every test.",
+    t_lvl_green_push: "Push code to GitHub to start a new check.",
+    t_lvl_green_bad: "It broke this time. That is normal. Let's see what to fix.",
+    t_lvl_green_busy: "Flare is checking your code right now.",
+    l_connect: "Connect GitHub",
+    l_pick: "Pick projects on GitHub ↗",
+    l_did_it: "I did it",
+    l_start: "▶ Start a check",
+    l_see_broke: "See what broke",
+    l_watch: "Watch it",
+    l_use_computer: "Use my computer",
+    l_see_checks: "See all checks",
+    l_project: "Project",
+    h_computer: "Your checks need a computer",
+    t_computer: "Use the computer you are on now. It takes one line.",
+    t_computer_ask: "Ask the owner to add a computer.",
+    t_computer_how: "Open the Terminal app. Paste this line and press Enter.",
+    t_computer_keep: "Keep that window open while your checks go.",
+    t_computer_fail: "Couldn't make a code. Only the owner can do this.",
+    t_making_code: "Making a one-time code…",
+    l_copy: "Copy",
+    h_ok: "All good",
+    h_bad: "Something broke",
+    h_busy: "Checking…",
+    h_wait: "Waiting for a computer",
+    h_stopped: "Check stopped",
+    l_streak: "🔥 {n} green in a row",
+    l_badges: "Your badges",
+    l_badge_green: "First green check",
+    l_badge_agent: "Agent connected",
+    l_badge_team: "Teammate invited",
+    h_latest: "Latest checks",
+    l_more: "Show more",
+    l_less: "Show less",
+    l_nav_more: "More",
+    l_nav_less: "Less",
+    t_pick_first: "Pick a project first.",
+    t_starting: "Starting your check…",
+    t_started: "Started! This page updates by itself.",
+    t_cant_start: "Couldn't start the check.",
+    t_level_up: "Level up! ⭐",
+    t_first_green: "Level up! ⭐ Your first green check!",
+    t_streak: "🔥 {n} green in a row!",
+    l_st_success: "Passed",
+    l_st_failure: "Broke",
+    l_st_error: "Broke",
+    l_st_running: "Checking…",
+    l_st_queued: "Waiting for a computer",
+    l_st_blocked: "Waiting",
+    l_st_cancelled: "Stopped",
+    l_st_skipped: "Skipped",
+    h_no_checks: "No checks yet",
+    t_no_checks: "Push code to GitHub. Your checks show up here.",
+    l_go_home: "Go to Home",
+    h_what_broke: "What broke",
+    l_broken_step: "This step broke",
+    l_last_lines: "Last lines it printed",
+    l_try: "💡 Try this",
+    t_next_look: "Open “Show all steps”. Look for the first red line.",
+    h_passed: "All good! Everything passed.",
+    t_detail_wait: "Waiting for a computer. Go Home and press “Use my computer”.",
+    t_detail_busy: "Checking your code right now. This page updates by itself.",
+    t_detail_stopped: "This check was stopped.",
+    l_all_steps: "Show all steps",
+    l_back: "← Back to checks",
+    h_no_projects: "No projects yet",
+    t_no_projects: "Your projects show up here once Flare has their code.",
+    t_mode_simple: "Simple mode. Less on the screen.",
+    t_mode_pro: "Pro mode. Every detail is back.",
+    l_next: "Next:",
+    t_ask_owner: "Ask the person who set up Flare to do this step.",
+    h_main_broke: "Main is broken",
+    l_waiting: "{n} waiting since {t}",
+    h_everywhere: "Flare everywhere",
+    t_everywhere: "Add Flare to every project and agent on this computer. One line does it.",
+    l_everywhere_doc: "How it works ↗"
+  };
+  // simple-copy:end
+  // The next-move engine (next-move.ts), spliced in verbatim so the
+  // tested string is the shipped one.
+  ${NEXT_MOVE_JS}
+  function scf(key, n, t) { return String(SC[key] || "").replace("{n}", String(n)).replace("{t}", String(t === undefined ? "" : t)); }
+  var SIMPLE_ICON = { success: "✅", failure: "❌", error: "❌", running: "⏳", queued: "🕐", blocked: "🕐", cancelled: "⏹️", skipped: "➖" };
+  var SIMPLE_TONE = { success: "ok", failure: "bad", error: "bad", running: "busy", queued: "busy", blocked: "busy" };
+  // [icon, plain word, tone] for a run/job status in Simple mode.
+  function simpleStatus(status) {
+    return [SIMPLE_ICON[status] || "•", SC["l_st_" + status] || status || "", SIMPLE_TONE[status] || ""];
+  }
+  // Colour (pill dot) + icon + word: state never rides on colour alone.
+  function simplePill(status) {
+    var st = simpleStatus(status);
+    var s = el("span", st[0] + " " + st[1]); s.className = "pill " + status; s.title = status; return s;
+  }
+  (function () {
+    var b = document.getElementById("authMoreBtn");
+    if (b) b.addEventListener("click", function () { document.getElementById("authPane").classList.add("auth-more"); var m = document.getElementById("magicEmail"); if (m) m.focus(); });
+  })();
+  function setUiMode(mode) {
+    var root = document.documentElement;
+    root.classList.remove("ui-simple", "ui-pro");
+    root.classList.add(mode === "pro" ? "ui-pro" : "ui-simple");
+    try { localStorage.setItem("flare-ui-mode", mode === "pro" ? "pro" : "simple"); } catch (e) { /* per-tab only */ }
+    syncModeBtn();
+    if (appPane.hidden) return;
+    syncSimpleNav(currentTab);
+    if (currentTab === "runs") { renderRuns(); }
+    if (currentTab === "settings") applySettingsAccordion();
+    toast(mode === "pro" ? SC.t_mode_pro : SC.t_mode_simple);
+    refreshCurrent();
+  }
+  function syncModeBtn() {
+    var b = document.getElementById("modeBtn");
+    if (b) b.setAttribute("aria-checked", uiSimple() ? "false" : "true");
+  }
+  // Simple nav: five items; everything else lives behind "More". A deep
+  // link to a More screen opens the drawer so the active item shows.
+  var navMoreOpen = false;
+  function setNavMore(open) {
+    navMoreOpen = !!open;
+    var nav = document.getElementById("sideNav");
+    nav.classList.toggle("more-open", navMoreOpen);
+    var b = document.getElementById("navMoreBtn");
+    b.setAttribute("aria-expanded", navMoreOpen ? "true" : "false");
+    document.getElementById("navMoreLabel").textContent = navMoreOpen ? SC.l_nav_less : SC.l_nav_more;
+  }
+  function syncSimpleNav(name) {
+    var link = document.querySelector('.side-link[data-tab="' + name + '"]');
+    if (link && !link.hasAttribute("data-simple-nav") && !navMoreOpen) setNavMore(true);
+  }
+  // "Show more" disclosures: the pane (a section.card) gets .more-open.
+  function setPaneMore(paneId, open) {
+    var pane = document.getElementById(paneId);
+    if (!pane) return;
+    pane.classList.toggle("more-open", !!open);
+    var btns = pane.querySelectorAll('[data-action="show_more"][aria-expanded]');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].setAttribute("aria-expanded", open ? "true" : "false");
+      btns[i].textContent = open ? SC.l_less : SC.l_more;
+    }
+  }
+  // Settings accordion (Simple): one section open at a time. Elements
+  // between a section's h2[id] and the next one get data-sec=<id>.
+  var openSettingsSec = "setTokens";
+  (function tagSettingsSections() {
+    ["teamPane", "settingsPane"].forEach(function (pid) {
+      var pane = document.getElementById(pid);
+      if (!pane) return;
+      var cur = "";
+      for (var c = pane.firstElementChild; c; c = c.nextElementSibling) {
+        if (c.classList.contains("acc-h") || c.classList.contains("settings-jump")) continue;
+        if (c.tagName === "H2" && c.id) cur = c.id;
+        if (cur) c.setAttribute("data-sec", cur);
+      }
+    });
+  })();
+  function applySettingsAccordion() {
+    var secs = document.querySelectorAll("[data-sec]");
+    for (var i = 0; i < secs.length; i++) secs[i].classList.toggle("sec-open", secs[i].getAttribute("data-sec") === openSettingsSec);
+    var btns = document.querySelectorAll(".acc-btn[data-sec-target]");
+    for (var j = 0; j < btns.length; j++) btns[j].setAttribute("aria-expanded", btns[j].getAttribute("data-sec-target") === openSettingsSec ? "true" : "false");
+  }
+  // Celebrations: confetti (pure DOM + CSS, <= 1.2s, none under
+  // prefers-reduced-motion) plus a toast. Pure decoration: aria-hidden.
+  function confetti() {
+    try { if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return; } catch (e) { return; }
+    var box = el("div"); box.className = "confetti"; box.setAttribute("aria-hidden", "true");
+    var colors = ["#4ade80", "#fbbf24", "#7db4f7", "#f87171", "#c084fc", "#fafafa"];
+    for (var i = 0; i < 40; i++) {
+      var p = el("span");
+      p.style.left = Math.round(Math.random() * 100) + "%";
+      p.style.background = colors[i % colors.length];
+      p.style.animationDelay = Math.round(Math.random() * 250) + "ms";
+      p.style.setProperty("--dx", Math.round(Math.random() * 180 - 90) + "px");
+      box.appendChild(p);
+    }
+    document.body.appendChild(box);
+    setTimeout(function () { if (box.parentNode) box.parentNode.removeChild(box); }, 1200);
+  }
+  // Wins are detected client-side between polls; the last celebrated
+  // state lives in localStorage so a reload never re-celebrates. A first
+  // visit only records the baseline.
+  var CELEB_KEY = "flare-celebrated";
+  function celebrateWins(st, streak) {
+    var prev = null;
+    try { prev = JSON.parse(localStorage.getItem(CELEB_KEY) || "null"); } catch (e) { prev = null; }
+    try { localStorage.setItem(CELEB_KEY, JSON.stringify({ done: st.done, streak: streak })); } catch (e) { return; }
+    if (!prev || typeof prev.done !== "number") return;
+    if (st.done > prev.done) { confetti(); toast(st.complete ? SC.t_first_green : SC.t_level_up); }
+    else if (streak >= 5 && streak % 5 === 0 && streak > (prev.streak || 0)) { confetti(); toast(scf("t_streak", streak)); }
+  }
+  // Green streak: consecutive passing checks, newest first, ignoring
+  // checks still going (and stopped/skipped ones).
+  function greenStreak(runs) {
+    var n = 0;
+    for (var i = 0; i < runs.length; i++) {
+      var s = runs[i].status;
+      if (s === "success") n++;
+      else if (s === "failure" || s === "error") break;
+    }
+    return n;
+  }
 
   // Turnstile widgets render lazily per auth pane (the site key arrives
   // with /v1/admin/status, and hidden panes break widget execution).
@@ -1056,6 +1443,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       showApp(st.user.actor, st.user.admin, st.githubConnected);
       loadRuns();
       registerWebMcpTools(st.user.admin);
+      startMovePoll();
       if (st.user.admin) { loadTokens(); loadUsers(); }
     } else if (FX.demo) {
       fxShowAnonDemo();
@@ -1446,9 +1834,312 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       li.appendChild(b); list.appendChild(li);
     });
   }
+  // ---------- Home, Simple mode: the quest, then the health screen ----------
+  var QUEST_LEVELS = ["account", "github", "repos", "first_run", "green"];
+  var teamSeen = false;
+  function openRunFromHome(id) { selectTab("runs"); loadRuns(); loadRun(id, true); }
+  function homeButton(label, primary, fn) {
+    var b = el("button", label); b.type = "button"; b.className = primary ? "home-btn" : "ghost";
+    b.addEventListener("click", fn);
+    return b;
+  }
+  // Starts a check on repo@branch; words answer the click immediately.
+  function homeStart(repo, branch, msg) {
+    if (!repo) { msg.textContent = SC.t_pick_first; return; }
+    msg.textContent = SC.t_starting;
+    api("/v1/runs/dispatch", { method: "POST", body: JSON.stringify({ repo: repo, sha: branch || "main" }) })
+      .then(function () { msg.textContent = SC.t_started; toast(SC.t_started); return loadHome(); })
+      .catch(function (e) { msg.textContent = SC.t_cant_start + " " + ((e && e.message) || ""); });
+  }
+  // "Use my computer": one-time pair code, shown as one copyable line.
+  function homePairInto(box, msg) {
+    msg.textContent = SC.t_making_code;
+    api("/v1/admin/pair-codes", { method: "POST", body: JSON.stringify({}) })
+      .then(function (data) {
+        msg.textContent = "";
+        box.textContent = "";
+        var cmd = "curl -fsSL " + window.location.origin + "/runner.sh | FLARE_PAIR_CODE=" + data.code + " sh";
+        box.appendChild(el("p", SC.t_computer_how));
+        var row = el("div"); row.className = "home-cmd";
+        row.appendChild(el("code", cmd));
+        var copy = el("button", SC.l_copy); copy.type = "button"; copy.className = "ghost";
+        copy.addEventListener("click", function () { copyText(cmd, copy); });
+        row.appendChild(copy);
+        box.appendChild(row);
+        box.appendChild(el("p", SC.t_computer_keep));
+        box.hidden = false;
+      })
+      .catch(function () { msg.textContent = SC.t_computer_fail; });
+  }
+  // The computer action: replaces a level's (or the health screen's)
+  // single button when checks sit waiting for a machine.
+  function computerAction(st, acts, msg, after) {
+    if (!st.admin) { msg.textContent = SC.t_computer_ask; return; }
+    var cmdBox = el("div"); cmdBox.className = "quest-cmd"; cmdBox.hidden = true;
+    acts.appendChild(homeButton(SC.l_use_computer, true, function () { homePairInto(cmdBox, msg); }));
+    after.appendChild(cmdBox);
+  }
+  function repoPicker(st, acts) {
+    var repos = st.repos || [];
+    if (repos.length > 1) {
+      var sel = el("select"); sel.setAttribute("aria-label", SC.l_project);
+      repos.forEach(function (r) {
+        var o = el("option", r.fullName + (r.private ? " 🔒" : "")); o.value = r.fullName; o.setAttribute("data-branch", r.defaultBranch || "main");
+        sel.appendChild(o);
+      });
+      acts.appendChild(sel);
+      return function () { var o = sel.options[sel.selectedIndex]; return o ? [o.value, o.getAttribute("data-branch") || "main"] : ["", ""]; };
+    }
+    if (repos.length === 1) return function () { return [repos[0].fullName, repos[0].defaultBranch || "main"]; };
+    var inp = el("input"); inp.placeholder = "owner/repo"; inp.maxLength = 100; inp.setAttribute("aria-label", SC.l_project);
+    acts.appendChild(inp);
+    return function () { return [inp.value.trim(), "main"]; };
+  }
+  // ---------- Next move (docs/OCTALYSIS.md): one engine, Home + side bar ----------
+  var currentMove = null;
+  function stepDone(st, id) {
+    var d = false;
+    (st.steps || []).forEach(function (s) { if (s.id === id && s.done) d = true; });
+    return d;
+  }
+  function inboxCount() {
+    var b = document.getElementById("fxBadgeInbox");
+    if (!b || b.hidden) return 0;
+    var n = parseInt(b.textContent || "0", 10);
+    return isFinite(n) && n > 0 ? n : 0;
+  }
+  function moveState(st) {
+    return {
+      signedIn: true,
+      admin: !!st.admin,
+      githubConnected: stepDone(st, "github"),
+      projectPicked: stepDone(st, "repos"),
+      waitingForComputer: !!st.waitingForComputer,
+      checks: st.runs || 0,
+      passed: st.passed || 0,
+      latestStatus: st.latest ? st.latest.status : "",
+      inboxCount: inboxCount(),
+      agentSeen: homeRuns.some(function (r) { return !!r.agent; }),
+      teammateSeen: teamSeen
+    };
+  }
+  // Agents and tests read the move off <html data-next-move data-phase>.
+  function applyNextMove(st) {
+    currentMove = nextMove(moveState(st));
+    var root = document.documentElement;
+    root.setAttribute("data-next-move", currentMove.key);
+    root.setAttribute("data-phase", currentMove.phase);
+    var chip = document.getElementById("nextMoveChip");
+    chip.setAttribute("data-next-move", currentMove.key);
+    document.getElementById("nextMoveLabel").textContent = currentMove.label;
+    chip.title = SC.l_next + " " + currentMove.label;
+    chip.hidden = false;
+    return currentMove;
+  }
+  function moveLabel(m) { return (m.key === "run" || m.key === "first_check" ? "▶ " : "") + m.label; }
+  function goInvite() {
+    palGoTab("settings");
+    openSettingsSec = "setPeople";
+    applySettingsAccordion();
+    setTimeout(function () { var i = document.getElementById("inviteEmail"); if (i) { i.scrollIntoView({ behavior: "smooth", block: "center" }); i.focus(); } }, 300);
+  }
+  function goAgentPrompt() {
+    setPaneMore("homePane", true);
+    var a = document.getElementById("homeAgent");
+    if (a && a.scrollIntoView) a.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+  // Side bar chip: the same move, from any screen.
+  function runNextMove() {
+    var m = currentMove, st = homeState;
+    if (!m || !st) return;
+    var latestId = st.latest ? st.latest.id : null;
+    if (m.owner && !st.admin) { palGoTab("home"); return; }
+    if (m.key === "github") startConnect(document.getElementById("homeErr"));
+    else if (m.key === "project" && st.installUrl) window.open(st.installUrl, "_blank", "noopener");
+    else if ((m.key === "see_broke" || m.key === "watch") && latestId) openRunFromHome(latestId);
+    else if (m.key === "inbox") palGoTab("inbox");
+    else if (m.key === "invite") goInvite();
+    else if (m.key === "agent") { palGoTab("home"); setTimeout(goAgentPrompt, 200); }
+    else {
+      palGoTab("home");
+      setTimeout(function () { var p = document.getElementById("homePrimary"); if (p) p.focus(); }, 400);
+    }
+  }
+  // Home's one primary button is the next move.
+  function renderMoveAction(m, st, acts, msg, after) {
+    if (m.owner && !st.admin) { msg.textContent = SC.t_ask_owner; return; }
+    var latestId = st.latest ? st.latest.id : null;
+    var primary = null;
+    if (m.key === "github") primary = homeButton(m.label, true, function () { startConnect(msg); });
+    else if (m.key === "project") {
+      if (st.installUrl) {
+        primary = el("a", SC.l_pick); primary.href = st.installUrl; primary.target = "_blank"; primary.rel = "noopener"; primary.className = "home-btn";
+      }
+      acts.appendChild(primary || homeButton(SC.l_did_it, true, function () { msg.textContent = SC.h_busy; loadHome(); }));
+      if (primary) acts.appendChild(homeButton(SC.l_did_it, false, function () { msg.textContent = SC.h_busy; loadHome(); }));
+      else primary = acts.lastChild;
+      primary.id = "homePrimary";
+      return;
+    } else if (m.key === "computer") {
+      computerAction(st, acts, msg, after);
+      if (acts.lastChild) acts.lastChild.id = "homePrimary";
+      return;
+    } else if (m.key === "first_check") {
+      var pick = repoPicker(st, acts);
+      primary = homeButton(moveLabel(m), true, function () { var r = pick(); homeStart(r[0], r[1], msg); });
+    } else if ((m.key === "see_broke" || m.key === "watch") && latestId) primary = homeButton(m.label, true, function () { openRunFromHome(latestId); });
+    else if (m.key === "inbox") primary = homeButton(m.label, true, function () { palGoTab("inbox"); });
+    else if (m.key === "agent") primary = homeButton(m.label, true, goAgentPrompt);
+    else if (m.key === "invite") primary = homeButton(m.label, true, goInvite);
+    else if (m.key === "run" && st.latest && st.latest.repo) {
+      var latest = st.latest, branch = latest.branch || "";
+      if (!branch) (st.repos || []).forEach(function (r) { if (r.fullName === latest.repo) branch = r.defaultBranch || ""; });
+      primary = homeButton(moveLabel(m), true, function () { homeStart(latest.repo, branch || "main", msg); });
+    } else primary = homeButton(SC.l_see_checks, true, function () { palGoTab("runs"); });
+    primary.id = "homePrimary";
+    acts.appendChild(primary);
+  }
+  function renderQuest(st, box, m) {
+    box.textContent = "";
+    var idx = QUEST_LEVELS.indexOf(st.next);
+    if (idx < 0) idx = QUEST_LEVELS.length - 1;
+    var top = el("div"); top.className = "quest-top";
+    top.appendChild(el("span", scf("l_level", idx + 1))).className = "quest-level";
+    var map = el("ol"); map.className = "quest-map"; map.setAttribute("aria-label", SC.l_levels);
+    QUEST_LEVELS.forEach(function (id, i) {
+      var li = el("li");
+      if (stepDone(st, id)) { li.className = "done"; li.textContent = "⭐"; li.setAttribute("aria-label", scf("l_lvl_done", i + 1) + ": " + SC["l_lvl_" + id]); }
+      else if (i === idx) { li.className = "now"; li.textContent = String(i + 1); li.setAttribute("aria-label", scf("l_lvl_now", i + 1)); li.setAttribute("aria-current", "step"); }
+      else { li.className = "locked"; li.setAttribute("aria-label", scf("l_lvl_locked", i + 1)); }
+      li.title = SC["l_lvl_" + id];
+      map.appendChild(li);
+    });
+    top.appendChild(map);
+    box.appendChild(top);
+    var id = QUEST_LEVELS[idx];
+    var name = el("h3", SC["l_lvl_" + id]); name.className = "quest-name";
+    var text = el("p"); text.className = "quest-text";
+    var acts = el("div"); acts.className = "quest-act";
+    var msg = el("p"); msg.className = "quest-msg"; msg.setAttribute("role", "status");
+    var after = el("div");
+    var tone = st.latest ? (SIMPLE_TONE[st.latest.status] || "") : "";
+    if (m.key === "computer") { name.textContent = SC.h_computer; text.textContent = st.admin ? SC.t_computer : SC.t_computer_ask; }
+    else if (id === "github") text.textContent = st.admin ? SC.t_lvl_github : SC.t_lvl_github_ask;
+    else if (id === "repos") text.textContent = SC.t_lvl_repos;
+    else if (id === "first_run") text.textContent = st.admin ? SC.t_lvl_first_run : SC.t_lvl_first_run_push;
+    else if (tone === "bad") text.textContent = SC.t_lvl_green_bad;
+    else if (tone === "busy") text.textContent = SC.t_lvl_green_busy;
+    else text.textContent = SC.t_lvl_green + " " + SC.t_lvl_green_push;
+    renderMoveAction(m, st, acts, msg, after);
+    if (m.owner && !st.admin && m.key !== "computer" && id !== "github") msg.textContent = SC.t_ask_owner;
+    box.appendChild(name); box.appendChild(text);
+    if (acts.children.length) box.appendChild(acts);
+    box.appendChild(after);
+    box.appendChild(msg);
+  }
+  // Real waits only (CD6): how many checks wait, since when.
+  function waitingLine() {
+    var n = 0, oldest = "";
+    homeRuns.forEach(function (r) {
+      if (r.status === "queued" || r.status === "blocked") { n++; if (!oldest || r.created_at < oldest) oldest = r.created_at; }
+    });
+    return n ? scf("l_waiting", n, fmtAgo(oldest)) : "";
+  }
+  function renderHealth(st, box, m) {
+    box.textContent = "";
+    var latest = st.latest;
+    var status = latest ? latest.status : "";
+    var tone = SIMPLE_TONE[status] || "";
+    var head = SC.h_stopped;
+    var mainBranch = latest && (latest.branch === "main" || latest.branch === "master");
+    if (status === "success") head = SC.h_ok;
+    else if (tone === "bad") head = mainBranch ? SC.h_main_broke : SC.h_bad;
+    else if (status === "queued" || status === "blocked") head = st.waitingForComputer ? SC.h_wait : SC.h_busy;
+    else if (status === "running") head = SC.h_busy;
+    var v = el("div"); v.className = "home-verdict" + (tone ? " " + tone : ""); v.setAttribute("role", "status");
+    var big = el("span", SIMPLE_ICON[status] || "•"); big.className = "big"; big.setAttribute("aria-hidden", "true");
+    var what = el("div"); what.className = "what";
+    what.appendChild(el("strong", head));
+    var sub = latest ? latest.repo + " · " + fmtAgo(latest.createdAt) : "";
+    if (st.waitingForComputer && waitingLine()) sub = waitingLine();
+    if (sub) what.appendChild(el("span", sub));
+    v.appendChild(big); v.appendChild(what);
+    var msg = el("p"); msg.className = "quest-msg"; msg.setAttribute("role", "status");
+    var after = el("div");
+    var acts = el("div"); acts.className = "quest-act";
+    renderMoveAction(m, st, acts, msg, after);
+    if (acts.children.length) v.appendChild(acts);
+    box.appendChild(v);
+    box.appendChild(after);
+    box.appendChild(msg);
+    var streak = greenStreak(homeRuns);
+    if (streak > 0) { var sl = el("p", scf("l_streak", streak)); sl.className = "health-streak"; box.appendChild(sl); }
+    var badges = [];
+    if (st.passed > 0) badges.push("🏅 " + SC.l_badge_green);
+    if (homeRuns.some(function (r) { return !!r.agent; })) badges.push("🤖 " + SC.l_badge_agent);
+    if (teamSeen) badges.push("👋 " + SC.l_badge_team);
+    if (badges.length) {
+      var ul = el("ul"); ul.className = "badges"; ul.setAttribute("aria-label", SC.l_badges);
+      badges.slice(0, 3).forEach(function (b) { ul.appendChild(el("li", b)); });
+      box.appendChild(ul);
+    }
+    if (m.phase === "endgame") box.appendChild(everywhereCard());
+    if (homeRuns.length) {
+      var h = el("h3", SC.h_latest); h.className = "home-sub"; box.appendChild(h);
+      var list = el("ul"); list.className = "home-runs";
+      homeRuns.slice(0, 6).forEach(function (r, i) {
+        var fr = simpleStatus(r.status);
+        var li = el("li"); if (i >= 3) li.className = "simple-more";
+        var b = el("button"); b.type = "button";
+        var ic = el("span", fr[0]); ic.className = "icon"; ic.setAttribute("aria-hidden", "true");
+        var nm = el("span", (r.repo || "") + (r.branch ? " · " + r.branch : "")); nm.className = "name";
+        var wd = el("span", fr[1]); wd.className = "word";
+        var wh = el("span", fmtAgo(r.created_at)); wh.className = "when";
+        b.appendChild(ic); b.appendChild(nm); b.appendChild(wd); b.appendChild(wh);
+        b.setAttribute("aria-label", fr[1] + ": " + nm.textContent + ", " + wh.textContent);
+        b.addEventListener("click", function () { openRunFromHome(r.id); });
+        li.appendChild(b); list.appendChild(li);
+      });
+      box.appendChild(list);
+    }
+    return streak;
+  }
+  // Endgame (CD1): Flare on every repo and agent on this machine.
+  function everywhereCard() {
+    var c = el("div"); c.className = "everywhere";
+    c.appendChild(el("h3", "🌍 " + SC.h_everywhere));
+    c.appendChild(el("p", SC.t_everywhere));
+    var cmd = "npx flare-forge forge init --global";
+    var row = el("div"); row.className = "home-cmd";
+    row.appendChild(el("code", cmd));
+    var copy = el("button", SC.l_copy); copy.type = "button"; copy.className = "ghost";
+    copy.addEventListener("click", function () { copyText(cmd, copy); });
+    row.appendChild(copy);
+    c.appendChild(row);
+    var a = el("a", SC.l_everywhere_doc); a.href = "https://github.com/everyai-com/flare-actions/blob/main/docs/EVERYWHERE.md"; a.target = "_blank"; a.rel = "noopener";
+    c.appendChild(a);
+    return c;
+  }
+  // Phases, not pages: Home shows only the current phase's job.
+  function renderHomeSimple(st) {
+    var m = currentMove || applyNextMove(st);
+    var quest = document.getElementById("homeQuest"), health = document.getElementById("homeHealth");
+    var onboarding = m.phase === "onboarding" || m.phase === "discovery";
+    document.getElementById("homeTitle").textContent = onboarding ? SC.h_quest : SC.h_health;
+    document.getElementById("homeLead").textContent = onboarding ? SC.t_quest : SC.t_health;
+    quest.hidden = !onboarding; health.hidden = onboarding;
+    var streak = 0;
+    if (onboarding) renderQuest(st, quest, m);
+    else streak = renderHealth(st, health, m);
+    renderHomeRepos(st);
+    document.getElementById("homeCardInvite").hidden = !st.admin;
+    celebrateWins(st, streak);
+  }
   function renderHome(st) {
     homeState = st;
     document.getElementById("homeErr").textContent = "";
+    applyNextMove(st);
+    if (uiSimple()) { renderHomeSimple(st); return; }
     document.getElementById("homeTitle").textContent = st.complete ? "Your projects" : "Welcome to Flare 👋";
     document.getElementById("homeLead").textContent = st.complete
       ? "Flare runs your tests every time you push to GitHub. Here's how things look right now."
@@ -1463,9 +2154,19 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   function loadHome() {
     return Promise.all([
       api("/v1/setup"),
-      api("/v1/runs?limit=5").then(function (d) { return d.runs || []; }, function () { return []; })
+      // Simple mode reads 20 for the green streak; Pro shows 5.
+      api("/v1/runs?limit=" + (uiSimple() ? 20 : 5)).then(function (d) { return d.runs || []; }, function () { return []; })
     ]).then(function (out) { homeRuns = out[1]; renderHome(out[0]); })
       .catch(function (e) { if (String(e && e.message) !== "unauthorized") document.getElementById("homeErr").textContent = "Couldn't load your setup — try refreshing the page."; });
+  }
+  // The side bar "Next:" chip needs /v1/setup on every screen: fetch once
+  // if Home isn't the landing screen, then every 30s while Home is hidden
+  // (Home's own 10s poll covers it while shown).
+  var movePollTimer = null;
+  function startMovePoll() {
+    if (currentTab !== "home" && uiSimple()) loadHome();
+    if (movePollTimer) return;
+    movePollTimer = setInterval(function () { if (uiSimple() && !document.hidden && !appPane.hidden && homePane.hidden) loadHome(); }, 30000);
   }
   function startHomePoll() {
     if (homeTimer) return;
@@ -1501,6 +2202,35 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   document.getElementById("homeCardRaces").addEventListener("click", function () { selectTab("tournaments"); loadTournaments(); });
   document.getElementById("homeCardInvite").addEventListener("click", function () { palGoTab("settings"); setTimeout(function () { var i = document.getElementById("inviteEmail") || document.querySelector("#teamPane input[type=email]"); if (i) { i.scrollIntoView({ behavior: "smooth", block: "center" }); i.focus(); } }, 300); });
   tabHome.addEventListener("click", function () { palGoTab("home"); });
+  document.getElementById("modeBtn").addEventListener("click", function () { setUiMode(uiSimple() ? "pro" : "simple"); });
+  syncModeBtn();
+  document.getElementById("navMoreBtn").addEventListener("click", function () { setNavMore(!navMoreOpen); });
+  document.getElementById("nextMoveChip").addEventListener("click", runNextMove);
+  (function () {
+    var mores = document.querySelectorAll('[data-action="show_more"][data-more-for]');
+    for (var i = 0; i < mores.length; i++) {
+      mores[i].addEventListener("click", function (ev) {
+        var b = ev.currentTarget;
+        var pid = b.getAttribute("data-more-for");
+        var pane = document.getElementById(pid);
+        if (b.id === "homeAgentLink") {
+          setPaneMore(pid, true);
+          var agent = document.getElementById("homeAgent");
+          if (agent && agent.scrollIntoView) agent.scrollIntoView({ behavior: "smooth", block: "center" });
+          return;
+        }
+        setPaneMore(pid, !(pane && pane.classList.contains("more-open")));
+      });
+    }
+    var accs = document.querySelectorAll(".acc-btn[data-sec-target]");
+    for (var j = 0; j < accs.length; j++) {
+      accs[j].addEventListener("click", function (ev) {
+        var t = ev.currentTarget.getAttribute("data-sec-target");
+        openSettingsSec = openSettingsSec === t ? "" : t;
+        applySettingsAccordion();
+      });
+    }
+  })();
   var NAV_HINTS = {
     home: "Start here: setup steps and how your tests are doing",
     live: "Agent forge: a live map of which AI agents are working on which files",
@@ -1523,6 +2253,9 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     }
   })();
   function selectTab(name) {
+    // Lets CSS drop the "Next:" chip on Home, where the big button
+    // already is the next move (one thing per screen).
+    document.documentElement.setAttribute("data-tab", name);
     tabHome.className = "side-link" + (name === "home" ? " active" : "");
     homePane.hidden = name !== "home";
     tabRuns.className = "side-link" + (name === "runs" ? " active" : "");
@@ -1545,6 +2278,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       panes[name].classList.add("pane-enter");
     }
     fxOnSelect(name);
+    if (uiSimple()) { syncSimpleNav(name); if (name === "settings") applySettingsAccordion(); }
     // Narrow screens: the nav is a scroll strip, so keep the active tab in view.
     var activeLink = document.querySelector('.side-link[data-tab="' + name + '"]');
     if (activeLink && window.innerWidth <= 900 && activeLink.scrollIntoView) activeLink.scrollIntoView({ block: "nearest", inline: "center" });
@@ -1933,6 +2667,12 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       var repos = (b && b.repos) || [];
       if (repos.length === 0) {
         var empty = el("div"); empty.className = "empty";
+        if (uiSimple()) {
+          empty.appendChild(el("h3", SC.h_no_projects));
+          empty.appendChild(el("p", SC.t_no_projects));
+          list.appendChild(empty);
+          return;
+        }
         empty.appendChild(el("h3", "No repositories yet"));
         empty.appendChild(el("p", "Push code to the Artifacts namespace or import a repo — it shows up here, ready to browse and race on."));
         list.appendChild(empty);
@@ -2309,6 +3049,20 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     else if (shown === lastRuns.length) { count.textContent = lastRuns.length + " runs"; }
     else { count.textContent = "Showing " + shown + " of " + lastRuns.length + " runs"; }
     document.getElementById("runsFilterForm").style.display = lastRuns.length ? "" : "none";
+    renderRunsVerdict();
+    if (!list.children.length && !lastRuns.length && uiSimple()) {
+      var sEmpty = el("div"); sEmpty.className = "empty";
+      sEmpty.appendChild(el("h3", SC.h_no_checks));
+      sEmpty.appendChild(el("p", SC.t_no_checks));
+      var sActs = el("p");
+      // The empty screen's one button is the next move itself, so the
+      // way forward never means a detour through Home.
+      var sHome = el("button", currentMove ? moveLabel(currentMove) : SC.l_go_home); sHome.type = "button";
+      sHome.setAttribute("data-action", "next_move");
+      sHome.addEventListener("click", function () { if (currentMove) runNextMove(); else location.hash = "#/home"; });
+      sActs.appendChild(sHome); sEmpty.appendChild(sActs);
+      list.appendChild(sEmpty);
+    }
     if (!list.children.length) {
       var empty = el("div"); empty.className = "empty";
       if (!lastRuns.length) {
@@ -2338,6 +3092,35 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
       }
       list.appendChild(empty);
     }
+  }
+  // Simple mode: one verdict line for the newest check + one next move.
+  function renderRunsVerdict() {
+    var box = document.getElementById("runsVerdict");
+    box.textContent = "";
+    var r = lastRuns[0];
+    box.hidden = !r;
+    if (!r) return;
+    var st = simpleStatus(r.status);
+    var head = r.status === "success" ? SC.h_ok : st[2] === "bad" ? SC.h_bad : r.status === "running" ? SC.h_busy : (r.status === "queued" || r.status === "blocked") ? SC.h_wait : SC.h_stopped;
+    var v = el("div"); v.className = "home-verdict" + (st[2] ? " " + st[2] : "");
+    var big = el("span", st[0]); big.className = "big"; big.setAttribute("aria-hidden", "true");
+    var what = el("div"); what.className = "what";
+    what.appendChild(el("strong", head));
+    what.appendChild(el("span", (r.repo || "") + (r.branch ? " · " + r.branch : "") + " · " + fmtAgo(r.updated_at)));
+    v.appendChild(big); v.appendChild(what);
+    var msg = el("p"); msg.className = "quest-msg"; msg.setAttribute("role", "status");
+    var go = null;
+    if (st[2] === "bad") go = homeButton(SC.l_see_broke, true, function () { selectedRunId = r.id; loadRun(r.id, true); });
+    else if (st[2] === "busy") go = homeButton(SC.l_watch, true, function () { selectedRunId = r.id; loadRun(r.id, true); });
+    else if (isAdmin && r.repo && r.event !== "source") go = homeButton(SC.l_start, true, function () {
+      msg.textContent = SC.t_starting;
+      api("/v1/runs/dispatch", { method: "POST", body: JSON.stringify({ repo: r.repo, sha: r.branch || r.sha }) })
+        .then(function (d) { msg.textContent = SC.t_started; toast(SC.t_started); selectedRunId = d.runId; loadRuns(); })
+        .catch(function (e) { msg.textContent = SC.t_cant_start + " " + ((e && e.message) || ""); });
+    });
+    if (go) v.appendChild(go);
+    box.appendChild(v);
+    box.appendChild(msg);
   }
   var usageStripAt = 0;
   function loadUsageStrip() {
@@ -2463,6 +3246,19 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   function appendRunRow(list, r) {
     var row = el("div");
     row.className = "run-row" + (r.id === selectedRunId ? " selected" : "");
+    if (uiSimple()) {
+      row.appendChild(simplePill(r.status));
+      var sMain = el("div"); sMain.className = "run-main";
+      var sRepo = el("div", r.repo || ""); sRepo.className = "run-repo"; sMain.appendChild(sRepo);
+      if (r.branch) { var sMeta = el("div", r.branch); sMeta.className = "run-meta"; sMain.appendChild(sMeta); }
+      row.appendChild(sMain);
+      var sT = el("span", fmtAgo(r.updated_at)); sT.className = "run-time"; sT.title = fmtTime(r.updated_at); row.appendChild(sT);
+      row.setAttribute("role", "button"); row.setAttribute("tabindex", "0");
+      row.addEventListener("click", function () { selectedRunId = r.id; loadRun(r.id, true); });
+      row.addEventListener("keydown", function (kev) { if (kev.key === "Enter") { selectedRunId = r.id; loadRun(r.id, true); } });
+      list.appendChild(row);
+      return;
+    }
     row.appendChild(pill(r.status));
     var main = el("div"); main.className = "run-main";
     var repo = el("div", r.repo); repo.className = "run-repo"; main.appendChild(repo);
@@ -2509,7 +3305,44 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     } catch (e) {}
     return null;
   }
+  // Simple mode: "What broke" first — the failing step, its last lines,
+  // and the AI's suggestion — in plain words.
+  function runSummarySimple(run, jobs) {
+    var st = simpleStatus(run.status);
+    var box = el("div"); box.className = "home-verdict run-summary" + (st[2] ? " " + st[2] : "");
+    var headText = SC.t_detail_stopped, lines = [], tail = "";
+    if (run.status === "success") headText = SC.h_passed;
+    else if (st[2] === "bad") {
+      headText = SC.h_what_broke;
+      var bad = null;
+      for (var i = 0; i < jobs.length; i++) if (jobs[i].status === "failure" || jobs[i].status === "error") { bad = jobs[i]; break; }
+      if (bad) {
+        var step = failedStepOf(bad);
+        lines.push([SC.l_broken_step, step ? (step.command || "").slice(0, 200) : (bad.name || bad.id), true]);
+        if (step && step.output) tail = String(step.output).split("\\n").slice(-12).join("\\n");
+        if (bad.triage) lines.push([SC.l_try, String(bad.triage).slice(0, 600), false]);
+        else lines.push(["", SC.t_next_look, false]);
+      }
+    } else if (run.status === "running") headText = SC.t_detail_busy;
+    else if (run.status === "queued" || run.status === "blocked") headText = SC.t_detail_wait;
+    var big = el("span", st[0]); big.className = "big"; big.setAttribute("aria-hidden", "true");
+    var what = el("div"); what.className = "what";
+    what.appendChild(el("strong", headText));
+    lines.forEach(function (l) {
+      var p = el("p"); p.className = "run-summary-line";
+      if (l[0]) p.appendChild(el("b", l[0] + ": "));
+      p.appendChild(el(l[2] ? "code" : "span", l[1]));
+      what.appendChild(p);
+    });
+    if (tail) {
+      var tl = el("p", SC.l_last_lines + ":"); tl.className = "run-summary-line"; what.appendChild(tl);
+      var pre = el("pre", tail); pre.className = "log"; what.appendChild(pre);
+    }
+    box.appendChild(big); box.appendChild(what);
+    return box;
+  }
   function runSummaryBox(run, jobs) {
+    if (uiSimple()) return runSummarySimple(run, jobs);
     var box = el("div"); box.className = "home-verdict run-summary";
     var icon = "•", headText = "", lines = [];
     if (run.status === "success") { box.className += " ok"; icon = "✅"; headText = "Everything passed."; }
@@ -2542,18 +3375,34 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   function loadRun(id, scroll) {
     api("/v1/runs/" + encodeURIComponent(id)).then(function (data) {
       var box = document.getElementById("runDetail");
+      // A poll re-render keeps "Show all steps" open if it was.
+      var allWasOpen = runDetailOpenId === data.run.id && !!box.querySelector("details.simple-all[open]");
       box.textContent = "";
       box.hidden = false;
       runDetailOpenId = data.run.id;
       document.title = (data.run.repo || "run") + " @ " + String(data.run.sha || "").slice(0, 7) + " · Flare Actions";
       syncHash();
       var head = el("h2");
+      if (uiSimple()) {
+        head.appendChild(el("span", (data.run.repo || "") + (data.run.branch ? " · " + data.run.branch : "") + " "));
+        head.appendChild(simplePill(data.run.status));
+      } else {
       head.appendChild(el("span", data.run.repo + " @ "));
       var shaCode = el("code", String(data.run.sha).slice(0, 7)); shaCode.className = "mono"; head.appendChild(shaCode);
       head.appendChild(el("span", " "));
       head.appendChild(pill(data.run.status));
+      }
       box.appendChild(head);
       box.appendChild(runSummaryBox(data.run, data.jobs || []));
+      // Simple mode: everything after "What broke" sits under one
+      // "Show all steps" disclosure; Pro appends straight to the box.
+      var sink = box;
+      if (uiSimple()) {
+        sink = document.createElement("details"); sink.className = "simple-all";
+        if (allWasOpen) sink.open = true;
+        sink.appendChild(el("summary", SC.l_all_steps));
+        box.appendChild(sink);
+      }
       if (data.race && data.race.tournament_id) {
         var raceLine = el("p"); raceLine.className = "t-crumb";
         raceLine.appendChild(el("span", "Verifying " + (data.race.agent || "an agent") + " in race "));
@@ -2567,10 +3416,10 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         } else if (data.race.verdict_rank) {
           raceLine.appendChild(el("span", "ranked #" + data.race.verdict_rank));
         }
-        box.appendChild(raceLine);
+        sink.appendChild(raceLine);
       }
       if (data.summary) {
-        box.appendChild(el("p", data.summary.finishedJobs + "/" + data.summary.jobs + " jobs finished, " +
+        sink.appendChild(el("p", data.summary.finishedJobs + "/" + data.summary.jobs + " jobs finished, " +
           data.summary.computeMinutes + " compute-min (~$" + data.summary.actionsListUsd + " at Actions list price)"));
       }
       var srcLabel = pipelineSourceLabel(data.run.pipeline_source);
@@ -2580,10 +3429,10 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         srcLine.textContent = srcLabel === "Actions"
           ? "Pipeline: .github/workflows (GitHub Actions drop-in)"
           : "Pipeline: " + srcLabel;
-        box.appendChild(srcLine);
+        sink.appendChild(srcLine);
       }
       var testsBox = document.createElement("div");
-      box.appendChild(testsBox);
+      sink.appendChild(testsBox);
       (function renderTests(runId) {
         api("/v1/runs/" + encodeURIComponent(runId) + "/tests").then(function (t) {
           if (!t || !t.totals || !t.totals.total) return;
@@ -2604,7 +3453,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         }).catch(function () {});
       })(data.run.id);
       var egressBox = document.createElement("div");
-      box.appendChild(egressBox);
+      sink.appendChild(egressBox);
       (function renderEgress(runId) {
         api("/v1/runs/" + encodeURIComponent(runId) + "/egress").then(function (e) {
           if (!e || !e.totals || (e.totals.reqBytes === 0 && e.totals.respBytes === 0)) return;
@@ -2615,7 +3464,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         }).catch(function () {});
       })(data.run.id);
       var resBox = document.createElement("div");
-      box.appendChild(resBox);
+      sink.appendChild(resBox);
       (function renderResources(jobs) {
         var measured = [];
         (jobs || []).forEach(function (j) {
@@ -2650,7 +3499,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         if (j.labels) meta.push(j.labels);
         if (j.durationMs !== null && j.durationMs !== undefined) meta.push((j.durationMs / 1000) + "s");
         if (meta.length) { var mspan = el("span", " " + meta.join(" · ")); mspan.className = "muted"; jhead.appendChild(mspan); }
-        box.appendChild(jhead);
+        sink.appendChild(jhead);
         if (j.status === "failure" || j.status === "error" || j.status === "cancelled" || j.status === "success") {
           var rerun = el("button", "Re-run job");
           rerun.className = "ghost";
@@ -2660,7 +3509,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
                 .then(function () { loadRun(data.run.id); loadRuns(); }).catch(function () {});
             });
           })(j.id);
-          box.appendChild(rerun);
+          sink.appendChild(rerun);
         }
         var hasSteps = false;
         try {
@@ -2678,13 +3527,13 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
                 sum.appendChild(el("span", " (exit " + s.exitCode + ", " + s.durationMs + "ms)"));
                 det.appendChild(sum);
                 var out = el("pre", String(s.output)); out.className = "log"; det.appendChild(out);
-                box.appendChild(det);
+                sink.appendChild(det);
               } else {
                 var line = el("p");
                 line.appendChild(el("span", "[" + (s.exitCode === 0 ? "ok" : "FAIL") + "] "));
                 var cmd2 = el("code", s.command); cmd2.className = "mono"; line.appendChild(cmd2);
                 line.appendChild(el("span", " (exit " + s.exitCode + ", " + s.durationMs + "ms)"));
-                box.appendChild(line);
+                sink.appendChild(line);
               }
             });
           }
@@ -2694,21 +3543,21 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
           tri.className = "triage";
           var tlabel = el("div", "AI triage"); tlabel.className = "triage-label"; tri.appendChild(tlabel);
           tri.appendChild(document.createTextNode("\\n" + j.triage));
-          box.appendChild(tri);
+          sink.appendChild(tri);
         }
         if (j.retained_until) {
           var ret = el("p", "Retained for debugging until " + j.retained_until + " (seat job-" + j.id + ").");
           ret.className = "muted";
-          box.appendChild(ret);
+          sink.appendChild(ret);
         }
         var fdet = document.createElement("details"); fdet.className = "fulllog";
         if (!hasSteps) fdet.open = true;
         fdet.appendChild(el("summary", "Full log"));
         var pre = el("pre", j.log || "(no log output)");
         pre.className = "log"; fdet.appendChild(pre);
-        box.appendChild(fdet);
+        sink.appendChild(fdet);
       });
-      var back = el("button", "Back to runs");
+      var back = el("button", uiSimple() ? SC.l_back : "Back to runs");
       back.id = "backToRuns";
       back.className = "ghost";
       back.addEventListener("click", function () { box.hidden = true; runDetailOpenId = null; selectedRunId = null; document.title = "Runs · Flare Actions"; loadRuns(); syncHash(); });
@@ -2829,7 +3678,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
         tr.appendChild(tdBtn);
         body.appendChild(tr);
       });
-      if (!body.children.length) stateRow(body, 6, "No tokens yet — create one above.", "muted");
+      if (!body.children.length) stateRow(body, 6, uiSimple() ? "No keys yet. Make one above." : "No tokens yet — create one above.", "muted");
     }).catch(function () { stateRow(body, 6, "Could not load tokens.", "err"); });
   }
 
@@ -2882,6 +3731,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     stateRow(document.getElementById("emailUsersBody"), 3, "Loading…", "muted");
     stateRow(document.getElementById("invitesBody"), 2, "Loading…", "muted");
     api("/v1/admin/users").then(function (data) {
+      teamSeen = (data.users || []).length > 0 || (data.invites || []).length > 0 || (data.emailUsers || []).length > 1;
       var adminLabel = data.admin ? "@" + data.admin : (data.adminEmail ? data.adminEmail : "—");
       document.getElementById("usersInfo").textContent =
         "Admin: " + adminLabel + ". Allowed users can view runs.";

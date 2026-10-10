@@ -217,6 +217,76 @@ describe("forge dashboard", () => {
   });
 });
 
+// Simple mode copy (docs/UX-BUDGET.md): every word a Simple screen shows
+// lives in FX_SIMPLE_COPY inside the embedded script.
+function simpleCopy(): Record<string, string> {
+  const start = FORGE_JS.indexOf("var FX_SIMPLE_COPY = {");
+  const end = FORGE_JS.indexOf("\n  };", start);
+  expect(start).toBeGreaterThan(0);
+  const literal = FORGE_JS.slice(start + "var FX_SIMPLE_COPY = ".length, end + 4);
+  const parsed: unknown = new Function("return " + literal)();
+  expect(typeof parsed).toBe("object");
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    expect(typeof v, k).toBe("string");
+    out[k] = String(v);
+  }
+  return out;
+}
+const words = (t: string) => t.split(/\s+/).filter((w) => /[\p{L}\p{N}{]/u.test(w));
+
+describe("forge simple mode", () => {
+  it("keeps Simple copy inside the cognitive-load budget", () => {
+    const copy = simpleCopy();
+    expect(Object.keys(copy).length).toBeGreaterThan(100);
+    const jargon = /\b(intents?|footprints?|trains?|trunk|fixtures?|sha|overlaps?|conflicts?|repo|repository|pipeline|runners?|dispatch|lanes?|ci|mcp|lease|bisect\w*|cas)\b/i;
+    for (const [key, text] of Object.entries(copy)) {
+      expect(text, key).not.toMatch(jargon);
+      expect(text.trim(), key).not.toBe("");
+      if (key.endsWith("_h")) expect(words(text).length, key + ": " + text).toBeLessThanOrEqual(6);
+      for (const sentence of text.split(/(?<=[.!?])\s+/)) expect(words(sentence).length, key + ": " + sentence).toBeLessThanOrEqual(15);
+    }
+  });
+
+  it("only reads Simple copy keys that exist", () => {
+    const copy = simpleCopy();
+    const used = [...FORGE_JS.matchAll(/fxS\("([a-z0-9_]+)"[,)]/g)].map((m) => m[1]);
+    expect(used.length).toBeGreaterThan(60);
+    for (const k of used) expect(copy, "fxS key " + k).toHaveProperty(k);
+    // dynamic families the renderers build from data
+    for (const st of ["working", "awaiting_plan", "in_train", "landed", "conflicted", "replaying", "open", "resolved", "idle"]) expect(copy).toHaveProperty("st_" + st);
+    for (const b of ["low", "med", "high"]) expect(copy).toHaveProperty("risk_" + b);
+    for (const r of ["plan", "sample", "help"]) { expect(copy).toHaveProperty("inbox_" + r + "_h"); expect(copy).toHaveProperty("inbox_why_" + r); }
+    for (const k of ["same", "landed", "clash"]) expect(copy).toHaveProperty("toast_" + k);
+    for (const n of [1, 2, 3, 4]) for (const part of ["_h", "_b", "_t"]) expect(copy).toHaveProperty("tour" + n + part);
+    for (const s of ["live", "inbox", "intents", "trains", "conflicts", "agents", "bench", "why"]) expect(copy).toHaveProperty("scr_" + s + "_h");
+    for (const [kind, keys] of [["intents", ["all", "human", "active", "train", "landed", "failed"]], ["trains", ["all", "running", "landed", "red"]], ["conflicts", ["all", "open", "claimed", "resolved", "failed"]]] as const) {
+      for (const k of keys) expect(copy).toHaveProperty("f_" + kind + "_" + k);
+    }
+  });
+
+  it("branches Live, Inbox and Agents on the shared html.ui-simple contract", () => {
+    expect(FORGE_JS).toContain('function fxSimple() { return document.documentElement.classList.contains("ui-simple"); }');
+    for (const fn of ["function fxRenderLiveSimple", "function fxRenderTrackSimple", "function fxRenderInboxSimple", "function fxRenderAgentsSimple", "function fxGameDiff", "function fxPollAgents"]) expect(FORGE_JS).toContain(fn);
+    expect(FORGE_JS).toContain("if (fxSimple()) { fxRenderInboxSimple(); return; }");
+    expect(FORGE_JS).toContain("if (fxSimple()) fxRenderTrackSimple(s); else fxRenderTrack(s);");
+    expect(FORGE_JS).toContain("if (fxSimple()) { fxRenderAgentsSimple(");
+    for (const id of ['id="fxLiveSimple"', 'id="fxInboxSimple"', 'id="fxMoreBtn"']) expect(FORGE_PANE_HTML).toContain(id);
+    expect(FORGE_CSS).toContain("html:not(.ui-simple) .fx-simple-only { display: none !important; }");
+    expect(FORGE_CSS).toContain(".ui-simple #forgePane:not(.fx-more) .fx-pro-only, .ui-simple .fx-pro-view { display: none !important; }");
+    // the machine [code] line stays in the DOM, hidden only visually
+    expect(FORGE_CSS).toContain(".ui-simple .fx-empty .fx-code");
+    // pulses respect reduced motion; toasts only in Simple, never while paused
+    const rm = FORGE_CSS.slice(FORGE_CSS.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(rm.slice(0, rm.indexOf("\n}"))).toContain(".fx-main-rule.fx-pulse { animation: none; }");
+    expect(FORGE_JS).toContain("if (!fxSimple() || FX.paused) return;");
+    // screens expose their one job and the phase for agents
+    expect(FORGE_JS).toContain('root.setAttribute("data-job", FX_SCREEN_JOB[s] || s)');
+    // demo visitors default to Simple unless a mode is already set
+    expect(FORGE_JS).toContain('if (FX.demo && q.get("stage") !== "1" && !rootCl.contains("ui-simple") && !rootCl.contains("ui-pro")) rootCl.add("ui-simple");');
+  });
+});
+
 describe("dashboard redirect", () => {
   it("keeps the query string on GET / -> /dashboard", () => {
     expect(dashboardRedirectUrl(new URL("https://x.dev/?demo=1"))).toBe("https://x.dev/dashboard?demo=1");
