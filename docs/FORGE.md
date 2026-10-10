@@ -633,3 +633,132 @@ One coordinator per repo is the shipping design.
 **Moving between modes.** Hydrate the shards from D1 like the
 coordinator does today. Then flip a per-repo `shards` meta key, which
 the router reads on each call. Going back to one DO is a re-hydrate.
+
+## Trains and conflicts
+
+> Provenance: agent-drafted 2026-10-10 (trains stream). The behavior
+> described here is covered by `train-core.test.ts`, `train.test.ts`
+> and `replay.test.ts` (`npm test`, 2026-10-10). The end-to-end tests
+> run isomorphic-git and MemoryFS against real bare repos, served
+> in-process by `git http-backend` with no network. The timings were
+> measured in those tests on a laptop, not against Artifacts.
+
+### Model
+
+- **One train group per repo at a time.**
+  - `cutTrain` orders ready intents by priority, then by oldest ready,
+    then by id.
+  - It takes at most `lanes.max_per_train` of them.
+  - It splits them into lanes whose footprints don't overlap: at most
+    `min(lanes.max_parallel, 8)` lanes.
+- **Stacked lanes.**
+  - Lane *i* is built on lane *i−1*'s head.
+  - Each lane head gets its own CI run on that exact SHA, so the runs
+    happen in parallel.
+  - If lane *i* is green, the whole prefix through *i* is green as one
+    SHA.
+  - The longest green prefix lands with one non-force push of `main`,
+    a compare-and-swap against the cut's base.
+  - The first red lane is bisected. Lanes stacked behind it go back to
+    the queue without blame.
+- **Bisect.**
+  - The red lane splits into two child trains (`parent_train_id`), with
+    the left half stacked under the right half.
+  - Left red: recurse into the left half and requeue the right half.
+  - Left green and right red: land the left half and recurse into the
+    right half.
+  - A red lane with a single intent is the culprit. That intent goes to
+    `failed`, and a `culprit` ledger row records the evidence.
+  - Bisection takes at most ⌈log₂ n⌉ rounds.
+- **Lane refs.**
+  - Lanes use the fixed refs `forge/lane-0..7` and force-update them for
+    each train. Spike S5 found that pushing a *new* ref from
+    isomorphic-git uploads the whole history.
+  - Create the lane refs once, when the repo is bootstrapped.
+  - `main` is never force-pushed.
+- **CI dispatch.**
+  - Lane runs use event `artifacts`, so seats check out the Artifacts
+    remote.
+  - They run as agent `forge-train` at priority 8.
+  - The train claims the `(repo, sha)` delivery before it pushes, so the
+    push trigger doesn't start a duplicate run.
+- **Squashed commits.**
+  - Each intent lands as one commit: its title, a summary of its
+    reasoning, and `Flare-*` trailers.
+  - Commit timestamps come from the train row, so a retried build
+    reproduces the same SHAs.
+- **Routing.**
+  - `enqueueReady` re-scores the intent's risk and routes it.
+  - Intents routed `human` stay out of trains until `approveLanding`
+    is called.
+  - On landing, a `routed` ledger row is written *before* the `landed`
+    transition. Its body is the policy line, for example
+    `risk 12 <= 30 → auto (...)`.
+- **After landing.**
+  - Why notes are written through `createWhyNotesWriter`
+    (`provenance.writeWhyNotes`), and `recordNotesTip` records the tip.
+  - Tokens on the landed intent's fork are revoked, which leaves a
+    `tokens_revoked` ledger row.
+- **Conflicts.**
+  - A textual conflict drops the intent from the train
+    (`in_train → conflicted`) and opens a Conflict.
+  - `intent_a` is the dropped intent.
+  - `intent_b` is the intent whose footprint covers the conflicting
+    files, or `"trunk"` if none does.
+- **Replay** (`replay.ts`).
+  - Replay waits until the other side of the conflict lands. If the
+    other side fails instead, the dropped intent goes back to the queue
+    unchanged.
+  - The owner is always notified through the mailbox.
+  - What happens next depends on policy and on whether AI is available:
+    - **`auto`:** diff3 merges the clean hunks and Workers AI resolves
+      the conflicting ones. The result is committed on fork
+      `r-<conflict>-<n>` and re-enters the queue as ready, with the
+      `llm_replay` risk term.
+    - **`race`** (`race_k > 1`): a tournament with
+      `baseRef: forge/replay` and a pre-filed `promote-failed` stop row.
+      `pollRaces` picks up the CI-verified winner.
+    - **`notify`:** the owner replays the intent and calls
+      `resolveConflictFor`.
+  - Every path lands only through a train (invariant 4).
+
+### TrainPort (`train.ts`; wiring in `train-workflow.ts`)
+
+```ts
+enqueueReady(deps, intentId, { cut? }): Promise<EnqueueResult | ForgeError>   // {risk, riskTerms, route, held, cut}
+approveLanding(deps, intentId, approvedBy): Promise<boolean>                  // human route -> may ride trains
+cutTrain(deps, repo): Promise<CutResult>         // cut | busy | idle | unavailable | no-pipeline | invalid-repo
+listTrains(deps, repo, { state?, limit? }): Promise<Train[]>
+getTrainDetail(deps, id): Promise<TrainDetail | null>  // lane intents (+squashed commit), CI run, bisect subtree, ledger
+claimConflictFor(deps, conflictId, agent): Promise<{ conflict, intent } | ForgeError>
+resolveConflictFor(deps, conflictId, agent, sha, { forkRepo?, llmReplay? })
+  : Promise<{ conflict, enqueue } | ForgeError>
+buildTrains / dispatchTrains / checkTrains / writeNotes / revokeLandedTokens / advanceRepo  // idempotent steps
+runTrainTick(env)        // train-workflow.ts: cron fallback; also cuts and launches the Workflow
+replayTick(deps, repo)   // replay.ts: start replays, finalize races
+trainDepsFromEnv(env)    // production deps (isomorphic-git, MemoryFS, ARTIFACTS, AI, notes writer)
+```
+
+`TrainWorkflow` (binding `TRAIN_WORKFLOW`) runs these durable steps in
+order:
+
+1. policy
+2. build
+3. check, polling with a `step.sleep` backoff from 10 s up to 2 min, at
+   most 40 polls
+4. notes
+5. revoke
+6. replays
+7. cut the next round
+
+The number of rounds is capped at ⌈log₂ max_per_train⌉ + 5.
+
+### Measured (tests, 2026-10-10)
+
+- **3-lane build:** about 1.2 s. That covers one trunk fetch, 3 fork
+  fetches, 3 merges and 3 lane pushes.
+- **One lane:** 130–160 ms for the fork fetch plus the merge.
+- **Lane with a conflict:** about 0.3 s for one merge plus detecting
+  one conflict.
+- Every number includes spawning a `git http-backend` process for each
+  HTTP request.
