@@ -4456,6 +4456,33 @@ paths:
                 type: string
         '400':
           $ref: '#/components/responses/BadRequest'
+  /llms.txt:
+    get:
+      tags: [admin]
+      operationId: llmsTxt
+      summary: Agent index (llms.txt convention), generated from the repo's llms.txt
+      security: []
+      responses:
+        '200':
+          description: Plain-text index of docs, quickstart, MCP and Forge surfaces
+          content:
+            text/plain:
+              schema:
+                type: string
+  /.well-known/mcp.json:
+    get:
+      tags: [admin]
+      operationId: mcpWellKnown
+      summary: MCP discovery document (same JSON as GET /mcp)
+      security: []
+      responses:
+        '200':
+          description: Server name, protocol versions, endpoint, OAuth endpoints, tools and risk tiers
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /openapi.yaml:
     get:
       tags: [admin]
@@ -5179,6 +5206,148 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/ForgeConflict'
+  /v1/forge/intents/{intentId}/approve-landing:
+    post:
+      tags:
+        - forge
+      operationId: forgeApproveLanding
+      summary: 'Approve landing of a human-routed intent (admin; ready intents only)'
+      description: A ready intent whose risk routed it to `human` is held out of trains until a human approves; it then rides the next train and still lands only on a CI-verified exact SHA. Needs the train runner (501 otherwise).
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      responses:
+        '200':
+          description: 'Approved: `{ intent, landingApproved: true, note, nextSteps }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+  /v1/forge/intents/{intentId}/send-back:
+    post:
+      tags:
+        - forge
+      operationId: forgeSendBack
+      summary: 'Send an intent back to its owner with a one-line reason (admin)'
+      description: Human review verb (dashboard Inbox; MCP `send_back`). The owner gets a mailbox note and the ledger records `review.sent_back`; a ready intent returns to working. Landed work is not moved (the review also counts as `review.disagreed`). awaiting_plan stays awaiting_plan so the protected-path gate is never bypassed.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+                  description: Required one-line reason
+      responses:
+        '200':
+          description: '`{ intentId, state, transitioned, reason, nextSteps }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+  /v1/forge/intents/{intentId}/review:
+    post:
+      tags:
+        - forge
+      operationId: forgeReviewSample
+      summary: 'Answer an audit-sample story: agree or disagree (admin)'
+      description: Human review verb (MCP `review_sample`). agree writes `review.sampled_ok`; disagree (reason required) writes `review.disagreed` and notes the owner. Feeds the inbox disagreement rate; no state change.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                decision:
+                  type: string
+                  enum: [agree, disagree]
+                reason:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: '`{ intentId, decision, ledger, nextSteps }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/forge/intents/{intentId}/session:
+    get:
+      tags:
+        - forge
+      operationId: forgeIntentSession
+      summary: 'The intent fork''s flare/session: plan.md + log.jsonl steps'
+      description: Read from the intent's own fork (`flare/session` branch). `session` is null when the intent was never claimed or the agent has not written a session yet.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+          description: Newest steps to return (default 200)
+      responses:
+        '200':
+          description: '`{ intentId, forkRepo, session: { repo, branch, head, plan, planTruncated, steps: [{ts, kind, text}], totalSteps, skippedLines, logTruncated } | null, note }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: Artifacts not configured
   /v1/forge/intents/{intentId}/abandon:
     post:
       tags:
@@ -5349,6 +5518,95 @@ paths:
                     $ref: '#/components/schemas/ForgeNextSteps'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/forge/goals/plan:
+    post:
+      tags:
+        - forge
+      operationId: forgePlanGoalAi
+      summary: 'Record a goal and ask the AI planner for proposals (same as POST /v1/forge/goals?plan=1)'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, text]
+              properties:
+                repo:
+                  type: string
+                text:
+                  type: string
+      responses:
+        '201':
+          description: '`{ goal, proposals: [{title, footprint, reasoning, accept, after}], planner: {used, model|reason}, nearby, nextSteps }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/forge/agents:
+    get:
+      tags:
+        - forge
+      operationId: forgeAgents
+      summary: 'Per-agent stats: active intents, landed (7d / today), conflicts, current intent + lease, review acceptance and disagreement rates (7d)'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Artifacts repo name (e.g. shop); token allowlists scope it as `<namespace>/<repo>`
+      responses:
+        '200':
+          description: '`{ repo, agents: [{id, label, client, intent, active, landed, landed_today, conflicts, last_at, reviews, acceptance_rate, disagreement_rate}] }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/forge/bench:
+    get:
+      tags:
+        - forge
+      operationId: forgeBench
+      summary: 'The recorded Forge bench run (SIMULATED: simulated is always true; docs/FORGE-BENCH.md)'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: agents
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Pick the run with this agent count (default 10000)
+      responses:
+        '200':
+          description: '`{ run, measured_at, sha, agents, simulated: true, kind, note, modes: [{mode, label, metrics, projected}], runs, source }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -6358,7 +6616,64 @@ components:
               items:
                 type: object
         head:
+          type: object
+          description: Trunk head ({ sha, at }); `headSha` repeats the sha as a string
+          properties:
+            sha:
+              type: string
+            at:
+              type: string
+              nullable: true
+        headSha:
           type: string
+        intents:
+          type: array
+          description: Live intents (≤500) with footprint.{paths,declared,actual,drift}
+          items:
+            type: object
+            additionalProperties: true
+        edges:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        overlaps:
+          type: array
+          items:
+            type: object
+            properties:
+              a:
+                type: string
+              b:
+                type: string
+              paths:
+                type: array
+                items:
+                  type: string
+              state:
+                type: string
+        conflicts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        agents:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              label:
+                type: string
+              client:
+                type: string
+        policy:
+          type: object
+          additionalProperties: true
+        ver:
+          type: integer
+          nullable: true
     Error:
       type: object
       required: [error]

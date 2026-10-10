@@ -271,7 +271,8 @@ describe("forge routes: the agent workflow (declare -> claim -> push -> ready)",
     expect((near.body.intents as Array<{ intentId: string; matchedPaths: string[] }>).map((i) => i.intentId)).toEqual([aId]);
     const snap = await h.call("GET", "/v1/forge/snapshot?repo=demo");
     expect(rec(snap.body.counters)).toMatchObject({ intents: 2, overlaps_caught: 1, main_red_minutes: 0, agents: 1 });
-    expect(snap.body.head).toBe(sha("0"));
+    expect(snap.body.head).toEqual({ sha: sha("0"), at: null });
+    expect(snap.body.headSha).toBe(sha("0"));
     expect((snap.body.cells as Array<{ path: string; state: string }>).find((x) => x.path === "src/api")?.state).toBe("overlap");
     expect((await h.call("GET", "/v1/forge/live?repo=demo")).body.counters).toEqual(snap.body.counters);
     const why = await h.call("GET", "/v1/forge/why?repo=demo&path=src/api/cache.ts&line=3");

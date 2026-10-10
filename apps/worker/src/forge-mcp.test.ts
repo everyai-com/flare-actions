@@ -20,6 +20,9 @@ const FORGE_TOOL_NAMES = [
   "why",
   "fork_session",
   "forge_snapshot",
+  "approve_plan",
+  "send_back",
+  "review_sample",
 ];
 
 function setup(over: Partial<McpDeps> = {}) {

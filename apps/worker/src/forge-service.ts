@@ -85,6 +85,8 @@ import {
 } from "./forge-ports";
 import type { GoalPlanner } from "./forge-planner";
 import { forkSession, readSession, SESSION_DEFAULT_STEPS, SESSION_MAX_STEPS, type SessionArtifacts } from "./session";
+import { agentClient, agentLabel, bisectView, conflictSide, evidenceOf, runBriefs, trackView, trainView, whyTitle, type DetailNode } from "./forge-views";
+import { benchPayload } from "./forge-bench-data";
 import { tournamentAllowed } from "./tournaments";
 import { changedFiles } from "./verdict";
 
@@ -429,6 +431,23 @@ function intentSummary(i: Intent): Record<string, unknown> {
   return { id: i.id, goalId: i.goalId, title: i.title, agent: i.agent, state: i.state, risk: i.risk, forkRepo: i.forkRepo, headSha: i.headSha };
 }
 
+// Dashboard view of an intent (forge-views.ts): canonical fields plus
+// `footprint.{declared,actual,drift}` (paths stays) and snake_case refs.
+export function intentView(i: Intent): Record<string, unknown> {
+  const actual = i.actualFootprint?.paths ?? [];
+  return {
+    ...i,
+    footprint: { ...i.footprint, declared: i.footprint.paths, actual, drift: i.actualFootprint ? driftPaths(i.footprint, i.actualFootprint) : [] },
+    goal_id: i.goalId,
+    risk_terms: riskView(i.riskTerms).map((t) => ({ term: t.term, points: t.weight, detail: t.detail })),
+    train_id: i.trainId,
+    landed_sha: i.landedSha,
+    lease_expires_at: i.leaseExpiresAt,
+    created_at: i.createdAt,
+    path: actual[0] ?? i.footprint.paths[0] ?? "",
+  };
+}
+
 // What an agent should do next for an intent in a given state.
 export function nextStepsFor(intent: Intent, agent?: string): NextStep[] {
   const id = intent.id;
@@ -669,15 +688,22 @@ export async function listIntentsOp(deps: ForgeServiceDeps, p: ForgePrincipal, a
   if (agent && !validateAgent(agent).ok) return forgeFail("invalid_request", "agent must match [A-Za-z0-9_.-]{1,40}");
   const before = str(args.before);
   if (before && Number.isNaN(Date.parse(before))) return forgeFail("invalid_request", "before must be an ISO timestamp");
+  const goalFilter = str(args.goalId) ?? str(args.goal);
   const intents = await listIntents(deps.db, r.repo, {
     state: (state as IntentState | null) ?? undefined,
-    goalId: str(args.goalId) ?? undefined,
+    goalId: goalFilter ?? undefined,
     agent: agent ?? undefined,
     limit,
     before: before ?? undefined,
   });
   const last = intents[intents.length - 1];
-  return ok({ repo: r.repo, intents, nextBefore: intents.length === limit && last ? last.createdAt : null });
+  const goals = await listGoals(deps.db, r.repo, { limit: 50 });
+  return ok({
+    repo: r.repo,
+    intents: intents.map(intentView),
+    goals: goalFilter ? goals.filter((g) => g.id === goalFilter) : goals,
+    nextBefore: intents.length === limit && last ? last.createdAt : null,
+  });
 }
 
 export async function getIntentOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
@@ -693,8 +719,31 @@ export async function getIntentOp(deps: ForgeServiceDeps, p: ForgePrincipal, arg
       .all<{ id: string; state: string; intent_a: string; intent_b: string }>(),
   ]);
   const actual = intent.actualFootprint?.paths ?? [];
+  const held = heldFootprint(intent).paths;
+  const [near, runs, session] = await Promise.all([
+    held.length ? deps.coordinator.whatsHappening(intent.repo, { paths: held, limit: 20, excludeIntent: intent.id }).catch(() => []) : Promise.resolve([]),
+    intent.trainId ? deps.db.prepare("SELECT run_id FROM trains WHERE id = ?").bind(intent.trainId).first<{ run_id: string | null }>().then((t) => runBriefs(deps.db, [t?.run_id ?? null])).catch(() => new Map()) : Promise.resolve(new Map()),
+    intent.forkRepo && deps.artifacts ? readSession({ artifacts: sessionArtifactsOf(deps.artifacts) }, intent.forkRepo, { limit: 50 }).catch(() => null) : Promise.resolve(null),
+  ]);
+  const t0 = session?.steps.length ? Date.parse(session.steps[0].ts) : NaN;
+  const openConflict = conflicts.results.some((c) => c.state === "open" || c.state === "claimed");
+  const view = {
+    ...intentView(intent),
+    goal: goal ? { id: goal.id, text: goal.text } : null,
+    mailbox: mailbox.map((m) => ({ from_intent: m.from.intent, from_agent: m.from.agent, body: m.text, at: m.createdAt, untrusted: true })),
+    session: intent.forkRepo
+      ? {
+          repo: `${intent.forkRepo} · flare/session`,
+          fork: intent.forkRepo,
+          steps: (session?.steps ?? []).map((st) => ({ t: Number.isFinite(t0) ? Math.max(0, Math.round((Date.parse(st.ts) - t0) / 1000)) : 0, kind: st.kind, text: st.text })),
+        }
+      : null,
+    overlaps: near.map((o) => ({ intent: o.intentId, paths: o.matchedPaths, state: openConflict && conflicts.results.some((c) => c.intent_a === o.intentId || c.intent_b === o.intentId) ? "conflict" : "overlap" })),
+    evidence: evidenceOf([...runs.values()][0], intent.headSha),
+    rejected: ledger.filter((l) => /^(alternative|rejected)/i.test(l.kind)).map((l) => l.body).slice(0, 10),
+  };
   return ok({
-    intent,
+    intent: view,
     goal,
     footprint: {
       declared: intent.footprint.paths,
@@ -1019,10 +1068,29 @@ export interface InboxItem {
   route: LandingRoute;
   risk: number;
   terms: Array<{ term: string; weight: number; detail: string }>;
-  evidence: { headSha: string; trainId: string | null; landedSha: string | null };
   reason: string;
+  why: string;
+  refs: { headSha: string; trainId: string | null; landedSha: string | null };
+  evidence: Record<string, unknown> | null;
+  footprint: string[];
+  plan: string[];
+  train_id: string | null;
   approve: { kind: "plan" | "landing"; endpoint: string } | null;
   landingApproved: boolean;
+}
+
+// Reviewer disagreement over the last 7 days of audit-sample reviews.
+async function reviewStats(db: Db, repo: string): Promise<{ rate: number | null; days: number; n: number }> {
+  const since = new Date(Date.now() - 7 * 86400_000).toISOString();
+  const row = await db
+    .prepare(
+      "SELECT SUM(CASE WHEN kind = 'review.disagreed' THEN 1 ELSE 0 END) AS bad, COUNT(*) AS n FROM forge_ledger WHERE repo = ? AND subject_kind = 'intent' AND kind IN ('review.sampled_ok', 'review.disagreed') AND created_at >= ?",
+    )
+    .bind(repo, since)
+    .first<{ bad: number | null; n: number }>()
+    .catch(() => null);
+  const n = row?.n ?? 0;
+  return { rate: n ? Math.round(((row?.bad ?? 0) / n) * 1000) / 1000 : null, days: 7, n };
 }
 
 // The human review queue (FORGE-UX §5.2): stories grouped by goal,
@@ -1048,11 +1116,33 @@ export async function storyInboxOp(deps: ForgeServiceDeps, p: ForgePrincipal, ar
       .all<{ subject_id: string }>();
     for (const row of rows.results) approvedLanding.add(row.subject_id);
   }
+  // Audit-sample reviews (review_sample) move a story out of the sample.
+  const ids = res.results.map((x) => x.id).slice(0, 90);
+  const reviewed = new Set<string>();
+  if (ids.length) {
+    const rows = await deps.db
+      .prepare(`SELECT DISTINCT subject_id FROM forge_ledger WHERE subject_kind = 'intent' AND kind IN ('review.sampled_ok', 'review.disagreed') AND subject_id IN (${ids.map(() => "?").join(", ")})`)
+      .bind(...ids)
+      .all<{ subject_id: string }>();
+    for (const row of rows.results) reviewed.add(row.subject_id);
+  }
+  const trainIds = [...new Set(res.results.map((x) => x.train_id).filter((x): x is string => typeof x === "string" && x.length > 0))].slice(0, 50);
+  const trainRuns = new Map<string, string>();
+  if (trainIds.length) {
+    const rows = await deps.db
+      .prepare(`SELECT id, run_id FROM trains WHERE id IN (${trainIds.map(() => "?").join(", ")})`)
+      .bind(...trainIds)
+      .all<{ id: string; run_id: string | null }>();
+    for (const row of rows.results) if (row.run_id) trainRuns.set(row.id, row.run_id);
+  }
+  const runs = await runBriefs(deps.db, [...trainRuns.values()]);
+  const disagreement = await reviewStats(deps.db, r.repo);
   const items: Array<InboxItem & { goalId: string | null }> = res.results.map((row) => {
     const it = toIntent(row);
     const route = routeLanding(it.risk, policy, auditRoll(it.id));
-    const bucket: InboxItem["bucket"] = it.state === "awaiting_plan" || route === "human" ? "needs_you" : route === "audit" ? "sample" : "auto";
-    const reason =
+    const sampled = route === "audit" && !reviewed.has(it.id);
+    const bucket: InboxItem["bucket"] = it.state === "awaiting_plan" || (route === "human" && it.state !== "landed") ? "needs_you" : sampled ? "sample" : "auto";
+    const why =
       it.state === "awaiting_plan"
         ? "plan approval: the footprint touches a protected path"
         : route === "human"
@@ -1067,8 +1157,16 @@ export async function storyInboxOp(deps: ForgeServiceDeps, p: ForgePrincipal, ar
       route,
       risk: it.risk,
       terms: riskView(it.riskTerms),
-      evidence: { headSha: it.headSha, trainId: it.trainId, landedSha: it.landedSha },
-      reason,
+      // CI evidence of the intent's train run (null = none yet).
+      evidence: evidenceOf(it.trainId ? runs.get(trainRuns.get(it.trainId) ?? "") : null, it.headSha),
+      refs: { headSha: it.headSha, trainId: it.trainId, landedSha: it.landedSha },
+      // plan | escalation | sample | auto (dashboard filters), with the
+      // one-line explanation in `why`.
+      reason: it.state === "awaiting_plan" ? "plan" : bucket === "needs_you" ? "escalation" : bucket,
+      why,
+      footprint: it.footprint.paths,
+      plan: [],
+      train_id: it.trainId,
       // What a human can do here (dashboard buttons).
       approve:
         it.state === "awaiting_plan"
@@ -1119,11 +1217,14 @@ export async function storyInboxOp(deps: ForgeServiceDeps, p: ForgePrincipal, ar
     repo: r.repo,
     metrics: {
       human_seconds_today: 0,
-      disagreement_rate: null,
+      disagreement_rate: disagreement.rate,
+      disagreement,
       sample_rate: policy.auditSample,
       needs_you: needsYou,
-      sample,
+      sample: { count: sample, of: sample + auto, rate: policy.auditSample },
       auto,
+      auto_landed: auto,
+      policy: { auto_land_max_risk: policy.autoLandMaxRisk, audit_sample: policy.auditSample },
     },
     policy: { autoLandMaxRisk: policy.autoLandMaxRisk, auditSample: policy.auditSample, protected: policy.protected },
     policyWarning: warning,
@@ -1201,7 +1302,7 @@ export async function listConflictsOp(deps: ForgeServiceDeps, p: ForgePrincipal,
   const open = conflicts.filter((c) => c.state === "open");
   return ok({
     repo: r.repo,
-    conflicts,
+    conflicts: conflicts.map((c) => ({ ...c, a: { intent: c.intentA }, b: c.intentB === "trunk" ? null : { intent: c.intentB } })),
     nextSteps: open.slice(0, 1).map((c) => ({ tool: "claim_conflict", args: { conflictId: c.id }, why: "replay the later intent on the new trunk; it lands only through a train" })),
   });
 }
@@ -1224,8 +1325,16 @@ export async function getConflictOp(deps: ForgeServiceDeps, p: ForgePrincipal, a
   ]);
   const view = (i: Intent | null) =>
     i ? { ...intentSummary(i), reasoning: i.reasoning, accept: i.accept, footprint: i.footprint.paths, actual: i.actualFootprint?.paths ?? [] } : null;
+  const goalText = async (i: Intent | null): Promise<string | null> => (i?.goalId ? ((await getGoal(deps.db, i.goalId))?.text ?? null) : null);
+  const [ga, gb] = await Promise.all([goalText(a), goalText(b)]);
+  const trainRow = ledger.find((l) => /train/i.test(l.body) && /[0-9a-f]{8}-/.test(l.body));
   return ok({
-    conflict: c.conflict,
+    conflict: {
+      ...c.conflict,
+      a: conflictSide(a, ga),
+      b: conflictSide(b, gb),
+      train_id: a?.trainId ?? (trainRow ? (/([0-9a-f]{8}-[0-9a-f-]{27})/.exec(trainRow.body)?.[1] ?? null) : null),
+    },
     a: view(a),
     b: view(b),
     ledger: ledger.map((l) => ({ kind: l.kind, body: l.body, actor: l.actor, at: l.created_at })),
@@ -1430,12 +1539,19 @@ export async function listTrainsOp(deps: ForgeServiceDeps, p: ForgePrincipal, ar
   const limit = intArg(args.limit, 20, 1, 200);
   if (limit === null) return forgeFail("invalid_request", "limit must be an integer 1-200");
   const trains = await deps.trains.listTrains(r.repo, { state: (state as TrainState | null) ?? undefined, limit });
+  const runs = await runBriefs(deps.db, trains.map((t) => t.runId));
   return ok({
     repo: r.repo,
     source: deps.trains.kind,
-    trains,
+    trains: trains.map((t) => trainView(t, t.runId ? runs.get(t.runId) : undefined)),
     ...(trains.length === 0 ? { empty: { code: "no_trains", hint: "trains form from ready intents; mark_ready queues one", command: `flare forge status ${r.repo}` } } : {}),
   });
+}
+
+function isDetailNode(v: unknown): v is DetailNode {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as { train?: unknown; children?: unknown; intents?: unknown };
+  return typeof o.train === "object" && o.train !== null && Array.isArray(o.children) && Array.isArray(o.intents);
 }
 
 export async function getTrainOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
@@ -1443,12 +1559,19 @@ export async function getTrainOp(deps: ForgeServiceDeps, p: ForgePrincipal, args
   if (!id || id.length > 64) return forgeFail("invalid_request", "trainId is required");
   const train: Train | null = await deps.trains.getTrain(id);
   if (!train || !allowed(deps, p, train.repo)) return forgeFail("forge_not_found", "train not found");
+  const runs = await runBriefs(deps.db, [train.runId]);
+  const lanePaths = await Promise.all(train.intentIds.slice(0, 50).map((iid) => getIntent(deps.db, iid)));
+  const paths = [...new Set(lanePaths.flatMap((i) => (i ? heldFootprint(i).paths : [])))].slice(0, 20);
+  const view = trainView(train, train.runId ? runs.get(train.runId) : undefined, paths);
   if (deps.trains.getTrainDetail) {
     const detail = await deps.trains.getTrainDetail(id);
-    if (detail) return ok({ ...detail, train });
+    if (detail) {
+      const bisect = isDetailNode(detail) && detail.children.length ? bisectView(detail) : undefined;
+      return ok({ ...detail, train: { ...view, ...(bisect ? { bisect } : {}) } });
+    }
   }
   const ledger = await listForgeLedger(deps.db, "train", train.id, 100);
-  return ok({ train, ledger: ledger.map((l) => ({ kind: l.kind, body: l.body, actor: l.actor, at: l.created_at })) });
+  return ok({ train: view, ledger: ledger.map((l) => ({ kind: l.kind, body: l.body, actor: l.actor, at: l.created_at })) });
 }
 
 export async function whyOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
@@ -1462,7 +1585,18 @@ export async function whyOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: For
     if (line === null) return forgeFail("invalid_request", "line must be a positive integer");
   }
   const answer = await deps.why.why(r.repo, path.value, line);
-  return ok({ ...answer, nextSteps: [] });
+  const intentLink = answer.chain.find((l) => l.kind === "intent");
+  const where = `${path.value}${line ? `:${line}` : ""}`;
+  return ok({
+    ...answer,
+    chain: answer.chain.map((l) => ({ ...l, title: l.kind === "line" ? `Line ${line ?? ""}`.trim() : whyTitle(l.kind) })),
+    intent: intentLink?.id ?? null,
+    command: `flare forge why ${r.repo} ${where}`,
+    ...(intentLink
+      ? {}
+      : { empty: { code: "why_not_found", hint: answer.exact ? "No Forge intent behind this line (a human or pre-Forge commit)." : "No intent footprint covers this path yet.", command: `git log -L${line ?? 1},${line ?? 1}:${path.value}` } }),
+    nextSteps: [],
+  });
 }
 
 export async function snapshotOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
@@ -1474,7 +1608,25 @@ export async function snapshotOp(deps: ForgeServiceDeps, p: ForgePrincipal, args
     deps.trains.listTrains(r.repo, { limit: 20 }),
   ]);
   const snap = await deps.coordinator.snapshot(r.repo, { policy, head, trains });
-  return ok({ ...snap });
+  const [conflicts, runs] = await Promise.all([
+    listConflicts(deps.db, r.repo, { limit: 50 }).catch(() => []),
+    runBriefs(deps.db, trains.map((t) => t.runId)),
+  ]);
+  const agentIds = [...new Set(snap.intents.map((i) => i.agent).filter(Boolean))].sort();
+  return ok({
+    ...snap,
+    // `head` is { sha, at } (dashboard); `headSha` keeps the plain sha.
+    head: { sha: snap.head, at: null },
+    headSha: snap.head,
+    intents: snap.intents.map((i) => ({
+      ...i,
+      footprint: { ...i.footprint, declared: i.footprint.paths, actual: i.actualFootprint?.paths ?? [], drift: i.actualFootprint ? driftPaths(i.footprint, i.actualFootprint) : [] },
+    })),
+    policy: { protected: policy.protected, autoLandMaxRisk: policy.autoLandMaxRisk, auditSample: policy.auditSample },
+    conflicts: conflicts.filter((c) => c.state === "open" || c.state === "claimed").map((c) => ({ id: c.id, state: c.state, files: c.files, a: c.intentA, b: c.intentB })),
+    agents: agentIds.map((id) => ({ id, label: agentLabel(id), client: agentClient(id) })),
+    track: trackView(trains, runs),
+  });
 }
 
 export async function forkSessionOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
@@ -1535,6 +1687,11 @@ export async function forkSessionOp(deps: ForgeServiceDeps, p: ForgePrincipal, a
     {
       intent: out.intent,
       session,
+      // Dashboard aliases (Fork session result card).
+      fork: typeof session?.forkRepo === "string" ? session.forkRepo : null,
+      fork_repo: typeof session?.forkRepo === "string" ? session.forkRepo : null,
+      fork_remote: typeof session?.remote === "string" ? session.remote : null,
+      command: `claude "continue Forge intent ${out.intent.id} (forked from ${source.id}): claim_intent, then ${typeof session?.fetchCommand === "string" && session.fetchCommand ? "fetch the session fork" : "fetch the source fork"}"`,
       source: {
         intentId: source.id,
         state: source.state,
@@ -1559,21 +1716,10 @@ export async function forkSessionOp(deps: ForgeServiceDeps, p: ForgePrincipal, a
   );
 }
 
-// GET /v1/forge/intents/:id/session: the intent fork's flare/session
-// (plan.md + log.jsonl steps) for the dashboard session timeline.
-export async function sessionOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
-  const intent = await loadIntent(deps, p, args.intentId);
-  if (isOutcome(intent)) return intent;
-  const limit = intArg(args.limit, SESSION_DEFAULT_STEPS, 1, SESSION_MAX_STEPS);
-  if (limit === null) return forgeFail("invalid_request", `limit must be an integer 1-${SESSION_MAX_STEPS}`);
-  if (!intent.forkRepo) {
-    return ok({ intentId: intent.id, forkRepo: null, session: null, note: "intent never claimed: no fork, no session yet" });
-  }
-  const artifacts = deps.artifacts;
-  if (!artifacts) return forgeFail("artifacts_unconfigured", "artifacts not configured");
-  // The binding's log() carries committedAt; the forge handle type
-  // only promises hash, so read it defensively.
-  const sessionArtifacts: SessionArtifacts = {
+// The binding's log() carries committedAt; the forge handle type only
+// promises hash, so read it defensively.
+function sessionArtifactsOf(artifacts: ForgeArtifacts): SessionArtifacts {
+  return {
     async get(name) {
       const h = await artifacts.get(name);
       return {
@@ -1587,7 +1733,192 @@ export async function sessionOp(deps: ForgeServiceDeps, p: ForgePrincipal, args:
       };
     },
   };
-  const view = await readSession({ artifacts: sessionArtifacts }, intent.forkRepo, { limit });
+}
+
+// ---------------------------------------------------------------------------
+// Human review verbs (dashboard Inbox; MCP human tier: admin only)
+// ---------------------------------------------------------------------------
+
+const REVIEW_REASON_MAX = 500;
+
+function reviewReason(v: unknown, required: boolean): { reason: string } | ForgeOutcome {
+  const t = typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
+  if (!t && required) return forgeFail("invalid_request", "reason is required (one line)", "say what the agent should change");
+  if (t.length > REVIEW_REASON_MAX) return forgeFail("invalid_request", `reason is longer than ${REVIEW_REASON_MAX} characters`);
+  return { reason: t };
+}
+
+// send_back: a human returns an intent with a one-line reason. The
+// owner gets it as a mailbox note (untrusted-labelled like every note)
+// and the ledger records `review.sent_back`. State: a ready intent goes
+// back to working (its owner reworks on the same fork) and an
+// awaiting_plan intent returns to draft-with-plan-pending, i.e. it stays
+// awaiting_plan until re-approved (draft would bypass the protected-path
+// gate); landed work is never moved (the review feeds the disagreement
+// rate and the note asks for a follow-up intent).
+export async function sendBackOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
+  if (!p.isAdmin) return forgeFail("admin_required", "send_back is a human review verb (admin); agents use send_note");
+  const intent = await loadIntent(deps, p, args.intentId);
+  if (isOutcome(intent)) return intent;
+  const rr = reviewReason(args.reason, true);
+  if (isOutcome(rr)) return rr;
+  let state: IntentState = intent.state;
+  if (intent.state === "ready") {
+    const moved = await transitionIntent(deps.db, intent.id, "ready", "working", { leaseExpiresAt: new Date(Date.now() + DEFAULT_LEASE_TTL_SECONDS * 1000).toISOString() }, p.actor);
+    if (!moved) return forgeFail("stale_state", "intent changed concurrently; retry");
+    state = "working";
+  } else if (intent.state === "failed" || intent.state === "abandoned") {
+    return forgeFail("stale_state", `intent is ${intent.state}; nothing to send back`);
+  }
+  await sendMessage(deps.db, { toIntent: intent.id, fromIntent: null, fromAgent: "human-review", body: `Sent back by a reviewer: ${rr.reason}` });
+  await appendForgeLedger(deps.db, { repo: intent.repo, subjectKind: "intent", subjectId: intent.id, kind: "review.sent_back", body: rr.reason, actor: p.actor });
+  if (intent.state === "landed") {
+    await appendForgeLedger(deps.db, { repo: intent.repo, subjectKind: "intent", subjectId: intent.id, kind: "review.disagreed", body: rr.reason, actor: p.actor });
+  }
+  await auditWrite(deps, p, "intent.send_back", `${intent.repo} ${intent.id}`);
+  await syncIndex(deps, intent.repo, intent.id);
+  return ok({
+    intentId: intent.id,
+    state,
+    transitioned: state !== intent.state,
+    reason: rr.reason,
+    nextSteps: [{ tool: "read_inbox", args: { intentId: intent.id }, why: "the owner sees the reason on its next tool call" }],
+  });
+}
+
+// review_sample: answer an audit-sample row. agree -> `review.sampled_ok`;
+// disagree -> `review.disagreed` (+ a note to the owner). Both feed the
+// inbox disagreement rate; neither moves state.
+export async function reviewSampleOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
+  if (!p.isAdmin) return forgeFail("admin_required", "review_sample is a human review verb (admin)");
+  const intent = await loadIntent(deps, p, args.intentId);
+  if (isOutcome(intent)) return intent;
+  const decision = args.decision === undefined || args.decision === null || args.decision === "" ? "agree" : args.decision;
+  if (decision !== "agree" && decision !== "disagree") return forgeFail("invalid_request", "decision must be agree or disagree");
+  const rr = reviewReason(args.reason ?? args.note, decision === "disagree");
+  if (isOutcome(rr)) return rr;
+  const kind = decision === "agree" ? "review.sampled_ok" : "review.disagreed";
+  await appendForgeLedger(deps.db, { repo: intent.repo, subjectKind: "intent", subjectId: intent.id, kind, body: rr.reason || "looks good", actor: p.actor });
+  if (decision === "disagree") {
+    await sendMessage(deps.db, { toIntent: intent.id, fromIntent: null, fromAgent: "human-review", body: `Audit sample: the reviewer disagrees: ${rr.reason}` });
+  }
+  await auditWrite(deps, p, `intent.review_${decision}`, `${intent.repo} ${intent.id}`);
+  return ok({ intentId: intent.id, decision, ledger: kind, nextSteps: [] });
+}
+
+// GET /v1/forge/agents: per-agent stats from D1 (agent = the intent's
+// display label): active intents, landed (7d), conflicts, last activity,
+// and review acceptance / disagreement over its sampled intents.
+export async function agentsOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
+  const r = repoArg(deps, p, args.repo);
+  if (isOutcome(r)) return r;
+  const since = new Date(Date.now() - 7 * 86400_000).toISOString();
+  const today = `${nowIso().slice(0, 10)}T00:00:00.000Z`;
+  const rows = await deps.db
+    .prepare(
+      `SELECT agent,
+         SUM(CASE WHEN state IN ('claimed','working','ready','in_train','replaying') THEN 1 ELSE 0 END) AS active,
+         SUM(CASE WHEN state = 'landed' AND updated_at >= ? THEN 1 ELSE 0 END) AS landed,
+         SUM(CASE WHEN state = 'landed' AND updated_at >= ? THEN 1 ELSE 0 END) AS landed_today,
+         SUM(CASE WHEN state IN ('conflicted','replaying') THEN 1 ELSE 0 END) AS conflicts,
+         MAX(updated_at) AS last_at
+       FROM intents WHERE repo = ? AND agent != '' GROUP BY agent ORDER BY last_at DESC LIMIT 200`,
+    )
+    .bind(since, today, r.repo)
+    .all<{ agent: string; active: number; landed: number; landed_today: number; conflicts: number; last_at: string }>();
+  const reviews = await deps.db
+    .prepare(
+      `SELECT i.agent AS agent, l.kind AS kind, COUNT(*) AS n FROM forge_ledger l JOIN intents i ON i.id = l.subject_id
+       WHERE l.repo = ? AND l.subject_kind = 'intent' AND l.kind IN ('review.sampled_ok','review.disagreed','review.sent_back') AND l.created_at >= ?
+       GROUP BY i.agent, l.kind`,
+    )
+    .bind(r.repo, since)
+    .all<{ agent: string; kind: string; n: number }>();
+  const current = await deps.db
+    .prepare("SELECT id, agent, state, title, lease_expires_at FROM intents WHERE repo = ? AND state IN ('claimed','working','replaying') ORDER BY updated_at DESC LIMIT 200")
+    .bind(r.repo)
+    .all<{ id: string; agent: string; state: string; title: string; lease_expires_at: string | null }>();
+  const agents = rows.results.map((a) => {
+    const rv = (k: string) => reviews.results.find((x) => x.agent === a.agent && x.kind === k)?.n ?? 0;
+    const ok7 = rv("review.sampled_ok");
+    const bad7 = rv("review.disagreed") + rv("review.sent_back");
+    const cur = current.results.find((c) => c.agent === a.agent) ?? null;
+    const lastS = Math.max(0, Math.round((Date.now() - Date.parse(a.last_at)) / 1000));
+    return {
+      id: a.agent,
+      label: agentLabel(a.agent),
+      client: agentClient(a.agent),
+      intent: cur?.id ?? null,
+      intent_title: cur?.title ?? null,
+      lease_expires_at: cur?.lease_expires_at ?? null,
+      active: a.active,
+      landed: a.landed,
+      landed_today: a.landed_today,
+      conflicts: a.conflicts,
+      last_tool: "forge",
+      last_at: a.last_at,
+      last_ago_s: Number.isFinite(lastS) ? lastS : null,
+      reviews: { agreed: ok7, disagreed: bad7, days: 7 },
+      acceptance_rate: ok7 + bad7 ? Math.round((ok7 / (ok7 + bad7)) * 1000) / 1000 : null,
+      disagreement_rate: ok7 + bad7 ? Math.round((bad7 / (ok7 + bad7)) * 1000) / 1000 : null,
+    };
+  });
+  return ok({ repo: r.repo, agents, ...(agents.length ? {} : { empty: { code: "no_agents", hint: "no agent has declared an intent on this repo yet", command: "npx flare forge connect-agent --client claude" } }) });
+}
+
+// GET /v1/forge/bench: the recorded (simulated) bench run.
+export async function benchOp(_deps: ForgeServiceDeps, _p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
+  const agents = intArg(args.agents, 0, 0, 10_000_000);
+  const out = benchPayload(agents || undefined);
+  if (!out) return forgeFail("forge_not_found", "no bench run recorded", "npm run forge:bench");
+  return ok(out);
+}
+
+// POST /v1/forge/goals with { goal|text, intents: [{title, footprint, reasoning?, accept?}] }:
+// the dashboard composer's launch: one goal, one declare per proposal.
+export async function launchGoalOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
+  const denied = needWrite(p, "declare_intent");
+  if (denied) return denied;
+  const r = repoArg(deps, p, args.repo);
+  if (isOutcome(r)) return r;
+  const list = Array.isArray(args.intents) ? args.intents : [];
+  if (!list.length || list.length > 20) return forgeFail("invalid_request", "intents must be an array of 1-20 { title, footprint }");
+  const text = typeof args.text === "string" ? args.text : typeof args.goal === "string" ? args.goal : "";
+  const goal = await createGoal(deps.db, { repo: r.repo, text, createdBy: p.actor });
+  if (isForgeError(goal)) return fromForgeError(goal);
+  await auditWrite(deps, p, "goal.create", `${r.repo} ${goal.id}`);
+  const declared: Array<Record<string, unknown>> = [];
+  const errors: Array<{ index: number; error: ApiErrorBody }> = [];
+  for (const [index, raw] of list.entries()) {
+    const it = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+    const out = await declareOp(deps, p, {
+      repo: r.repo,
+      goalId: goal.id,
+      title: it.title,
+      footprint: it.footprint,
+      reasoning: typeof it.reasoning === "string" ? it.reasoning : goal.text.slice(0, 1000),
+      accept: it.accept,
+      agent: it.agent ?? args.agent,
+    });
+    if (out.ok) declared.push({ intent: out.data.intent, overlaps: out.data.overlaps });
+    else errors.push({ index, error: out.body });
+  }
+  return ok({ goal, goal_id: goal.id, intents: declared, errors, nextSteps: [{ tool: "claim_intent", args: {}, why: "agents claim the declared intents" }] }, 201);
+}
+
+// GET /v1/forge/intents/:id/session: the intent fork's flare/session
+// (plan.md + log.jsonl steps) for the dashboard session timeline.
+export async function sessionOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
+  const intent = await loadIntent(deps, p, args.intentId);
+  if (isOutcome(intent)) return intent;
+  const limit = intArg(args.limit, SESSION_DEFAULT_STEPS, 1, SESSION_MAX_STEPS);
+  if (limit === null) return forgeFail("invalid_request", `limit must be an integer 1-${SESSION_MAX_STEPS}`);
+  if (!intent.forkRepo) {
+    return ok({ intentId: intent.id, forkRepo: null, session: null, note: "intent never claimed: no fork, no session yet" });
+  }
+  const artifacts = deps.artifacts;
+  if (!artifacts) return forgeFail("artifacts_unconfigured", "artifacts not configured");
+  const view = await readSession({ artifacts: sessionArtifactsOf(artifacts) }, intent.forkRepo, { limit });
   return ok({
     intentId: intent.id,
     forkRepo: intent.forkRepo,
@@ -1604,6 +1935,11 @@ export type ForgeOp = (deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArg
 
 export const FORGE_MCP_OPS: Record<string, ForgeOp> = {
   plan_goal: planGoal,
+  // Human tier (admin only; agents never call these: they are the
+  // reviewer's buttons in the dashboard Inbox).
+  approve_plan: approvePlanOp,
+  send_back: sendBackOp,
+  review_sample: reviewSampleOp,
   declare_intent: declareOp,
   whats_happening: whatsHappeningOp,
   claim_intent: claimOp,

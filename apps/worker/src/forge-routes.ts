@@ -10,6 +10,11 @@ import type { WorkerEnv } from "./env";
 import type { ForgeArtifacts } from "./intents";
 import {
   abandonOp,
+  agentsOp,
+  benchOp,
+  launchGoalOp,
+  reviewSampleOp,
+  sendBackOp,
   approveLandingOp,
   approvePlanOp,
   claimConflictOp,
@@ -127,10 +132,15 @@ export async function handleForgeRequest(
 
   // --- goals ---------------------------------------------------------------
   if (method === "POST" && url.pathname === "/v1/forge/goals") {
+    const body = await bodyArgs(request);
+    // { goal, intents: [...] } = the dashboard composer's launch.
+    if (Array.isArray(body.intents)) return respond(await launchGoalOp(deps, p, body));
     // `?plan=1` (or body `plan: true`) asks for the AI planner's split.
     const plan = url.searchParams.get("plan");
-    return write(planGoal, plan !== null ? { plan } : {});
+    return respond(await planGoal(deps, p, { ...body, ...(body.text === undefined && typeof body.goal === "string" ? { text: body.goal } : {}), ...(plan !== null ? { plan } : {}) }));
   }
+  // Dashboard alias: POST /v1/forge/goals/plan == POST /v1/forge/goals?plan=1.
+  if (method === "POST" && url.pathname === "/v1/forge/goals/plan") return write(planGoal, { plan: true });
   if (method === "GET" && url.pathname === "/v1/forge/goals") return read(listGoalsOp);
   const goalMatch = /^\/v1\/forge\/goals\/([^/]+)$/.exec(url.pathname);
   if (goalMatch && method === "GET") return read(getGoalOp, { goalId: goalMatch[1] });
@@ -148,7 +158,9 @@ export async function handleForgeRequest(
   if (pushMatch && method === "POST") return write(reportPushOp, { intentId: pushMatch[1] });
   const readyMatch = /^\/v1\/forge\/intents\/([^/]+)\/ready$/.exec(url.pathname);
   if (readyMatch && method === "POST") return write(markReadyOp, { intentId: readyMatch[1] });
-  const approveMatch = /^\/v1\/forge\/intents\/([^/]+)\/approve-plan$/.exec(url.pathname);
+  // `/approve`, `/notes`, `/fork` are dashboard aliases of approve-plan,
+  // messages and fork-session (openapi documents the canonical names).
+  const approveMatch = /^\/v1\/forge\/intents\/([^/]+)\/(?:approve-plan|approve)$/.exec(url.pathname);
   if (approveMatch && method === "POST") return write(approvePlanOp, { intentId: approveMatch[1] });
   const approveLandingMatch = /^\/v1\/forge\/intents\/([^/]+)\/approve-landing$/.exec(url.pathname);
   if (approveLandingMatch && method === "POST") return write(approveLandingOp, { intentId: approveLandingMatch[1] });
@@ -156,9 +168,13 @@ export async function handleForgeRequest(
   if (sessionMatch && method === "GET") return read(sessionOp, { intentId: sessionMatch[1] });
   const abandonMatch = /^\/v1\/forge\/intents\/([^/]+)\/abandon$/.exec(url.pathname);
   if (abandonMatch && method === "POST") return write(abandonOp, { intentId: abandonMatch[1] });
-  const forkMatch = /^\/v1\/forge\/intents\/([^/]+)\/fork-session$/.exec(url.pathname);
+  const forkMatch = /^\/v1\/forge\/intents\/([^/]+)\/(?:fork-session|fork)$/.exec(url.pathname);
   if (forkMatch && method === "POST") return write(forkSessionOp, { intentId: forkMatch[1] });
-  const messagesMatch = /^\/v1\/forge\/intents\/([^/]+)\/messages$/.exec(url.pathname);
+  const sendBackMatch = /^\/v1\/forge\/intents\/([^/]+)\/send-back$/.exec(url.pathname);
+  if (sendBackMatch && method === "POST") return write(sendBackOp, { intentId: sendBackMatch[1] });
+  const reviewMatch = /^\/v1\/forge\/intents\/([^/]+)\/review$/.exec(url.pathname);
+  if (reviewMatch && method === "POST") return write(reviewSampleOp, { intentId: reviewMatch[1] });
+  const messagesMatch = /^\/v1\/forge\/intents\/([^/]+)\/(?:messages|notes)$/.exec(url.pathname);
   if (messagesMatch && method === "POST") return write(sendNoteOp, { toIntent: messagesMatch[1] });
   if (messagesMatch && method === "GET") return read(readInboxOp, { intentId: messagesMatch[1] });
 
@@ -169,6 +185,8 @@ export async function handleForgeRequest(
   // FORGE-UX §10 names the Live map endpoint `live`; same payload.
   if (method === "GET" && url.pathname === "/v1/forge/live") return read(snapshotOp);
   if (method === "GET" && url.pathname === "/v1/forge/why") return read(whyOp);
+  if (method === "GET" && url.pathname === "/v1/forge/agents") return read(agentsOp);
+  if (method === "GET" && url.pathname === "/v1/forge/bench") return read(benchOp);
 
   // --- conflicts -------------------------------------------------------------
   if (method === "GET" && url.pathname === "/v1/forge/conflicts") return read(listConflictsOp);
