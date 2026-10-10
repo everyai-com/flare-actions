@@ -911,7 +911,8 @@ export async function reportPushOp(deps: ForgeServiceDeps, p: ForgePrincipal, ar
     truncated = true;
   }
   const { policy } = await deps.loadPolicy(intent.repo);
-  const pushed = await recordPush(deps.db, { id: intent.id, agent: who.agent, headSha: sha.value, actualFootprint: { paths: files }, policy });
+  // A truncated list fails closed (truncated_footprint risk term).
+  const pushed = await recordPush(deps.db, { id: intent.id, agent: who.agent, headSha: sha.value, actualFootprint: { paths: files }, policy, truncated });
   if (isForgeError(pushed)) return fromForgeError(pushed);
   const { overlaps } = await deps.coordinator.reportPush(intent.repo, pushed.intent);
   await auditWrite(deps, p, "intent.push", `${intent.repo} ${intent.id} ${sha.value}`);

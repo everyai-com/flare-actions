@@ -603,7 +603,8 @@ export type RiskTermName =
   | "drift"
   | "llm_replay"
   | "weak_evidence"
-  | "reviewer_disagrees";
+  | "reviewer_disagrees"
+  | "truncated_footprint";
 
 export interface RiskTerm {
   term: RiskTermName;
@@ -618,6 +619,10 @@ export const RISK_WEIGHTS = {
   llm_replay: 15,
   weak_evidence: 10,
   reviewer_disagrees: 15,
+  // Fail closed: the changed-file list hit a read/size cap, so drift and
+  // protected-path checks saw only part of the push (default policy routes
+  // 40 > 30 to a human).
+  truncated_footprint: 40,
 } as const;
 
 // A `**` entry stands for a whole subtree; count it as this many files
@@ -633,6 +638,8 @@ export interface RiskInput {
   // No test touched the footprint, or a quarantined flaky test was hit.
   weakEvidence?: boolean;
   reviewerDisagrees?: boolean;
+  // The actual footprint is incomplete (diff caps hit, or unreadable).
+  truncated?: boolean;
 }
 
 export function footprintWeight(fp: Footprint): number {
@@ -681,6 +688,13 @@ export function scoreRisk(input: RiskInput): { risk: number; terms: RiskTerm[] }
       term: "reviewer_disagrees",
       points: RISK_WEIGHTS.reviewer_disagrees,
       detail: "clean-context reviewer disagrees with the author",
+    });
+  }
+  if (input.truncated) {
+    terms.push({
+      term: "truncated_footprint",
+      points: RISK_WEIGHTS.truncated_footprint,
+      detail: "changed-file list truncated: drift and protected paths were checked on a partial list",
     });
   }
   const risk = Math.min(100, terms.reduce((s, t) => s + t.points, 0));
