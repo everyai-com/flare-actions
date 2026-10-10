@@ -300,6 +300,7 @@ import type { OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
 import { buildMcpServer, mcpDiscovery } from "./mcp";
 import { forgeDepsFromEnv, handleForgeRequest } from "./forge-routes";
 import { forgeAdaptersFromEnv } from "./forge-adapters";
+import { bindingRateLimiter, handleForgePublicRequest } from "./forge-public"; // forge-spectator
 import { listAppRepos, loadSetupFacts, setupSteps } from "./setup";
 import { runnerScript } from "./runner-script";
 import {
@@ -2495,6 +2496,18 @@ export default {
       if (request.method === "GET" && url.pathname === "/dashboard") {
         return dashboardResponse();
       }
+      // forge-spectator: /watch, /v1/public/forge/* (read-only, no auth), /v1/admin/forge/{public,judge-token}.
+      const publicForge = await handleForgePublicRequest(request, url, {
+        db: env.DB,
+        forge: () => forgeDepsFromEnv(env, forgeAdaptersFromEnv(env, { waitUntil: (p) => ctx.waitUntil(p) })),
+        namespace: env.ARTIFACTS_NAMESPACE ?? "",
+        auth: () => authIdentity(request, env),
+        sharedLimiter: bindingRateLimiter(env),
+        cache: typeof caches !== "undefined" ? caches.default : null,
+        dashboardHtml: DASHBOARD_HTML,
+        waitUntil: (p) => ctx.waitUntil(p),
+      });
+      if (publicForge) return publicForge;
       // The API serves its own contract (generated module, CI-synced)
       // plus an interactive Redoc reference over it.
       // One-line runner setup for the dashboard's "Use my computer":

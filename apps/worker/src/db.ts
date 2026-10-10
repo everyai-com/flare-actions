@@ -1028,6 +1028,7 @@ export interface TokenRow {
   repos: string;
   created_at: string;
   revoked_at: string | null;
+  expires_at?: string | null;
 }
 
 export interface TokenPublic {
@@ -1037,23 +1038,25 @@ export interface TokenPublic {
   repos: string;
   created_at: string;
   revoked_at: string | null;
+  expires_at?: string | null;
 }
 
 export async function createToken(
   db: Db,
-  token: { id: string; name: string; tokenHash: string; scopes: string; repos: string },
+  // expiresAt: optional hard expiry (ISO); null/absent = never expires.
+  token: { id: string; name: string; tokenHash: string; scopes: string; repos: string; expiresAt?: string | null },
 ): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO api_tokens (id, name, token_hash, scopes, repos, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, NULL)",
+      "INSERT INTO api_tokens (id, name, token_hash, scopes, repos, created_at, revoked_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
     )
-    .bind(token.id, token.name, token.tokenHash, token.scopes, token.repos, nowIso())
+    .bind(token.id, token.name, token.tokenHash, token.scopes, token.repos, nowIso(), token.expiresAt ?? null)
     .run();
 }
 
 export async function listTokens(db: Db): Promise<TokenPublic[]> {
   const res = await db
-    .prepare("SELECT id, name, scopes, repos, created_at, revoked_at FROM api_tokens ORDER BY created_at DESC")
+    .prepare("SELECT id, name, scopes, repos, created_at, revoked_at, expires_at FROM api_tokens ORDER BY created_at DESC")
     .bind()
     .all<TokenPublic>();
   return res.results;
@@ -1061,8 +1064,8 @@ export async function listTokens(db: Db): Promise<TokenPublic[]> {
 
 export async function findLiveToken(db: Db, tokenHash: string): Promise<TokenRow | null> {
   return db
-    .prepare("SELECT * FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL")
-    .bind(tokenHash)
+    .prepare("SELECT * FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)")
+    .bind(tokenHash, nowIso())
     .first<TokenRow>();
 }
 

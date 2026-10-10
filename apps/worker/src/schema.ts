@@ -60,7 +60,8 @@ export const SCHEMA_STATEMENTS = [
     scopes TEXT NOT NULL DEFAULT 'runner',
     repos TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
-    revoked_at TEXT
+    revoked_at TEXT,
+    expires_at TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_tokens_hash ON api_tokens(token_hash)`,
   `CREATE TABLE IF NOT EXISTS app_settings (
@@ -500,6 +501,7 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE jobs ADD COLUMN labels TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE api_tokens ADD COLUMN repos TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE api_tokens ADD COLUMN expires_at TEXT`,
   `ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE jobs ADD COLUMN started_at TEXT`,
   `ALTER TABLE jobs ADD COLUMN finished_at TEXT`,
