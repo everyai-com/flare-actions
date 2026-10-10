@@ -2533,7 +2533,7 @@ export const FORGE_JS = String.raw`
       var card = fxPanel("Connect an agent", [h("div", { cls: "fx-pad" }, [h("p", { style: "margin:0 0 10px;font-size:13px;color:var(--soft)", text: "Plain git and MCP: any agent works. OAuth clients can skip the header; the server supports OAuth 2.1 dynamic clients." }), tabs, pre, h("div", { cls: "fx-actions" }, [copyB])])]);
       box.appendChild(card);
       pick(0);
-      if (!list.length) { box.appendChild(fxEmpty("no_agents", "No agents connected.", "Add the MCP server above, then ask the agent to declare an intent.", "npx flare mcp-config --client claude-code")); return; }
+      if (!list.length) { box.appendChild(fxEmpty("no_agents", "No agents connected.", "Add the MCP server above, then ask the agent to declare an intent.", "npx flare-forge forge connect-agent --client claude")); return; }
       var real = list.filter(function (a) { return a.client !== "sim"; });
       var rows = h("div", {});
       rows.appendChild(h("div", { cls: "fx-agent-row h", "aria-hidden": "true" }, [h("span"), h("span", { text: "Agent" }), h("span", { text: "Client" }), h("span", { text: "Current intent" }), h("span", { text: "Last tool call" }), h("span", { text: "Lease" }), h("span", { text: "Landed" })]));

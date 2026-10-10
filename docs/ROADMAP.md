@@ -1,4 +1,4 @@
-# Roadmap: crushing GitHub Actions
+# Roadmap
 
 Thesis: GitHub bills per minute for cold VMs behind queues. Flare bills ~$0
 for orchestration on Cloudflare's edge, executes on warm metal or
@@ -83,10 +83,25 @@ The recurring pains, in practitioners' own terms:
       floor policy (fan-out merge, dry-run preview, dashboard UI),
       browser-test jobs (actions + preview-URL self-verification)
 
-### Tournaments
+### Flare Forge (agent integration on Artifacts)
 
-- [x] Race N agents on one task with real CI per attempt, deterministic
-      verdict + AI why, immutable ledger, collision radar
+- [x] Intents as the unit of change: declare-time overlap, per-intent
+      Artifacts forks with fork-scoped tokens, leases, peer notes
+      (`docs/FORGE.md`, `docs/FORGE-AGENTS.md`)
+- [x] Trains: lanes of non-overlapping intents, CI on the exact combined
+      SHA, bisect on red; trunk moves only through trains
+- [x] Conflict replay, including resolution races (N CI-verified
+      attempts, deterministic verdict + AI why, ledger;
+      `docs/TOURNAMENTS.md`)
+- [x] Risk-routed review inbox, `why` per line (notes + commit
+      trailers), session forks; MCP + REST + `cli forge` + the
+      `flare-forge` skill
+- [x] `cli forge init`: AGENTS.md block + MCP config for any repo
+- [ ] Publish the CLI to npm as `flare-forge` (manual `npm publish`)
+- [ ] Measured live numbers to replace the simulated bench
+      (`docs/FORGE-BENCH.md`)
+- [ ] Dogfooding: mirror this repo into Artifacts and land Forge's own
+      changes through Forge
 
 ## OSS roadmap (free forever)
 
@@ -279,14 +294,20 @@ enforcement (future Cloud overage policy, not the scaffold).
 
 ## Non-goals (for now)
 
-- Replacing GitHub the forge (repos, PRs, reviews stay where they are).
+- Replacing GitHub as the place where teams host code, PRs and reviews.
+  Flare Forge is the agent-integration layer on Cloudflare Artifacts
+  (intents, trains, replay, why), and Flare Actions is its verification
+  engine. A repo can stay on GitHub and mirror into Artifacts for agent
+  work; landing back out as a PR or push is the planned bridge.
 - Managed Windows/macOS runners — BYO only (a capex game; we lose it on
   purpose).
 - A $/minute price war with funded runner vendors — compete on the agent
   interface, not the meter.
 - Generic "faster containers" claims — table stakes, not differentiation.
-- Building the review UI: we cut the diff tax (triage, digests, one PR
-  summary) but human review stays in GitHub.
+- A general-purpose code review UI for human PRs: for the CI lane we cut
+  the diff tax (triage, digests, one PR summary) and human PR review
+  stays in GitHub. Forge's review inbox is narrower on purpose: it routes
+  agent intents by risk and shows evidence, not line-by-line diffs.
 - Full cryptographic supply-chain infra: attestation starts with signed,
   verifiable run records.
 - A marketplace of thousands of actions — ten excellent built-ins beat

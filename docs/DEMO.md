@@ -31,6 +31,12 @@ takes `--dry-run`, which prints the plan and touches nothing, and
 
 ## A. Judges: try it on a fresh account (~15 min)
 
+Short on time? The README's "Try it in 2 minutes" is the fast path:
+the hosted spectator view, or `npm run dev` and
+`http://localhost:8787/dashboard?demo=1#/live` for the designed
+scenario on demo data, no sign-in. This section runs the real thing on
+your own account.
+
 **You need:** Node 22.18 or newer, git, a Cloudflare account, and
 `npx wrangler login` done once. Optional: Docker, which lets setup
 provision managed seats so train CI runs without your laptop.
@@ -239,7 +245,8 @@ slow, or the network drops):
 swarm:
 
 ```sh
-npm run cli -- forge connect-agent --client claude --agent judge
+npx flare-forge forge connect-agent --client claude --agent judge   # no clone needed
+# from a clone: npm run cli -- forge connect-agent --client claude --agent judge
 ```
 
 Paste the one-line `claude mcp add ...` it prints and give the agent

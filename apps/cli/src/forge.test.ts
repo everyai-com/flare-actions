@@ -36,6 +36,8 @@ function harness(opts: { json?: boolean; git?: (args: string[]) => GitResult; re
     err: (l) => err.push(l),
     readText: (p) => files.get(p) ?? null,
     writeText: (p, t) => files.set(p, t),
+    writeFile: (p, t) => files.set(p, t),
+    cwd: "/work",
   };
   return { deps, out, err, gitCalls, files, fetches };
 }

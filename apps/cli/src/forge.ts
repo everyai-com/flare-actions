@@ -3,8 +3,8 @@
 // SDK's FlareForge; `--json` prints the versioned envelope. `forge push`
 // runs plain `git push` then report_push, so "any agent works".
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import {
   FlareForge,
   forgeConnectAgent,
@@ -13,6 +13,7 @@ import {
   type ForgeNextStep,
 } from "flare-actions-runner-sdk";
 import { printJson } from "./json.ts";
+import { applyForgeInit, ForgeInitError, PLACEHOLDER_URL, planForgeInit } from "./forge-init.ts";
 
 export interface GitResult {
   status: number;
@@ -30,7 +31,11 @@ export interface ForgeCliDeps {
   out: (line: string) => void;
   err: (line: string) => void;
   readText: (path: string) => string | null;
+  /** Writes a secret-bearing file (0600): fork auth in .git/config. */
   writeText: (path: string, text: string) => void;
+  /** Writes a normal repo file (0644, parent dirs created): `forge init`. */
+  writeFile: (path: string, text: string) => void;
+  cwd: string;
 }
 
 export const FORGE_USAGE = [
@@ -54,6 +59,8 @@ export const FORGE_USAGE = [
   "  forge approve <intentId>                             approve a protected-path plan (admin)",
   "  forge connect-agent --client claude|codex|cursor [--agent name] [--agents-md]",
   "                                                       ready-to-paste MCP config + agent workflow prompt",
+  "  forge init [--client claude|codex|cursor] [--repo name] [--url U] [--skill] [--dry-run]",
+  "                                                       wire this repo: AGENTS.md block + MCP config (token via env ref)",
   "intentId defaults to `git config flare.intent` (set by `forge claim --clone`) or FLARE_INTENT.",
 ].join("\n");
 
@@ -437,6 +444,31 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       emit(d, "approve", out, () => d.out(`plan approved: ${out.intent.id} is ${out.intent.state} (claimable)`));
       return 0;
     }
+    if (verb === "init") {
+      const f = parseFlags(args, { values: ["client", "repo", "url"], bools: ["skill", "dry-run"] });
+      const client = (f.values["client"] ?? "claude") as ForgeAgentClient;
+      if (!["claude", "codex", "cursor"].includes(client)) throw new UsageError("--client must be claude, codex or cursor");
+      const repo = f.values["repo"] ?? defaultForgeRepo(d);
+      if (!/^[\w.-]{1,100}$/.test(repo)) throw new UsageError("--repo must be a Forge repo name (letters, digits, dot, dash, underscore)");
+      const url = (f.values["url"] ?? d.env["FLARE_ACTIONS_URL"] ?? PLACEHOLDER_URL).replace(/\/+$/, "");
+      if (url !== PLACEHOLDER_URL && !/^https?:\/\/[^\s"'`$]+$/.test(url)) throw new UsageError("--url must be an http(s) URL");
+      const opts = { client, repo, url, skill: f.bools.has("skill") };
+      const read = (p: string): string | null => d.readText(join(d.cwd, p));
+      let plan: ReturnType<typeof planForgeInit>;
+      try {
+        plan = planForgeInit(opts, read);
+      } catch (e) {
+        if (!(e instanceof ForgeInitError)) throw e;
+        d.err(`error: ${e.message}`);
+        return 1;
+      }
+      const report = applyForgeInit(plan, { ...opts, dryRun: f.bools.has("dry-run"), quiet: d.json }, {
+        write: (p, text) => d.writeFile(join(d.cwd, p), text),
+        out: d.out,
+      });
+      if (d.json) printJson("forge init", report);
+      return 0;
+    }
     if (verb === "connect-agent") {
       const f = parseFlags(args, { values: ["client", "agent"], bools: ["agents-md"] });
       const client = (f.values["client"] ?? "claude") as ForgeAgentClient;
@@ -464,6 +496,17 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
   }
 }
 
+// Default Forge repo name for `forge init`: the clone's stored
+// flare.repo (set by `forge claim --clone`), else the git top-level
+// directory name, else the working directory name.
+function defaultForgeRepo(d: ForgeCliDeps): string {
+  const stored = d.git(["config", "--get", "flare.repo"], { cwd: d.cwd });
+  if (stored.status === 0 && stored.stdout.trim()) return stored.stdout.trim();
+  const top = d.git(["rev-parse", "--show-toplevel"], { cwd: d.cwd });
+  const dir = top.status === 0 && top.stdout.trim() ? top.stdout.trim() : d.cwd;
+  return basename(dir).replace(/[^\w.-]/g, "-").slice(0, 100) || "repo";
+}
+
 // Production wiring for apps/cli/src/index.ts.
 export function forgeCliDeps(json: boolean): ForgeCliDeps {
   const env = process.env;
@@ -484,5 +527,10 @@ export function forgeCliDeps(json: boolean): ForgeCliDeps {
     err: (line) => console.error(line),
     readText: (path) => (existsSync(path) ? readFileSync(path, "utf8") : null),
     writeText: (path, text) => writeFileSync(path, text, { mode: 0o600 }),
+    writeFile: (path, text) => {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, text);
+    },
+    cwd: process.cwd(),
   };
 }
