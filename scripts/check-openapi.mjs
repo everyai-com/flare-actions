@@ -54,7 +54,10 @@ for (const [path, item] of Object.entries(spec?.paths ?? {})) {
 
 // Route coverage: literals + regex matchers + startsWith prefixes in
 // the worker must each map to a spec path template.
-const src = readFileSync(join(root, "apps/worker/src/index.ts"), "utf8");
+// index.ts plus the routers it delegates to with a single line.
+const src = ["apps/worker/src/index.ts", "apps/worker/src/forge-routes.ts"]
+  .map((f) => readFileSync(join(root, f), "utf8"))
+  .join("\n");
 const literals = [...src.matchAll(/url\.pathname === "([^"]+)"/g)].map((m) => m[1]);
 const regexes = [...src.matchAll(/\/\^([^\n]*?)\$\/\.exec/g)].map((m) => m[1]);
 
