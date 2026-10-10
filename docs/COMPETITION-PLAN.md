@@ -28,12 +28,12 @@
 | Coordinator DO, live feed, push-trigger Workflow | ✅ merged | Index-only bench at 100k intents: query p50 0.19 ms, p99 1.1 ms |
 | API: REST, MCP (14 tools), SDK, CLI, agent docs, skill | ✅ merged | |
 | Trains (stacked lanes, exact-SHA CI, bisect), conflict replay, races | ✅ merged | |
-| Simulator and load harness, benchmark doc | ✅ merged | Simulated: ~74× time-to-80% vs serial queue, −72% human minutes at 10k |
+| Simulator and load harness, benchmark doc | ✅ merged | Simulated (corrected, `7b37655`) at 10k agents: Forge reaches 80% landed ~26× sooner than a serial queue (2d 14h vs 66d 23h), and 1.7× sooner than trains-only. Human minutes −69%, abandons 180 vs 1,140. The earlier ~74× figure came from a model that landed unverified combinations, and is retracted |
 | Dashboard (Live, Inbox, Intent, Train, Conflict, Why, Composer, Bench, Agents) | ✅ merged | Fixture fallback; needs signed-in check against the real API |
 | Everything above on `main` | ✅ PR #12, #13 | Includes adapter wiring and the AI planner (`e59a63c`, verified on `wrangler dev`: coordinator snapshot, feed returns 101) |
 | Dogfood CI, seat sizing, Easy mode (guided Home, one-line runner) | ✅ PR #14–17 | Merged by parallel sessions |
 | Wiring extras: index sync, train conflict ports, approve-landing, session routes, `/llms.txt`, audit dedupe, dashboard↔API contract | 🔄 in progress | Server-side only |
-| Speculative stacked trains + honest benchmark rerun | 🔄 in progress | Fixes the throughput plateau the sim exposed at ≥10k agents |
+| Speculative stacked trains + honest benchmark rerun | ✅ merged | Depth 3, a 32-ref pool, off-chain bisect probes. Train review fixes #4, #6, #11–#13 |
 | `forge:demo`, `forge:agents`, `forge:director`, DEMO.md | 🔄 in progress | |
 | UX polish (demo-link redirect, judge CTA, master–detail lists, hot-cell sizing, agent rail, guided tour) | ✅ merged | From the integrator's hands-on review, 2026-10-10 |
 | Adversarial review of the whole branch | 🔄 in progress | Findings will be fixed before staging |

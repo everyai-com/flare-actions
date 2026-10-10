@@ -121,11 +121,12 @@ Data contracts: [docs/FORGE.md](docs/FORGE.md).
 ## Benchmark (SIMULATED)
 
 > These numbers come from a deterministic simulator
-> (`apps/sim/src/sim.ts`, seed 7, commit `94bf9ae`, 2026-10-10) that
-> calls Forge's real overlap, lane, bisect and risk functions. They are
-> **not measurements**. Every constant is listed, with its source, in
-> [docs/FORGE-BENCH.md](docs/FORGE-BENCH.md), along with how to run the
-> live harness. Reproduce with
+> (`apps/sim/src/sim.ts`, seed 7, commit `7b37655`, 2026-10-10). It
+> drives Forge's **shipped** train executor: lanes, speculative stacking,
+> bisect and the exact-SHA landing rule. It also calls the real overlap
+> and risk functions. These are **not measurements**. Every constant is
+> listed, with its source, in [docs/FORGE-BENCH.md](docs/FORGE-BENCH.md),
+> along with the live harness. Reproduce with
 > `npm run forge:bench -- --agents 1000,10000 --seed 7`.
 
 Same workload, three ways: N agents declare one intent each within 10
@@ -134,16 +135,26 @@ minutes on one repo.
 | Agents | Mode | Landed | Abandoned | 80% landed by | Human review min |
 |---:|---|---:|---:|---:|---:|
 | 1,000 | Baseline: branch + PR + serial queue | 988 | 12 | 6d 13h | 10,636 |
-| 1,000 | Forge, trains only | 987 | 13 | 2h 40m | 10,645 |
-| 1,000 | Forge, full (intents + trains + replay + routing) | 1,000 | 0 | 2h 22m | 1,797 |
+| 1,000 | Trains only (one group in flight) | 986 | 14 | 9h 17m | 10,774 |
+| 1,000 | Forge (intents + speculative trains + replay + routing) | 998 | 2 | 7h 16m | 2,180 |
 | 10,000 | Baseline: branch + PR + serial queue | 8,860 | 1,140 | 66d 23h | 120,580 |
-| 10,000 | Forge, trains only | 8,862 | 1,138 | 21h 41m | 120,448 |
-| 10,000 | Forge, full (intents + trains + replay + routing) | 9,810 | 190 | 21h 51m | 34,210 |
+| 10,000 | Trains only (one group in flight) | 8,708 | 1,292 | 4d 12h | 122,809 |
+| 10,000 | Forge (intents + speculative trains + replay + routing) | 9,820 | 180 | 2d 14h | 37,693 |
+
+**"Main red due to integration" is 0 minutes in every mode**, because
+`main` only ever moves to a SHA that CI verified as that exact SHA.
+Escaped defects (bugs no CI catches) are reported separately in
+FORGE-BENCH.
 
 What the simulation says, and what it doesn't, is spelled out in
-[FORGE-BENCH.md §2](docs/FORGE-BENCH.md#2-results-simulated). In short:
-trains carry the throughput, while intents and risk routing carry the
-human-minutes and the abandoned changes.
+[FORGE-BENCH.md](docs/FORGE-BENCH.md):
+- Speculative stacking carries most of the throughput.
+- Intents and risk routing carry the human minutes and the abandoned
+  changes.
+- Interaction defects (changes that fail only together) set the ceiling.
+- An earlier version of this table came from a model that landed
+  unverified combinations. It has been corrected, and the before/after
+  is kept in that doc.
 
 ---
 
