@@ -94,6 +94,7 @@ export const FORGE_JS = String.raw`
     if (m < 60) return (s % 60) ? m + "m " + (s % 60) + "s" : m + "m";
     return Math.floor(m / 60) + "h " + (m % 60) + "m";
   }
+  function fxPlural(n, word) { n = Number(n) || 0; return fxNum(n) + " " + word + (n === 1 ? "" : "s"); }
   function fxTone(state) { return FX_TONE[state] || "idle"; }
   function fxWord(state) { return String(state || "unknown").split("_").join(" "); }
   function fxBand(n) { n = Number(n) || 0; return n > 60 ? "high" : n > 30 ? "med" : "low"; }
@@ -924,7 +925,7 @@ export const FORGE_JS = String.raw`
       "aria-label": c.path + ": " + c.files + " files, " + fxNum(n) + (c.agents !== undefined ? " agents" : " intents") + (c.overlap ? ", overlap" : "") + (c.conflict ? ", conflict" : "") + (c.protected ? ", protected" : "") });
     cell.addEventListener("click", function () { FX.pathFilter = FX.pathFilter === c.path ? "" : c.path; fxApplyPathFilter(); });
     cell.addEventListener("mousemove", function (ev) {
-      var lines = [h("div", { cls: "mono", text: c.path + " · " + c.files + " files" + (c.protected ? " · protected" : "") }), h("div", { cls: "fx-tip-title", text: fxNum(n) + (c.agents !== undefined ? " agents" : " intents") + (owners.length ? " · " + owners.join(" ") : "") })];
+      var lines = [h("div", { cls: "mono", text: c.path + " · " + fxPlural(c.files, "file") + (c.protected ? " · protected by policy" : "") }), h("div", { cls: "fx-tip-title", text: fxNum(n) + (c.agents !== undefined ? " agents" : " intents") + (owners.length ? " · " + owners.join(" ") : "") })];
       if (c.conflict) lines.push(h("div", { cls: "st-conflict", text: "✕ conflict" + (c.conflictId ? " " + c.conflictId + " (open from the ✕ badge)" : "") }));
       else if (c.overlap) lines.push(h("div", { cls: "st-overlap", text: "◐ footprints overlap (advisory, caught at declare)" }));
       fxTipShow(ev, lines);
@@ -933,7 +934,7 @@ export const FORGE_JS = String.raw`
     var badgeRoom = (c.protected ? 22 : 0) + (c.conflict ? 22 : 0);
     if (c.hot && hh > 18) cell.appendChild(h("span", { cls: "fx-cell-label", "data-full": c.path, text: fxFitPath(label, w - 16 - badgeRoom) }));
     else if (w > 46 && hh > 26) cell.appendChild(h("span", { cls: "fx-cell-label", text: label }));
-    if (w > 70 && hh > 48) cell.appendChild(h("span", { cls: "fx-cell-meta", text: c.files + " files" + (c.intents.length ? " · " + c.intents.length + " intents" : "") }));
+    if (w > 70 && hh > 48) cell.appendChild(h("span", { cls: "fx-cell-meta", text: fxPlural(c.files, "file") + (c.intents.length ? " · " + fxPlural(c.intents.length, "intent") : "") }));
     var badges = h("span", { cls: "fx-cell-badges" });
     if (c.protected) badges.appendChild(h("span", { cls: "fx-cbadge lock", title: "Protected by .flare/policy.yml: intents stop for plan approval", "aria-label": "protected path", text: "!" }));
     if (c.conflict) {
@@ -1132,8 +1133,8 @@ export const FORGE_JS = String.raw`
       recent.slice(0, 5).forEach(function (r) {
         var tone = fxTone(r.state);
         var res = r.result || {};
-        var total = r.total || (res.landed || 0) + (res.requeued || 0);
-        var txt = r.state === "bisected" ? "✕→bisect " + (res.landed || 0) + "/" + total : r.state === "landed" ? "landed " + (res.landed || total) : fxWord(r.state);
+        var total = r.total || (res.landed || 0) + (res.requeued || 0) + (res.failed || 0);
+        var txt = r.state === "bisected" ? "bisected · " + (res.landed || 0) + "/" + total + " landed" : r.state === "landed" ? "landed " + (res.landed || total) : fxWord(r.state);
         ul.appendChild(h("li", { "data-kind": "train", "data-id": r.id, "data-state": r.state }, [r.sim ? h("span", { cls: "fx-idchip", text: r.id }) : fxLink(r.id), h("span", { cls: "st-" + tone, text: FX_GLYPH[tone] }), h("span", { text: txt }), h("span", { cls: "r-right", text: r.duration_s ? fxClock(r.duration_s) : "" })]));
       });
       body.appendChild(h("div", {}, [h("div", { cls: "fx-sec-h", text: "Recent" }), ul]));
