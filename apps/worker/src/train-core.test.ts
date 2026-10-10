@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_POLICY, footprintsOverlap, parseTrailers, type ForgePolicy } from "./intents-core";
 import {
+  ABANDONED_TRAIN_MS,
+  maxCiWaitMs,
   agentIdentity,
   auditRoll,
   bisectStep,
@@ -300,6 +302,11 @@ describe("bounds", () => {
 
   it("poll backoff grows and caps", () => {
     expect([0, 1, 2, 3, 4, 20].map(pollBackoffSeconds)).toEqual([10, 20, 40, 80, 120, 120]);
+  });
+
+  it("the cron treats trains as abandoned only after the Workflow's full CI wait (review #13)", () => {
+    expect(maxCiWaitMs()).toBe((10 + 20 + 40 + 80 + 36 * 120) * 1000);
+    expect(ABANDONED_TRAIN_MS).toBeGreaterThan(maxCiWaitMs());
   });
 
   it("round budget covers a full bisect plus rebuilds", () => {

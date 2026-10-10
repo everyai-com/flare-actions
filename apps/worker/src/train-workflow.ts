@@ -31,7 +31,7 @@ import {
   type CheckResult,
   type TrainDispatchInput,
 } from "./train";
-import { auditRoll, MAX_CI_POLLS, maxTrainRounds, pollBackoffSeconds } from "./train-core";
+import { ABANDONED_TRAIN_MS, auditRoll, MAX_CI_POLLS, maxTrainRounds, pollBackoffSeconds } from "./train-core";
 
 export interface TrainWorkflowParams {
   repo: string;
@@ -156,7 +156,9 @@ export class TrainWorkflow extends WorkflowEntrypoint<WorkerEnv, TrainWorkflowPa
 // Cron fallback (every minute). With a Workflow binding: cut trains for
 // idle repos (the cut launches an instance) and advance only repos whose
 // trains look abandoned. Without one: advance every repo a step.
-export const TICK_STALE_MS = 10 * 60 * 1000;
+// Staleness must exceed the Workflow's own CI wait (review #13): a
+// verifying train sits untouched while the Workflow polls for ~75 min.
+export const TICK_STALE_MS = ABANDONED_TRAIN_MS;
 
 export async function runTrainTick(env: WorkerEnv): Promise<{ repos: number; advanced: number; cut: number }> {
   const out = { repos: 0, advanced: 0, cut: 0 };

@@ -528,6 +528,20 @@ export function pollBackoffSeconds(poll: number): number {
   return Math.min(120, 10 * 2 ** Math.max(0, Math.min(10, poll)));
 }
 
+// The longest a Workflow round waits on CI without touching a train row
+// (sum of every poll's backoff, ~75 min).
+export function maxCiWaitMs(): number {
+  let s = 0;
+  for (let p = 0; p < MAX_CI_POLLS; p++) s += pollBackoffSeconds(p);
+  return s * 1000;
+}
+
+// The cron fallback treats a repo's trains as abandoned (and drives them
+// itself) only after the Workflow could no longer be waiting on them:
+// its full CI wait plus margin. A shorter window lets the cron and a
+// live Workflow drive the same trains at once (review #13).
+export const ABANDONED_TRAIN_MS = maxCiWaitMs() + 15 * 60 * 1000;
+
 // Bounded train rounds per Workflow instance: bisect rounds for a full
 // train plus a few rebuilds when main moved under a green train.
 export const MAX_REBUILDS = 3;
