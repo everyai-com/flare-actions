@@ -928,15 +928,21 @@ export async function dispatchTrains(deps: TrainDeps, repo: string): Promise<num
   const trains = (await activeTrains(deps.db, repo)).filter((t) => t.state === "verifying");
   let dispatched = 0;
   let broken: string | null = null;
+  // The pipeline comes from TRUNK (the chain root's base = main when the
+  // chain was built), never from the lane head: a lane head carries the
+  // intents' changes, and an intent that rewrote flare.yml to `echo ok`
+  // must not get to choose the CI that verifies it.
+  const trunkSha = trains.length ? trains[0].baseSha : "";
+  let pipeline: string | null | undefined;
   for (const t of trains) {
     if (broken) {
       await abortTrain(deps.db, t, broken);
       continue;
     }
     if (t.runId) continue;
-    const pipeline = await loadPipelineAt(deps, repo, t.headSha);
+    if (pipeline === undefined) pipeline = await loadPipelineAt(deps, repo, trunkSha);
     if (!pipeline || !deps.dispatch) {
-      broken = pipeline ? "no dispatcher" : "no pipeline at lane head";
+      broken = pipeline ? "no dispatcher" : "no pipeline on trunk";
       await abortTrain(deps.db, t, broken);
       continue;
     }

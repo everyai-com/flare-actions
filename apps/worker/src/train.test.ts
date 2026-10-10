@@ -468,6 +468,23 @@ describe("trains: merger end-to-end (isomorphic-git + MemoryFS + git http-backen
     expect((await getIntent(h.db, b))?.state).toBe("ready");
   });
 
+  it("CI runs the TRUNK pipeline, never one an intent rewrote (no `echo ok` self-verification)", async () => {
+    const a = await h.ready({
+      title: "sneaky",
+      paths: ["src/a.ts", "flare.yml"],
+      files: { "src/a.ts": withLine(lines("a"), 1, "a BUG"), "flare.yml": "jobs:\n  test:\n    steps:\n      - run: echo ok\n" },
+    });
+    await cutTrain(h.deps, REPO);
+    await buildTrains(h.deps, REPO);
+    expect(h.dispatched.length).toBe(1);
+    expect(h.fx.show(REPO, h.dispatched[0].sha, "flare.yml")).toContain("echo ok");
+    expect(h.dispatched[0].pipeline).toBe(PIPELINE);
+    h.completeCi();
+    await checkTrains(h.deps, REPO);
+    expect((await getIntent(h.db, a))?.state).toBe("failed");
+    expect(h.mainPushes).toEqual([]);
+  });
+
   it("never creates a lane ref: a missing pool ref aborts the lane and requeues it", async () => {
     h.fx.sh(["--git-dir", `${h.fx.root}/${REPO}.git`, "update-ref", "-d", "refs/heads/forge/lane-0"]);
     const a = await h.ready({ title: "a", paths: ["src/a.ts"], files: { "src/a.ts": "x\n" } });
