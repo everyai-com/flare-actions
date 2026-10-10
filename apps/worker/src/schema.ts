@@ -270,6 +270,7 @@ export const SCHEMA_STATEMENTS = [
     verdict_rank INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    polled_at TEXT NOT NULL DEFAULT '',
     UNIQUE (tournament_id, agent)
   )`,
   `CREATE TABLE IF NOT EXISTS verdicts (
@@ -287,6 +288,7 @@ export const SCHEMA_STATEMENTS = [
     created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_attempts_tournament ON attempts(tournament_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_attempts_polled ON attempts(polled_at)`,
   `CREATE INDEX IF NOT EXISTS idx_ledger_tournament ON ledger(tournament_id)`,
   `CREATE TABLE IF NOT EXISTS pairing_codes (
     code_hash TEXT PRIMARY KEY,
@@ -418,6 +420,7 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE runs ADD COLUMN attested_by TEXT`,
   `ALTER TABLE gh_runner_jobs ADD COLUMN log_digest TEXT`,
   `ALTER TABLE jobs ADD COLUMN billed_ms INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE attempts ADD COLUMN polled_at TEXT NOT NULL DEFAULT ''`,
 ];
 
 let schemaPromise: Promise<void> | null = null;
