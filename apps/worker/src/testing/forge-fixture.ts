@@ -129,7 +129,11 @@ export function gitFixture(): GitFixture {
         if (k === "status") status = parseInt(v, 10);
         else h[k] = v;
       }
-      return { url, method, statusCode: status, statusMessage: status === 200 ? "OK" : "ERR", headers: h, body: [new Uint8Array(rest)] };
+      const bytes = new Uint8Array(rest);
+      async function* stream(): AsyncIterableIterator<Uint8Array> {
+        yield bytes;
+      }
+      return { url, method, statusCode: status, statusMessage: status === 200 ? "OK" : "ERR", headers: h, body: stream() };
     },
   };
 

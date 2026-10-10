@@ -62,6 +62,7 @@ import {
   type TrainRow,
 } from "./intents";
 import type { TournamentRepoHandle } from "./tournaments";
+import { recordNotesTip, writeWhyNotes, type ProvenanceGit } from "./provenance";
 import {
   agentIdentity,
   bisectStep,
@@ -84,7 +85,7 @@ import {
 // The isomorphic-git surface the train uses (the real module in prod).
 export type TrainGit = Pick<
   typeof git,
-  "init" | "fetch" | "push" | "merge" | "commit" | "writeRef" | "resolveRef" | "readCommit" | "listServerRefs"
+  "init" | "addRemote" | "fetch" | "push" | "merge" | "commit" | "writeRef" | "resolveRef" | "readCommit" | "listServerRefs"
 >;
 
 // Artifacts repo handle: the tournament surface plus token management
@@ -108,10 +109,12 @@ export interface TrainDispatchInput {
   priority: number;
 }
 
-// Writes `refs/notes/why` on a trunk commit (provenance stream). The
-// default is a no-op; notes are then skipped, never retried forever.
+// Writes why notes on trunk commits (provenance stream). Absent = notes
+// are skipped (never retried forever). Returns the shas written and the
+// pushed notes tip, which the train records (Artifacts reads notes only
+// by tip sha, never by ref name).
 export interface NotesWriter {
-  write(input: { repo: string; sha: string; note: WhyNote }): Promise<boolean>;
+  write(input: { repo: string; entries: Array<{ sha: string; note: WhyNote }> }): Promise<{ written: string[]; head: string | null }>;
 }
 
 export interface TrainDeps {
@@ -149,7 +152,6 @@ const TOKEN_TTL_SECONDS = 600;
 // after this long. A verifying train whose CI never finishes, likewise.
 export const STALE_MERGING_MS = 15 * 60 * 1000;
 export const STALE_VERIFYING_MS = 3 * 60 * 60 * 1000;
-const ACTIVE = ["forming", "merging", "verifying"] as const;
 
 function log(level: "info" | "warn", msg: string, fields: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ level, msg, ...fields }));
@@ -322,6 +324,18 @@ interface GitCtx {
   repo: string;
   trunkUrl: string;
   readToken: string;
+  // url -> configured remote name (isomorphic-git fetch needs a remote
+  // with a refspec; a bare url fetch has none).
+  remotes: Map<string, string>;
+}
+
+async function remoteFor(ctx: GitCtx, url: string): Promise<string> {
+  const known = ctx.remotes.get(url);
+  if (known) return known;
+  const name = `r${ctx.remotes.size}`;
+  await ctx.deps.git.addRemote({ fs: ctx.fs, gitdir: GITDIR, remote: name, url, force: true });
+  ctx.remotes.set(url, name);
+  return name;
 }
 
 async function hasCommit(ctx: GitCtx, oid: string): Promise<boolean> {
@@ -339,7 +353,7 @@ async function fetchRef(ctx: GitCtx, url: string, token: string, ref: string, de
     fs: ctx.fs,
     http: ctx.deps.http,
     gitdir: GITDIR,
-    url,
+    remote: await remoteFor(ctx, url),
     ref,
     singleBranch: true,
     depth,
@@ -370,7 +384,7 @@ async function openGit(deps: TrainDeps, repo: string): Promise<GitCtx | null> {
   const readToken = await mintToken(deps.artifacts, repo, "read");
   const fs = deps.fs();
   await deps.git.init({ fs, gitdir: GITDIR, bare: true, defaultBranch: "main" });
-  return { deps, fs, repo, trunkUrl, readToken };
+  return { deps, fs, repo, trunkUrl, readToken, remotes: new Map() };
 }
 
 async function pushRef(ctx: GitCtx, localRef: string, remoteRef: string, force: boolean): Promise<void> {
@@ -897,7 +911,18 @@ async function landIntent(deps: TrainDeps, policy: ForgePolicy, train: Train, in
   });
   const gate = landingGate(scored.risk, policy, intent.id, kinds.has("land_approved"));
   const commit = (await trainCommitFor(deps.db, intent.id, train.id)) ?? train.headSha;
-  const ok = await transitionIntent(
+  // The policy line goes in *before* the landed transition so the why
+  // chain's review is the routing decision, not the state change.
+  const approved = kinds.has("land_approved");
+  await appendForgeLedger(deps.db, {
+    repo: train.repo,
+    subjectKind: "intent",
+    subjectId: intent.id,
+    kind: "routed",
+    body: routeLine(scored.risk, policy, gate.route, approved, `run ${runId}, train ${train.id.slice(0, 8)}, sha ${commit.slice(0, 12)}`),
+    actor: "train",
+  });
+  return transitionIntent(
     deps.db,
     intent.id,
     "in_train",
@@ -905,18 +930,13 @@ async function landIntent(deps: TrainDeps, policy: ForgePolicy, train: Train, in
     { landedSha: commit, risk: scored.risk, riskTerms: scored.terms },
     "train",
   );
-  if (ok) {
-    const decision = kinds.has("land_approved") ? "approved" : gate.route;
-    await appendForgeLedger(deps.db, {
-      repo: train.repo,
-      subjectKind: "intent",
-      subjectId: intent.id,
-      kind: "routed",
-      body: `${decision} risk=${scored.risk} run=${runId} train=${train.id} sha=${commit}`,
-      actor: "train",
-    });
-  }
-  return ok;
+}
+
+// "risk 12 <= 30 -> auto (...)": the policy line the why chain shows.
+export function routeLine(risk: number, policy: ForgePolicy, route: LandingRoute, approved: boolean, detail = ""): string {
+  const cmp = risk > policy.autoLandMaxRisk ? ">" : "<=";
+  const decision = approved ? "approved" : route;
+  return `risk ${risk} ${cmp} ${policy.autoLandMaxRisk} → ${decision}${detail ? ` (${detail})` : ""}`;
 }
 
 export async function checkTrains(deps: TrainDeps, repo: string): Promise<CheckResult> {
@@ -1029,7 +1049,7 @@ export async function buildWhyNote(db: Db, intent: Intent): Promise<WhyNote | nu
   const train = await getTrain(db, intent.trainId);
   const goal = intent.goalId ? await getGoal(db, intent.goalId) : null;
   const routed = (await listForgeLedger(db, "intent", intent.id, 200)).filter((r) => r.kind === "routed").pop();
-  const decisionWord = routed?.body.split(" ")[0] ?? "auto";
+  const decisionWord = /→ (\w+)/.exec(routed?.body ?? "")?.[1] ?? "auto";
   const decision: WhyNote["review"]["decision"] =
     decisionWord === "approved" || decisionWord === "audit" || decisionWord === "human" ? decisionWord : "auto";
   const conflicts = await db
@@ -1049,31 +1069,69 @@ export async function buildWhyNote(db: Db, intent: Intent): Promise<WhyNote | nu
       with_intent: c.intent_a === intent.id ? c.intent_b : c.intent_a,
       decision: c.state === "resolved" ? "replayed on new trunk" : c.state,
     })),
-    review: { decision, by: decision === "approved" ? "human" : "policy", policy: `risk=${intent.risk}` },
+    review: { decision, by: decision === "approved" ? "human" : "policy", policy: routed?.body ?? `risk ${intent.risk}` },
     train_id: intent.trainId,
   };
 }
 
-// Write a why note for each landed intent's squashed commit. Without a
-// writer this is a no-op (the provenance stream supplies one).
-export async function writeNotes(deps: TrainDeps, repo: string): Promise<{ written: number }> {
-  if (!deps.notes) return { written: 0 };
-  let written = 0;
-  for (const intent of await landedWithout(deps.db, repo, "noted")) {
+// Write a why note for each landed intent's squashed commit in one
+// notes push, then record the pushed tip on the train (readers address
+// the notes tree by that sha). Without a writer this is a no-op.
+export async function writeNotes(deps: TrainDeps, repo: string): Promise<{ written: number; head: string | null }> {
+  if (!deps.notes) return { written: 0, head: null };
+  const pending = await landedWithout(deps.db, repo, "noted");
+  const entries: Array<{ sha: string; note: WhyNote; intent: Intent }> = [];
+  for (const intent of pending) {
     const note = await buildWhyNote(deps.db, intent);
-    if (!note || !intent.landedSha) continue;
-    let ok = false;
-    try {
-      ok = await deps.notes.write({ repo, sha: intent.landedSha, note });
-    } catch (err) {
-      log("warn", "why note failed", { repo, intent: intent.id, error: redact(err) });
-    }
-    if (ok) {
-      await appendForgeLedger(deps.db, { repo, subjectKind: "intent", subjectId: intent.id, kind: "noted", body: intent.landedSha, actor: "train" });
-      written += 1;
-    }
+    if (note && intent.landedSha) entries.push({ sha: intent.landedSha, note, intent });
   }
-  return { written };
+  if (!entries.length) return { written: 0, head: null };
+  let out: { written: string[]; head: string | null };
+  try {
+    out = await deps.notes.write({ repo, entries: entries.map((e) => ({ sha: e.sha, note: e.note })) });
+  } catch (err) {
+    log("warn", "why notes failed", { repo, error: redact(err) });
+    return { written: 0, head: null };
+  }
+  const written = new Set(out.written.map((s) => s.toLowerCase()));
+  let count = 0;
+  let lastTrain: string | null = null;
+  for (const e of entries) {
+    if (!written.has(e.sha.toLowerCase())) continue;
+    await appendForgeLedger(deps.db, { repo, subjectKind: "intent", subjectId: e.intent.id, kind: "noted", body: e.sha, actor: "train" });
+    lastTrain = e.intent.trainId ?? lastTrain;
+    count += 1;
+  }
+  if (out.head && lastTrain) await recordNotesTip(deps.db, repo, lastTrain, out.head);
+  return { written: count, head: out.head };
+}
+
+// The production NotesWriter: provenance.writeWhyNotes into a MemoryFS
+// repo, pushed to trunk `refs/notes/why` with a per-push write token
+// (server-side only; invariant 1).
+export function createWhyNotesWriter(deps: {
+  git: ProvenanceGit & Pick<typeof git, "init" | "addRemote">;
+  http: HttpClient;
+  fs: () => FsClient;
+  remoteFor: (repo: string) => string | null;
+  artifacts: TrainArtifacts | null;
+}): NotesWriter {
+  return {
+    async write({ repo, entries }) {
+      const url = deps.remoteFor(repo);
+      if (!url) return { written: [], head: null };
+      const fs = deps.fs();
+      const dir = "/notes";
+      await deps.git.init({ fs, dir, defaultBranch: "main" });
+      await deps.git.addRemote({ fs, dir, remote: "trunk", url });
+      const token = await mintToken(deps.artifacts, repo, "write");
+      const res = await writeWhyNotes(deps.git, fs, dir, entries, {
+        strategy: "notes",
+        remote: { name: "trunk", http: deps.http, onAuth: () => ({ username: "x", password: token }) },
+      });
+      return { written: res.pushed ? res.written : [], head: res.pushed ? res.head : null };
+    },
+  };
 }
 
 function tokenIds(list: unknown): string[] {
@@ -1283,6 +1341,14 @@ export async function resolveConflictFor(
   if (opts.llmReplay) {
     await appendForgeLedger(deps.db, { repo: conflict.repo, subjectKind: "intent", subjectId: intent.id, kind: "llm_replay", body: `conflict ${conflictId}`, actor: agent });
   }
+  await appendForgeLedger(deps.db, {
+    repo: conflict.repo,
+    subjectKind: "intent",
+    subjectId: intent.id,
+    kind: "decision",
+    body: `replayed on trunk ${base.slice(0, 12)} after conflict ${conflictId.slice(0, 8)} with ${conflict.intentB === "trunk" ? "trunk" : `intent ${conflict.intentB.slice(0, 8)}`} on ${conflict.files.slice(0, 5).join(", ") || "(unknown files)"}`,
+    actor: agent,
+  });
   const moved = await transitionIntent(deps.db, intent.id, "replaying", "ready", { headSha: sha.toLowerCase(), baseSha: base }, agent);
   if (!moved) return { error: "conflict", message: `intent is ${intent.state}, expected replaying` };
   await appendForgeLedger(deps.db, { repo: conflict.repo, subjectKind: "conflict", subjectId: conflictId, kind: "resolved", body: `${agent} replayed at ${sha.slice(0, 12)} on trunk ${base.slice(0, 12)}`, actor: agent });

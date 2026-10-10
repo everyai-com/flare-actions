@@ -22,6 +22,7 @@ import {
   advanceRepo,
   buildTrains,
   checkTrains,
+  createWhyNotesWriter,
   cutTrain,
   revokeLandedTokens,
   writeNotes,
@@ -75,6 +76,7 @@ export function trainDepsFromEnv(env: WorkerEnv, opts: { launch?: boolean } = {}
     ai: env.AI ?? null,
     gatewayId: env.AI_GATEWAY_ID,
   };
+  deps.notes = createWhyNotesWriter({ git, http, fs: deps.fs, remoteFor: deps.remoteFor, artifacts: deps.artifacts });
   deps.onConflict = async (conflict) => {
     await startReplay(deps, conflict.id);
   };

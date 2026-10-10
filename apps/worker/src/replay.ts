@@ -396,10 +396,12 @@ export async function replayOntoTrunk(
   await g.init({ fs, gitdir: GITDIR, bare: true, defaultBranch: "main" });
   const trunkToken = await mintToken(deps, intent.repo, "read");
   const forkToken = await mintToken(deps, intent.forkRepo, "read");
-  const fetched = await g.fetch({ fs, http: deps.http, gitdir: GITDIR, url: trunkUrl, ref: "main", singleBranch: true, depth: 200, tags: false, onAuth: () => ({ username: "x", password: trunkToken }) });
+  await g.addRemote({ fs, gitdir: GITDIR, remote: "trunk", url: trunkUrl });
+  await g.addRemote({ fs, gitdir: GITDIR, remote: "fork", url: forkUrl });
+  const fetched = await g.fetch({ fs, http: deps.http, gitdir: GITDIR, remote: "trunk", ref: "main", singleBranch: true, depth: 200, tags: false, onAuth: () => ({ username: "x", password: trunkToken }) });
   const trunkSha = fetched.fetchHead;
   if (!trunkSha) return null;
-  await g.fetch({ fs, http: deps.http, gitdir: GITDIR, url: forkUrl, ref: "main", singleBranch: true, depth: 200, tags: false, onAuth: () => ({ username: "x", password: forkToken }) });
+  await g.fetch({ fs, http: deps.http, gitdir: GITDIR, remote: "fork", ref: "main", singleBranch: true, depth: 200, tags: false, onAuth: () => ({ username: "x", password: forkToken }) });
   try {
     await g.readCommit({ fs, gitdir: GITDIR, oid: intent.headSha });
   } catch {
@@ -574,6 +576,7 @@ async function raceReplay(deps: ReplayDeps, conflict: Conflict, intent: Intent, 
   // honors so no tournament path ever pushes this winner anywhere.
   await appendLedger(deps.db, tournamentId, "promote-failed", "promotion disabled: forge resolutions land only through trains (invariant 4)");
   await appendForgeLedger(deps.db, { repo: conflict.repo, subjectKind: "conflict", subjectId: conflict.id, kind: "race", body: tournamentId, actor: REPLAY_AGENT });
+  await appendForgeLedger(deps.db, { repo: conflict.repo, subjectKind: "intent", subjectId: intent.id, kind: "race", body: tournamentId, actor: REPLAY_AGENT });
   let pushed = 0;
   for (let k = 0; k < policy.replay.raceK; k++) {
     const claim = await claimAttempt(deps.db, deps.artifacts, tournamentId, `replay-${k}`);
