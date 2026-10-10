@@ -1,0 +1,14 @@
+{
+  "name": "flare-forge-sim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Forge benchmark: deterministic simulator (baseline vs trains vs full Forge) and the AgentPool live load harness Worker.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "bench": "node --experimental-strip-types ../../scripts/forge-bench.mjs",
+    "dev": "wrangler dev -c wrangler.jsonc",
+    "deploy": "wrangler deploy -c wrangler.jsonc",
+    "deploy:dry": "wrangler deploy -c wrangler.jsonc --dry-run"
+  }
+}

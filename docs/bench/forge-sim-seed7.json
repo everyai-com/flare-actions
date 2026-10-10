@@ -1,0 +1,510 @@
+{
+  "kind": "simulated",
+  "note": "SIMULATED: outputs of apps/sim/src/sim.ts under the constants below; not measurements.",
+  "generated_at": "2026-10-10",
+  "sha": "94bf9ae",
+  "command": "node --experimental-strip-types scripts/forge-bench.mjs --agents 1000,10000,100000 --seed 7",
+  "seed": 7,
+  "constants": {
+    "arrivalWindowMin": 10,
+    "repoFiles": 100000,
+    "filesPerDir": 20,
+    "zipfS": 0.7,
+    "footprintExtraMean": 1.5,
+    "footprintMax": 12,
+    "protectedDirFraction": 0.02,
+    "pDrift": 0.1,
+    "work": {
+      "median": 8,
+      "sigma": 0.6
+    },
+    "ci": {
+      "median": 10,
+      "sigma": 0.3
+    },
+    "reviewLatency": {
+      "median": 30,
+      "sigma": 0.8
+    },
+    "rereviewLatency": {
+      "median": 15,
+      "sigma": 0.8
+    },
+    "planApprovalLatency": {
+      "median": 30,
+      "sigma": 0.8
+    },
+    "replay": {
+      "median": 3,
+      "sigma": 0.5
+    },
+    "mergeMin": 0.5,
+    "trainMergeBaseMin": 0.5,
+    "trainMergePerItemMin": 0.02,
+    "reworkFactor": 0.5,
+    "pConflictPerSharedFile": 0.35,
+    "pDefect": 0.05,
+    "pDefectCaught": 0.9,
+    "pInteraction": 0.02,
+    "pFlake": 0.05,
+    "pWeakEvidence": 0.15,
+    "pReviewerDisagrees": 0.06,
+    "replaySuccess": 0.6,
+    "mttrMin": 30,
+    "afterWaitMaxMin": 15,
+    "cutScanLimit": 2000,
+    "maxRebases": 3,
+    "maxFixes": 3,
+    "maxConflicts": 8,
+    "reviewMin": 10,
+    "rereviewMin": 3,
+    "planApprovalMin": 5,
+    "auditMin": 5,
+    "escalationMin": 10,
+    "opsPerIntent": 7,
+    "opsPerExtraPush": 2,
+    "opsPerLaneItem": 2,
+    "opsPerLaneLand": 6,
+    "dollarsPer1kOps": 0.15,
+    "policy": {
+      "protected": [
+        "src/auth/**",
+        "migrations/**"
+      ],
+      "autoLandMaxRisk": 30,
+      "auditSample": 0.05,
+      "lanes": {
+        "maxPerTrain": 50,
+        "maxParallel": 8
+      },
+      "replay": {
+        "maxAttempts": 2,
+        "raceK": 1
+      }
+    }
+  },
+  "constant_sources": {
+    "arrivalWindowMin": "COMPETITION-PLAN.md §4 scale math (10k agents in 10 min)",
+    "repoFiles": "assumption (a large monorepo)",
+    "zipfS": "assumption; calibrated so ~22% of intents overlap a live intent at 1k agents (51% at 10k, 75% at 100k)",
+    "pDrift": "assumption",
+    "work": "assumption (agent session, median 8 min)",
+    "ci": "assumption (median 10 min suite)",
+    "reviewLatency": "assumption; reviewers modeled as unlimited (favors the baselines)",
+    "pConflictPerSharedFile": "assumption; overlap is necessary, not sufficient, for a textual conflict",
+    "pFlake": "assumption (per CI run); Google reports ~1.5% of test runs flaky (2016 testing blog)",
+    "pDefect": "assumption (reaches CI with a real bug; 90% caught by the intent's own CI)",
+    "pInteraction": "assumption (semantic conflict caught only on the combined SHA)",
+    "replaySuccess": "Merge-Bench (COMPETITION-PLAN.md §13), default 0.6",
+    "mttrMin": "assumption (detect + revert)",
+    "afterWaitMaxMin": "assumption (planner wait budget)",
+    "reviewMin": "assumption (human minutes per small agent PR)",
+    "policy": "DEFAULT_POLICY from intents-core.ts + protected src/auth/**, migrations/**",
+    "dollarsPer1kOps": "COMPETITION-PLAN.md §4 ($0.15 / 1k Artifacts ops); verify against current pricing",
+    "opsPerIntent": "assumption: fork 1 + token 1 + clone 2 + push 2 + revoke 1"
+  },
+  "runs": [
+    {
+      "run": "sim-s7-n1000",
+      "measured_at": "2026-10-10",
+      "sha": "94bf9ae",
+      "kind": "simulated",
+      "simulated": true,
+      "agents": 1000,
+      "seed": 7,
+      "repo_files": 100000,
+      "overlap_at_declare": 0.21,
+      "command": "node --experimental-strip-types scripts/forge-bench.mjs --agents 1000,10000,100000 --seed 7",
+      "modes": [
+        {
+          "mode": "baseline",
+          "label": "Baseline: branch + PR + serial queue",
+          "metrics": {
+            "landed": 988,
+            "abandoned": 12,
+            "changes_per_min": 0.09,
+            "median_declare_to_land_min": 5721.35,
+            "p95_declare_to_land_min": 11008.72,
+            "time_to_80pct_landed_min": 9435.9,
+            "makespan_min": 11607.82,
+            "conflicts_hit": 205,
+            "conflicts_avoided": 0,
+            "stacked_intents": 0,
+            "replays_attempted": 0,
+            "replays_succeeded": 0,
+            "red_main_min": 120,
+            "escaped_defects": 4,
+            "human_min": 10636,
+            "human_breakdown_min": {
+              "review": 10000,
+              "rereview": 636,
+              "plan_approval": 0,
+              "audit": 0,
+              "escalation": 0
+            },
+            "routes": {
+              "auto": 0,
+              "audit": 0,
+              "human": 0
+            },
+            "ci_runs": 2392,
+            "trains": 0,
+            "bisections": 0,
+            "artifacts_ops": null,
+            "dollars_per_1k_agents": null
+          },
+          "projected": false,
+          "simulated": true
+        },
+        {
+          "mode": "trains",
+          "label": "Forge, trains only",
+          "metrics": {
+            "landed": 987,
+            "abandoned": 13,
+            "changes_per_min": 1.32,
+            "median_declare_to_land_min": 90.47,
+            "p95_declare_to_land_min": 210.97,
+            "time_to_80pct_landed_min": 159.64,
+            "makespan_min": 750.52,
+            "conflicts_hit": 209,
+            "conflicts_avoided": 0,
+            "stacked_intents": 0,
+            "replays_attempted": 0,
+            "replays_succeeded": 0,
+            "red_main_min": 81.48,
+            "escaped_defects": 4,
+            "human_min": 10645,
+            "human_breakdown_min": {
+              "review": 10000,
+              "rereview": 645,
+              "plan_approval": 0,
+              "audit": 0,
+              "escalation": 0
+            },
+            "routes": {
+              "auto": 0,
+              "audit": 0,
+              "human": 0
+            },
+            "ci_runs": 1568,
+            "trains": 132,
+            "bisections": 72,
+            "artifacts_ops": 10950,
+            "dollars_per_1k_agents": 1.64
+          },
+          "projected": false,
+          "simulated": true
+        },
+        {
+          "mode": "forge",
+          "label": "Forge, full",
+          "metrics": {
+            "landed": 1000,
+            "abandoned": 0,
+            "changes_per_min": 2.63,
+            "median_declare_to_land_min": 105.37,
+            "p95_declare_to_land_min": 198.38,
+            "time_to_80pct_landed_min": 141.61,
+            "makespan_min": 380.23,
+            "conflicts_hit": 167,
+            "conflicts_avoided": 52,
+            "stacked_intents": 131,
+            "replays_attempted": 258,
+            "replays_succeeded": 155,
+            "red_main_min": 94.14,
+            "escaped_defects": 4,
+            "human_min": 1797,
+            "human_breakdown_min": {
+              "review": 830,
+              "rereview": 87,
+              "plan_approval": 300,
+              "audit": 270,
+              "escalation": 310
+            },
+            "routes": {
+              "auto": 1039,
+              "audit": 54,
+              "human": 112
+            },
+            "ci_runs": 1611,
+            "trains": 132,
+            "bisections": 97,
+            "artifacts_ops": 10996,
+            "dollars_per_1k_agents": 1.65
+          },
+          "projected": false,
+          "simulated": true
+        }
+      ]
+    },
+    {
+      "run": "sim-s7-n10000",
+      "measured_at": "2026-10-10",
+      "sha": "94bf9ae",
+      "kind": "simulated",
+      "simulated": true,
+      "agents": 10000,
+      "seed": 7,
+      "repo_files": 100000,
+      "overlap_at_declare": 0.5041,
+      "command": "node --experimental-strip-types scripts/forge-bench.mjs --agents 1000,10000,100000 --seed 7",
+      "modes": [
+        {
+          "mode": "baseline",
+          "label": "Baseline: branch + PR + serial queue",
+          "metrics": {
+            "landed": 8860,
+            "abandoned": 1140,
+            "changes_per_min": 0.08,
+            "median_declare_to_land_min": 53166.8,
+            "p95_declare_to_land_min": 101834.59,
+            "time_to_80pct_landed_min": 96454.73,
+            "makespan_min": 107713.42,
+            "conflicts_hit": 7818,
+            "conflicts_avoided": 0,
+            "stacked_intents": 0,
+            "replays_attempted": 0,
+            "replays_succeeded": 0,
+            "red_main_min": 1590,
+            "escaped_defects": 53,
+            "human_min": 120580,
+            "human_breakdown_min": {
+              "review": 100000,
+              "rereview": 20580,
+              "plan_approval": 0,
+              "audit": 0,
+              "escalation": 0
+            },
+            "routes": {
+              "auto": 0,
+              "audit": 0,
+              "human": 0
+            },
+            "ci_runs": 27801,
+            "trains": 0,
+            "bisections": 0,
+            "artifacts_ops": null,
+            "dollars_per_1k_agents": null
+          },
+          "projected": false,
+          "simulated": true
+        },
+        {
+          "mode": "trains",
+          "label": "Forge, trains only",
+          "metrics": {
+            "landed": 8862,
+            "abandoned": 1138,
+            "changes_per_min": 5.6,
+            "median_declare_to_land_min": 698.99,
+            "p95_declare_to_land_min": 1396.96,
+            "time_to_80pct_landed_min": 1301.29,
+            "makespan_min": 1581.28,
+            "conflicts_hit": 7773,
+            "conflicts_avoided": 0,
+            "stacked_intents": 0,
+            "replays_attempted": 0,
+            "replays_succeeded": 0,
+            "red_main_min": 879.44,
+            "escaped_defects": 50,
+            "human_min": 120448,
+            "human_breakdown_min": {
+              "review": 100000,
+              "rereview": 20448,
+              "plan_approval": 0,
+              "audit": 0,
+              "escalation": 0
+            },
+            "routes": {
+              "auto": 0,
+              "audit": 0,
+              "human": 0
+            },
+            "ci_runs": 20289,
+            "trains": 416,
+            "bisections": 855,
+            "artifacts_ops": 124484,
+            "dollars_per_1k_agents": 1.87
+          },
+          "projected": false,
+          "simulated": true
+        },
+        {
+          "mode": "forge",
+          "label": "Forge, full",
+          "metrics": {
+            "landed": 9810,
+            "abandoned": 190,
+            "changes_per_min": 4.85,
+            "median_declare_to_land_min": 682.85,
+            "p95_declare_to_land_min": 1490.42,
+            "time_to_80pct_landed_min": 1311,
+            "makespan_min": 2021.08,
+            "conflicts_hit": 7099,
+            "conflicts_avoided": 944,
+            "stacked_intents": 1989,
+            "replays_attempted": 10380,
+            "replays_succeeded": 6205,
+            "red_main_min": 978.93,
+            "escaped_defects": 58,
+            "human_min": 34210,
+            "human_breakdown_min": {
+              "review": 11150,
+              "rereview": 4800,
+              "plan_approval": 2510,
+              "audit": 3530,
+              "escalation": 12220
+            },
+            "routes": {
+              "auto": 14189,
+              "audit": 706,
+              "human": 2715
+            },
+            "ci_runs": 21503,
+            "trains": 633,
+            "bisections": 951,
+            "artifacts_ops": 128918,
+            "dollars_per_1k_agents": 1.93
+          },
+          "projected": false,
+          "simulated": true
+        }
+      ]
+    },
+    {
+      "run": "sim-s7-n100000",
+      "measured_at": "2026-10-10",
+      "sha": "94bf9ae",
+      "kind": "simulated",
+      "simulated": true,
+      "agents": 100000,
+      "seed": 7,
+      "repo_files": 100000,
+      "overlap_at_declare": 0.8301999999999999,
+      "command": "node --experimental-strip-types scripts/forge-bench.mjs --agents 1000,10000,100000 --seed 7",
+      "modes": [
+        {
+          "mode": "baseline",
+          "label": "Baseline: branch + PR + serial queue",
+          "metrics": {
+            "landed": 68153,
+            "abandoned": 31847,
+            "changes_per_min": 0.08,
+            "median_declare_to_land_min": 423211.57,
+            "p95_declare_to_land_min": 836874.15,
+            "time_to_80pct_landed_min": null,
+            "makespan_min": 884428.23,
+            "conflicts_hit": 171932,
+            "conflicts_avoided": 0,
+            "stacked_intents": 0,
+            "replays_attempted": 0,
+            "replays_succeeded": 0,
+            "red_main_min": 11535.16,
+            "escaped_defects": 388,
+            "human_min": 1424611,
+            "human_breakdown_min": {
+              "review": 1000000,
+              "rereview": 424611,
+              "plan_approval": 0,
+              "audit": 0,
+              "escalation": 0
+            },
+            "routes": {
+              "auto": 0,
+              "audit": 0,
+              "human": 0
+            },
+            "ci_runs": 331879,
+            "trains": 0,
+            "bisections": 0,
+            "artifacts_ops": null,
+            "dollars_per_1k_agents": null
+          },
+          "projected": false,
+          "simulated": true
+        },
+        {
+          "mode": "trains",
+          "label": "Forge, trains only",
+          "metrics": {
+            "landed": 68330,
+            "abandoned": 31670,
+            "changes_per_min": 4.73,
+            "median_declare_to_land_min": 5971.07,
+            "p95_declare_to_land_min": 13385.02,
+            "time_to_80pct_landed_min": null,
+            "makespan_min": 14433.32,
+            "conflicts_hit": 171054,
+            "conflicts_avoided": 0,
+            "stacked_intents": 0,
+            "replays_attempted": 0,
+            "replays_succeeded": 0,
+            "red_main_min": 7542.75,
+            "escaped_defects": 380,
+            "human_min": 1422505,
+            "human_breakdown_min": {
+              "review": 1000000,
+              "rereview": 422505,
+              "plan_approval": 0,
+              "audit": 0,
+              "escalation": 0
+            },
+            "routes": {
+              "auto": 0,
+              "audit": 0,
+              "human": 0
+            },
+            "ci_runs": 274845,
+            "trains": 4842,
+            "bisections": 5996,
+            "artifacts_ops": 1528142,
+            "dollars_per_1k_agents": 2.29
+          },
+          "projected": false,
+          "simulated": true
+        },
+        {
+          "mode": "forge",
+          "label": "Forge, full",
+          "metrics": {
+            "landed": 97678,
+            "abandoned": 2322,
+            "changes_per_min": 5.47,
+            "median_declare_to_land_min": 7933.95,
+            "p95_declare_to_land_min": 15917.94,
+            "time_to_80pct_landed_min": 13465.78,
+            "makespan_min": 17851.49,
+            "conflicts_hit": 109929,
+            "conflicts_avoided": 10285,
+            "stacked_intents": 20405,
+            "replays_attempted": 161559,
+            "replays_succeeded": 96859,
+            "red_main_min": 9721.73,
+            "escaped_defects": 523,
+            "human_min": 478333,
+            "human_breakdown_min": {
+              "review": 162130,
+              "rereview": 60723,
+              "plan_approval": 25545,
+              "audit": 44615,
+              "escalation": 185320
+            },
+            "routes": {
+              "auto": 171866,
+              "audit": 8923,
+              "human": 36454
+            },
+            "ci_runs": 256690,
+            "trains": 4735,
+            "bisections": 9389,
+            "artifacts_ops": 1448860,
+            "dollars_per_1k_agents": 2.17
+          },
+          "projected": false,
+          "simulated": true
+        }
+      ]
+    }
+  ]
+}
