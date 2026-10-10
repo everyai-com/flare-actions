@@ -376,9 +376,9 @@ ${FORGE_CSS}</style>
 <header>
 <h1 class="brand-head"><span class="brand-mark">F</span><span>Flare Actions</span></h1>
 <nav class="side-nav" id="sideNav" aria-label="Primary">
+<button id="tabHome" class="side-link" data-tab="home" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.2 8 2.5l5.5 4.7V13a.5.5 0 0 1-.5.5H9.6V10H6.4v3.5H3a.5.5 0 0 1-.5-.5z"/></svg><span>Home</span></button>
 ${FORGE_NAV_HTML}
 <div class="side-group">Flare CI</div>
-<button id="tabHome" class="side-link" data-tab="home" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.2 8 2.5l5.5 4.7V13a.5.5 0 0 1-.5.5H9.6V10H6.4v3.5H3a.5.5 0 0 1-.5-.5z"/></svg><span>Home</span></button>
 <button id="tabRuns" class="side-link" data-tab="runs" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6.6 5.4 11 8l-4.4 2.6z" fill="currentColor" stroke="none"/></svg><span>Runs</span></button>
 <button id="tabMerge" class="side-link" data-tab="merge" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="8" r="1.7"/><path d="M4 5.7v4.6M5.6 4.6c2.8.3 2.4 3.4 4.7 3.4"/></svg><span>Merge queue</span></button>
 <div class="side-group">Code</div>
@@ -696,7 +696,7 @@ ${FORGE_HOME_CARD_HTML}
 <form id="tournamentForm" class="inline">
 <input id="tournamentIntent" placeholder="task intent, e.g. fix the login redirect" maxlength="200" size="40" aria-label="Task intent">
 <input id="tournamentSource" list="flareRepoList" autocomplete="off" placeholder="source repo" maxlength="100" size="20" aria-label="Source repo">
-<button type="submit">Open tournament</button>
+<button type="submit">Start a race</button>
 </form>
 <p id="tournamentsErr" class="err"></p>
 <div id="tournamentsList"></div>
@@ -1664,7 +1664,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     err.textContent = "";
     list.textContent = "";
     document.getElementById("tournamentDetail").hidden = true;
-    document.title = "Tournaments · Flare Actions";
+    document.title = "Races · Flare Actions";
     list.className = "t-enter";
     skeleton(list, 3, "skel-row");
     api("/v1/tournaments").then(function (b) {
@@ -2348,6 +2348,8 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     api("/v1/usage?days=30").then(function (u) {
       var list = (typeof u.actionsListUsd === "number" ? u.actionsListUsd : 0) +
         (typeof u.githubRunnerListUsd === "number" ? u.githubRunnerListUsd : 0);
+      // Nothing to report before the first run; the empty state speaks.
+      if (!u.runs) { document.getElementById("usageStrip").textContent = ""; return; }
       var base = "Last 30d: " + u.runs + " runs · " + u.computeMinutes + " compute-min · ≈$" +
         list.toFixed(2) + " spend avoided vs Actions list price";
       document.getElementById("usageStrip").textContent = base;
@@ -2417,9 +2419,11 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     var loading = el("p", "Loading runs…"); loading.className = "muted"; list.appendChild(loading);
     loadUsageStrip();
     loadCacheStats();
-    document.getElementById("cacheBox").hidden = !isAdmin;
+    document.getElementById("cacheBox").hidden = true;
     api("/v1/runs").then(function (data) {
       lastRuns = data.runs || [];
+      // The cache only has something to browse once runs exist.
+      document.getElementById("cacheBox").hidden = !isAdmin || !lastRuns.length;
       renderRuns();
       loadBottlenecks();
     }).catch(function () {
@@ -3087,6 +3091,9 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
 
   var currentTab = "tournaments";
   var TAB_TITLES = { home: "Home", runs: "Runs", tournaments: "Races", repos: "Repositories", merge: "Merge queue", settings: "Settings" };
+  // Human-readable URL spellings for tabs whose internal id differs from
+  // the label (#/races, #/queue, ...), so typed and shared links work.
+  var TAB_ALIASES = { races: "tournaments", race: "tournaments", queue: "merge", "merge-queue": "merge", mergequeue: "merge", repositories: "repos", repo: "repos", run: "runs", setup: "home", start: "home" };
   function toast(msg, isErr) {
     var box = document.getElementById("toasts");
     var t = el("div", msg);
@@ -3102,7 +3109,7 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
   function syncHash() {
     if (fxIsScreen(currentTab)) { fxWriteHash(); return; }
     try {
-      var h = "#/" + currentTab;
+      var h = "#/" + (currentTab === "tournaments" ? "races" : currentTab);
       if (currentTab === "tournaments" && currentTournamentId && !document.getElementById("tournamentDetail").hidden) h += "/" + currentTournamentId;
       if (currentTab === "repos" && currentRepo && !document.getElementById("repoDetail").hidden) h += "/" + currentRepo;
       if (currentTab === "runs" && runDetailOpenId) h += "/" + runDetailOpenId;
@@ -3139,8 +3146,14 @@ ${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFix
     var hash = location.hash || "";
     if (hash.slice(0, 2) !== "#/") return false;
     var parts = hash.slice(2).split("/");
-    var tab = parts[0] || "";
-    if (!TAB_TITLES[tab]) return false;
+    var tab = TAB_ALIASES[parts[0]] || parts[0] || "";
+    if (!TAB_TITLES[tab]) {
+      // Unknown or typo'd links land Home with a note instead of leaving
+      // the previous screen up and looking like the click did nothing.
+      if (parts[0]) toast("No page called \u201c" + parts[0] + "\u201d \u2014 showing Home.", true);
+      palGoTab("home");
+      return true;
+    }
     if (!isAdmin && tab === "settings") return false;
     var id = parts[1] ? decodeURIComponent(parts[1]) : "";
     if (tab === "tournaments" && id) { selectTab("tournaments"); showTournament(id); }

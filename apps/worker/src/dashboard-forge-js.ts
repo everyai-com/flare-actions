@@ -2542,7 +2542,13 @@ export const FORGE_JS = String.raw`
         copyB.onclick = function () { fxCopy(tabsDef[i][1], "Copied " + tabsDef[i][0] + " config"); };
       }
       tabsDef.forEach(function (t, i) { tabs.appendChild(h("button", { type: "button", role: "tab", on: { click: function () { pick(i); } } }, [t[0]])); });
-      var card = fxPanel("Connect an agent", [h("div", { cls: "fx-pad" }, [h("p", { style: "margin:0 0 10px;font-size:13px;color:var(--soft)", text: "Plain git and MCP: any agent works. OAuth clients can skip the header; the server supports OAuth 2.1 dynamic clients." }), tabs, pre, h("div", { cls: "fx-actions" }, [copyB])])]);
+      var card = fxPanel("Connect an agent", [h("div", { cls: "fx-pad" }, [h("p", { style: "margin:0 0 10px;font-size:13px;color:var(--soft)" }, [
+        "Pick your agent, copy the command, run it in your project. It needs a token in ",
+        h("code", { text: "FLARE_TOKEN" }),
+        ": make a runner token in ",
+        h("a", { href: "#/settings", text: "Settings \u2192 Tokens" }),
+        ". Agents with browser sign-in (OAuth) can drop the header and log in instead."
+      ]), tabs, pre, h("div", { cls: "fx-actions" }, [copyB])])]);
       box.appendChild(card);
       pick(0);
       if (!list.length) { box.appendChild(fxEmpty("no_agents", "No agents connected.", "Add the MCP server above, then ask the agent to declare an intent.", "npx flare-forge forge connect-agent --client claude")); return; }

@@ -22,6 +22,10 @@ import { hasJsonFlag, printJson, splitPassthrough, stripJsonFlag } from "./json.
 import { explainDigest } from "./explain.ts";
 import { formatCacheStats, parseCacheStats } from "./cache.ts";
 import { forgeCliDeps, runForge } from "./forge.ts";
+import { applyTokenAlias, missingConfigMessage, missingConfigVars, suggestCommand, type EnvLocation } from "./hints.ts";
+import { formatDoctor, runDoctor } from "./doctor.ts";
+import { loginMissingArgs } from "./login.ts";
+import { spawnSync } from "node:child_process";
 
 // npm runs scripts from the package root (`npm run cli` from any repo
 // subdirectory, `npm start` in apps/cli) and keeps the caller's directory
@@ -37,67 +41,81 @@ if (initCwd && ownScript && initCwd !== process.cwd()) {
   process.chdir(initCwd);
 }
 
-loadEnv();
+// FLARE_TOKEN (what the README exports) aliases RUNNER_TOKEN. Applied
+// before loadEnv so an exported FLARE_TOKEN beats a .env RUNNER_TOKEN
+// (explicit env wins), and again after for a FLARE_TOKEN only in .env.
+const aliasedBeforeLoad = applyTokenAlias(process.env);
+const ENV_LOCATION: EnvLocation = loadEnv();
+const TOKEN_FROM_ALIAS = applyTokenAlias(process.env) || aliasedBeforeLoad;
 
-const [cmd, ...rawRest] = process.argv.slice(2);
-// --json anywhere before a `--` separator switches the command to its
-// versioned envelope; args past `--` (devbox exec) pass through verbatim.
-const { head, tail } = splitPassthrough(rawRest);
-const JSON_MODE = hasJsonFlag(head);
-const rest = [...stripJsonFlag(head), ...tail];
+// --json anywhere before a `--` separator (including before the command
+// itself) switches the command to its versioned envelope; args past `--`
+// (devbox exec) pass through verbatim.
+const { head: argHead, tail } = splitPassthrough(process.argv.slice(2));
+const JSON_MODE = hasJsonFlag(argHead);
+const [cmd, ...head] = stripJsonFlag(argHead);
+const rest = [...head, ...tail];
 
 const USAGE_LINES = [
-  "  cli runs [agent]                          list recent runs, optionally one agent's",
-  "  cli logs <runId>                           show run jobs, steps, triage, logs",
+  "invoke as: npm run cli -- <command>   (or: flare-forge <command> once installed)",
+  "",
+  "Start here:",
+  "  cli doctor                                  check setup and tell you what to fix next (alias: whoami)",
+  "  cli login [--url U] [--code C]              pair this machine (writes .env, 0600)",
+  "  cli connect [repo] [--init] [--wire] [--dry-run]  detect stack, scaffold, wire, verify in one command",
+  "  cli init [--force] [--stack <id>] [--template <id>]  scaffold flare.yml (auto-detected stack) + AGENTS.md snippet",
+  "  cli run <repo> <sha|branch|tag> [ref]      dispatch, wait, print the compact digest (exit 1 on failure)",
+  "  cli run <repo> --source [ref]              upload the working tree and run it (no commit needed)",
+  "  run/dispatch accept --agent <tag>          tag the run for per-agent caps + attribution",
+  "  run/dispatch accept --profile <name>      run one CI profile from flare.yml (else the event default, else all jobs)",
+  "  append --dry-run to run/dispatch           plan the fan-out (queued/blocked/budget) without creating a run",
+  "  cli watch <runId>                          wait for a run and print the compact digest",
   "  cli explain <runId>                        one narrative: verdict, failures, next command",
   "  cli local [job] [--file flare.yml]         run the pipeline in this directory (no server, warm cache)",
   "  cli local --parity [--file] [job]          report local-vs-cloud divergences (image, cache, env) without running",
-  "  cli run <repo> <sha|branch|tag> [ref]      dispatch, wait, print the compact digest (exit 1 on failure)",
-  "  run/dispatch accept --agent <tag>          tag the run for per-agent caps + attribution",
-  "  run/dispatch accept --profile <name>      run one CI profile from flare.yml (else the event default, else all jobs)",
-  "  cli run <repo> --source [ref]              upload the working tree and run it (no commit needed)",
-  "  append --dry-run to run/dispatch           plan the fan-out (queued/blocked/budget) without creating a run",
-  "  cli watch <runId>                          wait for a run and print the compact digest",
+  "",
+  "Runs:",
+  "  cli runs [agent]                          list recent runs, optionally one agent's",
+  "  cli logs <runId>                           show run jobs, steps, triage, logs",
   "  cli cancel <runId>                         cancel queued/blocked jobs of a run",
   "  cli dispatch <repo> <sha|branch|tag> [ref]  trigger a run without waiting",
   "  cli rerun <runId> <jobId>                   reset a finished job to queued",
+  "  cli tests <runId>                           per-test results and failing tests",
+  "  cli selection <runId>                       smart test selection: what was skipped and why",
+  "  cli attestation <receiptId>                 verify a reused-verdict receipt",
+  "  cli artifacts <runId>                       list a run's artifacts",
+  "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
+  "  cli search <query...>                       search all job logs (branch:main level:error ...)",
   "  cli flaky <repo> [days]                     per-job failure rates, worst first",
   "  cli bottlenecks <repo> [days]               slowest checks: p50/p95 run time + queue wait",
   "  cli quarantine list <repo>                  quarantined (flaky) tests for a repo",
   "  cli quarantine add <repo> <test>            move a test out of the blocking gate",
   "  cli quarantine remove <repo> <test>         reinstate a quarantined test",
-  "  cli init [--force] [--stack <id>] [--template <id>]  scaffold flare.yml (auto-detected stack) + AGENTS.md snippet",
-  "  cli connect [repo] [--init] [--wire] [--dry-run]  detect stack, scaffold, wire, verify in one command",
-  "  cli tests <runId>                           per-test results and failing tests",
-  "  cli selection <runId>                       smart test selection: what was skipped and why",
-  "  cli attestation <receiptId>                 verify a reused-verdict receipt",
   "  cli mergequeue enqueue <repo> <pr> <sha>   queue a PR for verify-then-land (--base, --agent)",
   "  cli mergequeue status <repo>                queue entries + file-collision radar",
   "  cli mergequeue cancel <entryId>             cancel a queued/verifying entry",
-  "  cli login [--url U] [--code C]              pair this machine (writes .env, 0600)",
-  "  cli races [raceId]                          list agent races, or one race board",
-  "  cli repos [name] [path] [--ref R]           list forge repos, or browse one",
+  "  cli github-jobs [repo]                    ephemeral runner-mode jobs (status, duration, list price)",
+  "  cli github-jobs --logs <jobId> [repo]    print one lane job's log digest",
+  "  cli badge <repo> [branch]                   print badge markdown + url",
+  "  cli import <workflow.yml>                   convert a GitHub Actions workflow to flare.yml",
+  "",
+  "Agents & Forge:",
   "  cli forge <verb> ...                        Flare Forge: goal|declare|claim|push|ready|inbox|status|why|conflicts|trains|snapshot|connect-agent|init (cli forge --help)",
+  "  cli races [raceId]                          list agent races, or one race board",
   "  cli claim <raceId> <agent>                  claim a race lane (forks a workspace)",
   "  cli verdict <raceId>                        winner ranking + why-it-won rationale",
-  "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
+  "  cli repos [name] [path] [--ref R]           list forge repos, or browse one",
+  "  cli mcp-config                              print MCP client config for this server",
+  "",
+  "Admin:",
   "  cli queue [labels]                        live queue + projected claim order (admin)",
   "  cli cache list [prefix]                     list cache entries (admin)",
   "  cli cache purge [prefix]                    delete cache entries (admin)",
   "  cli cache stats                             shared warm-cache hit rate (7d)",
-  "  cli usage [days] [repo]                     runs, jobs, compute-minutes for billing",
-  "  cli usage --merged-pr <repo> [weeks]       cost-per-merged-PR trend (needs the GitHub App)",
-  "  cli credits [limit]                       prepaid balance + ledger (hosted; self-hosted is free)",
-  "  cli signup [--agent <tag>]                 onboard this deployment (tokenless probe + next steps)",
   "  cli paused                                  repos auto-paused for runaway spend (admin)",
   "  cli resume <repo>                           resume a paused repo (admin)",
-  "  cli github-jobs [repo]                    ephemeral runner-mode jobs (status, duration, list price)",
-  "  cli github-jobs --logs <jobId> [repo]    print one lane job's log digest",
-  "  cli search <query...>                       search all job logs (branch:main level:error ...)",
-  "  cli artifacts <runId>                       list a run's artifacts",
-  "  cli badge <repo> [branch]                   print badge markdown + url",
-  "  cli import <workflow.yml>                   convert a GitHub Actions workflow to flare.yml",
-  "  cli mcp-config                              print MCP client config for this server",
+  "",
+  "Dev boxes:",
   "  cli devbox create <name> [--image img]      create a persistent warm dev box (local docker)",
   "  cli devbox exec <name> -- <cmd...>           run a command in the box (/work)",
   "  cli devbox sync <name> [--dir D] [paths..]  tar local paths into the box workdir",
@@ -109,36 +127,89 @@ const USAGE_LINES = [
   "  append --remote to devbox/mcp-serve        run boxes on the seats worker (SEATS_URL + SEATS_TOKEN)",
   "  cli mcp-serve                               stdio MCP server for dev boxes (local agents)",
   "",
+  "Billing:",
+  "  cli usage [days] [repo]                     runs, jobs, compute-minutes for billing",
+  "  cli usage --merged-pr <repo> [weeks]       cost-per-merged-PR trend (needs the GitHub App)",
+  "  cli credits [limit]                       prepaid balance + ledger (hosted; self-hosted is free)",
+  "  cli signup [--agent <tag>]                 onboard this deployment (tokenless probe + next steps)",
+  "",
   "run/dispatch accept --priority N (0-10): higher jumps queued batch work.",
   "every command accepts --json: stdout becomes one versioned envelope",
   "  { version: 1, command, data } (mcp-config stays paste-ready, mcp-serve ignores it).",
   "cli local reads FLARE_SECRET_<NAME> for ${{ secrets.NAME }} placeholders.",
-  "env: FLARE_ACTIONS_URL + RUNNER_TOKEN (from `npm run setup` or the dashboard).",
+  "env: FLARE_ACTIONS_URL + RUNNER_TOKEN (FLARE_TOKEN also works; from `cli login`, `npm run setup`, or the dashboard).",
   "Reads accept readonly tokens; dispatch/rerun need runner scope.",
 ];
 
+// Every top-level command, for "did you mean" and for telling a known
+// command with missing args (show its usage) from a typo.
+const COMMANDS: readonly string[] = [
+  ...new Set([
+    ...USAGE_LINES.map((l) => /^\s*cli ([a-z][\w-]*)/.exec(l)?.[1]).filter((c): c is string => !!c),
+    "doctor",
+    "whoami",
+    "help",
+    "version",
+  ]),
+];
+// Forge verbs typed at top level (`cli status`) suggest `forge <verb>`.
+const FORGE_VERBS = ["goal", "declare", "push", "ready", "inbox", "status", "why", "conflicts", "trains", "snapshot", "connect-agent"];
+
+// Exit 0 (explicit help) prints to stdout; any non-zero exit prints to
+// stderr so a --json caller's stdout stays empty on failure.
 function usage(code = 2): never {
-  console.log(["usage:", ...USAGE_LINES].join("\n"));
+  const text = ["usage:", ...USAGE_LINES].join("\n");
+  if (code === 0) console.log(text);
+  else console.error(text);
   process.exit(code);
+}
+
+function commandUsageLines(name: string): string[] {
+  return USAGE_LINES.filter((l) => l.trimStart().startsWith(`cli ${name} `) || l.trim() === `cli ${name}`);
+}
+
+// The current command's args are wrong: its usage lines only, exit 2.
+function badArgs(): never {
+  const lines = commandUsageLines(cmd ?? "");
+  if (lines.length === 0) usage();
+  console.error(["usage:", ...lines].join("\n"));
+  process.exit(2);
+}
+
+// Typo or unknown command: one short hint, never the full usage dump.
+function unknownCommand(name: string): never {
+  console.error(`unknown command "${name}"`);
+  const top = suggestCommand(name, COMMANDS.filter((c) => c !== "help" && c !== "version"));
+  const forge = top ? null : suggestCommand(name, FORGE_VERBS);
+  if (top) console.error(`did you mean: ${top}?`);
+  else if (forge) console.error(`did you mean: forge ${forge}?`);
+  console.error("run with --help for all commands");
+  process.exit(2);
+}
+
+function requireConfig(): { baseUrl: string; token: string } {
+  const missing = missingConfigVars(process.env);
+  const baseUrl = process.env["FLARE_ACTIONS_URL"];
+  const token = process.env["RUNNER_TOKEN"];
+  if (missing.length > 0 || !baseUrl || !token) {
+    console.error(missingConfigMessage(missing, ENV_LOCATION));
+    process.exit(1);
+  }
+  return { baseUrl, token };
 }
 
 // `<cmd> --help` / `-h`: print that command's usage lines (exit 0) instead
 // of treating the flag as an argument (e.g. `import --help` opening a file
 // named --help). Commands with their own help (forge) handle it themselves.
 function commandHelp(name: string): never {
-  const lines = USAGE_LINES.filter((l) => l.trimStart().startsWith(`cli ${name} `) || l.trim() === `cli ${name}`);
+  const lines = commandUsageLines(name);
   if (lines.length === 0) usage(0);
   console.log(["usage:", ...lines].join("\n"));
   process.exit(0);
 }
 
 function client(): FlareClient {
-  const baseUrl = process.env["FLARE_ACTIONS_URL"];
-  const token = process.env["RUNNER_TOKEN"];
-  if (!baseUrl || !token) {
-    console.error("Not logged in: run `cli login`, `npm run setup`, or set FLARE_ACTIONS_URL and RUNNER_TOKEN");
-    process.exit(1);
-  }
+  const { baseUrl, token } = requireConfig();
   return new FlareClient(baseUrl, token);
 }
 
@@ -240,7 +311,8 @@ if (cmd === "--version" || cmd === "-v" || cmd === "version") {
 }
 const HELP_FLAGS = new Set(["--help", "-h"]);
 if (!cmd || cmd === "help" || HELP_FLAGS.has(cmd)) usage(cmd ? 0 : 2);
-if (cmd !== "forge" && head.some((a) => HELP_FLAGS.has(a))) commandHelp(cmd);
+if (!COMMANDS.includes(cmd)) unknownCommand(cmd);
+if (cmd !== "forge" && head.some((a) => HELP_FLAGS.has(a))) commandHelp(cmd === "whoami" ? "doctor" : cmd);
 
 try {
   if (cmd === "runs") {
@@ -313,7 +385,7 @@ try {
     const dryRun = args.includes("--dry-run");
     const positional = args.filter((a) => a !== "--source" && a !== "--dry-run");
     const repo = positional[0];
-    if (!repo || (!sourceMode && !positional[1])) usage();
+    if (!repo || (!sourceMode && !positional[1])) badArgs();
     if (dryRun) {
       // Source dry-runs plan from the local flare.yml without uploading;
       // the placeholder source id never leaves this branch.
@@ -368,7 +440,7 @@ try {
     const { args: noAgent, agent } = takeAgent(noPriority);
     const { args, profile } = takeProfile(noAgent);
     const positional = args.filter((a) => a !== "--dry-run");
-    if (!positional[0] || !positional[1]) usage();
+    if (!positional[0] || !positional[1]) badArgs();
     if (args.includes("--dry-run")) {
       const plan = await client().dryRunDispatch(positional[0], positional[1], {
         ...(positional[2] ? { ref: positional[2] } : {}),
@@ -494,12 +566,12 @@ try {
   } else if (cmd === "connect") {
     const baseUrl = process.env["FLARE_ACTIONS_URL"];
     if (!baseUrl) {
-      console.error("Set FLARE_ACTIONS_URL to your deployment first (from `npm run setup` or the dashboard)");
+      console.error(missingConfigMessage(["FLARE_ACTIONS_URL"], ENV_LOCATION));
       process.exit(2);
     }
     const token = process.env["RUNNER_TOKEN"];
     const positional = rest.filter((a) => !a.startsWith("--"));
-    if (positional.length > 1) usage();
+    if (positional.length > 1) badArgs();
     const dryRun = rest.includes("--dry-run");
     const lines: string[] = [];
     const out = await runConnect({
@@ -618,7 +690,17 @@ try {
       const i = rest.indexOf(flag);
       return i === -1 ? undefined : rest[i + 1];
     };
-    const out = await runLogin({ baseUrl: takeFlag("--url"), code: takeFlag("--code"), cwd: process.cwd() });
+    const loginOpts = { baseUrl: takeFlag("--url"), code: takeFlag("--code"), cwd: process.cwd() };
+    // No TTY (piped stdin, CI, agents): never block on a prompt that
+    // cannot be answered — name the missing flags and exit as usage.
+    const missingFlags = loginMissingArgs(loginOpts, process.env);
+    if (!process.stdin.isTTY && missingFlags.length > 0) {
+      console.error(`login: no terminal to prompt on; pass ${missingFlags.join(" and ")}`);
+      console.error("  e.g. npm run cli -- login --url https://<worker>.workers.dev --code ABCD-1234");
+      console.error("  (mint a code in dashboard Settings → Pair a runner)");
+      process.exit(2);
+    }
+    const out = await runLogin(loginOpts);
     // Prove the saved credentials work before declaring victory.
     await new FlareClient(out.baseUrl, out.token).listRuns();
     if (JSON_MODE) printJson("login", { envPath: out.envPath, name: out.name });
@@ -729,7 +811,7 @@ try {
     }
   } else if (cmd === "search") {
     const query = rest.join(" ").trim();
-    if (!query) usage();
+    if (!query) badArgs();
     const hits = await client().searchLogs(query);
     if (JSON_MODE) {
       printJson("search", { query, hits });
@@ -838,7 +920,7 @@ try {
     }
     const baseUrl = process.env["FLARE_ACTIONS_URL"];
     if (!baseUrl) {
-      console.error("Set FLARE_ACTIONS_URL to your deployment first (from `npm run setup` or the dashboard)");
+      console.error(missingConfigMessage(["FLARE_ACTIONS_URL"], ENV_LOCATION));
       process.exit(2);
     }
     const probe = new FlareClient(baseUrl, process.env["RUNNER_TOKEN"] ?? "");
@@ -860,10 +942,10 @@ try {
     }
   } else if (cmd === "signup") {
     const { args, agent } = takeAgent(rest);
-    if (args.length > 0) usage();
+    if (args.length > 0) badArgs();
     const baseUrl = process.env["FLARE_ACTIONS_URL"];
     if (!baseUrl) {
-      console.error("Set FLARE_ACTIONS_URL to your deployment first (from `npm run setup` or the dashboard)");
+      console.error(missingConfigMessage(["FLARE_ACTIONS_URL"], ENV_LOCATION));
       process.exit(2);
     }
     // Tokenless by design: onboarding happens before credentials exist.
@@ -1037,18 +1119,26 @@ try {
       process.exit(2);
     }
   } else if (cmd === "forge") {
-    const code = await runForge(rest, forgeCliDeps(JSON_MODE));
+    const code = await runForge(rest, forgeCliDeps(JSON_MODE, ENV_LOCATION));
     if (code !== 0) process.exit(code);
   } else if (cmd === "mcp-serve") {
     const remote = rest.includes("--remote");
     await runDevboxMcpServer(remote ? RemoteBoxManager.fromEnv() : new BoxManager());
+  } else if (cmd === "doctor" || cmd === "whoami") {
+    const report = await runDoctor({
+      env: process.env,
+      envLocation: ENV_LOCATION,
+      tokenFromAlias: TOKEN_FROM_ALIAS,
+      gitOrigin: () => {
+        const r = spawnSync("git", ["remote", "get-url", "origin"], { encoding: "utf8" });
+        return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+      },
+    });
+    if (JSON_MODE) printJson("doctor", report);
+    else console.log(formatDoctor(report));
+    if (!report.ok) process.exit(1);
   } else if (cmd === "mcp-config") {
-    const baseUrl = process.env["FLARE_ACTIONS_URL"];
-    const token = process.env["RUNNER_TOKEN"];
-    if (!baseUrl || !token) {
-      console.error("Not logged in: run `cli login`, `npm run setup`, or set FLARE_ACTIONS_URL and RUNNER_TOKEN");
-      process.exit(1);
-    }
+    const { baseUrl } = requireConfig();
     console.log(
       JSON.stringify(
         {
@@ -1065,7 +1155,8 @@ try {
       ),
     );
   } else {
-    usage();
+    // A known command whose required args are missing.
+    badArgs();
   }
 } catch (err) {
   console.error(`error: ${err instanceof Error ? err.message : String(err)}`);

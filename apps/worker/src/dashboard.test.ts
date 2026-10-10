@@ -47,9 +47,10 @@ describe("dashboard", () => {
 
   it("lands on a guided Home with plain-language steps and status", () => {
     expect(DASHBOARD_HTML).toContain('id="tabHome"');
-    // Forge leads the nav (competition story); Home heads the CI group
-    // right under it and stays the signed-in landing screen.
-    expect(DASHBOARD_HTML.indexOf('id="tabLive"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabHome"'));
+    // Home (the signed-in landing screen + setup checklist) is pinned
+    // first; the Forge group leads every other section.
+    expect(DASHBOARD_HTML.indexOf('id="tabHome"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabLive"'));
+    expect(DASHBOARD_HTML.indexOf('id="tabLive"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabRuns"'));
     expect(DASHBOARD_HTML.indexOf('id="tabHome"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabRuns"'));
     expect(DASHBOARD_HTML).toContain('id="homePane"');
     expect(DASHBOARD_HTML).toContain('api("/v1/setup")');

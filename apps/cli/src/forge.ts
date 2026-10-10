@@ -14,6 +14,7 @@ import {
 } from "flare-actions-runner-sdk";
 import { printJson } from "./json.ts";
 import { applyForgeInit, ForgeInitError, PLACEHOLDER_URL, planForgeInit } from "./forge-init.ts";
+import { missingConfigMessage, missingConfigVars, resolveToken, type EnvLocation } from "./hints.ts";
 
 export interface GitResult {
   status: number;
@@ -510,15 +511,16 @@ function defaultForgeRepo(d: ForgeCliDeps): string {
 }
 
 // Production wiring for apps/cli/src/index.ts.
-export function forgeCliDeps(json: boolean): ForgeCliDeps {
+export function forgeCliDeps(json: boolean, envLocation?: EnvLocation): ForgeCliDeps {
   const env = process.env;
   return {
     json,
     env,
     forge: () => {
       const baseUrl = env["FLARE_ACTIONS_URL"];
-      const token = env["RUNNER_TOKEN"];
-      if (!baseUrl || !token) throw new Error("Not logged in: run `cli login`, `npm run setup`, or set FLARE_ACTIONS_URL and RUNNER_TOKEN");
+      const token = resolveToken(env);
+      const missing = missingConfigVars(env);
+      if (missing.length > 0 || !baseUrl || !token) throw new Error(missingConfigMessage(missing, envLocation));
       return new FlareForge(baseUrl, token, { agent: env["FLARE_AGENT"] });
     },
     git: (args, opts = {}) => {

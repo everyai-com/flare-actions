@@ -1,7 +1,7 @@
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { describe, expect, it } from "vitest";
 import type { Db } from "./db";
-import { buildMcpServer, mcpAgentTag, mcpDiscovery, MCP_TOOLS, type McpDeps } from "./mcp";
+import { buildMcpServer, mcpAgentTag, mcpDiscovery, MCP_INSTRUCTIONS, MCP_TOOLS, type McpDeps } from "./mcp";
 
 function fakeDb(routes: { all?: unknown[]; first?: unknown }): Db {
   return {
@@ -123,6 +123,18 @@ describe("mcp", () => {
     expect((init.body as { result: { serverInfo: { name: string } } }).result.serverInfo.name).toBe("flare-actions");
     const list = await rpc(deps(), { jsonrpc: "2.0", id: 2, method: "tools/list" });
     expect((list.body as { result: { tools: unknown[] } }).result.tools).toHaveLength(MCP_TOOLS.length);
+  });
+
+  it("sends start-here instructions that only name real tools", async () => {
+    const init = await rpc(deps(), {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2026-07-28", capabilities: {}, clientInfo: { name: "t", version: "1" } },
+    });
+    expect((init.body as { result: { instructions?: string } }).result.instructions).toBe(MCP_INSTRUCTIONS);
+    const names = new Set(MCP_TOOLS.map((t) => t.name));
+    for (const m of MCP_INSTRUCTIONS.matchAll(/\b([a-z]+(?:_[a-z]+)+)\b/g)) expect(names, m[1]).toContain(m[1]);
   });
 
   it("answers notifications with 202 and no body", async () => {

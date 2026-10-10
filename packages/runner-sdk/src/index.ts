@@ -107,9 +107,19 @@ export type {
 } from "./provenance.ts";
 
 // Loads repo-root `.env` (written by `npm run setup`) into process.env.
-// Explicit environment variables always win. No dependencies, no-op if absent.
-export function loadEnv(): void {
-  let dir = process.cwd();
+// Explicit environment variables always win; an empty-string variable
+// counts as unset (so `RUNNER_TOKEN= cmd` does not mask .env). No
+// dependencies, no-op if absent. Returns where .env was found (null when
+// none) and the directory the upward search started from, so callers can
+// say exactly where they looked.
+export interface LoadEnvResult {
+  path: string | null;
+  searchedFrom: string;
+}
+
+export function loadEnv(): LoadEnvResult {
+  const searchedFrom = process.cwd();
+  let dir = searchedFrom;
   for (let i = 0; i < 6; i++) {
     const file = join(dir, ".env");
     if (existsSync(file)) {
@@ -120,14 +130,16 @@ export function loadEnv(): void {
         if (eq <= 0) continue;
         const key = trimmed.slice(0, eq).trim();
         const value = trimmed.slice(eq + 1).trim();
-        if (key && !(key in process.env)) process.env[key] = value;
+        const current = process.env[key];
+        if (key && (current === undefined || current === "")) process.env[key] = value;
       }
-      return;
+      return { path: file, searchedFrom };
     }
     const parent = dirname(dir);
-    if (parent === dir) return;
+    if (parent === dir) break;
     dir = parent;
   }
+  return { path: null, searchedFrom };
 }
 
 export interface FlareJob {
