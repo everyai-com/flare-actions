@@ -46,6 +46,8 @@ import {
 } from "./intents";
 import {
   appendTrailers,
+  normalizeFootprint,
+  scoreRisk,
   CONFLICT_STATES,
   DEFAULT_POLICY,
   driftPaths,
@@ -1357,39 +1359,49 @@ export async function claimConflictOp(deps: ForgeServiceDeps, p: ForgePrincipal,
   const { policy } = await deps.loadPolicy(c.conflict.repo);
   const won = await claimConflict(deps.db, c.conflict.id, who.agent, policy.replay.maxAttempts);
   if (!won) return forgeFail("conflict_not_claimable", `conflict is ${c.conflict.state} (attempts ${c.conflict.attempts}/${policy.replay.maxAttempts})`);
-  const [a, b] = await Promise.all([getIntent(deps.db, c.conflict.intentA), getIntent(deps.db, c.conflict.intentB)]);
-  if (b && b.state === "conflicted") await transitionIntent(deps.db, b.id, "conflicted", "replaying", {}, who.agent);
+  // Train convention (train.ts buildTrains): intent_a is the DROPPED
+  // intent the resolver replays; intent_b is the other side (landed or in
+  // a train) or the literal "trunk".
+  const [dropped, other] = await Promise.all([
+    getIntent(deps.db, c.conflict.intentA),
+    c.conflict.intentB && c.conflict.intentB !== "trunk" ? getIntent(deps.db, c.conflict.intentB) : Promise.resolve(null),
+  ]);
+  if (dropped && dropped.state === "conflicted") await transitionIntent(deps.db, dropped.id, "conflicted", "replaying", {}, who.agent);
   await appendForgeLedger(deps.db, { repo: c.conflict.repo, subjectKind: "conflict", subjectId: c.conflict.id, kind: "claimed", body: who.agent, actor: who.agent });
   await auditWrite(deps, p, "conflict.claim", `${c.conflict.repo} ${c.conflict.id} ${who.agent}`);
-  // Replay target: intent b's own fork (never trunk, invariant 1/4).
-  const minted = b?.forkRepo ? await mintForkToken(deps, b.forkRepo, "write") : null;
-  const remote = b?.forkRepo ? forkRemote(deps, b.forkRepo, minted?.remote ?? "") : "";
-  const cmds = b?.forkRepo ? gitCommands(b.forkRepo, remote) : null;
+  if (dropped) await syncIndex(deps, c.conflict.repo, dropped.id);
+  // Replay target: the dropped intent's own fork — never trunk, and never
+  // a landed intent's fork (its tokens are revoked at land).
+  const target = dropped?.forkRepo && dropped.state !== "landed" ? dropped.forkRepo : null;
+  const minted = target ? await mintForkToken(deps, target, "write") : null;
+  const remote = target ? forkRemote(deps, target, minted?.remote ?? "") : "";
+  const cmds = target ? gitCommands(target, remote) : null;
   return ok({
     conflict: { ...c.conflict, state: "claimed", resolverAgent: who.agent },
-    a: a ? { ...intentSummary(a), reasoning: a.reasoning, footprint: a.footprint.paths } : null,
-    b: b ? { ...intentSummary(b), reasoning: b.reasoning, footprint: b.footprint.paths } : null,
+    intent: dropped ? { ...intentSummary(dropped), state: dropped.state === "conflicted" ? "replaying" : dropped.state, reasoning: dropped.reasoning, footprint: dropped.footprint.paths } : null,
+    other: other ? { ...intentSummary(other), reasoning: other.reasoning, footprint: other.footprint.paths } : c.conflict.intentB === "trunk" ? "trunk" : null,
     files: c.conflict.files,
-    replay: b?.forkRepo
+    replay: target && dropped
       ? {
-          intentId: b.id,
-          forkRepo: b.forkRepo,
+          intentId: dropped.id,
+          forkRepo: target,
+          freshFork: false,
           forkRemote: remote,
           token: minted?.token ?? null,
-          tokenScope: `write:${b.forkRepo}`,
+          tokenScope: `write:${target}`,
           tokenExpiresAt: minted?.expiresAt ?? null,
           tokenEnv: "FLARE_FORK_TOKEN",
           cloneCommand: cmds?.cloneCommand ?? "",
           pushCommand: cmds?.pushCommand ?? "",
+          sourceHead: dropped.headSha,
         }
       : null,
     nextSteps: [
-      { tool: "shell", args: { command: cmds?.cloneCommand ?? "" }, why: "clone intent b's fork, rebuild its change on the current trunk (re-derive, don't hunk-merge)" },
-      { tool: "resolve_conflict", args: { conflictId: c.conflict.id, sha: "<replayed sha>" }, why: "after pushing the replay: b returns to ready and rides the next train through CI" },
+      { tool: "shell", args: { command: cmds?.cloneCommand ?? "" }, why: "clone the dropped intent's fork and rebuild its change on the current trunk (re-derive, don't hunk-merge)" },
+      { tool: "resolve_conflict", args: { conflictId: c.conflict.id, sha: "<replayed sha>" }, why: "after pushing the replay: the dropped intent returns to ready and rides the next train through CI" },
     ],
   });
 }
-
 export async function resolveConflictOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
   const denied = needWrite(p, "resolve_conflict");
   if (denied) return denied;
@@ -1400,27 +1412,63 @@ export async function resolveConflictOp(deps: ForgeServiceDeps, p: ForgePrincipa
   const c = await loadConflict(deps, p, args.conflictId);
   if (isOutcome(c)) return c;
   if (deps.trains.resolveConflict) return resolveConflictViaTrains(deps, p, c.conflict, who.agent, sha.value, args.forkRepo);
-  const b = await getIntent(deps.db, c.conflict.intentB);
-  if (b?.forkRepo && deps.artifacts) {
-    const exists = await forkHasCommit(deps, b.forkRepo, sha.value);
-    if (!exists) return forgeFail("push_unverified", `${sha.value.slice(0, 12)} is not on fork ${b.forkRepo}`);
+  const dropped = await getIntent(deps.db, c.conflict.intentA);
+  if (dropped?.forkRepo && deps.artifacts) {
+    const exists = await forkHasCommit(deps, dropped.forkRepo, sha.value);
+    if (!exists) return forgeFail("push_unverified", `${sha.value.slice(0, 12)} is not on fork ${dropped.forkRepo}`);
   }
   const done = await resolveConflict(deps.db, c.conflict.id, who.agent, sha.value);
   if (!done) return forgeFail("conflict_not_claimable", `conflict is ${c.conflict.state}${c.conflict.resolverAgent ? ` (claimed by ${c.conflict.resolverAgent})` : ""}`, "claim_conflict first; only the claiming agent can resolve");
   let requeued = false;
-  if (b && b.state === "replaying") {
-    requeued = await transitionIntent(deps.db, b.id, "replaying", "ready", { headSha: sha.value }, who.agent);
+  if (dropped && dropped.state === "replaying") {
+    // The replay is a new head on a new base: re-derive the actual
+    // footprint and risk from it, never keep the pre-conflict ones.
+    const base = (await deps.trunkHead(c.conflict.repo)) || dropped.baseSha;
+    const rescored = await rescoreReplay(deps, dropped, base, sha.value);
+    const patch = rescored ? { risk: rescored.risk, riskTerms: rescored.riskTerms } : {};
+    requeued = await transitionIntent(deps.db, dropped.id, "replaying", "ready", { headSha: sha.value, ...(base ? { baseSha: base } : {}), ...patch }, who.agent);
   }
   await appendForgeLedger(deps.db, { repo: c.conflict.repo, subjectKind: "conflict", subjectId: c.conflict.id, kind: "resolved", body: sha.value, actor: who.agent });
   await auditWrite(deps, p, "conflict.resolve", `${c.conflict.repo} ${c.conflict.id} ${sha.value}`);
+  if (dropped) await syncIndex(deps, c.conflict.repo, dropped.id);
   return ok({
     conflictId: c.conflict.id,
     state: "resolved",
     resolutionSha: sha.value,
-    intent: b ? { id: b.id, state: requeued ? "ready" : b.state } : null,
+    intent: dropped ? { id: dropped.id, state: requeued ? "ready" : dropped.state } : null,
     note: "the resolution lands only through a train verified by CI (invariant 4)",
-    nextSteps: b ? [{ tool: "read_inbox", args: { intentId: b.id }, why: "watch the replayed intent ride the next train" }] : [],
+    nextSteps: dropped ? [{ tool: "read_inbox", args: { intentId: dropped.id }, why: "watch the replayed intent ride the next train" }] : [],
   });
+}
+
+// A replay is a new head on a new base: re-derive the actual footprint
+// (changed files base..head on the replay's fork) and the risk from it
+// instead of keeping the pre-conflict ones. Writes the footprint while
+// the intent is still replaying; null diff = the sha is not readable on
+// that fork (caller refuses). Truncated lists fail closed.
+async function rescoreReplay(
+  deps: ForgeServiceDeps,
+  intent: Intent,
+  base: string,
+  head: string,
+  forkRepo: string | null = intent.forkRepo,
+): Promise<{ risk: number; riskTerms: RiskTerm[]; truncated: boolean; files: string[] } | null> {
+  const { policy } = await deps.loadPolicy(intent.repo);
+  let files: string[] = intent.actualFootprint?.paths ?? [];
+  let truncated = false;
+  if (deps.artifacts && forkRepo && base) {
+    const diff = await changedFiles(deps.artifacts, forkRepo, base, head).catch(() => null);
+    if (!diff) return null;
+    truncated = diff.truncated || diff.changed.length > LIMITS.footprintEntries;
+    const norm = normalizeFootprint(diff.changed.slice(0, LIMITS.footprintEntries));
+    files = norm.ok ? norm.value.paths : [];
+  }
+  const scored = scoreRisk({ footprint: intent.footprint, actualFootprint: { paths: files }, policy, llmReplay: false, truncated });
+  await deps.db
+    .prepare("UPDATE intents SET actual_footprint_json = ?, risk = ?, risk_terms_json = ?, updated_at = ? WHERE id = ? AND state = 'replaying'")
+    .bind(JSON.stringify({ paths: files }), scored.risk, JSON.stringify(scored.terms), nowIso(), intent.id)
+    .run();
+  return { risk: scored.risk, riskTerms: scored.terms, truncated, files };
 }
 
 // Train-stream conflicts (train.ts): intent_a is the intent the train
@@ -1506,6 +1554,13 @@ async function resolveConflictViaTrains(
   if (verifyOn && deps.artifacts) {
     const exists = await forkHasCommit(deps, verifyOn, sha);
     if (!exists) return forgeFail("push_unverified", `${sha.slice(0, 12)} is not on fork ${verifyOn}`);
+  }
+  // New head, new base: recompute the actual footprint before the train
+  // stream re-enqueues it (enqueueReady re-scores from that footprint).
+  if (intent && intent.state === "replaying" && deps.artifacts && verifyOn) {
+    const base = (await deps.trunkHead(conflict.repo)) || intent.baseSha;
+    const rescored = await rescoreReplay(deps, intent, base, sha, verifyOn);
+    if (!rescored) return forgeFail("push_unverified", `cannot diff ${sha.slice(0, 12)} against trunk ${base.slice(0, 12)} on ${verifyOn}`, "push the replay built on the current trunk main, then retry");
   }
   const out = await resolve(conflict.id, agent, sha, { forkRepo });
   if ("error" in out) {

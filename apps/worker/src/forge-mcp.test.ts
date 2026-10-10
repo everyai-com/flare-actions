@@ -184,7 +184,7 @@ describe("forge MCP tools: workflow", () => {
     await tool({ ...deps, agent: "beta" }, "report_push", { intentId: bId, sha: sha("6") });
     await tool({ ...deps, agent: "beta" }, "mark_ready", { intentId: bId });
     await transitionIntent(db, bId, "ready", "conflicted");
-    const c = await openConflict(db, { repo: "demo", intentA: (a.data.intent as { id: string }).id, intentB: bId, files: ["src/x.ts"] });
+    const c = await openConflict(db, { repo: "demo", intentA: bId, intentB: (a.data.intent as { id: string }).id, files: ["src/x.ts"] });
     const claimed = await tool({ ...deps, agent: "fixer" }, "claim_conflict", { conflictId: c.id });
     expect(claimed.isError).toBe(false);
     fake.commit(forkB, sha("7"), { "src/x.ts": "x7" });

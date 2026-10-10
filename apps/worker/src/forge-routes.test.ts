@@ -329,12 +329,13 @@ describe("forge routes: conflicts, trains, fork sessions, feed", () => {
     await h.call("POST", `/v1/forge/intents/${bId}/push`, { sha: sha("2"), agent: "beta" });
     await h.call("POST", `/v1/forge/intents/${bId}/ready`, { agent: "beta" });
     expect(await transitionIntent(h.db, bId, "ready", "conflicted")).toBe(true);
-    const conflict = await openConflict(h.db, { repo: "demo", intentA: rec(a.intent).id as string, intentB: bId, files: ["src/api/a.ts"] });
+    // Train convention: intent_a = the dropped intent (b here), intent_b = the other side.
+    const conflict = await openConflict(h.db, { repo: "demo", intentA: bId, intentB: rec(a.intent).id as string, files: ["src/api/a.ts"] });
 
     const list = await h.call("GET", "/v1/forge/conflicts?repo=demo&state=open");
     expect(steps(list.body)[0]).toMatchObject({ tool: "claim_conflict", args: { conflictId: conflict.id } });
     const got = await h.call("GET", `/v1/forge/conflicts/${conflict.id}`);
-    expect(rec(got.body.b).id).toBe(bId);
+    expect(rec(got.body.a).id).toBe(bId);
 
     const claimed = await h.call("POST", `/v1/forge/conflicts/${conflict.id}/claim`, { agent: "fixer" });
     expect(claimed.status).toBe(200);
