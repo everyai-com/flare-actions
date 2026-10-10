@@ -293,6 +293,9 @@ describe("github runner mode settings", () => {
     expect(validateGithubRunnerGroupName("")).not.toBeNull();
     expect(validateGithubRunnerGroupName("x".repeat(101))).not.toBeNull();
     expect(validateGithubRunnerGroupName("has\nnewline")).not.toBeNull();
+    expect(validateGithubRunnerGroupName("del\x7fchar")).not.toBeNull();
+    expect(validateGithubRunnerGroupName("  ")).not.toBeNull();
+    expect(validateGithubRunnerGroupName("Équipe GPU")).toBeNull();
   });
 
   it("caches group ids with TTL, tolerance, and bounds", () => {

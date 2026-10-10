@@ -48,6 +48,7 @@ export const SCHEMA_STATEMENTS = [
     attempts INTEGER NOT NULL DEFAULT 0,
     started_at TEXT,
     finished_at TEXT,
+    billed_ms INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
@@ -269,6 +270,7 @@ export const SCHEMA_STATEMENTS = [
     verdict_rank INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    polled_at TEXT NOT NULL DEFAULT '',
     UNIQUE (tournament_id, agent)
   )`,
   `CREATE TABLE IF NOT EXISTS verdicts (
@@ -286,6 +288,7 @@ export const SCHEMA_STATEMENTS = [
     created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_attempts_tournament ON attempts(tournament_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_attempts_polled ON attempts(polled_at)`,
   `CREATE INDEX IF NOT EXISTS idx_ledger_tournament ON ledger(tournament_id)`,
   `CREATE TABLE IF NOT EXISTS pairing_codes (
     code_hash TEXT PRIMARY KEY,
@@ -388,6 +391,102 @@ export const SCHEMA_STATEMENTS = [
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
   )`,
+  // Flare Forge (migration 0045, intents-core.ts states).
+  `CREATE TABLE IF NOT EXISTS goals (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'done', 'abandoned')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_goals_repo_state ON goals(repo, state)`,
+  `CREATE TABLE IF NOT EXISTS intents (
+    id TEXT PRIMARY KEY,
+    goal_id TEXT,
+    repo TEXT NOT NULL,
+    agent TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    reasoning TEXT NOT NULL DEFAULT '',
+    accept_check TEXT NOT NULL DEFAULT '',
+    footprint_json TEXT NOT NULL DEFAULT '{"paths":[]}',
+    actual_footprint_json TEXT,
+    fork_repo TEXT,
+    state TEXT NOT NULL DEFAULT 'draft' CHECK (state IN (
+      'draft', 'awaiting_plan', 'claimed', 'working', 'ready', 'in_train',
+      'landed', 'conflicted', 'replaying', 'bisected', 'failed', 'expired',
+      'abandoned')),
+    risk INTEGER NOT NULL DEFAULT 0 CHECK (risk BETWEEN 0 AND 100),
+    risk_terms_json TEXT NOT NULL DEFAULT '[]',
+    base_sha TEXT NOT NULL DEFAULT '',
+    head_sha TEXT NOT NULL DEFAULT '',
+    train_id TEXT,
+    landed_sha TEXT,
+    plan_approved_by TEXT,
+    lease_expires_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_intents_repo_state ON intents(repo, state)`,
+  `CREATE INDEX IF NOT EXISTS idx_intents_goal ON intents(goal_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_intents_fork ON intents(fork_repo)`,
+  `CREATE INDEX IF NOT EXISTS idx_intents_lease ON intents(state, lease_expires_at)`,
+  `CREATE TABLE IF NOT EXISTS conflicts (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    intent_a TEXT NOT NULL,
+    intent_b TEXT NOT NULL,
+    files_json TEXT NOT NULL DEFAULT '[]',
+    state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'claimed', 'resolved', 'failed', 'abandoned')),
+    resolver_agent TEXT,
+    resolution_sha TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_conflicts_repo_state ON conflicts(repo, state)`,
+  `CREATE INDEX IF NOT EXISTS idx_conflicts_intent_a ON conflicts(intent_a)`,
+  `CREATE INDEX IF NOT EXISTS idx_conflicts_intent_b ON conflicts(intent_b)`,
+  `CREATE TABLE IF NOT EXISTS trains (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    lane INTEGER NOT NULL DEFAULT 0,
+    base_sha TEXT NOT NULL DEFAULT '',
+    head_sha TEXT NOT NULL DEFAULT '',
+    intents_json TEXT NOT NULL DEFAULT '[]',
+    run_id TEXT,
+    state TEXT NOT NULL DEFAULT 'forming' CHECK (state IN (
+      'forming', 'merging', 'verifying', 'landed', 'failed', 'bisected', 'aborted')),
+    parent_train_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_trains_repo_state ON trains(repo, state)`,
+  `CREATE INDEX IF NOT EXISTS idx_trains_run ON trains(run_id)`,
+  `CREATE TABLE IF NOT EXISTS intent_messages (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    to_intent TEXT NOT NULL,
+    from_intent TEXT,
+    from_agent TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_intent_messages_inbox ON intent_messages(to_intent, delivered_at, created_at)`,
+  `CREATE TABLE IF NOT EXISTS forge_ledger (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    subject_kind TEXT NOT NULL CHECK (subject_kind IN ('goal', 'intent', 'conflict', 'train')),
+    subject_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    actor TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_forge_ledger_subject ON forge_ledger(subject_kind, subject_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_forge_ledger_repo ON forge_ledger(repo, created_at)`,
 ];
 
 // Additive columns for databases created before the matching migration.
@@ -416,6 +515,8 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE runs ADD COLUMN profile TEXT`,
   `ALTER TABLE runs ADD COLUMN attested_by TEXT`,
   `ALTER TABLE gh_runner_jobs ADD COLUMN log_digest TEXT`,
+  `ALTER TABLE jobs ADD COLUMN billed_ms INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE attempts ADD COLUMN polled_at TEXT NOT NULL DEFAULT ''`,
 ];
 
 let schemaPromise: Promise<void> | null = null;

@@ -85,9 +85,14 @@ export function parseCloudEntitlements(raw: string | null): { maxConcurrentJobs:
 // Sum of per-job durations in ms (compute spend), unlike the wall
 // clock in analytics runDurationMs: two parallel 1-minute jobs burn
 // 2 compute-minutes. Jobs that never started carry no signal.
-export function runComputeMs(jobs: { started_at: string | null; finished_at: string | null }[]): number {
+// billed_ms carries earlier attempts (retries, reruns) of each job.
+type MeteredJob = { started_at: string | null; finished_at: string | null; billed_ms?: number | null };
+
+export function runComputeMs(jobs: MeteredJob[]): number {
   let total = 0;
   for (const job of jobs) {
+    const prior = job.billed_ms;
+    if (typeof prior === "number" && Number.isFinite(prior) && prior > 0) total += prior;
     if (!job.started_at || !job.finished_at) continue;
     const s = Date.parse(job.started_at);
     const f = Date.parse(job.finished_at);
@@ -99,7 +104,7 @@ export function runComputeMs(jobs: { started_at: string | null; finished_at: str
 
 // Cents for a run: whole minutes, rounded up, minimum one minute
 // once anything ran (a 5s run still costs a minute of bookkeeping).
-export function runSpendCents(jobs: { started_at: string | null; finished_at: string | null }[]): number {
+export function runSpendCents(jobs: MeteredJob[]): number {
   const ms = runComputeMs(jobs);
   if (ms <= 0) return 0;
   return Math.ceil(ms / 60000) * CLOUD_CENTS_PER_MINUTE;
@@ -119,23 +124,35 @@ function isoNow(): string {
 }
 
 // Prepaid top-up. ref is caller-supplied for idempotent retries
-// (grants from a retried webhook pass the same ref twice).
+// (grants from a retried webhook pass the same ref twice). A replay
+// reports `duplicate: true`; a reused ref with a different amount (or
+// a non-grant row) is a conflict, never a silent no-op — future
+// payment proofs need to tell a replay from a new purchase.
 export async function grantCredits(
   db: Db,
   amountCents: number,
   memo: string,
   ref: string,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; duplicate: boolean } | { ok: false; error: string; conflict?: true }> {
   if (!validCents(amountCents)) return { ok: false, error: "amountCents must be an integer 1..1000000000" };
   if (typeof memo !== "string" || memo.length > 280) return { ok: false, error: "memo must be a string ≤280 chars" };
   if (typeof ref !== "string" || ref.length < 1 || ref.length > 128) {
     return { ok: false, error: "ref must be a string 1..128 chars" };
   }
-  await db
+  const res = (await db
     .prepare("INSERT OR IGNORE INTO credit_ledger (kind, amount_cents, memo, ref, created_at) VALUES ('grant', ?, ?, ?, ?)")
     .bind(amountCents, memo, ref, isoNow())
-    .run();
-  return { ok: true };
+    .run()) as { meta?: { changes?: number } } | undefined;
+  if ((res?.meta?.changes ?? 0) > 0) return { ok: true, duplicate: false };
+  const existing = await db
+    .prepare("SELECT kind, amount_cents FROM credit_ledger WHERE ref = ?")
+    .bind(ref)
+    .first<{ kind: string; amount_cents: number }>();
+  if (!existing) return { ok: false, error: "grant was not recorded — retry" };
+  if (existing.kind !== "grant" || existing.amount_cents !== amountCents) {
+    return { ok: false, error: "ref already used by a different ledger entry", conflict: true };
+  }
+  return { ok: true, duplicate: true };
 }
 
 // Current balance in cents (grants minus spend). May go negative —
@@ -171,22 +188,32 @@ export async function recentLedger(db: Db, limit: number): Promise<LedgerRow[]> 
   return res.results ?? [];
 }
 
-// Exactly-once spend for a terminal run: the UNIQUE ref
-// (`run:<runId>`) makes redelivered rollups a no-op, and a zero
-// spend (nothing ran) writes nothing. The caller (rollup) checks the
-// D1 cloud_metering switch first — this module stays free of settings
-// imports so db.ts can use it without a cycle. Best-effort: a ledger
-// write must never fail a status update.
-export async function recordRunSpend(
-  db: Db,
-  runId: string,
-  jobs: { started_at: string | null; finished_at: string | null }[],
-): Promise<void> {
+// Exactly-once spend per terminal rollup. A run can go terminal more
+// than once (job reruns), so each rollup charges only the delta over
+// what the run has already paid, under a ref keyed by the cumulative
+// total (`run:<runId>:<cents>`): redelivered rollups of the same state
+// collide on the UNIQUE ref, and pre-existing `run:<runId>` rows count
+// toward the paid total. Zero spend writes nothing. The caller (rollup)
+// checks the D1 cloud_metering switch first — this module stays free of
+// settings imports so db.ts can use it without a cycle. Best-effort: a
+// ledger write must never fail a status update.
+export async function recordRunSpend(db: Db, runId: string, jobs: MeteredJob[]): Promise<void> {
   const cents = runSpendCents(jobs);
   if (cents <= 0) return;
-  await db
-    .prepare("INSERT OR IGNORE INTO credit_ledger (kind, amount_cents, memo, ref, created_at) VALUES ('spend', ?, ?, ?, ?)")
-    .bind(cents, `run ${runId}`, `run:${runId}`, isoNow())
-    .run()
-    .catch(() => undefined);
+  try {
+    const paid = await db
+      .prepare(
+        "SELECT COALESCE(SUM(amount_cents), 0) AS paid FROM credit_ledger WHERE kind = 'spend' AND (ref = ? OR ref GLOB ?)",
+      )
+      .bind(`run:${runId}`, `run:${runId}:*`)
+      .first<{ paid: number }>();
+    const delta = cents - (paid?.paid ?? 0);
+    if (delta <= 0) return;
+    await db
+      .prepare("INSERT OR IGNORE INTO credit_ledger (kind, amount_cents, memo, ref, created_at) VALUES ('spend', ?, ?, ?, ?)")
+      .bind(delta, `run ${runId}`, `run:${runId}:${cents}`, isoNow())
+      .run();
+  } catch {
+    // Best-effort by contract (see above).
+  }
 }

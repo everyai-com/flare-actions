@@ -26,10 +26,15 @@ export async function resolveTournament(db: Db, tournamentId: string): Promise<R
     .first<{ run_id: string | null; last_seen_sha: string }>();
   if (!winner?.run_id || !winner.last_seen_sha) return { status: "skipped", reason: "no-winner" };
   const now = nowIso();
-  await db
-    .prepare("UPDATE tournaments SET winner_run_id = ?, resolved_sha = ?, state = 'decided', updated_at = ? WHERE id = ?")
+  // Conditional transition: of two concurrent ticks only the one that
+  // flips verifying -> decided writes the ledger row.
+  const res = (await db
+    .prepare(
+      "UPDATE tournaments SET winner_run_id = ?, resolved_sha = ?, state = 'decided', updated_at = ? WHERE id = ? AND state = 'verifying'",
+    )
     .bind(winner.run_id, winner.last_seen_sha, now, tournamentId)
-    .run();
+    .run()) as { meta?: { changes?: number } } | null;
+  if ((res?.meta?.changes ?? 0) === 0) return { status: "skipped", reason: "already" };
   await appendLedger(db, tournamentId, "resolved", `winner run ${winner.run_id} @ ${winner.last_seen_sha.slice(0, 12)}`);
   return { status: "resolved", winnerRunId: winner.run_id, resolvedSha: winner.last_seen_sha };
 }

@@ -130,7 +130,7 @@ export class RemoteBoxManager implements DevboxOps {
         body: JSON.stringify(body),
       });
     } catch (err) {
-      throw new Error(`remote devbox ${op} failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`remote devbox ${op} failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     const payload = (await res.json().catch(() => null)) as Record<string, unknown> | null;
     if (!res.ok) {
@@ -147,7 +147,7 @@ export class RemoteBoxManager implements DevboxOps {
         headers: { Authorization: `Bearer ${this.token}` },
       });
     } catch (err) {
-      throw new Error(`remote devbox list failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`remote devbox list failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     const payload = (await res.json().catch(() => null)) as { boxes?: RemoteBoxJson[] } | null;
     if (!res.ok || !payload || !Array.isArray(payload.boxes)) {

@@ -7,7 +7,7 @@ import { ACTIONS_LIST_USD_PER_MIN } from "./cost";
 import { labelsMatch, splitLabels } from "./fairness";
 import { deleteJobLogIndex } from "./search";
 import { storeReceiptForRun } from "./attestation";
-import { recordRunSpend } from "./cloud";
+import { parseCloudEntitlements, recordRunSpend } from "./cloud";
 
 export interface RunRow {
   id: string;
@@ -56,6 +56,8 @@ export interface JobRow {
   finished_at: string | null;
   retained_until: string | null;
   prior_ms: number;
+  // Compute ms of earlier attempts (retries/reruns) still owed to metering.
+  billed_ms?: number;
   created_at: string;
   updated_at: string;
 }
@@ -543,12 +545,31 @@ export async function readNeedsContext(
 // Atomic claim: exactly one executor (runner or seat) wins a job. The
 // conditional UPDATE plus the changed-row check close the read-then-act
 // race between concurrent pollers.
-export async function claimJob(db: Db, id: string): Promise<boolean> {
+// `maxRunning` (hosted plan cap) folds the concurrency check into the
+// same statement, so concurrent claimers can never overrun the cap.
+export async function claimJob(db: Db, id: string, maxRunning: number | null = null): Promise<boolean> {
+  const capped = maxRunning !== null;
   const res = (await db
-    .prepare("UPDATE jobs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ? AND status = 'queued'")
-    .bind(nowIso(), nowIso(), id)
+    .prepare(
+      "UPDATE jobs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ? AND status = 'queued'" +
+        (capped ? " AND (SELECT COUNT(*) FROM jobs WHERE status = 'running') < ?" : ""),
+    )
+    .bind(nowIso(), nowIso(), id, ...(capped ? [maxRunning] : []))
     .run()) as { meta?: { changes?: number } };
   return (res?.meta?.changes ?? 0) > 0;
+}
+
+// Hosted plan's concurrent-job cap (D1 cloud_entitlements), or null
+// for unlimited. Callers gate on the env-only hosted bit first, so
+// self-hosted deploys never pay this read.
+export async function cloudRunningCap(db: Db): Promise<number | null> {
+  const raw = await getSetting(db, SETTING_KEYS.cloudEntitlements).catch(() => null);
+  return parseCloudEntitlements(raw).maxConcurrentJobs;
+}
+
+export async function countRunningJobs(db: Db): Promise<number> {
+  const row = await db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running'").bind().first<{ n: number }>();
+  return row?.n ?? 0;
 }
 
 // Append one line to a job's log without touching its status.
@@ -561,14 +582,32 @@ export async function appendJobLog(db: Db, id: string, text: string): Promise<vo
     .run();
 }
 
+// Whole ms from started_at to the bound end time (first `?`), never
+// negative; a never-started attempt contributes nothing.
+const ELAPSED_MS_SQL =
+  "CASE WHEN started_at IS NULL THEN 0 ELSE MAX(0, CAST(ROUND((julianday(?) - julianday(started_at)) * 86400000) AS INTEGER)) END";
+
 // Release a job back to the queue (seat fallback: something this
 // executor can't do — a BYO runner may still take it). True when the
 // job was actually running (a concurrent finish wins the race).
-export async function releaseJob(db: Db, id: string): Promise<boolean> {
-  const res = (await db
-    .prepare("UPDATE jobs SET status = 'queued', started_at = NULL, updated_at = ? WHERE id = ? AND status = 'running'")
-    .bind(nowIso(), id)
-    .run()) as { meta?: { changes?: number } };
+// `bill` folds the released attempt's elapsed time into billed_ms so
+// metering still charges it (failed attempts before a retry). Seat
+// fallbacks and dead-executor requeues pass false: those are platform
+// faults, not compute the customer chose to spend.
+export async function releaseJob(db: Db, id: string, opts: { bill?: boolean } = {}): Promise<boolean> {
+  const now = nowIso();
+  const res = (await (opts.bill
+    ? db
+        .prepare(
+          `UPDATE jobs SET status = 'queued',
+             billed_ms = billed_ms + ${ELAPSED_MS_SQL},
+             started_at = NULL, updated_at = ? WHERE id = ? AND status = 'running'`,
+        )
+        .bind(now, now, id)
+    : db
+        .prepare("UPDATE jobs SET status = 'queued', started_at = NULL, updated_at = ? WHERE id = ? AND status = 'running'")
+        .bind(now, id)
+  ).run()) as { meta?: { changes?: number } };
   return (res?.meta?.changes ?? 0) > 0;
 }
 
@@ -675,8 +714,11 @@ export async function claimNextJob(
   db: Db,
   runnerLabels: string[] = [],
   allowedRepos: string[] = [],
-  opts: { fairSharePerRepo?: number; fairSharePerAgent?: number } = {},
+  opts: { fairSharePerRepo?: number; fairSharePerAgent?: number; maxRunning?: number | null } = {},
 ): Promise<JobWithSource | null> {
+  // Hosted plan saturated: nothing to scan (claimJob re-checks atomically).
+  const maxRunning = opts.maxRunning ?? null;
+  if (maxRunning !== null && (await countRunningJobs(db)) >= maxRunning) return null;
   // Artifacts runs execute seats-only (BYO runners check out from GitHub
   // and cannot reach Artifacts remotes), so both scans below exclude
   // event 'artifacts' in SQL. Seats claim their woken jobs by id.
@@ -736,7 +778,7 @@ export async function claimNextJob(
       if (!labelsMatch(job.labels ?? "", runnerLabels)) continue;
       if (cap > 0 && (runningByRepo.get(job.repo) ?? 0) >= cap) continue;
       if (agentCap > 0 && job.agent && (runningByAgent.get(job.agent) ?? 0) >= agentCap) continue;
-      if (await claimJob(db, job.id)) return { ...job, status: "running" };
+      if (await claimJob(db, job.id, maxRunning)) return { ...job, status: "running" };
     }
     const last = res.results[res.results.length - 1];
     afterPriority = last.priority ?? 0;
@@ -818,9 +860,13 @@ export async function rerunJob(db: Db, jobId: string): Promise<(JobRow & { repo:
   if (job.status === "queued" || job.status === "running" || job.status === "blocked") return job;
   await db
     .prepare(
-      "UPDATE jobs SET status = 'queued', log = '', result = '', triage = '', attempts = 0, started_at = NULL, finished_at = NULL, updated_at = ? WHERE id = ?",
+      // The finished attempt's time moves into billed_ms before the
+      // reset so a rerun is metered again, not free.
+      `UPDATE jobs SET status = 'queued', log = '', result = '', triage = '', attempts = 0,
+         billed_ms = billed_ms + ${ELAPSED_MS_SQL.replace("julianday(?)", "julianday(COALESCE(finished_at, ?))")},
+         started_at = NULL, finished_at = NULL, updated_at = ? WHERE id = ?`,
     )
-    .bind(nowIso(), jobId)
+    .bind(nowIso(), nowIso(), jobId)
     .run();
   // The retry re-indexes on completion; drop the stale slice now so a
   // search during the re-run doesn't surface the previous attempt.

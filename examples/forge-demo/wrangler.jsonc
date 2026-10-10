@@ -1,0 +1,9 @@
+// Deployable as-is (`npx wrangler deploy` from this directory); the demo
+// only needs the tests. No bindings: the store is in-memory until the
+// D1 migration in migrations/ lands.
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "forge-demo-bookshelf",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01"
+}

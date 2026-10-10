@@ -127,9 +127,13 @@ class MemDb implements Db {
       return {};
     }
     if (norm.startsWith("UPDATE jobs SET status = 'queued'")) {
-      const job = this.jobs.get(values[1] as string);
+      // The job id binds last; the billing variant binds the end time first.
+            const job = this.jobs.get(values[values.length - 1] as string);
       if (job && job.status === "running") {
-        job.status = "queued";
+        if (norm.includes("billed_ms = billed_ms +") && typeof job.started_at === "string") {
+                job.billed_ms = ((job.billed_ms as number) ?? 0) + Math.max(0, Date.parse(values[0] as string) - Date.parse(job.started_at));
+              }
+              job.status = "queued";
         job.started_at = null;
         return { meta: { changes: 1 } };
       }

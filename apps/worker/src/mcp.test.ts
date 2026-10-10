@@ -172,6 +172,45 @@ describe("mcp", () => {
     expect(detail.jobs[0].steps[0].exitCode).toBe(0);
   });
 
+  it("scopes list_runs, get_run, digests, reruns, and flaky to the token allowlist", async () => {
+    const seen: { sql: string; binds: unknown[] }[] = [];
+    const recording: Db = {
+      prepare(sql: string) {
+        return {
+          bind(...values: unknown[]) {
+            seen.push({ sql, binds: values });
+            return {
+              all: async <T,>() => ({ results: (/FROM jobs/.test(sql) ? [JOB] : [RUN]) as T[] }),
+              first: async <T,>() => RUN as T,
+              run: async () => ({}),
+            };
+          },
+        };
+      },
+    };
+    const call = (name: string, args: Record<string, unknown>, repos: string[]) =>
+      rpc(deps({ db: recording, repos }), { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
+    await call("list_runs", {}, ["other/r"]);
+    const listSql = seen.find((q) => q.sql.includes("FROM runs") && q.sql.includes("LIMIT"));
+    expect(listSql?.sql).toContain("lower(repo) IN");
+    expect(listSql?.binds).toContain("other/r");
+    // RUN lives in o/r: a token scoped elsewhere sees "not found".
+    for (const [name, args] of [
+      ["get_run", { runId: "run1" }],
+      ["get_run_digest", { runId: "run1" }],
+      ["rerun_job", { runId: "run1", jobId: "job1" }],
+    ] as const) {
+      const denied = toolErr((await call(name, args, ["other/r"])).body);
+      expect(denied.isError).toBe(true);
+      expect(denied.text).toContain("not found");
+    }
+    const flaky = toolErr((await call("get_flaky", { repo: "o/r" }, ["other/r"])).body);
+    expect(flaky.isError).toBe(true);
+    // In scope: detail comes back.
+    const ok = await call("get_run", { runId: "run1" }, ["o/*"]);
+    expect(JSON.parse(text(ok.body)).run.id).toBe("run1");
+  });
+
   it("passes the CI profile override through dispatch_run", async () => {
     let seen: unknown;
     const d = deps({ dispatchRun: async (input) => { seen = input; return { runId: "run9", jobIds: ["job9"] }; } });
@@ -357,7 +396,7 @@ describe("mcp", () => {
               },
               first: async <T,>() => {
                 if (norm.startsWith("SELECT * FROM tournaments")) {
-                  return { id: "t1", intent: "fix it", state: "verifying" } as T;
+                  return { id: "t1", intent: "fix it", state: "verifying", source_repo: "base" } as T;
                 }
                 if (norm.startsWith("SELECT * FROM verdicts")) {
                   return { tournament_id: "t1", ranking: "[\"a1\"]", rationale: "a1 green", model: "m" } as T;
@@ -388,6 +427,18 @@ describe("mcp", () => {
       params: { name: "tournament_why", arguments: { tournamentId: "nope" } },
     });
     expect(toolErr(missing.body).isError).toBe(true);
+    // Repo scope: the race's source is ns/base.
+    const why = (repos: string[]) =>
+      rpc(deps({ db: boardDb, repos, artifactsNamespace: "ns" }), {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "tournament_why", arguments: { tournamentId: "t1" } },
+      });
+    const denied = toolErr((await why(["ns/other"])).body);
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain("tournament not found");
+    expect(JSON.parse(text((await why(["ns/base"])).body)).intent).toBe("fix it");
   });
 
   it("exposes discovery metadata", () => {

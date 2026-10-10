@@ -8,6 +8,7 @@ import {
   cancelSupersededBranchRuns,
   claimAdminMarker,
   claimNextJob,
+  cloudRunningCap,
   claimWebhookDelivery,
   createJob,
   createMonitor,
@@ -101,7 +102,7 @@ import {
   updateRunningJob,
   usageStats,
 } from "./db";
-import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, getDefaultBranch, getInstallationToken, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, resolveRunnerGroupId, updatePullRequestBranch, verifyGitHubSignature } from "./github";
+import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, getDefaultBranch, getInstallationToken, getPullRequestHead, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, resolveRunnerGroupId, updatePullRequestBranch, verifyGitHubSignature } from "./github";
 import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
 import { DASHBOARD_HTML } from "./dashboard";
@@ -227,9 +228,11 @@ import {
   claimAttempt,
   createTournament,
   getAttemptRace,
+  getTournament,
   getTournamentBoard,
   listTournaments,
   pollTournamentAttempts,
+  tournamentAllowed,
   validateTournamentClaim,
   validateTournamentCreate,
 } from "./tournaments";
@@ -240,7 +243,7 @@ import {
   getRepoCommits,
   getRepoInfo,
   getRepoTree,
-  listRepos,
+  listAllowedRepos,
   normalizeRepoPath,
   validateRef,
 } from "./repos";
@@ -260,6 +263,7 @@ import {
 import git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
 import { MemoryFS } from "./memory-fs";
+import { registerTrainDispatch, runTrainTick } from "./train-workflow";
 import { cronMatches, validateCron } from "./cron";
 import { reportJobCheck } from "./checks";
 import {
@@ -272,7 +276,7 @@ import {
 import { MAX_JUNIT_BYTES, parseJUnit } from "./junit";
 import { compileLogQuery, indexJobLog, searchLogs } from "./search";
 import { lookupPriorMs, recordRuntimePrior } from "./priors";
-import { apiError, dispatchErrorCode } from "./errors";
+import { apiError, dispatchErrorCode, type ErrorCode } from "./errors";
 import { billableWindow, fetchBillableUsage, fetchR2Bandwidth, summarizeBillableUsage, type R2BandwidthSummary } from "./billing";
 import { TRIAGE_MODEL } from "./triage";
 import { upsertPrComment } from "./prcomment";
@@ -294,6 +298,8 @@ import {
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import type { OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
 import { buildMcpServer, mcpDiscovery } from "./mcp";
+import { forgeDepsFromEnv, handleForgeRequest } from "./forge-routes";
+import { forgeAdaptersFromEnv } from "./forge-adapters";
 import {
   describeScope,
   handleAuthorizeGet,
@@ -473,6 +479,7 @@ async function serveMcpRequest(
       repos: props.repos,
       isAdmin: props.isAdmin,
       artifacts: env.CACHE,
+      artifactsNamespace: env.ARTIFACTS_NAMESPACE ?? "",
       gatewayId: env.AI_GATEWAY_ID,
       agent: request.headers.get("X-Flare-Agent") ?? request.headers.get("User-Agent") ?? undefined,
       dispatchRun: async (input) => {
@@ -495,7 +502,7 @@ async function serveMcpRequest(
         return { runId: out.runId, jobIds: out.jobIds };
       },
       rerunJob: async (runId, jobId) => {
-        const out = await rerunJobAndQueue(env, runId, jobId, basin);
+        const out = await rerunJobAndQueue(env, ctx, props.actor, runId, jobId, basin);
         if (out.ok) {
           await audit(env.DB, props.actor, "job.rerun", jobId);
           await wakeSeat(env, jobId);
@@ -507,6 +514,8 @@ async function serveMcpRequest(
         return { timedOut: out ? out.timedOut : true };
       },
       digestRun: async (runId) => buildRunDigest(env.DB, runId),
+      forge: forgeDepsFromEnv(env, forgeAdaptersFromEnv(env, ctx ? { waitUntil: (p) => ctx.waitUntil(p) } : {})),
+      actor: props.actor,
     }),
   );
   return handler.fetch(request);
@@ -1817,14 +1826,44 @@ async function dispatchRun(
   return { runId, jobIds, queuedIds, profile, reused };
 }
 
+// A rerun spends compute like a dispatch, so it passes the same gates
+// (pause, budget block, hosted plan cap) before the job is reset.
 async function rerunJobAndQueue(
   env: WorkerEnv,
+  ctx: ExecutionContext | undefined,
+  actor: string,
   runId: string,
   jobId: string,
   basin?: BasinSink,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; code?: ErrorCode; status?: number }> {
   const job = await getJob(env.DB, jobId);
-  if (!job || job.run_id !== runId) return { ok: false, error: "job not found" };
+  if (!job || job.run_id !== runId) return { ok: false, error: "job not found", status: 404 };
+  const run = await getRun(env.DB, runId);
+  if (!run) return { ok: false, error: "job not found", status: 404 };
+  if (await isRepoPaused(env.DB, run.repo)) {
+    return { ok: false, code: "repo_paused", error: `${run.repo} is paused for runaway spend`, status: 429 };
+  }
+  const verdict = await budgetVerdict(env, run.repo);
+  if (ctx) await maybeAutoPause(env, ctx, run.repo, actor, verdict);
+  if (verdict?.mode === "block") {
+    await audit(env.DB, actor, "budget.blocked", `${run.repo} ${verdict.usedMinutes}/${verdict.cap}`);
+    return {
+      ok: false,
+      code: "budget_exceeded",
+      error: `monthly budget exceeded for ${run.repo} (${verdict.usedMinutes}/${verdict.cap} compute-minutes)`,
+      status: 429,
+    };
+  }
+  const cloud = await cloudVerdict(env);
+  if (cloud) {
+    await audit(env.DB, actor, "cloud.plan_limited", `${run.repo} ${cloud.used}/${cloud.cap}`);
+    return {
+      ok: false,
+      code: "plan_limit_exceeded",
+      error: `Flare Cloud plan saturated (${cloud.used}/${cloud.cap} concurrent jobs)`,
+      status: 429,
+    };
+  }
   const reset = await rerunJob(env.DB, jobId);
   if (!reset) return { ok: false, error: "job not found" };
   await rollupRunStatus(env.DB, runId, env.ANALYTICS, basin, cloudMetering(env));
@@ -2383,8 +2422,13 @@ async function runMergeQueueTick(
         },
         updateBranch: async (repo, pr) => {
           const token = await mintInstallationTokenFor(env, await latestInstallationId(env.DB, repo));
-          if (!token) return false;
+          if (!token) return "failed";
           return updatePullRequestBranch(token, repo, pr);
+        },
+        prHead: async (repo, pr) => {
+          const token = await mintInstallationTokenFor(env, await latestInstallationId(env.DB, repo));
+          if (!token) return null;
+          return getPullRequestHead(token, repo, pr);
         },
         prFiles: async (repo, pr) => {
           const token = await mintInstallationTokenFor(env, await latestInstallationId(env.DB, repo));
@@ -2402,6 +2446,20 @@ async function runMergeQueueTick(
     return { started: 0, landed: 0, failed: 0, requeued: 0 };
   }
 }
+
+// --- Forge coordinator (stream A): Durable Object + Workflow classes ---
+export { RepoCoordinator, ForgeFeed } from "./coordinator";
+export { ForgePushWorkflow } from "./forge-push-workflow";
+// --- end Forge coordinator ---
+// Forge trains (train-workflow.ts): the Workflow class is a main-module
+// export, and trains dispatch CI through the same dispatchRun + seat
+// wake path as every other run.
+export { TrainWorkflow } from "./train-workflow";
+registerTrainDispatch(async (env, input) => {
+  const out = await dispatchRun(env, input);
+  for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
+  return { runId: out.runId };
+});
 
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
@@ -2716,14 +2774,19 @@ export default {
         if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
           return json({ error: "limit must be an integer 1-100" }, 400);
         }
-        return json({ tournaments: await listTournaments(env.DB, limit) });
+        return json({
+          tournaments: await listTournaments(env.DB, limit, { repos: ident.repos, namespace: env.ARTIFACTS_NAMESPACE ?? "" }),
+        });
       }
       const tournamentMatch = /^\/v1\/tournaments\/([^/]+)$/.exec(url.pathname);
       if (tournamentMatch && request.method === "GET") {
         const ident = await requireScope(request, env, "read");
         if (!ident) return json({ error: "unauthorized" }, 401);
         const board = await getTournamentBoard(env.DB, tournamentMatch[1]);
-        if (!board) return json({ error: "tournament not found" }, 404);
+        // Out-of-scope races answer like unknown ids (no existence leak).
+        if (!board || !tournamentAllowed(ident.repos, env.ARTIFACTS_NAMESPACE ?? "", board.tournament.source_repo)) {
+          return json({ error: "tournament not found" }, 404);
+        }
         return json(board);
       }
       const claimMatch = /^\/v1\/tournaments\/([^/]+)\/claims$/.exec(url.pathname);
@@ -2734,6 +2797,12 @@ export default {
         const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
         const valid = validateTournamentClaim(body);
         if ("error" in valid) return json({ error: valid.error }, 400);
+        if (ident.repos.length > 0) {
+          const target = await getTournament(env.DB, claimMatch[1]);
+          if (!target || !tournamentAllowed(ident.repos, env.ARTIFACTS_NAMESPACE ?? "", target.source_repo)) {
+            return json({ error: "tournament not found" }, 404);
+          }
+        }
         const out = await claimAttempt(env.DB, env.ARTIFACTS, claimMatch[1], valid.agent);
         if ("error" in out) {
           const status = out.error === "already-claimed" ? 409 : out.error === "fork-failed" ? 502 : 400;
@@ -2749,6 +2818,14 @@ export default {
         await audit(env.DB, ident.actor, "tournament.tick", JSON.stringify(tick));
         return json(tick);
       }
+      // Flare Forge (intent-native git): every /v1/forge/* route.
+      const forgeResponse = await handleForgeRequest(
+        request,
+        url,
+        forgeDepsFromEnv(env, forgeAdaptersFromEnv(env, { waitUntil: (p) => ctx.waitUntil(p) })),
+        () => authIdentity(request, env),
+      );
+      if (forgeResponse) return forgeResponse;
       // Forge repository browsing over the ARTIFACTS namespace.
       // Token-scoped per repo like tournament sources (`namespace/name`).
       if (request.method === "GET" && url.pathname === "/v1/repos") {
@@ -2761,10 +2838,9 @@ export default {
         }
         const cursor = url.searchParams.get("cursor") ?? undefined;
         if (cursor && cursor.length > 500) return json({ error: "cursor too long" }, 400);
-        const page = await listRepos(env.ARTIFACTS, limit, cursor);
         const namespace = env.ARTIFACTS_NAMESPACE ?? "";
-        const repos = page.repos.filter((r) => repoAllowed(ident, `${namespace}/${r.name}`));
-        return json({ repos, total: repos.length, ...(page.cursor ? { cursor: page.cursor } : {}) });
+        const allow = ident.repos.length > 0 ? (name: string) => repoAllowed(ident, `${namespace}/${name}`) : null;
+        return json(await listAllowedRepos(env.ARTIFACTS, limit, cursor, allow));
       }
       const repoTreeMatch = /^\/v1\/repos\/([^/]+)\/tree$/.exec(url.pathname);
       if (repoTreeMatch && request.method === "GET") {
@@ -2997,6 +3073,9 @@ export default {
         const job = await claimNextJob(env.DB, labels, ident.repos, {
           fairSharePerRepo: "cap" in fairShare ? fairShare.cap : 0,
           fairSharePerAgent: "cap" in agentShare ? agentShare.cap : 0,
+          // Hosted plans cap concurrently running jobs at claim time too:
+          // dispatch-time checks alone let one dispatch overshoot.
+          maxRunning: hostedMode(env) ? await cloudRunningCap(env.DB) : null,
         });
         if (!job) return json({ job: null }, 200);
         await rollupRunStatus(env.DB, job.run_id, env.ANALYTICS, basinSink(env, ctx), cloudMetering(env));
@@ -3171,8 +3250,11 @@ export default {
         if (!ident) return json({ error: "unauthorized" }, 401);
         const rerunRun = await getRun(env.DB, rerunMatch[1]);
         if (!rerunRun || !repoAllowed(ident, rerunRun.repo)) return json({ error: "job not found" }, 404);
-        const out = await rerunJobAndQueue(env, rerunMatch[1], rerunMatch[2], basinSink(env, ctx));
-        if (!out.ok) return json({ error: out.error ?? "rerun failed" }, 404);
+        const out = await rerunJobAndQueue(env, ctx, ident.actor, rerunMatch[1], rerunMatch[2], basinSink(env, ctx));
+        if (!out.ok) {
+          const message = out.error ?? "rerun failed";
+          return json(out.code ? apiError(out.code, message) : { error: message }, out.status ?? 404);
+        }
         await audit(env.DB, ident.actor, "job.rerun", rerunMatch[2]);
         await wakeSeat(env, rerunMatch[2]);
         return json({ ok: true });
@@ -3850,9 +3932,9 @@ export default {
           typeof body.memo === "string" ? body.memo : "",
           typeof body.ref === "string" && body.ref ? body.ref : crypto.randomUUID(),
         );
-        if (!out.ok) return json({ error: out.error }, 400);
-        await audit(env.DB, ident.actor, "cloud.grant", `${body.amountCents}c`);
-        return json({ ok: true, balanceCents: await creditBalance(env.DB) });
+        if (!out.ok) return json({ error: out.error }, out.conflict ? 409 : 400);
+        await audit(env.DB, ident.actor, out.duplicate ? "cloud.grant_replay" : "cloud.grant", `${body.amountCents}c`);
+        return json({ ok: true, duplicate: out.duplicate, balanceCents: await creditBalance(env.DB) });
       }
       // Ledger balance + recent rows for `cli credits`. Hosted-only.
       if (request.method === "GET" && url.pathname === "/v1/cloud/credits/balance") {
@@ -4246,8 +4328,10 @@ export default {
         const body = (await request.json().catch(() => ({}))) as { email?: unknown; turnstileToken?: unknown };
         const emailErr = validateEmail(body.email);
         const email = emailErr === null ? normalizeEmail(body.email as string) : "";
+        // Magic keys are namespaced so link requests never spend (or
+        // clear) the shared password-login IP window.
         const ipKey = await ipThrottleKey(request);
-        const keys = [...(email ? [`magic:${email}`] : []), ...(ipKey ? [ipKey] : [])];
+        const keys = [...(email ? [`magic:${email}`] : []), ...(ipKey ? [`magic-${ipKey}`] : [])];
         if (await authThrottleBlocked(env.DB, keys)) {
           return json({ error: "too many attempts — try again later" }, 429);
         }
@@ -4262,7 +4346,7 @@ export default {
         if (eligible && sender && mailer) {
           try {
             const token = await createMagicToken(env.DB, email);
-            const link = new URL(`/v1/admin/magic/consume?token=${encodeURIComponent(token)}`, url).toString();
+            const link = new URL(`/dashboard?magic_token=${encodeURIComponent(token)}`, url).toString();
             await mailer.send({
               from: { name: "Flare Actions", email: sender },
               to: email,
@@ -4284,33 +4368,42 @@ export default {
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/magic/consume") {
-        // Consume in the browser: set the session cookie and land on the
-        // dashboard. Failures redirect with a generic code (no oracle).
-        const fail = (code: string): Response =>
-          Response.redirect(new URL(`/dashboard?magic=${code}`, url).toString(), 302);
+        // Legacy link shape. A GET never consumes: mail scanners prefetch
+        // every link, so redemption needs the explicit POST below.
         const token = url.searchParams.get("token") ?? "";
+        const dest = new URL("/dashboard", url);
+        if (token) dest.searchParams.set("magic_token", token);
+        return new Response(null, { status: 302, headers: { Location: dest.pathname + dest.search, "Cache-Control": "no-store" } });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/magic/consume") {
+        // Redeem from the dashboard confirm screen. JSON + no CORS means a
+        // cross-site page cannot submit this (login CSRF); Sec-Fetch-Site
+        // is an extra guard where browsers send it.
+        const site = request.headers.get("sec-fetch-site");
+        if (site !== null && site !== "same-origin" && site !== "none") return json({ error: "cross-site request refused" }, 403);
+        const body = (await request.json().catch(() => ({}))) as { token?: unknown };
+        const token = typeof body.token === "string" ? body.token : "";
         const ipKey = await ipThrottleKey(request);
-        const keys = ipKey ? [ipKey] : [];
-        if (await authThrottleBlocked(env.DB, keys)) return fail("throttled");
+        const keys = ipKey ? [`magic-${ipKey}`] : [];
+        if (await authThrottleBlocked(env.DB, keys)) return json({ error: "too many attempts — try again later" }, 429);
         const email = await consumeMagicToken(env.DB, token);
         if (!email) {
           await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
-          return fail("expired");
+          return json({ error: "login link invalid or expired" }, 404);
         }
         let user = await getUser(env.DB, email);
         if (!user) {
-          if (!(await isOpenRegistration(env))) return fail("expired");
+          if (!(await isOpenRegistration(env))) return json({ error: "login link invalid or expired" }, 404);
           await createUser(env.DB, { email, passwordHash: await hashPassword(crypto.randomUUID()), isAdmin: false });
           user = await getUser(env.DB, email);
-          if (!user) return fail("expired");
+          if (!user) return json({ error: "login link invalid or expired" }, 404);
         }
-        await clearAuthFailures(env.DB, keys);
         const sessionId = await createLoginSession(env.DB, { kind: "email", login: email, isAdmin: user.is_admin === 1 });
         await audit(env.DB, `email:${email}`, "session.login", "");
-        return new Response(null, {
-          status: 302,
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
           headers: {
-            Location: "/dashboard",
+            "Content-Type": "application/json",
             "Cache-Control": "no-store",
             "Set-Cookie": sessionSetCookie(sessionId, url.protocol === "https:"),
           },
@@ -4840,6 +4933,12 @@ export default {
       const mq = await runMergeQueueTick(env, ctx);
       if (mq.started > 0 || mq.landed > 0 || mq.failed > 0 || mq.requeued > 0) {
         log("info", "merge queue tick finished", { ...mq });
+      }
+      try {
+        const trains = await runTrainTick(env);
+        if (trains.cut > 0 || trains.advanced > 0) log("info", "forge train tick finished", { ...trains });
+      } catch (err) {
+        log("warn", "forge train tick failed", { error: String(err) });
       }
     } catch (err) {
       log("error", "scheduled handler failed", { error: String(err) });

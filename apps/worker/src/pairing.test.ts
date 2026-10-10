@@ -15,6 +15,7 @@ class PairDb implements Db {
   codes = new Map<string, { created_by: string; created_at: string; expires_at: string }>();
   topups = new Map<string, { amount_cents: number; memo: string; created_by: string; created_at: string; expires_at: string }>();
   grants = new Map<string, number>();
+  memos = new Map<string, string>();
 
   prepare(sql: string) {
     const norm = sql.replace(/\s+/g, " ").trim();
@@ -92,7 +93,9 @@ class PairDb implements Db {
           }
           if (norm.startsWith("INSERT OR IGNORE INTO credit_ledger")) {
             const ref = values[2] as string;
-            if (!this.grants.has(ref)) this.grants.set(ref, values[0] as number);
+            if (this.grants.has(ref)) return { meta: { changes: 0 } };
+            this.grants.set(ref, values[0] as number);
+            this.memos.set(ref, values[1] as string);
             return { meta: { changes: 1 } };
           }
           throw new Error(`unrouted run: ${norm}`);
@@ -185,6 +188,17 @@ describe("top-up links", () => {
     // Still redeemable after any number of previews (unfurlers safe).
     await previewTopupLink(db, out.link.code);
     expect((await redeemTopupLink(db, out.link.code)).ok).toBe(true);
+  });
+
+  it("never writes the redeemable code into the ledger memo", async () => {
+    const db = new PairDb();
+    const out = await mint(db, { memo: "" });
+    if (!out.ok) throw new Error("mint failed");
+    expect((await redeemTopupLink(db, out.link.code)).ok).toBe(true);
+    const memos = [...db.memos.values()];
+    expect(memos).toHaveLength(1);
+    expect(memos[0]).toMatch(/^top-up [0-9a-f]{8}$/);
+    expect(memos[0]).not.toContain(out.link.code);
   });
 
   it("redeems once: grants the ledger, then the code is dead", async () => {

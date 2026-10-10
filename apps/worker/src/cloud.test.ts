@@ -49,6 +49,18 @@ class CloudDb implements Db {
             const balance = this.ledger.reduce((s, r) => s + (r.kind === "grant" ? r.amountCents : -r.amountCents), 0);
             return { balance } as unknown as T;
           }
+          if (norm.startsWith("SELECT kind, amount_cents FROM credit_ledger WHERE ref")) {
+            const row = this.ledger.find((r) => r.ref === values[0]);
+            return (row ? { kind: row.kind, amount_cents: row.amountCents } : null) as T | null;
+          }
+          if (norm.startsWith("SELECT COALESCE(SUM(amount_cents), 0) AS paid")) {
+            const [exact, glob] = values as [string, string];
+            const prefix = glob.replace(/\*$/, "");
+            const paid = this.ledger
+              .filter((r) => r.kind === "spend" && (r.ref === exact || r.ref.startsWith(prefix)))
+              .reduce((sum, r) => sum + r.amountCents, 0);
+            return { paid } as unknown as T;
+          }
           if (norm.startsWith("SELECT COUNT(*) AS n FROM jobs")) {
             const n = this.jobs.filter((j) => j.status === "queued" || j.status === "running" || j.status === "blocked").length;
             return { n } as unknown as T;
@@ -59,8 +71,9 @@ class CloudDb implements Db {
           if (norm.startsWith("INSERT OR IGNORE INTO credit_ledger")) {
             const [amountCents, memo, ref] = values as [number, string, string];
             const kind = norm.includes("VALUES ('grant'") ? "grant" : "spend";
-            if (!this.ledger.some((r) => r.ref === ref)) this.ledger.push({ kind, amountCents, memo, ref });
-            return {};
+            if (this.ledger.some((r) => r.ref === ref)) return { meta: { changes: 0 } };
+            this.ledger.push({ kind, amountCents, memo, ref });
+            return { meta: { changes: 1 } };
           }
           if (norm.startsWith("UPDATE runs SET status")) {
             this.runStatus = values[0] as string;
@@ -119,7 +132,7 @@ describe("credit ledger", () => {
   it("grants add, spends subtract, empty is zero", async () => {
     const db = new CloudDb();
     expect(await creditBalance(db)).toBe(0);
-    expect(await grantCredits(db, 500, "top-up", "grant:1")).toEqual({ ok: true });
+    expect(await grantCredits(db, 500, "top-up", "grant:1")).toEqual({ ok: true, duplicate: false });
     await recordRunSpend(db, "r1", [stamp("2026-10-09T00:00:00Z", "2026-10-09T00:02:00Z")]);
     expect(await creditBalance(db)).toBe(498);
   });
@@ -134,9 +147,17 @@ describe("credit ledger", () => {
   });
   it("grants are idempotent on ref (retried billing webhooks)", async () => {
     const db = new CloudDb();
-    await grantCredits(db, 100, "", "grant:dup");
-    await grantCredits(db, 100, "", "grant:dup");
+    expect(await grantCredits(db, 100, "", "grant:dup")).toEqual({ ok: true, duplicate: false });
+    expect(await grantCredits(db, 100, "", "grant:dup")).toEqual({ ok: true, duplicate: true });
     expect(await creditBalance(db)).toBe(100);
+  });
+  it("rejects a reused ref with a different amount or kind", async () => {
+    const db = new CloudDb();
+    await grantCredits(db, 100, "", "grant:x");
+    expect(await grantCredits(db, 500, "", "grant:x")).toMatchObject({ ok: false, conflict: true });
+    await recordRunSpend(db, "r5", [stamp("2026-10-09T00:00:00Z", "2026-10-09T00:01:00Z")]);
+    expect(await grantCredits(db, 1, "", "run:r5:1")).toMatchObject({ ok: false, conflict: true });
+    expect(await creditBalance(db)).toBe(99);
   });
   it("recentLedger is newest-first and capped", async () => {
     const db = new CloudDb();
@@ -152,10 +173,38 @@ describe("credit ledger", () => {
     const jobs = [stamp("2026-10-09T00:00:00Z", "2026-10-09T00:03:00Z")];
     await recordRunSpend(db, "r9", jobs);
     await recordRunSpend(db, "r9", jobs);
-    expect(db.ledger.filter((r) => r.ref === "run:r9")).toHaveLength(1);
-    expect(db.ledger[0].amountCents).toBe(3);
+    expect(db.ledger.filter((r) => r.ref.startsWith("run:r9"))).toHaveLength(1);
+    expect(db.ledger[0]).toMatchObject({ ref: "run:r9:3", amountCents: 3 });
     await recordRunSpend(db, "r0", []);
-    expect(db.ledger.some((r) => r.ref === "run:r0")).toBe(false);
+    expect(db.ledger.some((r) => r.ref.startsWith("run:r0"))).toBe(false);
+  });
+
+  it("bills a rerun's extra compute as a delta, never for free", async () => {
+    const db = new CloudDb();
+    // First terminal rollup: one 3-minute job.
+    await recordRunSpend(db, "r1", [stamp("2026-10-09T00:00:00Z", "2026-10-09T00:03:00Z")]);
+    // Rerun: the 3 minutes moved into billed_ms, the new attempt ran 2.
+    const rerun = [{ ...stamp("2026-10-09T01:00:00Z", "2026-10-09T01:02:00Z"), billed_ms: 180000 }];
+    await recordRunSpend(db, "r1", rerun);
+    await recordRunSpend(db, "r1", rerun); // redelivered rollup: no-op
+    const spends = db.ledger.filter((r) => r.kind === "spend");
+    expect(spends.map((r) => [r.ref, r.amountCents])).toEqual([
+      ["run:r1:3", 3],
+      ["run:r1:5", 2],
+    ]);
+  });
+
+  it("counts legacy run:<id> rows as already paid", async () => {
+    const db = new CloudDb();
+    db.ledger.push({ kind: "spend", amountCents: 3, memo: "run r2", ref: "run:r2" });
+    await recordRunSpend(db, "r2", [stamp("2026-10-09T00:00:00Z", "2026-10-09T00:03:00Z")]);
+    expect(db.ledger).toHaveLength(1);
+  });
+
+  it("bills earlier retry attempts carried in billed_ms", () => {
+    const job = { ...stamp("2026-10-09T00:00:00Z", "2026-10-09T00:01:00Z"), billed_ms: 4 * 60000 };
+    expect(runComputeMs([job])).toBe(5 * 60000);
+    expect(runSpendCents([job])).toBe(5);
   });
 });
 
@@ -179,7 +228,7 @@ describe("rollup metering gate", () => {
     db.settings.set("cloud_metering", "on");
     expect(await rollupRunStatus(db, "r", undefined, undefined, { hosted: true })).toBe("cancelled");
     expect(db.ledger).toHaveLength(1);
-    expect(db.ledger[0]).toMatchObject({ kind: "spend", amountCents: 2, ref: "run:r" });
+    expect(db.ledger[0]).toMatchObject({ kind: "spend", amountCents: 2, ref: "run:r:2" });
   });
   it("writes nothing when unmetered, off, or OSS", async () => {
     const cases: { hosted: boolean; metering?: string }[] = [

@@ -12,3 +12,6 @@ coverage/
 apps/seats/wrangler.jsonc
 .DS_Store
 apps/seats/wrangler.staging.jsonc
+
+# Agent worktrees (Claude Code)
+.claude/worktrees/

@@ -1,6 +1,6 @@
 # Error codes
 
-Failures on the core lanes (dispatch, dry-run, claim, webhook, auth,
+Failures on the core lanes (dispatch, dry-run, claim, webhook, auth, Flare Forge,
 pairing) return a stable `code` plus a `hint` naming the next step:
 
 ```json
@@ -43,3 +43,28 @@ lane by lane.
 | `plan_limit_exceeded` | 429 | hosted plan saturated (concurrent jobs at cap) | raise the cap in Cloud billing, or wait for drain |
 | `hosted_only` | 501 | Cloud surface hit on a self-hosted deploy | runs on Flare Cloud only; OSS stays unlimited |
 | `topup_invalid` | 404 | top-up link unknown/consumed/expired | ask an admin for a fresh link |
+
+### Flare Forge codes (`/v1/forge/*` and the forge MCP tools)
+
+Every forge route and MCP tool answers failures with `{ error, code, hint }`
+(MCP: as an `isError` tool result carrying the same JSON). Validation,
+scope and auth failures reuse `invalid_request`, `repo_not_allowed` and
+`unauthorized` above. Out-of-scope ids answer `forge_not_found`, the
+same as unknown ids (no existence oracle).
+
+| code | status | meaning | next step |
+| ---- | ------ | ------- | --------- |
+| `forge_not_found` | 404 | unknown (or out-of-scope) goal, intent, conflict, train or route | `whats_happening` / `GET /v1/forge/intents?repo=` for real ids |
+| `intent_not_claimable` | 409 | intent is not `draft`/`expired` (claimed, awaiting plan, ...) | `whats_happening`; declare new work or `fork_session` |
+| `not_owner` | 403 | another agent owns the intent | `send_note` the owner, or `fork_session` |
+| `not_pushable` | 409 | push reported for an intent that is not claimed/working/ready/replaying | read the intent and follow its `nextSteps` |
+| `not_ready` | 409 | `mark_ready` before any `report_push` | push, `report_push`, then `mark_ready` |
+| `stale_state` | 409 | lost a race: the intent/plan changed concurrently | re-read, retry the step |
+| `goal_closed` | 409 | declaring against a done/abandoned goal | `plan_goal` a new goal or drop `goalId` |
+| `lease_lost` | 409 | heartbeat on a lapsed or moved-on lease | `claim_intent` again (expired is re-claimable) or `fork_session` |
+| `fork_failed` | 502 | Artifacts fork or fork-token mint failed (claim released) | retry in a few seconds |
+| `push_unverified` | 422 | `report_push`/`resolve_conflict` sha is not on the fork | `git push` to the fork first (`flare forge push`), retry |
+| `artifacts_unconfigured` | 503 | no `ARTIFACTS` binding (claims need forks) | bind the namespace in `wrangler.jsonc` |
+| `conflict_not_claimable` | 409 | conflict already claimed/resolved, out of replay attempts, or resolved by a non-claimer | list `state=open` conflicts; only the claimer resolves |
+| `admin_required` | 403 | plan approval by a non-admin | a human admin approves in the dashboard Inbox |
+| `not_implemented` | 501 | capability not wired on this deployment (e.g. the live feed before the Coordinator) | follow the fallback in `hint` (poll `/v1/forge/snapshot`) |

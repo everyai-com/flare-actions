@@ -5,9 +5,11 @@
 // Push subscriptions are repo-scoped and not CLI-provisionable, so
 // dynamic forks poll instead of subscribing: the same dispatch core as
 // artifacts-push.ts, driven by head changes rather than events.
-import { type Db, getRun, isTerminal, nowIso } from "./db";
+import { type Db, claimWebhookDelivery, getRun, isTerminal, nowIso, repoAllowSql } from "./db";
+import { reposAllow } from "./tokens";
 import {
   ARTIFACTS_EVENT,
+  artifactsDeliveryId,
   loadArtifactsPipeline,
   type ArtifactsDispatchInput,
   type ArtifactsRepoHandle,
@@ -50,6 +52,7 @@ export interface AttemptRow {
   verdict_rank: number | null;
   created_at: string;
   updated_at: string;
+  polled_at?: string;
 }
 
 export interface VerdictRow {
@@ -240,15 +243,29 @@ export async function pollTournamentAttempts(deps: TournamentPollDeps): Promise<
 }> {
   const out = { checked: 0, dispatched: 0, terminal: 0 };
   if (!deps.artifacts || !deps.namespace) return out;
+  // Round-robin by polled_at (every visit stamps it, even unreadable
+  // forks): ordering by updated_at let attempts whose head never moves
+  // pin the window forever once more than POLL_BATCH were live.
+  // Decided tournaments are skipped entirely.
   const rows = await deps.db
     .prepare(
       `SELECT a.*, t.base_ref AS base_ref FROM attempts a
        JOIN tournaments t ON t.id = a.tournament_id
        WHERE a.state IN ('claimed', 'pushing', 'verifying', 'terminal') AND t.state != 'decided'
-       ORDER BY a.updated_at ASC LIMIT ?`,
+       ORDER BY a.polled_at ASC, a.created_at ASC LIMIT ?`,
     )
     .bind(POLL_BATCH)
     .all<AttemptRow & { base_ref: string }>();
+  if (rows.results.length > 0) {
+    // One write stamps the whole window (POLL_BATCH + 1 binds stays
+    // under D1's 100-parameter cap).
+    const ids = rows.results.map((a) => a.id);
+    await deps.db
+      .prepare(`UPDATE attempts SET polled_at = ? WHERE id IN (${ids.map(() => "?").join(", ")})`)
+      .bind(nowIso(), ...ids)
+      .run()
+      .catch(() => undefined);
+  }
   for (const attempt of rows.results) {
     let head: string | null = null;
     try {
@@ -275,37 +292,59 @@ export async function pollTournamentAttempts(deps: TournamentPollDeps): Promise<
       }
       if (attempt.state === ATTEMPT_TERMINAL && head === attempt.last_seen_sha) continue;
       if (head === attempt.last_seen_sha && attempt.state !== ATTEMPT_CLAIMED) continue;
-      // New head (or first sight): stamp it, then verify when a pipeline
-      // exists. Stamping without a pipeline avoids re-reading every tick;
-      // any later push moves the head again.
-      await deps.db
-        .prepare("UPDATE attempts SET last_seen_sha = ?, updated_at = ? WHERE id = ?")
-        .bind(head, now, attempt.id)
-        .run();
       const pipeline = await loadArtifactsPipeline(deps.artifacts, attempt.fork_repo, head);
       if (!pipeline) {
-        if (attempt.state === ATTEMPT_CLAIMED) {
-          await deps.db
-            .prepare("UPDATE attempts SET state = 'pushing', updated_at = ? WHERE id = ?")
-            .bind(now, attempt.id)
-            .run();
-        }
+        // Stamping without a pipeline avoids re-reading every tick; any
+        // later push moves the head again.
+        await deps.db
+          .prepare(
+            `UPDATE attempts SET last_seen_sha = ?, updated_at = ?,
+               state = CASE WHEN state = 'claimed' THEN 'pushing' ELSE state END
+             WHERE id = ?`,
+          )
+          .bind(head, now, attempt.id)
+          .run();
         continue;
       }
-      const dispatched = await deps.dispatch({
-        repo: `${deps.namespace}/${attempt.fork_repo}`,
-        sha: head,
-        ref: `refs/heads/${attempt.base_ref || "main"}`,
-        pipeline,
-        event: ARTIFACTS_EVENT,
-      });
+      const runRepo = `${deps.namespace}/${attempt.fork_repo}`;
+      let runId: string;
+      let adopted = false;
+      // Same delivery id as the push trigger: a fork that is also
+      // subscribed dispatches once, whichever path sees the head first.
+      if (await claimWebhookDelivery(deps.db, artifactsDeliveryId(deps.namespace, attempt.fork_repo, head))) {
+        // Stamp before dispatching so a dispatch failure is not retried
+        // every tick (the push trigger's semantics: the claim is spent).
+        await deps.db
+          .prepare("UPDATE attempts SET last_seen_sha = ?, updated_at = ? WHERE id = ?")
+          .bind(head, now, attempt.id)
+          .run();
+        runId = (
+          await deps.dispatch({
+            repo: runRepo,
+            sha: head,
+            ref: `refs/heads/${attempt.base_ref || "main"}`,
+            pipeline,
+            event: ARTIFACTS_EVENT,
+          })
+        ).runId;
+      } else {
+        // The push trigger already dispatched this head: adopt its run.
+        // Not visible yet (claimed, still inserting) — retry next tick.
+        const existing = await deps.db
+          .prepare("SELECT id FROM runs WHERE repo = ? AND sha = ? AND event = ? ORDER BY created_at DESC LIMIT 1")
+          .bind(runRepo, head, ARTIFACTS_EVENT)
+          .first<{ id: string }>();
+        if (!existing) continue;
+        runId = existing.id;
+        adopted = true;
+      }
       await deps.db
-        .prepare("UPDATE attempts SET state = 'verifying', run_id = ?, updated_at = ? WHERE id = ?")
-        .bind(dispatched.runId, now, attempt.id)
+        .prepare("UPDATE attempts SET state = 'verifying', last_seen_sha = ?, run_id = ?, updated_at = ? WHERE id = ?")
+        .bind(head, runId, now, attempt.id)
         .run();
       await markTournamentVerifying(deps.db, attempt.tournament_id);
-      await appendLedger(deps.db, attempt.tournament_id, "pushed", `${attempt.agent}@${head.slice(0, 7)} -> ${dispatched.runId}`);
-      out.dispatched += 1;
+      await appendLedger(deps.db, attempt.tournament_id, "pushed", `${attempt.agent}@${head.slice(0, 7)} -> ${runId}`);
+      if (!adopted) out.dispatched += 1;
     } catch {
       // Per-attempt failure: counted as checked, retried next tick.
     }
@@ -324,10 +363,54 @@ export interface TournamentBoard {
   ledger: LedgerRow[];
 }
 
-export async function listTournaments(db: Db, limit = 20): Promise<TournamentRow[]> {
+// Tournaments are repo-scoped by their source as `namespace/name` (the
+// same key the create route and repo browsing check).
+export function tournamentRepoKey(namespace: string, sourceRepo: string): string {
+  return `${namespace}/${sourceRepo}`;
+}
+
+export function tournamentAllowed(allowedRepos: string[], namespace: string, sourceRepo: string): boolean {
+  return reposAllow(allowedRepos, tournamentRepoKey(namespace, sourceRepo));
+}
+
+// Translate a token allowlist (`ns/name`, `org/*`) into source_repo
+// names under the bound namespace: null = every source, [] = none.
+export function allowedTournamentSources(allowedRepos: string[], namespace: string): string[] | null {
+  if (allowedRepos.length === 0) return null;
+  const ns = namespace.toLowerCase();
+  const names: string[] = [];
+  for (const entry of allowedRepos) {
+    const lower = entry.toLowerCase();
+    if (lower.endsWith("/*")) {
+      if (lower.slice(0, -2) === ns) return null;
+      continue;
+    }
+    const slash = lower.indexOf("/");
+    if (slash > 0 && lower.slice(0, slash) === ns) names.push(entry.slice(slash + 1));
+  }
+  return names;
+}
+
+export async function listTournaments(
+  db: Db,
+  limit = 20,
+  scope: { repos: string[]; namespace: string } = { repos: [], namespace: "" },
+): Promise<TournamentRow[]> {
+  const bounded = Math.min(Math.max(limit, 1), 100);
+  const sources = allowedTournamentSources(scope.repos, scope.namespace);
+  if (sources === null) {
+    const res = await db
+      .prepare("SELECT * FROM tournaments ORDER BY created_at DESC LIMIT ?")
+      .bind(bounded)
+      .all<TournamentRow>();
+    return res.results;
+  }
+  // Allowlists are short; cap the IN list under D1's 100-bind limit.
+  const filter = repoAllowSql(sources.slice(0, 90), "source_repo");
+  if (!filter.clause) return [];
   const res = await db
-    .prepare("SELECT * FROM tournaments ORDER BY created_at DESC LIMIT ?")
-    .bind(Math.min(Math.max(limit, 1), 100))
+    .prepare(`SELECT * FROM tournaments WHERE ${filter.clause} ORDER BY created_at DESC LIMIT ?`)
+    .bind(...filter.binds, bounded)
     .all<TournamentRow>();
   return res.results;
 }
@@ -362,10 +445,14 @@ export function validateTournamentClaim(body: Record<string, unknown>): { agent:
 export async function getTournamentBoard(db: Db, id: string): Promise<TournamentBoard | null> {
   const tournament = await getTournament(db, id);
   if (!tournament) return null;
+  // Join run status in SQL: a per-run IN (?, ...) list breaks D1's
+  // 100-bound-parameter cap once a race has many attempts.
   const attempts = await db
-    .prepare("SELECT * FROM attempts WHERE tournament_id = ? ORDER BY created_at ASC")
+    .prepare(
+      "SELECT a.*, r.status AS run_status FROM attempts a LEFT JOIN runs r ON r.id = a.run_id WHERE a.tournament_id = ? ORDER BY a.created_at ASC",
+    )
     .bind(id)
-    .all<AttemptRow>();
+    .all<AttemptRow & { run_status: string | null }>();
   const verdict = await db
     .prepare("SELECT * FROM verdicts WHERE tournament_id = ?")
     .bind(id)
@@ -374,19 +461,9 @@ export async function getTournamentBoard(db: Db, id: string): Promise<Tournament
     .prepare("SELECT * FROM ledger WHERE tournament_id = ? ORDER BY created_at ASC LIMIT 100")
     .bind(id)
     .all<LedgerRow>();
-  const runIds = [...new Set(attempts.results.map((a) => a.run_id).filter((r): r is string => !!r))];
-  const runStatus = new Map<string, string>();
-  if (runIds.length > 0) {
-    const placeholders = runIds.map(() => "?").join(",");
-    const runs = await db
-      .prepare(`SELECT id, status FROM runs WHERE id IN (${placeholders})`)
-      .bind(...runIds)
-      .all<{ id: string; status: string }>();
-    for (const row of runs.results) runStatus.set(row.id, row.status);
-  }
   const boardAttempts: TournamentBoardAttempt[] = attempts.results.map((a) => ({
     ...a,
-    run_status: a.run_id ? (runStatus.get(a.run_id) ?? null) : null,
+    run_status: a.run_id ? (a.run_status ?? null) : null,
   }));
   return { tournament, attempts: boardAttempts, verdict, ledger: ledger.results };
 }

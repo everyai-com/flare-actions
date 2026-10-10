@@ -8,14 +8,16 @@ import {
   forkHead,
   forkNameFor,
   getAttemptRace,
+  allowedTournamentSources,
   getTournamentBoard,
+  listTournaments,
   pollTournamentAttempts,
   validateTournamentClaim,
   validateTournamentCreate,
   type TournamentArtifacts,
   type TournamentRepoHandle,
 } from "./tournaments";
-import type { ArtifactsDispatchInput } from "./artifacts-push";
+import { artifactsDeliveryId, handleArtifactsPush, type ArtifactsDispatchInput } from "./artifacts-push";
 
 // node:sqlite via getBuiltinModule: vite-node's import analysis predates
 // the specifier, but the runtime resolves it fine.
@@ -28,12 +30,13 @@ CREATE TABLE tournaments (id TEXT PRIMARY KEY, intent TEXT NOT NULL, source_repo
 CREATE TABLE attempts (id TEXT PRIMARY KEY, tournament_id TEXT NOT NULL, agent TEXT NOT NULL,
   fork_repo TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'claimed', last_seen_sha TEXT NOT NULL DEFAULT '',
   run_id TEXT, verdict_rank INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-  UNIQUE (tournament_id, agent));
+  polled_at TEXT NOT NULL DEFAULT '', UNIQUE (tournament_id, agent));
 CREATE TABLE verdicts (tournament_id TEXT PRIMARY KEY, ranking TEXT NOT NULL DEFAULT '[]',
   rationale TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
 CREATE TABLE ledger (id TEXT PRIMARY KEY, tournament_id TEXT NOT NULL, kind TEXT NOT NULL,
   body TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
-CREATE TABLE runs (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'queued');
+CREATE TABLE runs (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'queued', repo TEXT NOT NULL DEFAULT '',
+  sha TEXT NOT NULL DEFAULT '', event TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE webhook_deliveries (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);`;
 
 function sqliteDb(): Db {
@@ -43,6 +46,8 @@ function sqliteDb(): Db {
     prepare(query: string) {
       return {
         bind(...values: unknown[]) {
+          // Mirror D1's bound-parameter cap so oversized IN lists fail here too.
+          if (values.length > 100) throw new Error("D1: too many SQL variables");
           const params = values as (string | number | null)[];
           return {
             all: async <T,>() => ({ results: raw.prepare(query).all(...params) as T[] }),
@@ -251,6 +256,104 @@ describe("pollTournamentAttempts", () => {
     expect(await pollTournamentAttempts(deps)).toEqual({ checked: 1, dispatched: 1, terminal: 0 });
     expect(runs).toEqual(["run-1", "run-2"]);
   });
+  it("polls fairly past the batch window when heads never move", async () => {
+    const db = sqliteDb();
+    const tid = await seedTournament(db);
+    const { artifacts, store } = fakeArtifacts({ base: {} });
+    // 60 live attempts (> POLL_BATCH = 50), all already seen at SHA_A.
+    const forks: string[] = [];
+    for (let i = 0; i < 60; i++) {
+      const claimed = await claimAttempt(db, artifacts, tid, `agent${String(i).padStart(2, "0")}`);
+      if ("error" in claimed) throw new Error("should claim");
+      store.get(claimed.forkRepo)!.head = SHA_A;
+      forks.push(claimed.forkRepo);
+      // The first 50 have the oldest updated_at and never move.
+      const updated = i < 50 ? "2000-01-01T00:00:00.000Z" : "2001-01-01T00:00:00.000Z";
+      await db
+        .prepare("UPDATE attempts SET state = 'pushing', last_seen_sha = ?, updated_at = ? WHERE fork_repo = ?")
+        .bind(SHA_A, updated, claimed.forkRepo)
+        .run();
+    }
+    // An attempt outside the oldest-50 window pushes a new head.
+    const late = forks[59];
+    store.get(late)!.head = SHA_B;
+    const deps = { db, artifacts, namespace: "ns", dispatch: async () => ({ runId: "r" }) };
+    await pollTournamentAttempts(deps);
+    await pollTournamentAttempts(deps);
+    const row = await db.prepare("SELECT last_seen_sha FROM attempts WHERE fork_repo = ?").bind(late).first<{ last_seen_sha: string }>();
+    expect(row?.last_seen_sha).toBe(SHA_B);
+  });
+
+  it("skips attempts of decided tournaments", async () => {
+    const db = sqliteDb();
+    const tid = await seedTournament(db);
+    const { artifacts, store } = fakeArtifacts({ base: {} });
+    const claimed = await claimAttempt(db, artifacts, tid, "a1");
+    if ("error" in claimed) throw new Error("should claim");
+    store.get(claimed.forkRepo)!.head = SHA_A;
+    await db.prepare("UPDATE tournaments SET state = 'decided' WHERE id = ?").bind(tid).run();
+    const out = await pollTournamentAttempts({ db, artifacts, namespace: "ns", dispatch: async () => ({ runId: "r" }) });
+    expect(out).toEqual({ checked: 0, dispatched: 0, terminal: 0 });
+  });
+
+  it("shares the push trigger's delivery claim and never double-dispatches", async () => {
+    const db = sqliteDb();
+    const tid = await seedTournament(db);
+    const { artifacts, store } = fakeArtifacts({ base: {} });
+    const claimed = await claimAttempt(db, artifacts, tid, "a1");
+    if ("error" in claimed) throw new Error("should claim");
+    store.get(claimed.forkRepo)!.head = SHA_B;
+    store.get(claimed.forkRepo)!.files.set(`${SHA_B}:flare.yml`, YAML);
+    const dispatched: string[] = [];
+    const dispatch = async (input: ArtifactsDispatchInput) => {
+      const id = `run-${dispatched.length + 1}`;
+      dispatched.push(id);
+      await db
+        .prepare("INSERT INTO runs (id, status, repo, sha, event, created_at) VALUES (?, 'queued', ?, ?, ?, ?)")
+        .bind(id, input.repo, input.sha, input.event, new Date().toISOString())
+        .run();
+      return { runId: id };
+    };
+    // The push trigger sees the head first.
+    const pushed = await handleArtifactsPush({ db, artifacts, dispatch }, {
+      type: "cf.artifacts.repo.pushed",
+      source: { type: "artifacts.repo", namespace: "ns", repoName: claimed.forkRepo },
+      payload: { ref: "refs/heads/main", before: SHA_A, after: SHA_B },
+    });
+    expect(pushed).toEqual({ status: "dispatched", runId: "run-1" });
+    // The poller loses the shared claim and adopts the push path's run.
+    const out = await pollTournamentAttempts({ db, artifacts, namespace: "ns", dispatch });
+    expect(out).toEqual({ checked: 1, dispatched: 0, terminal: 0 });
+    expect(dispatched).toEqual(["run-1"]);
+    const attempt = await db.prepare("SELECT state, run_id, last_seen_sha FROM attempts WHERE id = ?").bind(claimed.attemptId).first<Record<string, unknown>>();
+    expect(attempt).toMatchObject({ state: "verifying", run_id: "run-1", last_seen_sha: SHA_B });
+  });
+
+  it("claims the delivery so a later push redelivery skips", async () => {
+    const db = sqliteDb();
+    const tid = await seedTournament(db);
+    const { artifacts, store } = fakeArtifacts({ base: {} });
+    const claimed = await claimAttempt(db, artifacts, tid, "a1");
+    if ("error" in claimed) throw new Error("should claim");
+    store.get(claimed.forkRepo)!.head = SHA_B;
+    store.get(claimed.forkRepo)!.files.set(`${SHA_B}:flare.yml`, YAML);
+    let n = 0;
+    const dispatch = async () => ({ runId: `run-${++n}` });
+    expect(await pollTournamentAttempts({ db, artifacts, namespace: "ns", dispatch })).toMatchObject({ dispatched: 1 });
+    const row = await db
+      .prepare("SELECT id FROM webhook_deliveries WHERE id = ?")
+      .bind(artifactsDeliveryId("ns", claimed.forkRepo, SHA_B))
+      .first<{ id: string }>();
+    expect(row).not.toBeNull();
+    const pushed = await handleArtifactsPush({ db, artifacts, dispatch }, {
+      type: "cf.artifacts.repo.pushed",
+      source: { type: "artifacts.repo", namespace: "ns", repoName: claimed.forkRepo },
+      payload: { ref: "refs/heads/main", before: SHA_A, after: SHA_B },
+    });
+    expect(pushed).toEqual({ status: "skipped", reason: "duplicate" });
+    expect(n).toBe(1);
+  });
+
   it("no-ops without a binding or namespace", async () => {
     const db = sqliteDb();
     await seedTournament(db);
@@ -306,6 +409,22 @@ describe("appendLedger + getTournamentBoard", () => {
     expect(byAgent.get("a2")).toBeNull();
   });
 
+  it("renders boards past D1's 100-parameter cap", async () => {
+    const db = sqliteDb();
+    const tid = await seedTournament(db);
+    const now = new Date().toISOString();
+    for (let i = 0; i < 150; i++) {
+      await db
+        .prepare("INSERT INTO attempts (id, tournament_id, agent, fork_repo, run_id, created_at, updated_at) VALUES (?, ?, ?, '', ?, ?, ?)")
+        .bind(`at-${i}`, tid, `agent-${i}`, `run-${i}`, now, now)
+        .run();
+      await db.prepare("INSERT INTO runs (id, status) VALUES (?, 'success')").bind(`run-${i}`).run();
+    }
+    const board = await getTournamentBoard(db, tid);
+    expect(board?.attempts).toHaveLength(150);
+    expect(board?.attempts.every((a) => a.run_status === "success")).toBe(true);
+  });
+
   it("resolves the race behind a verification run", async () => {
     const db = sqliteDb();
     const tid = await seedTournament(db);
@@ -314,5 +433,26 @@ describe("appendLedger + getTournamentBoard", () => {
     await db.prepare("UPDATE attempts SET run_id = ? WHERE tournament_id = ?").bind("run-9", tid).run();
     expect(await getAttemptRace(db, "run-9")).toEqual({ tournament_id: tid, agent: "a1", verdict_rank: null });
     expect(await getAttemptRace(db, "other")).toBeNull();
+  });
+});
+
+describe("tournament repo scope", () => {
+  it("translates token allowlists into source names", () => {
+    expect(allowedTournamentSources([], "ns")).toBeNull();
+    expect(allowedTournamentSources(["ns/*"], "ns")).toBeNull();
+    expect(allowedTournamentSources(["NS/*"], "ns")).toBeNull();
+    expect(allowedTournamentSources(["ns/a", "other/b", "org/*"], "ns")).toEqual(["a"]);
+    expect(allowedTournamentSources(["other/*"], "ns")).toEqual([]);
+  });
+
+  it("lists only in-scope tournaments", async () => {
+    const db = sqliteDb();
+    await createTournament(db, { intent: "one", sourceRepo: "alpha" });
+    await createTournament(db, { intent: "two", sourceRepo: "beta" });
+    expect((await listTournaments(db, 20)).map((t) => t.source_repo).sort()).toEqual(["alpha", "beta"]);
+    const scoped = await listTournaments(db, 20, { repos: ["ns/alpha"], namespace: "ns" });
+    expect(scoped.map((t) => t.source_repo)).toEqual(["alpha"]);
+    expect(await listTournaments(db, 20, { repos: ["elsewhere/*"], namespace: "ns" })).toEqual([]);
+    expect(await listTournaments(db, 20, { repos: ["ns/*"], namespace: "ns" })).toHaveLength(2);
   });
 });

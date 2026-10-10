@@ -595,7 +595,7 @@ the error line.
 - `POST /v1/admin/register` — redeem an invite, or self-register by email when open registration is on (public, throttled)
 - `POST /v1/admin/bootstrap` — first-run admin claim (open until claimed, throttled)
 - `POST /v1/admin/login`, `POST /v1/admin/logout` — email sessions (throttled)
-- `POST /v1/admin/magic/request`, `GET /v1/admin/magic/consume?token=` — passwordless magic-link login (public, throttled, single-use 15 min)
+- `POST /v1/admin/magic/request`, `POST /v1/admin/magic/consume` — passwordless magic-link login (public, throttled, single-use 15 min; emailed links open a dashboard confirm screen so mail scanners cannot burn them)
 - `GET|POST /v1/admin/github/*` — GitHub App connect + login flows
 - `GET /v1/admin/status` — setup state for the dashboard (public)
 - `GET /v1/tournaments`, `GET /v1/tournaments/:id` — race list + board: attempts, verdict, ledger (read scope)

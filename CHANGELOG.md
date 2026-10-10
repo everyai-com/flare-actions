@@ -15,6 +15,36 @@ tagged on `main` (`v0.1.0` is the first).
   such column" on databases predating the column. Indexes now apply
   after the ALTERs; staging self-healed on redeploy. Regression test
   runs `ensureSchema` against an old-database fake.
+- Magic-link login survives mail scanners: emailed links open a
+  dashboard confirm screen and only a same-origin `POST
+  /v1/admin/magic/consume` redeems (the legacy GET redirects without
+  consuming), which also closes login CSRF. Magic requests throttle on
+  their own `magic-ip:` window instead of the shared login IP window,
+  and expired magic/reset tokens prune on issue.
+- Race boards no longer 500 past ~100 attempts (run status is joined
+  in SQL instead of a D1-capped `IN (?, ...)` list).
+- `GET /v1/repos` for repo-scoped tokens filters before paging and
+  refills from later pages, so pages are never empty while allowed
+  repos remain.
+
+- Flare Cloud metering/enforcement (security review of the purchasing
+  scaffold): job reruns and `retry: N` attempts are now billed (rerun
+  rollups charge the delta under `run:<id>:<cents>` refs; earlier
+  attempts accumulate in the new `jobs.billed_ms`, migration 0044);
+  reruns pass the pause, budget, and plan-cap gates like dispatches;
+  the concurrent-job cap is enforced atomically at claim time (BYO
+  runners and seats), not only at dispatch; duplicate grant refs
+  report `duplicate: true` and mismatched reuse is a 409; default
+  top-up memos name the link by hash prefix instead of storing the
+  redeemable code.
+- The optional eslint pass (`lint:full`) is clean: wrapped errors keep
+  their `cause`, and the runner-group validator no longer needs a
+  control-character regex.
+
+### Changed
+
+- Dependencies: TypeScript 6.0, wrangler 4.149, patch bumps across
+  the tree; Workers compatibility date 2026-10-06 (worker + seats).
 
 ### Added
 

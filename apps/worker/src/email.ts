@@ -138,7 +138,21 @@ function resetKey(token: string): string {
   return `email_reset_${token}`;
 }
 
+// Expired one-time tokens are inert (consume rechecks the clock), but
+// prune them boundedly on each issue so app_settings cannot grow forever.
+const TOKEN_PRUNE_LIMIT = 50;
+
+async function pruneExpiredTokens(db: Db, prefix: string): Promise<void> {
+  await db
+    .prepare(
+      "DELETE FROM app_settings WHERE key IN (SELECT key FROM app_settings WHERE key GLOB ? AND json_extract(value, '$.expiresAt') < ? LIMIT ?)",
+    )
+    .bind(`${prefix}*`, new Date().toISOString(), TOKEN_PRUNE_LIMIT)
+    .run();
+}
+
 export async function createResetToken(db: Db, email: string): Promise<string> {
+  await pruneExpiredTokens(db, "email_reset_");
   const token = crypto.randomUUID();
   await setSetting(
     db,
@@ -174,6 +188,7 @@ function magicKey(token: string): string {
 }
 
 export async function createMagicToken(db: Db, email: string): Promise<string> {
+  await pruneExpiredTokens(db, "email_magic_");
   const token = crypto.randomUUID();
   await setSetting(
     db,

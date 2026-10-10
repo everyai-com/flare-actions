@@ -2,6 +2,7 @@
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "ignorePatterns": [
     "**/node_modules/**",
+    ".claude/**",
     "**/worker-configuration.d.ts",
     "**/wrangler.jsonc",
     ".wrangler/**",

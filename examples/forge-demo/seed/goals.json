@@ -1,0 +1,180 @@
+{
+  "version": 1,
+  "repo": "forge-demo",
+  "description": "Three demo goals for the Bookshelf API, pre-decomposed into intents with scripted reference solutions (agents/solutions/<intent>.mjs). Interactions are designed and verified by scripts/verify-scenarios.mjs.",
+  "test": ["node", "--test", "test/**/*.test.ts"],
+  "goals": [
+    {
+      "id": "g1",
+      "text": "Make every Bookshelf request observable: traceable ids, version info on /health, catalog metrics, and stable error codes.",
+      "intents": [
+        {
+          "id": "g1-request-id",
+          "title": "Tag every request with an x-request-id and log it",
+          "reasoning": "Support cannot join a customer's report to our logs. Reuse the caller's x-request-id (or cf-ray) when present so traces join across hops; otherwise mint a UUID. Echo it on the response and add it to the access-log line.",
+          "footprint": ["src/middleware/logging.ts", "test/request-id.test.ts"],
+          "accept": "node --test test/request-id.test.ts"
+        },
+        {
+          "id": "g1-health-version",
+          "title": "Report build version and uptime on /health",
+          "reasoning": "After a deploy we cannot tell which build is serving. Expose a semver VERSION and uptimeSeconds; keep ok:true so existing probes stay green.",
+          "footprint": ["src/routes/health.ts", "test/health-version.test.ts"],
+          "accept": "node --test test/health-version.test.ts"
+        },
+        {
+          "id": "g1-metrics",
+          "title": "Expose catalog gauges at GET /metrics",
+          "reasoning": "Dashboards need book/author counts without querying the API page by page. Prometheus text format is what our scraper speaks. Registered in the route table only; no middleware change.",
+          "footprint": ["src/routes/metrics.ts", "src/index.ts", "test/metrics.test.ts"],
+          "accept": "node --test test/metrics.test.ts"
+        },
+        {
+          "id": "g1-error-codes",
+          "title": "Add stable machine-readable codes to error bodies",
+          "reasoning": "Clients string-match error messages, so every wording change breaks them. Add an additive `code` field derived from the status; keep `error` as the human message.",
+          "footprint": ["src/lib/errors.ts", "test/error-codes.test.ts"],
+          "accept": "node --test test/error-codes.test.ts"
+        }
+      ]
+    },
+    {
+      "id": "g2",
+      "text": "Make the catalog nicer to browse: author bibliographies, fewer round trips per page, forgiving search, and valid ISBNs.",
+      "intents": [
+        {
+          "id": "g2-author-books",
+          "title": "List an author's books at GET /authors/:id/books",
+          "reasoning": "The author page currently fetches all books and filters client-side. Serve it directly, paged, with its own page default so it does not couple to /books paging.",
+          "footprint": ["src/routes/authors.ts", "test/author-books.test.ts"],
+          "accept": "node --test test/author-books.test.ts"
+        },
+        {
+          "id": "g2-default-page-size",
+          "title": "Raise the /books default page size from 20 to 30",
+          "reasoning": "The mobile list shows ~28 rows per screen, so a 20-item page forces a second request on first paint. 30 fills the screen in one round trip.",
+          "footprint": ["src/routes/books.ts", "test/default-page-size.test.ts"],
+          "accept": "node --test test/default-page-size.test.ts"
+        },
+        {
+          "id": "g2-fuzzy-search",
+          "title": "Make ?q= case-insensitive substring search",
+          "reasoning": "Users type 'dune' and get nothing because search is a case-sensitive prefix match. Match anywhere in the title, ignoring case.",
+          "footprint": ["src/lib/store.ts", "test/fuzzy-search.test.ts"],
+          "accept": "node --test test/fuzzy-search.test.ts"
+        },
+        {
+          "id": "g2-isbn-validation",
+          "title": "Reject ISBN-13s with a bad checksum",
+          "reasoning": "Typos in ISBNs break the cover-image lookup downstream. Validate the ISBN-13 checksum at write time; hyphens and spaces are allowed.",
+          "footprint": ["src/lib/validate.ts", "test/isbn-validation.test.ts"],
+          "accept": "node --test test/isbn-validation.test.ts"
+        }
+      ]
+    },
+    {
+      "id": "g3",
+      "text": "Harden the API for public launch: rotatable API keys, bounded pages, rate limiting, request latency in logs, and a CORS allowlist.",
+      "intents": [
+        {
+          "id": "g3-api-key-rotation",
+          "title": "Accept a list of API keys so keys rotate without downtime",
+          "reasoning": "Rotating the single API_KEY breaks every client at once. Accept a comma-separated list (new key first, old key until clients move); compare against every key so timing does not reveal the slot.",
+          "footprint": ["src/auth/apiKey.ts", "test/api-key-rotation.test.ts"],
+          "accept": "node --test test/api-key-rotation.test.ts"
+        },
+        {
+          "id": "g3-max-page-size",
+          "title": "Cap list pages at 25 items",
+          "reasoning": "A 50-item page is the largest single response we serve and will be the largest D1 read after the migration. Bound payload size at 25.",
+          "footprint": ["src/lib/pagination.ts", "test/max-page-size.test.ts"],
+          "accept": "node --test test/max-page-size.test.ts"
+        },
+        {
+          "id": "g3-rate-limit",
+          "title": "Rate-limit clients per IP (429 past the limit)",
+          "reasoning": "One scraper can starve the isolate. A fixed-window per-IP limit (RATE_LIMIT/min, default 600) sheds abuse; it sits inside CORS so browsers can read the 429. Wired into the middleware chain only; no route change.",
+          "footprint": ["src/middleware/rateLimit.ts", "src/index.ts", "test/rate-limit.test.ts"],
+          "accept": "node --test test/rate-limit.test.ts"
+        },
+        {
+          "id": "g3-log-latency",
+          "title": "Log request latency (durationMs) on every access-log line",
+          "reasoning": "We cannot see slow endpoints before launch. Measure around next() with performance.now() and add durationMs to the access-log line.",
+          "footprint": ["src/middleware/logging.ts", "test/log-latency.test.ts"],
+          "accept": "node --test test/log-latency.test.ts"
+        },
+        {
+          "id": "g3-cors-allowlist",
+          "title": "Restrict CORS to an origin allowlist when configured",
+          "reasoning": "`*` lets any site call write endpoints from a logged-in browser. When CORS_ORIGINS is set, echo only listed origins (with Vary: Origin); unset keeps `*` so local dev is unchanged.",
+          "footprint": ["src/middleware/cors.ts", "test/cors-allowlist.test.ts"],
+          "accept": "node --test test/cors-allowlist.test.ts"
+        }
+      ]
+    }
+  ],
+  "interactions": [
+    {
+      "id": "overlap-clean",
+      "kind": "overlap_clean",
+      "intents": ["g1-metrics", "g3-rate-limit"],
+      "files": ["src/index.ts"],
+      "narrative": "Both declare src/index.ts, so declare_intent returns each as the other's overlap before any code is written. They edit different regions (g1-metrics: an import after the health import + a route-table line; g3-rate-limit: an import after the logging import + the middleware-chain line), so git merges cleanly and the combined suite is green. Demo beat: Q1 awareness ('agent 2 is changing src/index.ts because ...').",
+      "expect": { "declareOverlap": true, "merge": "clean", "combinedTests": "pass" }
+    },
+    {
+      "id": "overlap-conflict",
+      "kind": "textual_conflict",
+      "intents": ["g1-request-id", "g3-log-latency"],
+      "files": ["src/middleware/logging.ts"],
+      "narrative": "Both rewrite formatLogLine's signature, its JSON.stringify line, and the body of withLogging. Whichever lands second hits a real git conflict in src/middleware/logging.ts. Resolution is replay: re-derive g3-log-latency on the new trunk with g1-request-id's reasoning in context (agents/apply.mjs g3-log-latency --replay-on g1-request-id), which logs both requestId and durationMs and passes CI. Demo beat: Q2 conflicts.",
+      "expect": {
+        "declareOverlap": true,
+        "merge": "conflict",
+        "conflictFiles": ["src/middleware/logging.ts"],
+        "replay": { "intent": "g3-log-latency", "on": "g1-request-id", "tests": "pass" }
+      }
+    },
+    {
+      "id": "semantic",
+      "kind": "semantic_conflict",
+      "intents": ["g2-default-page-size", "g3-max-page-size"],
+      "files": ["src/routes/books.ts", "src/lib/pagination.ts"],
+      "narrative": "Disjoint footprints (no declare-time overlap), clean git merge, each green alone. Together DEFAULT_PAGE_SIZE 30 > MAX_PAGE_SIZE 25: parseLimit clamps the default to 25, so the page-size contract test and g2's own accept check fail on the combined SHA. Only train CI on the exact combined SHA catches it; bisect isolates the pair. Demo beat: Q2 'one lane fails CI on the combined SHA, so it bisects'.",
+      "expect": {
+        "declareOverlap": false,
+        "merge": "clean",
+        "aloneTests": "pass",
+        "combinedTests": "fail",
+        "failingTests": [
+          "contract: the default page size is servable",
+          "GET /books without ?limit= returns exactly DEFAULT_PAGE_SIZE items",
+          "GET /books returns 30 books per page by default"
+        ]
+      }
+    },
+    {
+      "id": "protected",
+      "kind": "plan_approval",
+      "intents": ["g3-api-key-rotation"],
+      "files": ["src/auth/apiKey.ts"],
+      "narrative": "The only intent whose footprint matches a protected glob (src/auth/** in .flare/policy.yml). It stops at awaiting_plan until a human approves the plan (one click). Demo beat: 'Goal -> plan'.",
+      "expect": { "protectedMatch": "src/auth/**", "state": "awaiting_plan" }
+    }
+  ],
+  "trains": [
+    {
+      "id": "green-train",
+      "narrative": "Everything except the second half of each conflicting pair: 11 of 13 intents, 2 of them overlapping on src/index.ts. Merges cleanly and is green.",
+      "exclude": ["g3-log-latency", "g3-max-page-size"],
+      "expect": "pass"
+    },
+    {
+      "id": "red-train",
+      "narrative": "Everything except g3-log-latency (the textual conflict): 12 of 13 intents merge cleanly but CI is red; bisect isolates g2-default-page-size + g3-max-page-size.",
+      "exclude": ["g3-log-latency"],
+      "expect": "fail"
+    }
+  ]
+}

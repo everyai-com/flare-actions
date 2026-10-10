@@ -106,9 +106,13 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   14-run `testSparkline`) rendered in the tab and `cli flaky`.
 - Flare Cloud scaffold (`cloud.ts`, inert on OSS): env-only
   `FLARE_CLOUD=1` flag; `cloudVerdict` enforces a concurrent-runner
-  cap (`cloud_entitlements` JSON) at all four dispatch entries;
-  `credit_ledger` tracks prepaid grants + exactly-once run spend
-  (1¢/min, `run:<id>` refs) behind `cloud_metering`, threaded into
+  cap (`cloud_entitlements` JSON) at all four dispatch entries plus
+  job reruns, and `claimJob` re-checks it atomically at claim time
+  (`cloudRunningCap`); `credit_ledger` tracks prepaid grants
+  (replay = `duplicate`, mismatched ref = 409) + exactly-once run
+  spend (1¢/min, delta per rollup under `run:<id>:<cents>` refs,
+  retry/rerun attempts carried in `jobs.billed_ms`) behind
+  `cloud_metering`, threaded into
   every terminal rollup (worker + seats); admin settings provision
   both; `GET /v1/cloud/status` probes. Agent purchasing rides it:
   single-use top-up links (`pairing.ts`, unfurl-safe preview +

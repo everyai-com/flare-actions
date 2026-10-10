@@ -1,6 +1,7 @@
 import {
   appendJobLog,
   claimJob,
+  cloudRunningCap,
   deleteSeatSnapshot,
   getJob,
   getJobsForRun,
@@ -465,7 +466,19 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
   if (!seatEligible(job.definition)) {
     return { status: "skipped", jobId, detail: "ineligible for seats" };
   }
-  if (!(await claimJob(deps.db, jobId))) {
+  const maxRunning = deps.hosted === true ? await cloudRunningCap(deps.db) : null;
+  if (!(await claimJob(deps.db, jobId, maxRunning))) {
+    // Hosted plan saturated: leave the job queued and re-wake later
+    // (same 30-minute run-age horizon as capacity releases).
+    const fresh = maxRunning !== null ? await getJob(deps.db, jobId) : null;
+    if (fresh?.status === "queued") {
+      const ageMs = Date.now() - Date.parse(run.created_at);
+      if (deps.seatQueue && Number.isFinite(ageMs) && ageMs < 30 * 60000) {
+        await deps.seatQueue.send({ jobId }, { delaySeconds: 60 });
+        return { status: "skipped", jobId, detail: "plan saturated (re-wake in 60s)" };
+      }
+      return { status: "skipped", jobId, detail: "plan saturated" };
+    }
     return { status: "skipped", jobId, detail: "claim lost" };
   }
   // Corrupt or newer-format definition: fail closed. An echo-substitute

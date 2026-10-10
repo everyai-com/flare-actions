@@ -4,6 +4,7 @@ import {
   getRepoCommits,
   getRepoInfo,
   getRepoTree,
+  listAllowedRepos,
   listRepos,
   normalizeRepoPath,
   validateRef,
@@ -158,5 +159,51 @@ describe("getRepoCommits", () => {
     expect(commits?.map((c) => c.hash)).toEqual([COMMIT_B.hash, COMMIT_A.hash]);
     expect(commits?.[0].authorName).toBe("Ada");
     expect(await getRepoCommits(fakeArtifacts({ missing: true }), "demo", "main", 10)).toBeNull();
+  });
+});
+
+describe("listAllowedRepos", () => {
+  // Paging fake: cursor is the next index; honors the requested limit.
+  function pagedArtifacts(names: string[]): { artifacts: ReposArtifacts; limits: number[] } {
+    const base = fakeArtifacts({ repos: names.map((name) => ({ name })) });
+    const limits: number[] = [];
+    const all = names.map((name) => ({
+      id: `id-${name}`, name, description: null, defaultBranch: "main",
+      createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-02T00:00:00Z",
+      lastPushAt: null, source: null, readOnly: false,
+    }));
+    return {
+      limits,
+      artifacts: {
+        get: base.get,
+        list: async (opts) => {
+          const start = opts?.cursor ? Number(opts.cursor) : 0;
+          const limit = opts?.limit ?? 50;
+          limits.push(limit);
+          const end = start + limit;
+          return { repos: all.slice(start, end), total: all.length, ...(end < all.length ? { cursor: String(end) } : {}) };
+        },
+      },
+    };
+  }
+
+  it("passes through unscoped with the namespace total", async () => {
+    const { artifacts } = pagedArtifacts(["a", "b", "c"]);
+    const page = await listAllowedRepos(artifacts, 2, undefined, null);
+    expect(page.repos.map((r) => r.name)).toEqual(["a", "b"]);
+    expect(page.total).toBe(3);
+    expect(page.cursor).toBe("2");
+  });
+
+  it("refills past filtered pages without skipping repos", async () => {
+    const names = ["x1", "x2", "ok1", "x3", "ok2", "ok3", "x4"];
+    const { artifacts, limits } = pagedArtifacts(names);
+    const allow = (n: string) => n.startsWith("ok");
+    const first = await listAllowedRepos(artifacts, 2, undefined, allow);
+    expect(first.repos.map((r) => r.name)).toEqual(["ok1", "ok2"]);
+    expect(limits.every((l) => l <= 2)).toBe(true);
+    const second = await listAllowedRepos(artifacts, 2, first.cursor, allow);
+    expect(second.repos.map((r) => r.name)).toEqual(["ok3"]);
+    expect(second.cursor).toBeUndefined();
   });
 });

@@ -42,6 +42,8 @@ tags:
     description: MCP streamable-HTTP endpoint
   - name: webhooks
     description: GitHub event ingestion
+  - name: forge
+    description: Flare Forge intent-native git (goals, intents, conflicts, trains, why, live map)
   - name: templates
     description: Starter pipeline gallery and Actions migration
 security:
@@ -1079,6 +1081,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          description: Refused like a dispatch — repo_paused, budget_exceeded (block mode), or plan_limit_exceeded (hosted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/attestations/{receiptId}:
     get:
       tags: [runs]
@@ -2894,7 +2902,7 @@ paths:
     get:
       tags: [auth]
       operationId: consumeMagicLink
-      summary: Redeem a magic link (sets session cookie, redirects to dashboard)
+      summary: Legacy magic link (never consumes; redirects to the dashboard confirm screen)
       security: []
       parameters:
         - name: token
@@ -2904,7 +2912,38 @@ paths:
             type: string
       responses:
         '302':
-          description: Redirect to /dashboard (or /dashboard?magic=expired)
+          description: Redirect to /dashboard?magic_token=... (the token is not consumed)
+    post:
+      tags: [auth]
+      operationId: redeemMagicLink
+      summary: Redeem a magic-link token (single use; sets the session cookie)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        '200':
+          description: Logged in; session cookie set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '403':
+          description: Cross-site request refused
+        '404':
+          description: Link invalid, expired, or already used
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /v1/admin/reset:
     post:
       tags: [auth]
@@ -3708,12 +3747,17 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [ok, balanceCents]
+                required: [ok, duplicate, balanceCents]
                 properties:
                   ok:
                     type: boolean
+                  duplicate:
+                    type: boolean
+                    description: True when this ref was already granted (a replay; nothing new credited)
                   balanceCents:
                     type: integer
+        '409':
+          description: Ref already used by a different ledger entry (different amount or a spend row)
         '501':
           description: OSS deploy (hosted_only)
           content:
@@ -4339,6 +4383,1413 @@ paths:
       responses:
         '302':
           description: Redirect to /dashboard
+  /v1/forge/goals:
+    post:
+      tags:
+        - forge
+      operationId: forgePlanGoal
+      summary: Record a goal and get a planning scaffold (plan_goal)
+      description: |-
+        Without `plan`, proposals come from paths named in the goal text.
+        With `plan=1` (query) or `plan: true` (body) and Workers AI bound,
+        the planner splits the goal into 3-12 intents grounded in the
+        trunk tree, with `after` edges for unavoidable overlaps. Planner
+        misses degrade to the heuristic scaffold (never a 5xx); `planner`
+        says which one answered.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: plan
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['1', 'true']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - repo
+                - text
+              properties:
+                repo:
+                  type: string
+                text:
+                  type: string
+                  maxLength: 4000
+                plan:
+                  type: boolean
+      responses:
+        '201':
+          description: Goal + proposals + nearby live intents
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - goal
+                properties:
+                  goal:
+                    $ref: '#/components/schemas/ForgeGoal'
+                  proposals:
+                    type: array
+                    items:
+                      type: object
+                  nearby:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForgeLiveIntent'
+                  planner:
+                    type: object
+                    description: Present only when `plan` was requested.
+                    required:
+                      - used
+                    properties:
+                      used:
+                        type: boolean
+                      model:
+                        type: string
+                      dropped:
+                        type: integer
+                        description: Model proposals rejected by validation/grounding.
+                      reason:
+                        type: string
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    get:
+      tags:
+        - forge
+      operationId: forgeListGoals
+      summary: List a repo's goals
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Artifacts repo name (e.g. shop); token allowlists scope it as `<namespace>/<repo>`
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+          description: open | done | abandoned
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          description: 1-200 (default 50)
+      responses:
+        '200':
+          description: Goals, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo:
+                    type: string
+                  goals:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForgeGoal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/forge/goals/{goalId}:
+    get:
+      tags:
+        - forge
+      operationId: forgeGetGoal
+      summary: One goal with its intents
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: goalId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Goal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  goal:
+                    $ref: '#/components/schemas/ForgeGoal'
+                  intents:
+                    type: array
+                    items:
+                      type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/forge/intents:
+    post:
+      tags:
+        - forge
+      operationId: forgeDeclareIntent
+      summary: Declare an intent before editing (declare_intent)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      description: Returns overlapping live intents before any code is written. Protected paths (.flare/policy.yml) start at awaiting_plan.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - repo
+                - title
+                - footprint
+              properties:
+                repo:
+                  type: string
+                title:
+                  type: string
+                  minLength: 3
+                  maxLength: 200
+                footprint:
+                  oneOf:
+                    - type: array
+                      items:
+                        type: string
+                    - type: object
+                      properties:
+                        paths:
+                          type: array
+                          items:
+                            type: string
+                        entities:
+                          type: array
+                          items:
+                            type: string
+                reasoning:
+                  type: string
+                  maxLength: 4000
+                accept:
+                  type: string
+                  maxLength: 1000
+                goalId:
+                  type: string
+                baseSha:
+                  type: string
+                agent:
+                  type: string
+                  description: Agent name [A-Za-z0-9_.-]{1,40}; defaults to X-Flare-Agent, else the token actor
+      responses:
+        '201':
+          description: Declared intent with overlaps and similar intents
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - intent
+                  - overlaps
+                properties:
+                  intent:
+                    $ref: '#/components/schemas/ForgeIntent'
+                  protectedHits:
+                    type: array
+                    items:
+                      type: string
+                  overlaps:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForgeOverlap'
+                  similar:
+                    type: array
+                    items:
+                      type: object
+                  inbox:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForgeMailboxMessage'
+                  policyWarning:
+                    type: string
+                    nullable: true
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+    get:
+      tags:
+        - forge
+      operationId: forgeListIntents
+      summary: 'List a repo''s intents (filters: state, goalId, agent; keyset `before`)'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Artifacts repo name (e.g. shop); token allowlists scope it as `<namespace>/<repo>`
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Intent state
+        - name: goalId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Goal id
+        - name: agent
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Owning agent
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          description: 1-200 (default 50)
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: string
+          description: ISO createdAt cursor (nextBefore)
+      responses:
+        '200':
+          description: Intents, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo:
+                    type: string
+                  intents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForgeIntent'
+                  nextBefore:
+                    type: string
+                    nullable: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/forge/intents/{intentId}:
+    get:
+      tags:
+        - forge
+      operationId: forgeGetIntent
+      summary: 'Intent detail: footprint declared/actual/drift, risk terms, mailbox (untrusted), ledger'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      responses:
+        '200':
+          description: Intent detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  intent:
+                    $ref: '#/components/schemas/ForgeIntent'
+                  goal:
+                    type: object
+                    nullable: true
+                  footprint:
+                    type: object
+                    properties:
+                      declared:
+                        type: array
+                        items:
+                          type: string
+                      actual:
+                        type: array
+                        items:
+                          type: string
+                      drift:
+                        type: array
+                        items:
+                          type: string
+                  risk:
+                    $ref: '#/components/schemas/ForgeRisk'
+                  conflicts:
+                    type: array
+                    items:
+                      type: object
+                  mailbox:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForgeMailboxMessage'
+                  ledger:
+                    type: array
+                    items:
+                      type: object
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/forge/intents/{intentId}/claim:
+    post:
+      tags:
+        - forge
+      operationId: forgeClaimIntent
+      summary: 'Claim: fork trunk to i-<id> and mint a fork-scoped write token (never trunk)'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent:
+                  type: string
+                  description: Agent name [A-Za-z0-9_.-]{1,40}; defaults to X-Flare-Agent, else the token actor
+                leaseTtlSeconds:
+                  type: integer
+                  minimum: 30
+                  maximum: 3600
+      responses:
+        '200':
+          description: Fork remote, token and git commands
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - forkRepo
+                  - token
+                  - cloneCommand
+                properties:
+                  intent:
+                    $ref: '#/components/schemas/ForgeIntent'
+                  forkRepo:
+                    type: string
+                  forkRemote:
+                    type: string
+                  token:
+                    type: string
+                  tokenScope:
+                    type: string
+                  tokenExpiresAt:
+                    type: string
+                  tokenEnv:
+                    type: string
+                  cloneCommand:
+                    type: string
+                  pushCommand:
+                    type: string
+                  trailers:
+                    type: string
+                  commitTemplate:
+                    type: string
+                  leaseExpiresAt:
+                    type: string
+                    nullable: true
+                  heartbeatEverySeconds:
+                    type: integer
+                  inbox:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForgeMailboxMessage'
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+        '502':
+          $ref: '#/components/responses/ForgeUpstream'
+        '503':
+          $ref: '#/components/responses/NotConfigured'
+  /v1/forge/intents/{intentId}/heartbeat:
+    post:
+      tags:
+        - forge
+      operationId: forgeHeartbeat
+      summary: Renew the lease; delivers peer notes once; optional fork-token refresh
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent:
+                  type: string
+                  description: Agent name [A-Za-z0-9_.-]{1,40}; defaults to X-Flare-Agent, else the token actor
+                leaseTtlSeconds:
+                  type: integer
+                refreshToken:
+                  type: boolean
+      responses:
+        '200':
+          description: Lease + inbox + drift
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  leaseExpiresAt:
+                    type: string
+                  forkToken:
+                    type: object
+                  inbox:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForgeMailboxMessage'
+                  drift:
+                    type: array
+                    items:
+                      type: string
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+        '502':
+          $ref: '#/components/responses/ForgeUpstream'
+  /v1/forge/intents/{intentId}/push:
+    post:
+      tags:
+        - forge
+      operationId: forgeReportPush
+      summary: 'Report a push: verifies the sha on the fork and computes the actual footprint (report_push)'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sha
+              properties:
+                sha:
+                  type: string
+                  pattern: ^[0-9a-fA-F]{40}$
+                files:
+                  type: array
+                  items:
+                    type: string
+                  description: Only when Artifacts is unbound
+                agent:
+                  type: string
+                  description: Agent name [A-Za-z0-9_.-]{1,40}; defaults to X-Flare-Agent, else the token actor
+      responses:
+        '200':
+          description: Actual footprint, drift, risk, overlaps
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  intent:
+                    $ref: '#/components/schemas/ForgeIntent'
+                  sha:
+                    type: string
+                  actualFootprint:
+                    type: object
+                  drift:
+                    type: array
+                    items:
+                      type: string
+                  risk:
+                    $ref: '#/components/schemas/ForgeRisk'
+                  overlaps:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForgeOverlap'
+                  inbox:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForgeMailboxMessage'
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+        '422':
+          $ref: '#/components/responses/ForgeUnverified'
+        '503':
+          $ref: '#/components/responses/NotConfigured'
+  /v1/forge/intents/{intentId}/ready:
+    post:
+      tags:
+        - forge
+      operationId: forgeMarkReady
+      summary: Queue the intent for the next CI-verified train (mark_ready)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent:
+                  type: string
+                  description: Agent name [A-Za-z0-9_.-]{1,40}; defaults to X-Flare-Agent, else the token actor
+      responses:
+        '200':
+          description: Risk, policy route and train queue position
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  intent:
+                    $ref: '#/components/schemas/ForgeIntent'
+                  risk:
+                    $ref: '#/components/schemas/ForgeRisk'
+                  route:
+                    type: string
+                    enum:
+                      - auto
+                      - audit
+                      - human
+                  train:
+                    type: object
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+  /v1/forge/intents/{intentId}/approve-plan:
+    post:
+      tags:
+        - forge
+      operationId: forgeApprovePlan
+      summary: Approve a protected-path plan (admin; awaiting_plan -> draft)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      responses:
+        '200':
+          description: Approved intent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  intent:
+                    $ref: '#/components/schemas/ForgeIntent'
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+  /v1/forge/intents/{intentId}/abandon:
+    post:
+      tags:
+        - forge
+      operationId: forgeAbandonIntent
+      summary: Abandon an intent you own
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent:
+                  type: string
+                  description: Agent name [A-Za-z0-9_.-]{1,40}; defaults to X-Flare-Agent, else the token actor
+      responses:
+        '200':
+          description: Abandoned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  intentId:
+                    type: string
+                  state:
+                    type: string
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+  /v1/forge/intents/{intentId}/fork-session:
+    post:
+      tags:
+        - forge
+      operationId: forgeForkSession
+      summary: Continue someone else's intent on a new linked intent (fork_session)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent:
+                  type: string
+                  description: Agent name [A-Za-z0-9_.-]{1,40}; defaults to X-Flare-Agent, else the token actor
+      responses:
+        '201':
+          description: New intent + read token for the source fork
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  intent:
+                    $ref: '#/components/schemas/ForgeIntent'
+                  source:
+                    type: object
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+  /v1/forge/intents/{intentId}/messages:
+    post:
+      tags:
+        - forge
+      operationId: forgeSendNote
+      summary: Leave a note for the intent's owner (send_note); delivered as untrusted data
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - text
+              properties:
+                text:
+                  type: string
+                  maxLength: 2000
+                fromIntent:
+                  type: string
+                agent:
+                  type: string
+                  description: Agent name [A-Za-z0-9_.-]{1,40}; defaults to X-Flare-Agent, else the token actor
+      responses:
+        '201':
+          description: Queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messageId:
+                    type: string
+                  toIntent:
+                    type: string
+                  delivery:
+                    type: string
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    get:
+      tags:
+        - forge
+      operationId: forgeReadMailbox
+      summary: Peek an intent's mailbox (newest first, labelled untrusted)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: 1-100 (default 20)
+      responses:
+        '200':
+          description: Mailbox
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  intent:
+                    type: object
+                  messages:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForgeMailboxMessage'
+                  mailboxNotice:
+                    type: string
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/forge/whats-happening:
+    get:
+      tags:
+        - forge
+      operationId: forgeWhatsHappening
+      summary: Live intents, optionally only those touching the given paths (whats_happening)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Artifacts repo name (e.g. shop); token allowlists scope it as `<namespace>/<repo>`
+        - name: paths
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Comma-separated paths or globs
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          description: 1-200 (default 50)
+        - name: excludeIntent
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Leave this intent out
+      responses:
+        '200':
+          description: Live intents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo:
+                    type: string
+                  paths:
+                    type: array
+                    items:
+                      type: string
+                  source:
+                    type: string
+                  count:
+                    type: integer
+                  intents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForgeLiveIntent'
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/forge/inbox:
+    get:
+      tags:
+        - forge
+      operationId: forgeInbox
+      summary: 'Human review inbox: stories by goal, needs_you -> sample -> auto, risk-sorted'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Artifacts repo name (e.g. shop); token allowlists scope it as `<namespace>/<repo>`
+      responses:
+        '200':
+          description: Stories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo:
+                    type: string
+                  metrics:
+                    type: object
+                  policy:
+                    type: object
+                  groups:
+                    type: array
+                    items:
+                      type: object
+                  empty:
+                    $ref: '#/components/schemas/ForgeEmpty'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/forge/snapshot:
+    get:
+      tags:
+        - forge
+      operationId: forgeSnapshot
+      summary: 'Live map: counters, directory cells, dots, train track, trunk head (forge_snapshot)'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Artifacts repo name (e.g. shop); token allowlists scope it as `<namespace>/<repo>`
+      responses:
+        '200':
+          description: Snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForgeSnapshot'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/forge/live:
+    get:
+      tags:
+        - forge
+      operationId: forgeLive
+      summary: Alias of /v1/forge/snapshot (FORGE-UX §10 name)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Artifacts repo name (e.g. shop); token allowlists scope it as `<namespace>/<repo>`
+      responses:
+        '200':
+          description: Snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForgeSnapshot'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/forge/why:
+    get:
+      tags:
+        - forge
+      operationId: forgeWhy
+      summary: 'Why does this line exist: line -> commit -> intent -> goal -> reason -> evidence (why)'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Artifacts repo name (e.g. shop); token allowlists scope it as `<namespace>/<repo>`
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: File path
+        - name: line
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          description: 1-based line
+      responses:
+        '200':
+          description: Why chain
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo:
+                    type: string
+                  path:
+                    type: string
+                  line:
+                    type: integer
+                    nullable: true
+                  exact:
+                    type: boolean
+                  source:
+                    type: string
+                  chain:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        kind:
+                          type: string
+                        id:
+                          type: string
+                        text:
+                          type: string
+                        links:
+                          type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/forge/conflicts:
+    get:
+      tags:
+        - forge
+      operationId: forgeListConflicts
+      summary: List a repo's conflicts
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Artifacts repo name (e.g. shop); token allowlists scope it as `<namespace>/<repo>`
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+          description: open | claimed | resolved | failed | abandoned
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          description: 1-200 (default 50)
+      responses:
+        '200':
+          description: Conflicts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo:
+                    type: string
+                  conflicts:
+                    type: array
+                    items:
+                      type: object
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/forge/conflicts/{conflictId}:
+    get:
+      tags:
+        - forge
+      operationId: forgeGetConflict
+      summary: Conflict with both intents' goals, reasoning and footprints
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeConflictId'
+      responses:
+        '200':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conflict:
+                    type: object
+                  a:
+                    type: object
+                    nullable: true
+                  b:
+                    type: object
+                    nullable: true
+                  ledger:
+                    type: array
+                    items:
+                      type: object
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/forge/conflicts/{conflictId}/claim:
+    post:
+      tags:
+        - forge
+      operationId: forgeClaimConflict
+      summary: Claim a conflict to replay intent b (fork token for b's fork, never trunk)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeConflictId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent:
+                  type: string
+                  description: Agent name [A-Za-z0-9_.-]{1,40}; defaults to X-Flare-Agent, else the token actor
+      responses:
+        '200':
+          description: Replay workspace
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conflict:
+                    type: object
+                  a:
+                    type: object
+                  b:
+                    type: object
+                  files:
+                    type: array
+                    items:
+                      type: string
+                  replay:
+                    type: object
+                    nullable: true
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+  /v1/forge/conflicts/{conflictId}/resolve:
+    post:
+      tags:
+        - forge
+      operationId: forgeResolveConflict
+      summary: Resolve a claimed conflict with the replayed sha (b returns to ready)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeConflictId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sha
+              properties:
+                sha:
+                  type: string
+                agent:
+                  type: string
+                  description: Agent name [A-Za-z0-9_.-]{1,40}; defaults to X-Flare-Agent, else the token actor
+      responses:
+        '200':
+          description: Resolved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conflictId:
+                    type: string
+                  state:
+                    type: string
+                  resolutionSha:
+                    type: string
+                  intent:
+                    type: object
+                    nullable: true
+                  nextSteps:
+                    $ref: '#/components/schemas/ForgeNextSteps'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+        '422':
+          $ref: '#/components/responses/ForgeUnverified'
+  /v1/forge/trains:
+    get:
+      tags:
+        - forge
+      operationId: forgeListTrains
+      summary: List a repo's trains
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Artifacts repo name (e.g. shop); token allowlists scope it as `<namespace>/<repo>`
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Train state
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          description: 1-200 (default 50)
+      responses:
+        '200':
+          description: Trains, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo:
+                    type: string
+                  source:
+                    type: string
+                  trains:
+                    type: array
+                    items:
+                      type: object
+                  empty:
+                    $ref: '#/components/schemas/ForgeEmpty'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/forge/trains/{trainId}:
+    get:
+      tags:
+        - forge
+      operationId: forgeGetTrain
+      summary: One train with its ledger
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: trainId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Train
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  train:
+                    type: object
+                  ledger:
+                    type: array
+                    items:
+                      type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/forge/feed:
+    get:
+      tags:
+        - forge
+      operationId: forgeFeed
+      summary: 'Live map deltas over WebSocket (Upgrade: websocket); 501 + poll hint until the Coordinator is wired'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Artifacts repo name (e.g. shop); token allowlists scope it as `<namespace>/<repo>`
+      responses:
+        '101':
+          description: WebSocket upgrade
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          description: Upgrade header required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '501':
+          $ref: '#/components/responses/ForgeNotImplemented'
 components:
   securitySchemes:
     bearerAuth:
@@ -4351,6 +5802,18 @@ components:
       name: flare_session
       description: Dashboard session cookie (admin routes, MCP, OAuth consent)
   parameters:
+    ForgeIntentId:
+      name: intentId
+      in: path
+      required: true
+      schema:
+        type: string
+    ForgeConflictId:
+      name: conflictId
+      in: path
+      required: true
+      schema:
+        type: string
     RunId:
       name: runId
       in: path
@@ -4404,6 +5867,30 @@ components:
         maximum: 100000
         default: 0
   responses:
+    ForgeConflict:
+      description: State conflict (intent_not_claimable, not_pushable, not_ready, stale_state, lease_lost, goal_closed, conflict_not_claimable)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ForgeUnverified:
+      description: 'push_unverified: the sha is not on the fork'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ForgeNotImplemented:
+      description: 'not_implemented: capability not wired on this deployment (hint names the fallback)'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ForgeUpstream:
+      description: 'fork_failed: Artifacts fork/token mint failed (claim released)'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     BadRequest:
       description: Invalid input
       content:
@@ -4447,6 +5934,323 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
   schemas:
+    ForgeNextSteps:
+      type: array
+      description: 'What to call next: MCP tool name (or `shell`), arguments, and why'
+      items:
+        type: object
+        required:
+          - tool
+          - args
+          - why
+        properties:
+          tool:
+            type: string
+          args:
+            type: object
+          why:
+            type: string
+    ForgeGoal:
+      type: object
+      required:
+        - id
+        - repo
+        - text
+        - state
+      properties:
+        id:
+          type: string
+        repo:
+          type: string
+        text:
+          type: string
+        createdBy:
+          type: string
+        state:
+          type: string
+          enum:
+            - open
+            - done
+            - abandoned
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+    ForgeIntent:
+      type: object
+      required:
+        - id
+        - repo
+        - title
+        - state
+      properties:
+        id:
+          type: string
+        goalId:
+          type: string
+          nullable: true
+        repo:
+          type: string
+        agent:
+          type: string
+        title:
+          type: string
+        reasoning:
+          type: string
+        accept:
+          type: string
+        footprint:
+          type: object
+          properties:
+            paths:
+              type: array
+              items:
+                type: string
+            entities:
+              type: array
+              items:
+                type: string
+        actualFootprint:
+          type: object
+          nullable: true
+          properties:
+            paths:
+              type: array
+              items:
+                type: string
+        forkRepo:
+          type: string
+          nullable: true
+        state:
+          type: string
+          enum:
+            - draft
+            - awaiting_plan
+            - claimed
+            - working
+            - ready
+            - in_train
+            - conflicted
+            - replaying
+            - bisected
+            - expired
+            - landed
+            - failed
+            - abandoned
+        risk:
+          type: integer
+          minimum: 0
+          maximum: 100
+        riskTerms:
+          type: array
+          items:
+            type: object
+        baseSha:
+          type: string
+        headSha:
+          type: string
+        trainId:
+          type: string
+          nullable: true
+        landedSha:
+          type: string
+          nullable: true
+        planApprovedBy:
+          type: string
+          nullable: true
+        leaseExpiresAt:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+    ForgeOverlap:
+      type: object
+      properties:
+        intentId:
+          type: string
+        title:
+          type: string
+        agent:
+          type: string
+        state:
+          type: string
+        reasoning:
+          type: string
+        paths:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+        leaseExpiresAt:
+          type: string
+          nullable: true
+    ForgeLiveIntent:
+      type: object
+      properties:
+        intentId:
+          type: string
+        goalId:
+          type: string
+          nullable: true
+        title:
+          type: string
+        agent:
+          type: string
+        state:
+          type: string
+        reasoning:
+          type: string
+        footprint:
+          type: array
+          items:
+            type: string
+        actualFootprint:
+          type: array
+          nullable: true
+          items:
+            type: string
+        headSha:
+          type: string
+        risk:
+          type: integer
+        leaseExpiresAt:
+          type: string
+          nullable: true
+        matchedPaths:
+          type: array
+          items:
+            type: string
+    ForgeMailboxMessage:
+      type: object
+      description: 'Untrusted peer data: text is prefixed with an untrusted label'
+      properties:
+        id:
+          type: string
+        from:
+          type: object
+          properties:
+            agent:
+              type: string
+            intent:
+              type: string
+              nullable: true
+        text:
+          type: string
+        untrusted:
+          type: boolean
+          enum:
+            - true
+        createdAt:
+          type: string
+        deliveredAt:
+          type: string
+          nullable: true
+    ForgeRisk:
+      type: object
+      properties:
+        score:
+          type: integer
+        terms:
+          type: array
+          items:
+            type: object
+            properties:
+              term:
+                type: string
+              weight:
+                type: integer
+              detail:
+                type: string
+    ForgeEmpty:
+      type: object
+      description: Machine-readable empty state (FORGE-UX §8.6)
+      properties:
+        code:
+          type: string
+        hint:
+          type: string
+        command:
+          type: string
+    ForgeSnapshot:
+      type: object
+      properties:
+        repo:
+          type: string
+        generatedAt:
+          type: string
+        source:
+          type: string
+          enum:
+            - coordinator
+            - d1
+        counters:
+          type: object
+          properties:
+            agents:
+              type: integer
+            intents:
+              type: integer
+            overlaps_caught:
+              type: integer
+            conflicts_open:
+              type: integer
+            landed_today:
+              type: integer
+            main_red_minutes:
+              type: integer
+            human_minutes:
+              type: integer
+        cells:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              files:
+                type: integer
+              intents:
+                type: array
+                items:
+                  type: string
+              state:
+                type: string
+              overlap_with:
+                type: array
+                items:
+                  type: array
+                  items:
+                    type: string
+              protected:
+                type: boolean
+        dots:
+          type: array
+          items:
+            type: object
+            properties:
+              intent:
+                type: string
+              agent:
+                type: string
+              path:
+                type: string
+              state:
+                type: string
+        track:
+          type: object
+          properties:
+            current:
+              type: object
+              nullable: true
+            recent:
+              type: array
+              items:
+                type: object
+        head:
+          type: string
     Error:
       type: object
       required: [error]
