@@ -620,14 +620,16 @@ export async function declareOp(deps: ForgeServiceDeps, p: ForgePrincipal, args:
   if (isOutcome(r)) return r;
   const who = resolveAgent(p, args.agent);
   if (isOutcome(who)) return who;
-  let baseSha = str(args.baseSha) ?? "";
-  if (baseSha) {
-    const s = validateSha(baseSha);
+  // The base is always trunk main as the server reads it, never the
+  // caller's: report_push and the push trigger diff base..head on the
+  // fork, so a caller-chosen base could hide changes (e.g. protected
+  // paths) in a pre-made base commit. A supplied baseSha is validated
+  // and ignored. Empty (trunk unreadable) = claim fills it from trunk.
+  if (args.baseSha !== undefined && args.baseSha !== null && args.baseSha !== "") {
+    const s = validateSha(args.baseSha);
     if (!s.ok) return forgeFail("invalid_request", s.error);
-    baseSha = s.value;
-  } else {
-    baseSha = await deps.trunkHead(r.repo);
   }
+  const baseSha = await deps.trunkHead(r.repo);
   const { policy, warning } = await deps.loadPolicy(r.repo);
   const out = await declareIntent(deps.db, {
     repo: r.repo,

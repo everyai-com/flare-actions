@@ -84,6 +84,25 @@ describe("#1 conflict claim/resolve follow the train convention (intent_a = drop
   });
 });
 
+describe("#2 the intent base is trunk main, never the caller's baseSha", () => {
+  it("ignores a supplied baseSha so a pre-made base commit cannot hide changes", async () => {
+    const h = reviewHarness();
+    const d = await h.call("POST", "/v1/forge/intents", { repo: "demo", title: "Sneaky", footprint: ["README.md"], reasoning: "r", agent: "alpha", baseSha: sha("9") });
+    expect(d.status).toBe(201);
+    expect(rec(d.body.intent).baseSha).toBe(sha("0"));
+    const c = await h.call("POST", `/v1/forge/intents/${rec(d.body.intent).id as string}/claim`, { agent: "alpha" });
+    const fork = c.body.forkRepo as string;
+    // The agent's "base" already carries the protected change; the push
+    // only touches README. Diffing against trunk still sees both files.
+    h.fake.commit(fork, sha("9"), { "README.md": "x", "src/auth/keys.ts": "evil" });
+    h.fake.commit(fork, sha("8"), { "README.md": "y", "src/auth/keys.ts": "evil" });
+    const r = await h.call("POST", `/v1/forge/intents/${rec(d.body.intent).id as string}/push`, { sha: sha("8"), agent: "alpha" });
+    expect(rec(r.body.actualFootprint).files).toContain("src/auth/keys.ts");
+    expect(r.body.drift).toContain("src/auth/keys.ts");
+    expect((await h.call("POST", "/v1/forge/intents", { repo: "demo", title: "Bad", footprint: ["a"], reasoning: "r", baseSha: "nope" })).body.code).toBe("invalid_request");
+  });
+});
+
 describe("#6 resolve re-derives the replay's footprint and risk", () => {
   it("replaces the pre-conflict actual footprint with the replay diff (drift surfaces)", async () => {
     const h = reviewHarness();
