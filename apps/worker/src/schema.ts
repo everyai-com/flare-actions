@@ -60,7 +60,8 @@ export const SCHEMA_STATEMENTS = [
     scopes TEXT NOT NULL DEFAULT 'runner',
     repos TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
-    revoked_at TEXT
+    revoked_at TEXT,
+    expires_at TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_tokens_hash ON api_tokens(token_hash)`,
   `CREATE TABLE IF NOT EXISTS app_settings (
@@ -426,7 +427,8 @@ export const SCHEMA_STATEMENTS = [
     plan_approved_by TEXT,
     lease_expires_at TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    owner_principal TEXT NOT NULL DEFAULT ''
   )`,
   `CREATE INDEX IF NOT EXISTS idx_intents_repo_state ON intents(repo, state)`,
   `CREATE INDEX IF NOT EXISTS idx_intents_goal ON intents(goal_id)`,
@@ -459,6 +461,7 @@ export const SCHEMA_STATEMENTS = [
     state TEXT NOT NULL DEFAULT 'forming' CHECK (state IN (
       'forming', 'merging', 'verifying', 'landed', 'failed', 'bisected', 'aborted')),
     parent_train_id TEXT,
+    group_seq INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
@@ -500,6 +503,7 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE jobs ADD COLUMN labels TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE api_tokens ADD COLUMN repos TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE api_tokens ADD COLUMN expires_at TEXT`,
   `ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE jobs ADD COLUMN started_at TEXT`,
   `ALTER TABLE jobs ADD COLUMN finished_at TEXT`,
@@ -517,6 +521,8 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE gh_runner_jobs ADD COLUMN log_digest TEXT`,
   `ALTER TABLE jobs ADD COLUMN billed_ms INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE attempts ADD COLUMN polled_at TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE intents ADD COLUMN owner_principal TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE trains ADD COLUMN group_seq INTEGER NOT NULL DEFAULT 0`,
 ];
 
 let schemaPromise: Promise<void> | null = null;

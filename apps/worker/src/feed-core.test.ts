@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { CoordinatorSnapshot, FeedOp, LiveIntent } from "./coordinator-core";
 import {
   coalesceOps,
+  dashboardOps,
+  dashboardSnapshot,
   deltaFrames,
   FEED_FLUSH_MS,
   FEED_MAX_OPS_PER_FRAME,
@@ -104,5 +106,38 @@ describe("parseClientMessage", () => {
     expect(parseClientMessage("null")).toBeNull();
     expect(parseClientMessage(new ArrayBuffer(4))).toBeNull();
     expect(parseClientMessage(`{"type":"resync","pad":"${"x".repeat(2000)}"}`)).toBeNull();
+  });
+});
+
+describe("dashboard view fields (the Forge dashboard reads the REST shape)", () => {
+  it("adds footprint/path to intent ops, snake_case counters, and an overlap twin per edge op", () => {
+    const intent = intentOp("i1", 1);
+    const edge: FeedOp = { op: "upsert", kind: "edge", id: "i1~i2", ver: 2, fields: { id: "i1~i2", a: "i1", b: "i2", pairs: [{ a: "x", b: "x" }], origin: "declared", createdAt: "t" } };
+    const gone: FeedOp = { op: "remove", kind: "edge", id: "i1~i3", ver: 3 };
+    const out = dashboardOps([intent, edge, gone]);
+    expect(out).toHaveLength(5);
+    const fields = (out[0] as { fields: Record<string, unknown> }).fields;
+    expect(fields.footprint).toEqual({ paths: ["x"], declared: ["x"], actual: [], drift: [] });
+    expect(fields.path).toBe("x");
+    expect(fields.paths).toEqual(["x"]);
+    expect(out[2]).toEqual({ op: "upsert", kind: "overlap", id: "i1~i2", ver: 2, fields: { a: "i1", b: "i2", paths: ["x"], state: "overlap", origin: "declared" } });
+    expect(out[4]).toEqual({ op: "remove", kind: "overlap", id: "i1~i3", ver: 3 });
+  });
+
+  it("puts a REST-shaped `data` view in the snapshot frame next to the coordinator snapshot", () => {
+    const fields = (intentOp("i9", 1) as { fields: LiveIntent }).fields;
+    const snapshot: CoordinatorSnapshot = {
+      v: 1, repo: "demo", at: "t", ver: 4, intents: [{ ...fields, actual: ["x", "y"] }],
+      edges: [{ id: "a~b", a: "a", b: "b", pairs: [{ a: "x", b: "x" }], origin: "actual", createdAt: "t" }],
+      counters: { intents: 1, agents: 1, overlaps: 1, overlapsCaught: 3, pushOverlaps: 0, driftAlerts: 0, notesSent: 0, pushes: 0, declared: 1, expired: 0, byState: {} },
+      truncated: false,
+    };
+    const d = dashboardSnapshot(snapshot);
+    expect(d.intents[0].footprint).toEqual({ paths: ["x"], declared: ["x"], actual: ["x", "y"], drift: ["y"] });
+    expect(d.overlaps).toEqual([{ a: "a", b: "b", paths: ["x"], state: "overlap", _id: "a~b" }]);
+    expect(d.counters.overlaps_caught).toBe(3);
+    const frame = JSON.parse(snapshotFrame(snapshot, 7)) as { snapshot: CoordinatorSnapshot; data: { intents: unknown[] } };
+    expect(frame.snapshot.intents).toHaveLength(1);
+    expect(frame.data.intents).toHaveLength(1);
   });
 });

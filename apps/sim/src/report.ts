@@ -18,8 +18,16 @@ export interface BenchMetrics {
   stacked_intents: number;
   replays_attempted: number;
   replays_succeeded: number;
-  red_main_min: number;
+  // Defects no CI catches (formerly "red_main_min"): count, and the
+  // union of [land, land + MTTR] minutes they keep main red.
   escaped_defects: number;
+  escaped_defect_min: number;
+  // Main red because a landed state was never verified as that exact SHA.
+  // 0 by construction for trains/Forge; computed per landing.
+  main_red_integration_min: number;
+  unverified_landings: number;
+  speculative_groups: number;
+  invalidated_lanes: number;
   human_min: number;
   human_breakdown_min: { review: number; rereview: number; plan_approval: number; audit: number; escalation: number };
   routes: { auto: number; audit: number; human: number };
@@ -69,8 +77,12 @@ export function toBenchMetrics(m: ModeMetrics): BenchMetrics {
     stacked_intents: m.stackedIntents,
     replays_attempted: m.replaysAttempted,
     replays_succeeded: m.replaysSucceeded,
-    red_main_min: r2(m.brokenMainMin),
     escaped_defects: m.escapedDefects,
+    escaped_defect_min: r2(m.escapedDefectMin),
+    main_red_integration_min: r2(m.mainRedIntegrationMin),
+    unverified_landings: m.unverifiedLandings,
+    speculative_groups: m.speculativeGroups,
+    invalidated_lanes: m.invalidatedLanes,
     human_min: r2(m.humanReviewMin),
     human_breakdown_min: {
       review: r2(m.human.review),
@@ -133,7 +145,8 @@ const COLUMNS = [
   "p50 declare->land",
   "p95",
   "Conflicts hit / avoided",
-  "Red-main min",
+  "Escaped defects (n / min)",
+  "Main red: integration min",
   "Human min",
   "CI runs",
   "$ / 1k agents",
@@ -151,7 +164,8 @@ export function tableRows(doc: BenchDoc): string[][] {
       formatMinutes(m.median_declare_to_land_min),
       formatMinutes(m.p95_declare_to_land_min),
       `${formatInt(m.conflicts_hit)} / ${formatInt(m.conflicts_avoided)}`,
-      formatInt(m.red_main_min),
+      `${formatInt(m.escaped_defects)} / ${formatInt(m.escaped_defect_min)}`,
+      formatInt(m.main_red_integration_min),
       formatInt(m.human_min),
       formatInt(m.ci_runs),
       m.dollars_per_1k_agents === null ? "n/a" : `$${m.dollars_per_1k_agents.toFixed(2)}`,

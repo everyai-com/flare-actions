@@ -695,6 +695,12 @@ paths:
                 baseSha:
                   type: string
                   description: Pinned base commit (optional)
+                promote:
+                  type: boolean
+                  description: >-
+                    Fast-forward the winner onto baseRef of the source repo
+                    (default true). Must be false when sourceRepo is a Forge
+                    trunk: only the train moves a trunk's main.
       responses:
         '201':
           description: Tournament id
@@ -712,6 +718,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 'forge_trunk_promote: sourceRepo is a Forge trunk and promote was not false'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
     get:
       tags: [tournaments]
       operationId: listTournaments
@@ -4456,6 +4468,33 @@ paths:
                 type: string
         '400':
           $ref: '#/components/responses/BadRequest'
+  /llms.txt:
+    get:
+      tags: [admin]
+      operationId: llmsTxt
+      summary: Agent index (llms.txt convention), generated from the repo's llms.txt
+      security: []
+      responses:
+        '200':
+          description: Plain-text index of docs, quickstart, MCP and Forge surfaces
+          content:
+            text/plain:
+              schema:
+                type: string
+  /.well-known/mcp.json:
+    get:
+      tags: [admin]
+      operationId: mcpWellKnown
+      summary: MCP discovery document (same JSON as GET /mcp)
+      security: []
+      responses:
+        '200':
+          description: Server name, protocol versions, endpoint, OAuth endpoints, tools and risk tiers
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /openapi.yaml:
     get:
       tags: [admin]
@@ -5179,6 +5218,148 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/ForgeConflict'
+  /v1/forge/intents/{intentId}/approve-landing:
+    post:
+      tags:
+        - forge
+      operationId: forgeApproveLanding
+      summary: 'Approve landing of a human-routed intent (admin; ready intents only)'
+      description: A ready intent whose risk routed it to `human` is held out of trains until a human approves; it then rides the next train and still lands only on a CI-verified exact SHA. Needs the train runner (501 otherwise).
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      responses:
+        '200':
+          description: 'Approved: `{ intent, landingApproved: true, note, nextSteps }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+  /v1/forge/intents/{intentId}/send-back:
+    post:
+      tags:
+        - forge
+      operationId: forgeSendBack
+      summary: 'Send an intent back to its owner with a one-line reason (admin)'
+      description: Human review verb (dashboard Inbox; MCP `send_back`). The owner gets a mailbox note and the ledger records `review.sent_back`; a ready intent returns to working. Landed work is not moved (the review also counts as `review.disagreed`). awaiting_plan stays awaiting_plan so the protected-path gate is never bypassed.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+                  description: Required one-line reason
+      responses:
+        '200':
+          description: '`{ intentId, state, transitioned, reason, nextSteps }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+  /v1/forge/intents/{intentId}/review:
+    post:
+      tags:
+        - forge
+      operationId: forgeReviewSample
+      summary: 'Answer an audit-sample story: agree or disagree (admin)'
+      description: Human review verb (MCP `review_sample`). agree writes `review.sampled_ok`; disagree (reason required) writes `review.disagreed` and notes the owner. Feeds the inbox disagreement rate; no state change.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                decision:
+                  type: string
+                  enum: [agree, disagree]
+                reason:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: '`{ intentId, decision, ledger, nextSteps }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/forge/intents/{intentId}/session:
+    get:
+      tags:
+        - forge
+      operationId: forgeIntentSession
+      summary: 'The intent fork''s flare/session: plan.md + log.jsonl steps'
+      description: Read from the intent's own fork (`flare/session` branch). `session` is null when the intent was never claimed or the agent has not written a session yet.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ForgeIntentId'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+          description: Newest steps to return (default 200)
+      responses:
+        '200':
+          description: '`{ intentId, forkRepo, session: { repo, branch, head, plan, planTruncated, steps: [{ts, kind, text}], totalSteps, skippedLines, logTruncated } | null, note }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: Artifacts not configured
   /v1/forge/intents/{intentId}/abandon:
     post:
       tags:
@@ -5349,6 +5530,95 @@ paths:
                     $ref: '#/components/schemas/ForgeNextSteps'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/forge/goals/plan:
+    post:
+      tags:
+        - forge
+      operationId: forgePlanGoalAi
+      summary: 'Record a goal and ask the AI planner for proposals (same as POST /v1/forge/goals?plan=1)'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, text]
+              properties:
+                repo:
+                  type: string
+                text:
+                  type: string
+      responses:
+        '201':
+          description: '`{ goal, proposals: [{title, footprint, reasoning, accept, after}], planner: {used, model|reason}, nearby, nextSteps }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/forge/agents:
+    get:
+      tags:
+        - forge
+      operationId: forgeAgents
+      summary: 'Per-agent stats: active intents, landed (7d / today), conflicts, current intent + lease, review acceptance and disagreement rates (7d)'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Artifacts repo name (e.g. shop); token allowlists scope it as `<namespace>/<repo>`
+      responses:
+        '200':
+          description: '`{ repo, agents: [{id, label, client, intent, active, landed, landed_today, conflicts, last_at, reviews, acceptance_rate, disagreement_rate}] }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/forge/bench:
+    get:
+      tags:
+        - forge
+      operationId: forgeBench
+      summary: 'The recorded Forge bench run (SIMULATED: simulated is always true; docs/FORGE-BENCH.md)'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: agents
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Pick the run with this agent count (default 10000)
+      responses:
+        '200':
+          description: '`{ run, measured_at, sha, agents, simulated: true, kind, note, modes: [{mode, label, metrics, projected}], runs, source }`'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -5898,6 +6168,573 @@ paths:
                 $ref: '#/components/schemas/Error'
         '501':
           $ref: '#/components/responses/ForgeNotImplemented'
+  /watch:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicWatch
+      summary: 'Spectator page: the dashboard HTML with <meta name="flare-public" content="<repo>"> injected (404 when spectator mode is off)'
+      security: []
+      parameters:
+        - name: repo
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Public repo to watch (default the first designated repo)
+      responses:
+        '200':
+          description: Dashboard HTML (text/html) flagged for public read-only mode
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicIndex
+      summary: 'Spectator index: designated repos, endpoints, and how to join'
+      security: []
+      responses:
+        '200':
+          description: Sanitized read-only payload (credentials, commands, mailboxes and nextSteps removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/join:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicJoin
+      summary: 'How a judge connects: watch URLs, the read-only MCP one-liner, how to request a write token'
+      security: []
+      responses:
+        '200':
+          description: Sanitized read-only payload (credentials, commands, mailboxes and nextSteps removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/snapshot:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicSnapshot
+      summary: 'Public live map (forge_snapshot, sanitized)'
+      security: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A repo the admin designated in forge_public_repos
+      responses:
+        '200':
+          description: Sanitized read-only payload (credentials, commands, mailboxes and nextSteps removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/live:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicLive
+      summary: 'Alias of /v1/public/forge/snapshot'
+      security: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A repo the admin designated in forge_public_repos
+      responses:
+        '200':
+          description: Sanitized read-only payload (credentials, commands, mailboxes and nextSteps removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/inbox:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicInbox
+      summary: 'Public review inbox summary (sanitized)'
+      security: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A repo the admin designated in forge_public_repos
+      responses:
+        '200':
+          description: Sanitized read-only payload (credentials, commands, mailboxes and nextSteps removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/goals:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicGoals
+      summary: 'Public goal list'
+      security: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A repo the admin designated in forge_public_repos
+      responses:
+        '200':
+          description: Sanitized read-only payload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/goals/{goalId}:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicGoal
+      summary: 'Public goal detail'
+      security: []
+      parameters:
+        - name: goalId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sanitized read-only payload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/intents:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicIntents
+      summary: 'Public intent list (sanitized)'
+      security: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A repo the admin designated in forge_public_repos
+      responses:
+        '200':
+          description: Sanitized read-only payload (credentials, commands, mailboxes and nextSteps removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/trains:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicTrains
+      summary: 'Public train list'
+      security: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A repo the admin designated in forge_public_repos
+      responses:
+        '200':
+          description: Sanitized read-only payload (credentials, commands, mailboxes and nextSteps removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/conflicts:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicConflicts
+      summary: 'Public conflict list'
+      security: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A repo the admin designated in forge_public_repos
+      responses:
+        '200':
+          description: Sanitized read-only payload (credentials, commands, mailboxes and nextSteps removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/why:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicWhy
+      summary: 'Public why chain for a path/line'
+      security: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A repo the admin designated in forge_public_repos
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: line
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Sanitized read-only payload (credentials, commands, mailboxes and nextSteps removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/whats-happening:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicWhatsHappening
+      summary: 'Public live intents, optionally filtered by paths'
+      security: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A repo the admin designated in forge_public_repos
+      responses:
+        '200':
+          description: Sanitized read-only payload (credentials, commands, mailboxes and nextSteps removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/intents/{intentId}:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicIntent
+      summary: 'Public intent detail (no mailbox, no fork credentials)'
+      security: []
+      parameters:
+        - name: intentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sanitized read-only payload (credentials, commands, mailboxes and nextSteps removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/trains/{trainId}:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicTrain
+      summary: 'Public train detail'
+      security: []
+      parameters:
+        - name: trainId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sanitized read-only payload (credentials, commands, mailboxes and nextSteps removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/conflicts/{conflictId}:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicConflict
+      summary: 'Public conflict detail'
+      security: []
+      parameters:
+        - name: conflictId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sanitized read-only payload (credentials, commands, mailboxes and nextSteps removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/feed:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicFeed
+      summary: 'Public live map WebSocket (same frames as /v1/forge/feed; cookies and auth are stripped before the upgrade)'
+      security: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A repo the admin designated in forge_public_repos
+      responses:
+        '101':
+          description: WebSocket upgrade
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          description: Upgrade header required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/mcp:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicMcpInfo
+      summary: Read-only public MCP discovery (tool names, public repos)
+      security: []
+      responses:
+        '200':
+          description: Discovery document
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags:
+        - forge
+      operationId: forgePublicMcp
+      summary: 'Read-only public MCP over Streamable HTTP: forge_snapshot, whats_happening, why, read_inbox for designated repos; no auth, rate-limited per IP'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: JSON-RPC response (SSE data frames)
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/admin/forge/public:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicSettingsGet
+      summary: 'Admin: the repos designated for public read-only spectator mode'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Designated repos, judge sandbox repo, watch URLs
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+        - forge
+      operationId: forgePublicSettingsSet
+      summary: 'Admin: set forge_public_repos (empty list = spectator mode off)'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - repos
+              properties:
+                repos:
+                  type: array
+                  maxItems: 10
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/admin/forge/judge-token:
+    post:
+      tags:
+        - forge
+      operationId: forgeJudgeToken
+      summary: 'Admin: mint a runner token pinned to the judge sandbox repo with a hard expiry (shown once)'
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                repo:
+                  type: string
+                  description: Sandbox repo (default forge_judge_repo setting, else bookshelf-sandbox); never a public repo
+                ttlDays:
+                  type: integer
+                  minimum: 1
+                  maximum: 30
+                  default: 7
+                name:
+                  type: string
+                remember:
+                  type: boolean
+                  description: Store repo as the forge_judge_repo setting
+      responses:
+        '201':
+          description: Token (plaintext once), repo allowlist, expiresAt, Claude Code one-liner
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: ARTIFACTS_NAMESPACE unset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   securitySchemes:
     bearerAuth:
@@ -6358,7 +7195,64 @@ components:
               items:
                 type: object
         head:
+          type: object
+          description: Trunk head ({ sha, at }); `headSha` repeats the sha as a string
+          properties:
+            sha:
+              type: string
+            at:
+              type: string
+              nullable: true
+        headSha:
           type: string
+        intents:
+          type: array
+          description: Live intents (≤500) with footprint.{paths,declared,actual,drift}
+          items:
+            type: object
+            additionalProperties: true
+        edges:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        overlaps:
+          type: array
+          items:
+            type: object
+            properties:
+              a:
+                type: string
+              b:
+                type: string
+              paths:
+                type: array
+                items:
+                  type: string
+              state:
+                type: string
+        conflicts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        agents:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              label:
+                type: string
+              client:
+                type: string
+        policy:
+          type: object
+          additionalProperties: true
+        ver:
+          type: integer
+          nullable: true
     Error:
       type: object
       required: [error]

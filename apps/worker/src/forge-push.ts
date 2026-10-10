@@ -189,7 +189,7 @@ export interface ForgePushDeps {
   reportPush: (
     repo: string,
     intentId: string,
-    input: { agent: string; headSha: string; actualFootprint: { paths: string[] }; source: "trigger" },
+    input: { agent: string; headSha: string; actualFootprint: { paths: string[] }; truncated: boolean; source: "trigger" },
   ) => Promise<{ ok: true; duplicate: boolean; drift: string[] } | { ok: false; error: string; message: string }>;
 }
 
@@ -240,6 +240,7 @@ export async function handleForgePush(deps: ForgePushDeps, raw: unknown): Promis
     agent: intent.agent,
     headSha: push.after,
     actualFootprint: { paths },
+    truncated: diff.truncated,
     source: "trigger",
   });
   if (!res.ok) return { status: "failed", error: res.error, message: res.message };

@@ -6,6 +6,10 @@ import { EventQueue, MODES, simulate, unionLength } from "./sim";
 import { filePathFor, generateWorkload } from "./workload";
 import { formatMarkdown, formatMinutes, formatTable, toBenchDoc } from "./report";
 
+// These suites spawn real git processes (or run the full simulator), which
+// can exceed vitest's 5 s default on a loaded machine.
+const SLOW_TEST_MS = 60_000;
+
 describe("prng", () => {
   it("is deterministic per seed and label", () => {
     const a = rngFor(7, "x");
@@ -91,7 +95,7 @@ describe("workload", () => {
   });
 });
 
-describe("simulate", () => {
+describe("simulate", { timeout: SLOW_TEST_MS }, () => {
   const run = simulate({ agents: 400, seed: 7, now: () => 0 });
   const by = Object.fromEntries(run.modes.map((m) => [m.mode, m]));
 
@@ -131,6 +135,18 @@ describe("simulate", () => {
     expect(f.humanReviewMin).toBeLessThan(by.baseline.humanReviewMin);
   });
 
+  it("every mode lands only exact verified states: no integration red, no unverified landing", () => {
+    for (const m of run.modes) {
+      expect(m.unverifiedLandings).toBe(0);
+      expect(m.mainRedIntegrationMin).toBe(0);
+    }
+  });
+
+  it("Forge speculates (groups cut on in-flight groups); trains-only (depth 1) never does", () => {
+    expect(by.trains.speculativeGroups).toBe(0);
+    expect(by.forge.speculativeGroups).toBeGreaterThan(0);
+  });
+
   it("trains out-ship the serial queue", () => {
     expect(by.trains.landedPerMin).toBeGreaterThan(by.baseline.landedPerMin);
     expect(by.forge.landedPerMin).toBeGreaterThan(by.baseline.landedPerMin);
@@ -145,7 +161,8 @@ describe("simulate", () => {
     });
     for (const m of quiet.modes) {
       expect(m.abandoned).toBe(0);
-      expect(m.brokenMainMin).toBe(0);
+      expect(m.escapedDefectMin).toBe(0);
+      expect(m.mainRedIntegrationMin).toBe(0);
       expect(m.flakeReruns).toBe(0);
     }
   });

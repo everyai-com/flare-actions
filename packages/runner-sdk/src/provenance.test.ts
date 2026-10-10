@@ -21,6 +21,10 @@ import {
   writeSessionPlan,
 } from "./provenance.ts";
 
+// These suites spawn real git processes (or run the full simulator), which
+// can exceed vitest's 5 s default on a loaded machine.
+const SLOW_TEST_MS = 60_000;
+
 const ENV = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", HOME: tmpdir() };
 
 function sh(cwd: string, args: string[]): string {
@@ -58,7 +62,7 @@ describe("trailer parity with the Worker", () => {
   });
 });
 
-describe("commitWithTrailers", () => {
+describe("commitWithTrailers", { timeout: SLOW_TEST_MS }, () => {
   it("commits with the trailer block; explicit values beat env", async () => {
     const dir = repo();
     writeFileSync(join(dir, "a.txt"), "b\n");
@@ -82,7 +86,7 @@ describe("commitWithTrailers", () => {
   });
 });
 
-describe("session branch", () => {
+describe("session branch", { timeout: SLOW_TEST_MS }, () => {
   it("appends steps and writes the plan without touching HEAD, index or worktree", async () => {
     const dir = repo();
     writeFileSync(join(dir, "dirty.txt"), "uncommitted\n");

@@ -23,6 +23,7 @@ export interface FixtureRiskTerm {
 export interface FixtureAgent {
   id: string;
   label: string;
+  name: string;
   client: string;
   intent: string | null;
   last_tool: string;
@@ -55,17 +56,19 @@ export interface FixtureIntent {
 
 const BOOKSHELF = "flare/bookshelf";
 const HEAD = "9f2c1e0";
+// t-142 lands its green prefix (lanes 0-1) first, then the green bisect half.
+const PREFIX = "2c5d8e1";
 
 const agents: FixtureAgent[] = [
-  { id: "a-01", label: "C1", client: "claude-code", intent: "i-77b4", last_tool: "report_push", last_ago_s: 12, landed_today: 1 },
-  { id: "a-02", label: "C2", client: "claude-code", intent: "i-3b90", last_tool: "mark_ready", last_ago_s: 48, landed_today: 0 },
-  { id: "a-03", label: "C3", client: "claude-code", intent: "i-9a01", last_tool: "declare_intent", last_ago_s: 94, landed_today: 2 },
-  { id: "a-04", label: "C4", client: "claude-code", intent: "i-7f3a", last_tool: "heartbeat", last_ago_s: 4, landed_today: 1 },
-  { id: "a-05", label: "CX", client: "codex", intent: "i-4c22", last_tool: "report_push", last_ago_s: 18, landed_today: 0 },
-  { id: "a-06", label: "CR", client: "cursor", intent: "i-55e0", last_tool: "mark_ready", last_ago_s: 66, landed_today: 1 },
-  { id: "a-07", label: "AI", client: "workers-ai", intent: null, last_tool: "resolve_conflict", last_ago_s: 140, landed_today: 0 },
-  { id: "a-08", label: "C8", client: "claude-code", intent: "i-c310", last_tool: "mark_ready", last_ago_s: 210, landed_today: 0 },
-  { id: "a-09", label: "C9", client: "claude-code", intent: "i-31c2", last_tool: "claim_conflict", last_ago_s: 31, landed_today: 0 },
+  { id: "a-01", name: "Claude Code #1", label: "C1", client: "claude-code", intent: "i-77b4", last_tool: "report_push", last_ago_s: 12, landed_today: 1 },
+  { id: "a-02", name: "Claude Code #2", label: "C2", client: "claude-code", intent: "i-3b90", last_tool: "mark_ready", last_ago_s: 48, landed_today: 0 },
+  { id: "a-03", name: "Claude Code #3", label: "C3", client: "claude-code", intent: "i-9a01", last_tool: "declare_intent", last_ago_s: 94, landed_today: 2 },
+  { id: "a-04", name: "Claude Code #4", label: "C4", client: "claude-code", intent: "i-7f3a", last_tool: "heartbeat", last_ago_s: 4, landed_today: 1 },
+  { id: "a-05", name: "Codex", label: "CX", client: "codex", intent: "i-4c22", last_tool: "report_push", last_ago_s: 18, landed_today: 0 },
+  { id: "a-06", name: "Cursor", label: "CR", client: "cursor", intent: "i-55e0", last_tool: "mark_ready", last_ago_s: 66, landed_today: 1 },
+  { id: "a-07", name: "Workers AI", label: "AI", client: "workers-ai", intent: null, last_tool: "resolve_conflict", last_ago_s: 140, landed_today: 0 },
+  { id: "a-08", name: "Claude Code #8", label: "C8", client: "claude-code", intent: "i-c310", last_tool: "mark_ready", last_ago_s: 210, landed_today: 0 },
+  { id: "a-09", name: "Claude Code #9", label: "C9", client: "claude-code", intent: "i-31c2", last_tool: "claim_conflict", last_ago_s: 31, landed_today: 0 },
 ];
 
 const goals = [
@@ -96,8 +99,8 @@ const intents: FixtureIntent[] = [
     reasoning: "After a deploy we cannot tell which build is serving. Expose a semver VERSION and uptimeSeconds; keep ok:true so existing probes stay green.",
     accept: "node --test test/health-version.test.ts", rejected: ["A separate /version route: probes already hit /health."],
     plan: ["Export VERSION", "Track isolate start time", "Return version and uptimeSeconds"],
-    train_id: "t-142", landed_sha: HEAD, lease_expires_in_s: null, route: "auto", escalation: null,
-    evidence: { run_id: "r-889", sha: HEAD, status: "success", tests: 41, duration_s: 38, reviewer: "agrees" }, created_at: "2026-10-12T13:44:52Z",
+    train_id: "t-142", landed_sha: PREFIX, lease_expires_in_s: null, route: "auto", escalation: null,
+    evidence: { run_id: "r-886", sha: PREFIX, status: "success", tests: 41, duration_s: 22, reviewer: "agrees" }, created_at: "2026-10-12T13:44:52Z",
   },
   {
     id: "i-3b90", goal_id: "g-1", title: "Expose catalog gauges at GET /metrics", agent: "a-02", state: "in_train",
@@ -155,8 +158,8 @@ const intents: FixtureIntent[] = [
     reasoning: "Typos in ISBNs break the cover-image lookup downstream. Validate the ISBN-13 checksum at write time; hyphens and spaces are allowed.",
     accept: "node --test test/isbn-validation.test.ts", rejected: ["Validate in the cover service: bad rows are already stored by then."],
     plan: ["Strip hyphens and spaces", "Check the mod-10 weighted sum", "Return 400 with a code"],
-    train_id: "t-142", landed_sha: HEAD, lease_expires_in_s: null, route: "auto", escalation: null,
-    evidence: { run_id: "r-889", sha: HEAD, status: "success", tests: 41, duration_s: 38, reviewer: "agrees" }, created_at: "2026-10-12T13:46:01Z",
+    train_id: "t-142", landed_sha: PREFIX, lease_expires_in_s: null, route: "auto", escalation: null,
+    evidence: { run_id: "r-886", sha: PREFIX, status: "success", tests: 41, duration_s: 22, reviewer: "agrees" }, created_at: "2026-10-12T13:46:01Z",
   },
   {
     id: "i-9a01", goal_id: "g-3", title: "Accept a list of API keys so keys rotate without downtime", agent: "a-03", state: "awaiting_plan",
@@ -169,14 +172,14 @@ const intents: FixtureIntent[] = [
     evidence: null, created_at: "2026-10-12T14:04:10Z",
   },
   {
-    id: "i-c310", goal_id: "g-3", title: "Cap list pages at 25 items", agent: "a-08", state: "ready",
-    risk: 43, risk_terms: [size(3, 2), { term: "drift", points: 15, detail: "1 undeclared file: src/routes/books.ts" }, { term: "weak_evidence", points: 10, detail: "contract test red on t-142 combined SHA 7e91f00" }, { term: "reviewer_disagrees", points: 15, detail: "reviewer: 25 < DEFAULT_PAGE_SIZE 30 now on main" }],
+    id: "i-c310", goal_id: "g-3", title: "Cap list pages at 25 items", agent: "a-08", state: "failed",
+    risk: 43, risk_terms: [size(3, 2), { term: "drift", points: 15, detail: "1 undeclared file: src/routes/books.ts" }, { term: "weak_evidence", points: 10, detail: "contract test red on forge/lane-2 at 7e91f00" }, { term: "reviewer_disagrees", points: 15, detail: "reviewer: 25 < DEFAULT_PAGE_SIZE 30 now on main" }],
     path: "src/lib/pagination.ts",
     footprint: { declared: ["src/lib/pagination.ts", "test/max-page-size.test.ts"], actual: ["src/lib/pagination.ts", "src/routes/books.ts", "test/max-page-size.test.ts"], drift: ["src/routes/books.ts"] },
     reasoning: "A 50-item page is the largest single response we serve and will be the largest D1 read after the migration. Bound payload size at 25.",
     accept: "node --test test/max-page-size.test.ts", rejected: ["Cap at 50 and stream: the D1 read is the cost, not the transfer."],
     plan: ["Set MAX_PAGE_SIZE to 25", "Clamp in parseLimit", "Test the cap"],
-    train_id: null, landed_sha: null, lease_expires_in_s: null, route: "human", escalation: "Bisect culprit in t-142: with i-6d13 on main, DEFAULT_PAGE_SIZE 30 > MAX_PAGE_SIZE 25",
+    train_id: "t-142", landed_sha: null, lease_expires_in_s: null, route: "human", escalation: "Bisect culprit in t-142 (failed): with i-6d13 on main, DEFAULT_PAGE_SIZE 30 > MAX_PAGE_SIZE 25. Send it back with a fix or let it go.",
     evidence: { run_id: "r-887", sha: "88d1f42", status: "failure", tests: 41, duration_s: 29, reviewer: "disagrees", note: "contract: the default page size is servable" }, created_at: "2026-10-12T13:49:02Z",
   },
   {
@@ -207,8 +210,8 @@ const intents: FixtureIntent[] = [
     reasoning: "A wildcard origin lets any site call write endpoints from a logged-in browser. When CORS_ORIGINS is set, echo only listed origins (with Vary: Origin); unset keeps the wildcard so local dev is unchanged.",
     accept: "node --test test/cors-allowlist.test.ts", rejected: ["Always require an allowlist: breaks local dev."],
     plan: ["Parse CORS_ORIGINS", "Echo listed origins with Vary: Origin", "Keep the wildcard when unset"],
-    train_id: "t-142", landed_sha: HEAD, lease_expires_in_s: null, route: "audit", escalation: null,
-    evidence: { run_id: "r-889", sha: HEAD, status: "success", tests: 41, duration_s: 38, reviewer: "disagrees" }, created_at: "2026-10-12T13:47:58Z",
+    train_id: "t-142", landed_sha: PREFIX, lease_expires_in_s: null, route: "audit", escalation: null,
+    evidence: { run_id: "r-886", sha: PREFIX, status: "success", tests: 41, duration_s: 22, reviewer: "disagrees" }, created_at: "2026-10-12T13:47:58Z",
   },
 ];
 
@@ -224,49 +227,58 @@ const tree = [
   { path: "(root)", files: 6 },
 ];
 
+// Trains match docs/FORGE.md "Trains and conflicts": lanes are stacked
+// (lane i builds on lane i-1's head) and force-update the fixed refs
+// forge/lane-0..7; each lane head gets CI on that exact SHA; the longest
+// green prefix lands with one compare-and-swap of main; the first red
+// lane bisects (left half stacked under the right) and a single-intent
+// red half is the culprit, which goes to failed.
 const trains = [
   {
     id: "t-143", state: "verifying", base_sha: HEAD, head_sha: "d03b7e5", started_at: "2026-10-12T14:05:40Z", duration_s: 21,
     lanes: [
-      { n: 1, paths: ["src/routes/metrics.ts", "src/index.ts"], intents: ["i-3b90"], stages: { merge: "done", push: "done", ci: { status: "running", run: "r-907", sha: "d03b7e5", duration_s: 21 }, cas: "pending" } },
-      { n: 2, paths: ["src/routes/authors.ts"], intents: ["i-55e0"], stages: { merge: "done", push: "running", ci: { status: "pending", run: null, sha: null, duration_s: 0 }, cas: "pending" } },
+      { n: 0, ref: "forge/lane-0", paths: ["src/routes/metrics.ts", "src/index.ts"], intents: ["i-3b90"], stages: { merge: "done", push: "done", ci: { status: "running", run: "r-907", sha: "5a1c3f8", duration_s: 21 }, cas: "pending" } },
+      { n: 1, ref: "forge/lane-1", paths: ["src/routes/authors.ts"], intents: ["i-55e0"], stages: { merge: "done", push: "running", ci: { status: "pending", run: null, sha: null, duration_s: 0 }, cas: "pending" } },
     ],
     bisect: null, result: null,
   },
   {
     id: "t-142", state: "bisected", base_sha: "4be17a2", head_sha: "7e91f00", started_at: "2026-10-12T13:55:02Z", duration_s: 134,
     lanes: [
-      { n: 1, paths: ["src/routes/health.ts", "src/lib/validate.ts"], intents: ["i-2a71", "i-8e05"], stages: { merge: "done", push: "done", ci: { status: "success", run: "r-884", sha: "1f0a7c2", duration_s: 31 }, cas: "done" } },
-      { n: 2, paths: ["src/routes/books.ts", "src/lib/pagination.ts"], intents: ["i-6d13", "i-c310"], stages: { merge: "done", push: "done", ci: { status: "failure", run: "r-885", sha: "7e91f00", duration_s: 29 }, cas: "skipped" } },
-      { n: 3, paths: ["src/middleware/cors.ts"], intents: ["i-e0c7"], stages: { merge: "done", push: "done", ci: { status: "success", run: "r-886", sha: "2c5d8e1", duration_s: 22 }, cas: "done" } },
+      { n: 0, ref: "forge/lane-0", paths: ["src/routes/health.ts", "src/lib/validate.ts"], intents: ["i-2a71", "i-8e05"], stages: { merge: "done", push: "done", ci: { status: "success", run: "r-884", sha: "1f0a7c2", duration_s: 31 }, cas: "done" } },
+      { n: 1, ref: "forge/lane-1", paths: ["src/middleware/cors.ts"], intents: ["i-e0c7"], stages: { merge: "done", push: "done", ci: { status: "success", run: "r-886", sha: PREFIX, duration_s: 22 }, cas: "done" } },
+      { n: 2, ref: "forge/lane-2", paths: ["src/routes/books.ts", "src/lib/pagination.ts"], intents: ["i-6d13", "i-c310"], stages: { merge: "done", push: "done", ci: { status: "failure", run: "r-885", sha: "7e91f00", duration_s: 29 }, cas: "skipped" } },
     ],
     bisect: {
-      lane: 2, count: 2, status: "failure", sha: "7e91f00", intents: ["i-6d13", "i-c310"],
+      lane: 2, ref: "forge/lane-2", count: 2, status: "failure", sha: "7e91f00", intents: ["i-6d13", "i-c310"],
       children: [
-        { count: 1, status: "success", sha: "3c0a91e", intents: ["i-6d13"], children: [] },
-        { count: 1, status: "failure", sha: "88d1f42", intents: ["i-c310"], culprit: true, note: "on top of i-6d13: back to ready, owner notified", children: [] },
+        { count: 1, status: "success", sha: HEAD, run: "r-889", intents: ["i-6d13"], note: "left half green: landed", children: [] },
+        { count: 1, status: "failure", sha: "88d1f42", run: "r-887", intents: ["i-c310"], culprit: true, note: "stacked on i-6d13: failed, culprit ledger row, owner notified", children: [] },
       ],
     },
-    result: { landed: 4, requeued: 1, sha: HEAD, run: "r-889", tests: 41 },
+    result: { landed: 4, requeued: 0, failed: 1, prefix_sha: PREFIX, sha: HEAD, run: "r-889", tests: 41 },
   },
   {
     id: "t-141", state: "landed", base_sha: "a07c3e9", head_sha: "4be17a2", started_at: "2026-10-12T13:44:10Z", duration_s: 38,
     lanes: [
-      { n: 1, paths: ["src/middleware/logging.ts"], intents: ["i-1d4e"], stages: { merge: "done", push: "done", ci: { status: "success", run: "r-871", sha: "4be17a2", duration_s: 31 }, cas: "done" } },
+      { n: 0, ref: "forge/lane-0", paths: ["src/middleware/logging.ts"], intents: ["i-1d4e"], stages: { merge: "done", push: "done", ci: { status: "success", run: "r-871", sha: "4be17a2", duration_s: 31 }, cas: "done" } },
     ],
-    bisect: null, result: { landed: 1, requeued: 0, sha: "4be17a2", run: "r-871", tests: 38 },
+    bisect: null, result: { landed: 1, requeued: 0, failed: 0, sha: "4be17a2", run: "r-871", tests: 38 },
   },
 ];
 
+// A textual conflict drops the intent from its train (in_train ->
+// conflicted): intent_a is the dropped intent, intent_b the one whose
+// footprint covers the conflicting file. Replay waits for b to land.
 const conflicts = [
   {
-    id: "c-9", state: "claimed", files: ["src/middleware/logging.ts"], lines: "12-31", train_id: "t-141",
-    a: { intent: "i-1d4e", agent: "a-01", title: "Tag every request with an x-request-id and log it", goal: "g-1", goal_text: "traceable ids on every request",
-      why: "Reuse the caller's x-request-id so traces join across hops; add it to the access-log line.", footprint: ["src/middleware/logging.ts", "test/request-id.test.ts"],
-      hunk: ["-export function formatLogLine(req, status) {", "+export function formatLogLine(req, status, requestId) {", "+  const id = requestId ?? crypto.randomUUID()"], landed: true },
-    b: { intent: "i-31c2", agent: "a-09", title: "Log request latency (durationMs) on every access-log line", goal: "g-3", goal_text: "see slow endpoints before launch",
+    id: "c-9", state: "claimed", files: ["src/middleware/logging.ts"], lines: "12-31", train_id: "t-141", opened_at: "2026-10-12T13:45:02Z", policy: "race",
+    a: { intent: "i-31c2", agent: "a-09", title: "Log request latency (durationMs) on every access-log line", goal: "g-3", goal_text: "see slow endpoints before launch",
       why: "Measure around next() with performance.now() and add durationMs to the access-log line.", footprint: ["src/middleware/logging.ts", "test/log-latency.test.ts"],
       hunk: ["-export function formatLogLine(req, status) {", "+export function formatLogLine(req, status, durationMs) {", "+  const started = performance.now()"], landed: false },
+    b: { intent: "i-1d4e", agent: "a-01", title: "Tag every request with an x-request-id and log it", goal: "g-1", goal_text: "traceable ids on every request",
+      why: "Reuse the caller's x-request-id so traces join across hops; add it to the access-log line.", footprint: ["src/middleware/logging.ts", "test/request-id.test.ts"],
+      hunk: ["-export function formatLogLine(req, status) {", "+export function formatLogLine(req, status, requestId) {", "+  const id = requestId ?? crypto.randomUUID()"], landed: true },
     replay: { by: "a-09", stage: "ci", stages: [
       { name: "claimed", status: "done", at: "2026-10-12T14:06:05Z" },
       { name: "replaying", status: "done", at: "2026-10-12T14:06:41Z" },
@@ -339,10 +351,10 @@ function bookshelfSnapshot() {
     repo: BOOKSHELF,
     head: { sha: HEAD, at: "2026-10-12T14:00:12Z" },
     policy: { protected: ["src/auth/**", "migrations/**"], auto_land_max_risk: 30, audit_sample: 0.05 },
-    counters: { agents: 7, intents: 8, overlaps_caught: 2, conflicts_open: 1, landed_today: 5, main_red_minutes: 0, human_seconds_today: 90 },
+    counters: { agents: 7, intents: 7, overlaps_caught: 2, conflicts_open: 1, landed_today: 5, main_red_minutes: 0, human_seconds_today: 90 },
     series: {
       agents: [1, 3, 4, 6, 8, 8, 7, 7],
-      intents: [2, 4, 7, 9, 11, 10, 9, 8],
+      intents: [2, 4, 7, 9, 11, 10, 9, 7],
       overlaps_caught: [0, 0, 1, 1, 1, 2, 2, 2],
       landed_today: [0, 0, 0, 1, 1, 5, 5, 5],
     },
@@ -411,9 +423,9 @@ function bench() {
     sha: "3c9e1a0",
     demo: true,
     modes: [
-      { mode: "baseline", label: "Baseline PR + merge queue", projected: false, metrics: { changes_per_min: 3.1, median_declare_to_land_s: 11520, conflicts_hit: 1840, conflicts_avoided: 0, red_main_min: 47, human_min: 1210, usd_per_1k_agents: null } },
-      { mode: "trains", label: "Forge, trains only", projected: false, metrics: { changes_per_min: 88, median_declare_to_land_s: 580, conflicts_hit: 1790, conflicts_avoided: 0, red_main_min: 0, human_min: 1210, usd_per_1k_agents: 0.41 } },
-      { mode: "full", label: "Forge, full", projected: true, metrics: { changes_per_min: 131, median_declare_to_land_s: 245, conflicts_hit: 212, conflicts_avoided: 1628, red_main_min: 0, human_min: 96, usd_per_1k_agents: 0.44 } },
+      { mode: "baseline", label: "Baseline PR + merge queue", projected: false, metrics: { changes_per_min: 3.1, median_declare_to_land_s: 11520, conflicts_hit: 1840, conflicts_avoided: 0, escaped_defect_min: 47, main_red_integration_min: 0, human_min: 1210, usd_per_1k_agents: null } },
+      { mode: "trains", label: "Forge, trains only", projected: false, metrics: { changes_per_min: 88, median_declare_to_land_s: 580, conflicts_hit: 1790, conflicts_avoided: 0, escaped_defect_min: 0, main_red_integration_min: 0, human_min: 1210, usd_per_1k_agents: 0.41 } },
+      { mode: "full", label: "Forge, full", projected: true, metrics: { changes_per_min: 131, median_declare_to_land_s: 245, conflicts_hit: 212, conflicts_avoided: 1628, escaped_defect_min: 0, main_red_integration_min: 0, human_min: 96, usd_per_1k_agents: 0.44 } },
     ],
     declare_bench: { intents: 100000, p50_ms: 3.1, p99_ms: 11, shards: 4 },
     command: "npm run forge:bench -- --agents 10000 --mode all",

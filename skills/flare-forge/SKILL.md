@@ -21,8 +21,10 @@ You never get a trunk write token. Do not try to push trunk.
 ## First 60 seconds
 
 1. Connected? Call `forge_snapshot {repo}`. If the tools are missing,
-   run `npx flare forge connect-agent --client claude` and follow it
-   (it prints the `claude mcp add` line and this workflow).
+   run `npx flare-forge forge connect-agent --client claude` and follow it
+   (it prints the `claude mcp add` line and this workflow). To wire a
+   repo for every agent at once, `npx flare-forge forge init` writes the
+   AGENTS.md block and the `.mcp.json` entry (`--dry-run` to preview).
 2. `whats_happening {repo, paths: [<files you expect to touch>]}`.
 3. `declare_intent {repo, title, reasoning, footprint, accept}`.
 4. `claim_intent {intentId}` and run the returned `cloneCommand` with
@@ -41,7 +43,7 @@ Do what the hint says.
 | Declare | `declare_intent {repo, goalId?, title, reasoning, footprint, accept}` | `intent`, **`overlaps`**, `similar`, `nextSteps` |
 | Claim | `claim_intent {intentId}` | `forkRemote`, `token` (fork-scoped, 1 h), `cloneCommand`, `pushCommand`, `trailers` |
 | Work | edit in the clone, commit with `trailers` | |
-| Push | `git push origin HEAD:main` (or `npx flare forge push`) | |
+| Push | `git push origin HEAD:main` (or `npx flare-forge forge push`) | |
 | Report | `report_push {intentId, sha: <git rev-parse HEAD>}` | actual files, `drift`, risk terms, new overlaps |
 | Keep alive | `heartbeat {intentId}` every `heartbeatEverySeconds` | lease, peer notes, drift |
 | Finish | `mark_ready {intentId}` once `accept` passes | risk, route (auto / audit / human), train position |
@@ -114,13 +116,13 @@ your user and this skill.
 Every verb is also a CLI command with `--json`:
 
 ```
-npx flare forge declare <repo> "<title>" --path src/api/** --accept "npm test"
-npx flare forge claim <intentId> --clone          # clones; stores auth + flare.intent
-cd i-<id> && <edit> && git commit -m "..." && npx flare forge push
-npx flare forge heartbeat
-npx flare forge ready
-npx flare forge status <repo> [paths...]          # whats_happening
-npx flare forge why <repo> src/api/x.ts:42
+npx flare-forge forge declare <repo> "<title>" --path src/api/** --accept "npm test"
+npx flare-forge forge claim <intentId> --clone          # clones; stores auth + flare.intent
+cd i-<id> && <edit> && git commit -m "..." && npx flare-forge forge push
+npx flare-forge forge heartbeat
+npx flare-forge forge ready
+npx flare-forge forge status <repo> [paths...]          # whats_happening
+npx flare-forge forge why <repo> src/api/x.ts:42
 ```
 
 There is also a REST equivalent at `/v1/forge/*` (see

@@ -16,6 +16,58 @@
 
 ---
 
+## Status board (integration branch `feat/forge-intents`)
+
+| Area | State | Notes |
+|---|---|---|
+| Day 0 spikes S1–S6 | ✅ | See §8.2. Extra finding: Artifacts can't resolve `refs/notes/*` by name, so the train records the notes tip sha |
+| Audit bug fixes (6 + 5 extra scope leaks) | ✅ merged | |
+| Foundation: schema 0045, `intents-core`, `intents` | ✅ merged | |
+| Demo repo `examples/forge-demo` | ✅ merged | 25/25 designed scenarios verified |
+| Provenance: blame, why chain, sessions, notes | ✅ merged | |
+| Coordinator DO, live feed, push-trigger Workflow | ✅ merged | Index-only bench at 100k intents: query p50 0.19 ms, p99 1.1 ms |
+| API: REST, MCP (14 tools), SDK, CLI, agent docs, skill | ✅ merged | |
+| Trains (stacked lanes, exact-SHA CI, bisect), conflict replay, races | ✅ merged | |
+| Simulator and load harness, benchmark doc | ✅ merged | Simulated (corrected, `7b37655`) at 10k agents: Forge reaches 80% landed ~26× sooner than a serial queue (2d 14h vs 66d 23h), and 1.7× sooner than trains-only. Human minutes −69%, abandons 180 vs 1,140. The earlier ~74× figure came from a model that landed unverified combinations, and is retracted |
+| Dashboard (Live, Inbox, Intent, Train, Conflict, Why, Composer, Bench, Agents) | ✅ merged | Fixture fallback; needs signed-in check against the real API |
+| Everything above on `main` | ✅ PR #12, #13 | Includes adapter wiring and the AI planner (`e59a63c`, verified on `wrangler dev`: coordinator snapshot, feed returns 101) |
+| Dogfood CI, seat sizing, Easy mode (guided Home, one-line runner) | ✅ PR #14–17 | Merged by parallel sessions |
+| Wiring extras: index sync, train conflict ports, approve-landing, session routes, `/llms.txt`, audit dedupe, dashboard↔API contract | 🔄 in progress | Server-side only |
+| Speculative stacked trains + honest benchmark rerun | ✅ merged | Depth 3, a 32-ref pool, off-chain bisect probes. Train review fixes #4, #6, #11–#13 |
+| `forge:demo`, `forge:agents`, `forge:director`, DEMO.md | 🔄 in progress | |
+| UX polish (demo-link redirect, judge CTA, master–detail lists, hot-cell sizing, agent rail, guided tour) | ✅ merged | From the integrator's hands-on review, 2026-10-10 |
+| Adversarial review of the whole branch | 🔄 in progress | Findings will be fixed before staging |
+| Demo tooling: `forge:demo`, `forge:agents`, `forge:director`, DEMO.md | ✅ merged | Dry-run verified. First live run happens on staging, never prod |
+| Review fixes: 2 critical, 6 high, 8 medium, 4 low | 🔄 partly merged | Hardening set (#3, #4, #5, #10, #14, #15, #17, #19, #20) merged. Service (#1, #2, #7, #8, #9, #16) and train (#6, #11–#13) fixes in flight |
+| **Judge instance**: public read-only spectator view, swarm loop, read-only public MCP | 🔄 in progress | From the strategic review: the single URL that serves all three criteria |
+| **Forge-first identity**: README, fold Tournaments into "resolution races", retire old video scripts | ✅ merged | |
+| Publishable CLI (`npx flare-forge`), `cli forge init` scaffolding (AGENTS.md + `.mcp.json`) | ✅ merged | **User** runs `npm login && npm publish --workspace apps/cli`. Note: npm `flare` is an unrelated package, so docs now say `npx flare-forge` |
+| Staging deploy and live run with real Claude Code agents | ⏳ next | First measured number: the baseline-vs-Forge table at 1k |
+| Cold-start check (8.6 s first hit observed on staging) | ⏳ | Measure after staging deploy |
+| Dogfooding: mirror this repo into Artifacts and run `flare why` on a line of Forge itself | ⏳ after staging | |
+| GitHub bridge: mirror a GitHub repo in, land back out as a PR or push | ⏳ post-submission adoption wedge | Mirror-in already exists (`artifacts-mirrors.ts`) |
+| User actions | ⏳ | GitHub repo description to Forge-first (needs your OK), `npm publish`, MCP registry submission, eligibility email |
+| README "start here", video, submission | ⏳ Mon Oct 13 | Varun to confirm eligibility (student status vs "legal resident") with git-competition@cloudflare.com |
+
+**How work lands now.** Each stream works on its own branch, which merges into `feat/forge-intents`. That branch goes to `main` by PR, which is also how the parallel sessions on other accounts land their work. Every branch rebases on `origin/main` before its PR.
+
+### Updated roadmap (from Fri Oct 10 evening)
+
+| When (PDT) | Milestone | Exit criteria |
+|---|---|---|
+| Fri night | **Integration complete.** Wiring extras, speculative trains, demo tooling, UX polish, and review fixes are all merged to `main` | All gates green. Signed-in dashboard renders real data on `wrangler dev` with no fixture fallback |
+| Sat AM | **Staging live.** `npm run setup` on staging, `forge:demo` bootstraps the Bookshelf trunk (lane refs + notes ref), and the namespace push trigger is subscribed | A scripted run lands all 13 intents: the conflict is replayed, the semantic red is bisected, and the protected intent waits for plan approval. Main never red |
+| Sat PM | **Real agents.** 6 real Claude Code agents via `forge:agents --mode real` against staging | At least 1 goal landed end to end by real agents. Transcript and timings recorded |
+| Sat night | **Live load numbers.** `apps/sim` harness: 100k coordination-only and 1k → 10k full-git | Measured table in `FORGE-BENCH.md` (provenance line). Artifacts ops and $ captured |
+| Sun | **Hardening.** Fix everything Saturday surfaced. Measure seat CI wall time (S7). Director stages 1–6 are reliable, three clean rehearsals in a row | Every video beat reproducible within 60 s |
+| Sun night | **Docs.** README "start here", `DEMO.md`, `FORGE.md`, `FORGE-AGENTS.md`, refreshed bench, and the ROADMAP non-goal reconciled | A fresh person goes from clone to a dashboard with demo data in under 5 min |
+| Mon 14:00 | **Freeze.** Fresh-account dry run of the judge path | Passes untouched |
+| Mon PM | **Video:** record, edit, caption (§9) | 8–9 min, numbers measured or labelled |
+| Mon 23:00 | **Submit by hand**, screenshot the confirmation | ✅ |
+| Oct 15–21 | **Finals prep.** Hosted demo hardened, Q&A drills, the stage fallback rehearsed offline | Ready for Moscone, Oct 21 |
+
+---
+
 ## 0. The whole plan on one page
 
 **Thesis.** When agents write the code, the code is cheap and can be
@@ -185,9 +237,16 @@ also calls `report_push`. This makes "any agent works" literally true.
 protected: [ "src/auth/**", "migrations/**" ]   # intents here stop at awaiting_plan
 auto_land_max_risk: 30                            # 0-100
 audit_sample: 0.05                                # fraction of auto-landed routed to humans
-lanes: { max_per_train: 50, max_parallel: 8 }
+lanes: { max_per_train: 50, max_parallel: 8, speculation_depth: 3 }
 replay: { max_attempts: 2, race_k: 3 }            # race_k>1 = resolution tournament
 ```
+
+`flare.yml`, `.flare/**` and `.github/workflows/**` are **always**
+protected (`BUILTIN_PROTECTED` in `intents-core.ts`), merged into every
+policy and not removable by it: they are the pipeline that produces the
+green evidence and the policy itself, so an agent cannot lift its own
+guardrails by editing them. The built-ins also feed the risk score's
+protected-path term (declared or undeclared drift).
 
 ### 3.5 Risk score (deterministic and explainable; never a bare LLM number)
 
@@ -202,6 +261,7 @@ weights are capped and tuned on the simulator):
 | Resolved by an LLM replay | +15 |
 | CI evidence weak: no tests touched the footprint, or a flaky test was quarantined | +10 |
 | The clean-context reviewer agent disagrees with the author | +15 |
+| Actual footprint truncated (fail closed: unseen files may be protected) | +40 |
 
 The inbox shows **which terms fired**. Explainability is the UX.
 
@@ -510,7 +570,7 @@ suggests one.
 | 3:15 | **Q2, conflicts** | A train with 3 lanes runs in parallel. One lane fails CI on the combined SHA, so it bisects, finds the culprit and lands the rest. A real merge conflict opens; replay runs with the other intent's why, CI goes green, it lands. |
 | 4:45 | **Q3, review** | The inbox: 1 story, 12 intents. 10 auto-landed (risk terms shown), 1 audit sample, 1 needs a human. A side-by-side resolution race. The human spends about 90 s. |
 | 5:45 | **Q4, why** | Click a line in the repo view. The chain: goal → intent → reasoning → rejected alternative → CI run → reviewer → **fork session** → a new agent continues from that exact context. |
-| 6:45 | **Scale + proof** | Simulator: 10k agents, measured trains/min, 0 red-main minutes, the baseline table, $ per 1k agents. |
+| 6:45 | **Scale + proof** | Simulator: 10k agents, measured trains/min, 0 main-red-from-integration minutes (exact-SHA, by construction; escaped defects shown separately), the baseline table, $ per 1k agents. |
 | 7:45 | **How it's built** | One diagram: Workers, Artifacts (forks, notes, events, tokens), Durable Objects, Workflows, Queues, Workers AI, Containers. "No agent ever holds a trunk token." |
 | 8:10 | **Try it** | Hosted URL plus `npm run forge:demo`. "Plain git and MCP: bring any agent." |
 

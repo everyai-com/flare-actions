@@ -108,6 +108,7 @@ export interface TrainRow {
   run_id: string | null;
   state: string;
   parent_train_id: string | null;
+  group_seq: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -221,6 +222,7 @@ export function toTrain(row: TrainRow): Train {
     runId: row.run_id,
     state: row.state as TrainState,
     parentTrainId: row.parent_train_id,
+    groupSeq: row.group_seq ?? 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -605,10 +607,39 @@ function dispose(handle: TournamentRepoHandle | null): void {
   }
 }
 
+// Revoke every active token on a fork (the Artifacts handle's token
+// API). Null = could not revoke (API missing or a call failed); the
+// caller fails closed. Revoked/expired entries are skipped.
+async function revokeForkTokens(handle: TournamentRepoHandle): Promise<number | null> {
+  const h = handle as TournamentRepoHandle & {
+    listTokens?: () => Promise<unknown>;
+    revokeToken?: (tokenOrId: string) => Promise<boolean>;
+  };
+  if (typeof h.listTokens !== "function" || typeof h.revokeToken !== "function") return null;
+  try {
+    const list = await h.listTokens();
+    const tokens: unknown[] = Array.isArray(list)
+      ? list
+      : typeof list === "object" && list !== null && Array.isArray((list as { tokens?: unknown }).tokens)
+        ? (list as { tokens: unknown[] }).tokens
+        : [];
+    let count = 0;
+    for (const t of tokens) {
+      if (typeof t !== "object" || t === null) continue;
+      const { id, state } = t as { id?: unknown; state?: unknown };
+      if (typeof id !== "string" || !id || state === "revoked" || state === "expired") continue;
+      if (await h.revokeToken(id)) count += 1;
+    }
+    return count;
+  } catch {
+    return null;
+  }
+}
+
 // Claim: draft|expired -> claimed (conditional; the row wins first so a
 // lost race never forks), then fork trunk to `i-<shortid>` (an existing
-// fork from a prior claim is reused) and mint a fork-scoped write token
-// (1 h). A fork/token failure releases the claim back to its prior
+// fork from a prior claim is reused, with every token on it revoked
+// first) and mint a fork-scoped write token (1 h). A fork/token failure releases the claim back to its prior
 // state. The agent never receives a trunk token (§3.2 invariant 1).
 export async function claimIntent(
   db: Db,
@@ -644,6 +675,7 @@ export async function claimIntent(
   };
 
   let remote = "";
+  let reused = from === "expired";
   let trunk: TournamentRepoHandle | null = null;
   try {
     trunk = await artifacts.get(current.repo);
@@ -652,6 +684,7 @@ export async function claimIntent(
       remote = forked.remote;
     } catch (err) {
       if (!isAlreadyExists(err)) throw err;
+      reused = true;
     }
   } catch {
     await release();
@@ -661,9 +694,22 @@ export async function claimIntent(
   }
 
   let token = "";
+  let revoked = 0;
   let fork: TournamentRepoHandle | null = null;
   try {
     fork = await artifacts.get(forkRepo);
+    if (reused) {
+      // Re-claim of a fork a previous holder wrote to: its token may
+      // still be live (1 h TTL outlives a lapsed lease). Revoke every
+      // token on the fork BEFORE minting the new holder's, so exactly
+      // one agent can push. Fails closed: no revoke, no claim.
+      const count = await revokeForkTokens(fork);
+      if (count === null) {
+        await release();
+        return { error: "token-failed", message: "could not revoke the previous holder's fork tokens" };
+      }
+      revoked = count;
+    }
     const out = await fork.createToken("write", FORK_TOKEN_TTL_SECONDS);
     const plaintext = typeof out === "string" ? out : out.plaintext;
     token = typeof plaintext === "string" ? plaintext : "";
@@ -686,7 +732,7 @@ export async function claimIntent(
     subjectKind: "intent",
     subjectId: current.id,
     kind: "claimed",
-    body: `${a.value} -> ${forkRepo}`,
+    body: `${a.value} -> ${forkRepo}${reused ? ` (re-claim; revoked ${revoked} prior token(s))` : ""}`,
     actor: a.value,
   });
   const intent = await getIntent(db, current.id);
@@ -757,7 +803,7 @@ export interface RecordPushResult {
 // Conditional on the pushing agent still owning a pushable state.
 export async function recordPush(
   db: Db,
-  input: { id: string; agent: string; headSha: string; actualFootprint: unknown; policy?: ForgePolicy },
+  input: { id: string; agent: string; headSha: string; actualFootprint: unknown; policy?: ForgePolicy; truncated?: boolean },
 ): Promise<RecordPushResult | ForgeError> {
   const sha = validateSha(input.headSha);
   if (!sha.ok) return { error: "invalid-sha", message: sha.error };
@@ -773,7 +819,7 @@ export async function recordPush(
   // replaying stays replaying (a resolution push); everything else works.
   const to: IntentState = from === "replaying" ? "replaying" : "working";
   const policy = input.policy ?? DEFAULT_POLICY;
-  const scored = scoreRisk({ footprint: current.footprint, actualFootprint: actual.value, policy });
+  const scored = scoreRisk({ footprint: current.footprint, actualFootprint: actual.value, policy, truncated: input.truncated === true });
   const ok = await changed(
     db
       .prepare(
@@ -945,27 +991,29 @@ export async function transitionConflict(db: Db, id: string, from: ConflictState
 
 export async function createTrain(
   db: Db,
-  input: { repo: string; lane: number; baseSha: string; intentIds: string[]; parentTrainId?: string | null },
+  input: { repo: string; lane: number; baseSha: string; intentIds: string[]; parentTrainId?: string | null; groupSeq?: number },
 ): Promise<Train> {
   const now = nowIso();
   const row: TrainRow = {
     id: crypto.randomUUID(),
     repo: input.repo,
-    lane: Math.max(0, Math.floor(input.lane)),
+    // -1 = no lane-ref slot yet (a bisect probe waiting for one).
+    lane: Math.max(-1, Math.floor(input.lane)),
     base_sha: input.baseSha,
     head_sha: "",
     intents_json: JSON.stringify(input.intentIds.slice(0, 500)),
     run_id: null,
     state: "forming",
     parent_train_id: input.parentTrainId ?? null,
+    group_seq: Math.max(0, Math.floor(input.groupSeq ?? 0)),
     created_at: now,
     updated_at: now,
   };
   await db
     .prepare(
-      "INSERT INTO trains (id, repo, lane, base_sha, head_sha, intents_json, state, parent_train_id, created_at, updated_at) VALUES (?, ?, ?, ?, '', ?, 'forming', ?, ?, ?)",
+      "INSERT INTO trains (id, repo, lane, base_sha, head_sha, intents_json, state, parent_train_id, group_seq, created_at, updated_at) VALUES (?, ?, ?, ?, '', ?, 'forming', ?, ?, ?, ?)",
     )
-    .bind(row.id, row.repo, row.lane, row.base_sha, row.intents_json, row.parent_train_id, now, now)
+    .bind(row.id, row.repo, row.lane, row.base_sha, row.intents_json, row.parent_train_id, row.group_seq, now, now)
     .run();
   await appendForgeLedger(db, { repo: row.repo, subjectKind: "train", subjectId: row.id, kind: "forming", body: `${input.intentIds.length} intents, lane ${row.lane}` });
   return toTrain(row);
