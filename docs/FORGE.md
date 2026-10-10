@@ -566,9 +566,14 @@ backoff):
 6. **Call `reportPush`** on the trunk repo's coordinator with
    `source: "trigger"`.
 
-The trigger is configured only at the top level. Previews share the
-`flare-tournaments` namespace, so a preview trigger would also consume
-production pushes. Workflow names are also account-global.
+The trigger is configured only at the top level. Previews bind their
+own Artifacts namespace, `flare-forge-preview` (binding and
+`ARTIFACTS_NAMESPACE` var in the `previews` block), and their own train
+Workflow, `flare-forge-train-preview`, so a preview never reads or
+writes production trunks or forks (AGENTS.md: previews never point at
+prod resources). Event triggers are namespace-filtered and Workflow
+names are account-global, so previews get no push trigger; preview
+forks rely on `report_push`.
 
 ### Benchmark: index at 100k intents
 
