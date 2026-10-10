@@ -1,3 +1,41 @@
+import { FORGE_CSS, FORGE_NAV_HTML, FORGE_NAV_BENCH_HTML, FORGE_PANE_HTML, FORGE_OVERLAYS_HTML } from "./dashboard-forge-ui";
+import { FORGE_JS } from "./dashboard-forge-js";
+import { forgeFixturesJson } from "./forge-fixtures";
+
+// Every data-action in the dashboard is either an MCP tool name (agents
+// can do what humans click: docs/FORGE-UX.md §8.7) or a UI-only verb.
+// FORGE_MCP_TOOL_NAMES lists the Forge tools the screens call (plan §3.3
+// plus approve_plan/send_back/review_sample from the UX spec); stream B
+// registers them in mcp.ts MCP_TOOL_RISK.
+export const FORGE_MCP_TOOL_NAMES = [
+  "plan_goal",
+  "declare_intent",
+  "whats_happening",
+  "heartbeat",
+  "report_push",
+  "send_note",
+  "mark_ready",
+  "claim_conflict",
+  "resolve_conflict",
+  "why",
+  "fork_session",
+  "approve_plan",
+  "send_back",
+  "review_sample",
+] as const;
+
+export const DASHBOARD_UI_ACTIONS = [
+  "pause_live",
+  "view_as_table",
+  "stage_mode",
+  "toggle_theme",
+  "copy_json_url",
+  "copy_mcp_config",
+  "copy_chain",
+  "show_shortcuts",
+  "select_item",
+] as const;
+
 export const DASHBOARD_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -7,6 +45,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <meta name="theme-color" content="#0a0a0a">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23fafafa'/%3E%3Ctext x='16' y='23' font-family='system-ui,sans-serif' font-size='19' font-weight='800' fill='black' text-anchor='middle'%3EF%3C/text%3E%3C/svg%3E">
 <title>Flare Actions</title>
+<link rel="alternate" type="application/json" id="fxAltLink" href="/v1/forge/snapshot">
 <style>
 :root { color-scheme: dark; --bg: #0a0a0a; --card: #111113; --sidebar: #0a0a0a; --line: #1f1f23; --line-strong: #2e2e33; --ink: #fafafa; --soft: #a1a1aa; --muted: #71717a; --faint: #3f3f46; --accent: #fafafa; --accent-hover: #e4e4e7; --accent-ink: #7aa8f0; --danger: #f87171; --ok: #4ade80; --warn: #fbbf24; --info: #7db4f7; --hover: #17171a; --input-bg: #0a0a0a; --ring: #52525b; }
 * { box-sizing: border-box; }
@@ -246,19 +285,22 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
   details.step summary { overflow-wrap: anywhere; }
   pre.log { white-space: pre-wrap; overflow-wrap: anywhere; }
 }
-</style>
+${FORGE_CSS}</style>
 </head>
 <body>
 <header>
 <h1 class="brand-head"><span class="brand-mark">F</span><span>Flare Actions</span></h1>
 <nav class="side-nav" id="sideNav" aria-label="Primary">
-<div class="side-group">Forge</div>
-<button id="tabTournaments" class="side-link active"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.8" r="3.2"/><path d="M6.2 8.4 5.2 13.8 8 12.2l2.8 1.6-1-5.4"/></svg><span>Races</span></button>
-<button id="tabRepos" class="side-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5 8 2l5 2.5v7L8 14l-5-2.5z"/><path d="M3 4.5 8 7l5-2.5M8 7v7"/></svg><span>Repositories</span></button>
-<button id="tabMerge" class="side-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="8" r="1.7"/><path d="M4 5.7v4.6M5.6 4.6c2.8.3 2.4 3.4 4.7 3.4"/></svg><span>Merge queue</span></button>
-<button id="tabRuns" class="side-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6.6 5.4 11 8l-4.4 2.6z" fill="currentColor" stroke="none"/></svg><span>Runs</span></button>
+${FORGE_NAV_HTML}
+<div class="side-group">Code</div>
+<button id="tabRepos" class="side-link" data-tab="repos" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5 8 2l5 2.5v7L8 14l-5-2.5z"/><path d="M3 4.5 8 7l5-2.5M8 7v7"/></svg><span>Repositories</span></button>
+<button id="tabTournaments" class="side-link" data-tab="tournaments" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.8" r="3.2"/><path d="M6.2 8.4 5.2 13.8 8 12.2l2.8 1.6-1-5.4"/></svg><span>Races</span></button>
+<div class="side-group">CI</div>
+<button id="tabRuns" class="side-link" data-tab="runs" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6.6 5.4 11 8l-4.4 2.6z" fill="currentColor" stroke="none"/></svg><span>Runs</span></button>
+<button id="tabMerge" class="side-link" data-tab="merge" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="8" r="1.7"/><path d="M4 5.7v4.6M5.6 4.6c2.8.3 2.4 3.4 4.7 3.4"/></svg><span>Merge queue</span></button>
 <div class="side-group">Manage</div>
-<button id="tabSettings" class="side-link"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.5h12M2 10.5h12"/><circle cx="10" cy="5.5" r="1.8" style="fill:var(--sidebar)"/><circle cx="6" cy="10.5" r="1.8" style="fill:var(--sidebar)"/></svg><span>Settings</span></button>
+<button id="tabSettings" class="side-link" data-tab="settings" type="button"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.5h12M2 10.5h12"/><circle cx="10" cy="5.5" r="1.8" style="fill:var(--sidebar)"/><circle cx="6" cy="10.5" r="1.8" style="fill:var(--sidebar)"/></svg><span>Settings</span></button>
+${FORGE_NAV_BENCH_HTML}
 </nav>
 <div class="side-foot"><span id="userLabel" class="muted"></span> <button id="paletteBtn" class="ghost" type="button" aria-label="Open command palette">⌘K</button> <button id="logoutBtn" class="ghost" hidden>Log out</button></div>
 </header>
@@ -555,16 +597,17 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
 <button type="submit">Enqueue</button>
 </form>
 </section>
-</section>
+${FORGE_PANE_HTML}</section>
 </div></main>
 <div id="paletteOverlay" hidden>
 <div id="palette" role="dialog" aria-label="Command palette">
 <input id="paletteInput" placeholder="Type a command or search…" autocomplete="off" aria-label="Command palette">
 <div id="paletteList"></div>
-<div id="paletteFoot"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>↵</kbd> run</span><span><kbd>esc</kbd> close</span></div>
+<div id="paletteFoot"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>↵</kbd> run</span><span><kbd>esc</kbd> close</span><span><kbd>i-</kbd> jump to ID</span><span class="pal-mcp" id="palMcp"></span></div>
 </div>
 </div>
 <div id="toasts" aria-live="polite"></div>
+${FORGE_OVERLAYS_HTML}<script type="application/json" id="fxFixtures">${forgeFixturesJson()}</script>
 <script>
 (function () {
   var KEY = "flare-admin-token";
@@ -765,7 +808,8 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
       selectTab("runs");
     } else {
       notice.hidden = true;
-      if (!applyHashRoute()) palGoTab("tournaments");
+      fxStartForge();
+      if (!applyHashRoute()) palGoTab("live");
     }
   }
   function api(path, opts) {
@@ -858,6 +902,8 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
       loadRuns();
       registerWebMcpTools(st.user.admin);
       if (st.user.admin) { loadTokens(); loadUsers(); }
+    } else if (FX.demo) {
+      fxShowAnonDemo();
     } else {
       showAuth(st);
     }
@@ -1134,6 +1180,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
       void panes[name].offsetWidth;
       panes[name].classList.add("pane-enter");
     }
+    fxOnSelect(name);
     syncHash();
   }
   document.getElementById("runsFilter").addEventListener("input", function () { renderRuns(); });
@@ -1659,7 +1706,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
       } else if (b.text === null || b.text === undefined) {
         var big = el("p", "File too large to preview — " + fmtBytes(b.size) + "."); big.className = "t-clean"; zone.appendChild(big);
       } else {
-        var pre = el("pre", b.text); pre.className = "log"; zone.appendChild(pre);
+        zone.appendChild(fxCodeView(b.text, currentRepo, path, 0, null));
         if (b.truncated) {
           var note = el("p", "Truncated preview of " + fmtBytes(b.size) + "."); note.className = "t-clean"; zone.appendChild(note);
         }
@@ -2303,8 +2350,10 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
       });
     }).catch(function (e) { box.textContent = ""; err.textContent = "Could not load secrets: " + (e.message || "error"); });
   }
-  document.getElementById("secretLoadForm").addEventListener("submit", function (ev) { ev.preventDefault(); loadSecrets(); });
-  document.getElementById("secretForm").addEventListener("submit", function (ev) {
+  // The secrets card was removed from the markup (b067b21); guard so the
+  // rest of the script (palette, keys, boot) still runs.
+  if (document.getElementById("secretLoadForm")) document.getElementById("secretLoadForm").addEventListener("submit", function (ev) { ev.preventDefault(); loadSecrets(); });
+  if (document.getElementById("secretForm")) document.getElementById("secretForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
     var err = document.getElementById("secretErr");
     var ok = document.getElementById("secretOk");
@@ -2626,6 +2675,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
     for (var i = 0; i < rows; i++) { var s = el("div"); s.className = "skel " + cls; parent.appendChild(s); }
   }
   function syncHash() {
+    if (fxIsScreen(currentTab)) { fxWriteHash(); return; }
     try {
       var h = "#/" + currentTab;
       if (currentTab === "tournaments" && currentTournamentId && !document.getElementById("tournamentDetail").hidden) h += "/" + currentTournamentId;
@@ -2635,6 +2685,11 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
     } catch (e) {}
   }
   function palGoTab(name) {
+    if (fxIsScreen(name)) {
+      if ((location.hash || "").split("?")[0] === "#/" + name) fxStartForge().then(function () { fxGo(name, "", FX.route.screen === name ? FX.route.q : null); });
+      else fxNav("#/" + name);
+      return;
+    }
     selectTab(name);
     if (name === "runs") loadRuns();
     else if (name === "tournaments") loadTournaments();
@@ -2643,6 +2698,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
     else if (name === "settings") { loadSettings(); loadTokens(); loadUsers(); }
   }
   function refreshCurrent() {
+    if (fxIsScreen(currentTab)) { fxRenderScreen(); return; }
     if (currentTab === "tournaments") {
       if (currentTournamentId && !document.getElementById("tournamentDetail").hidden) showTournament(currentTournamentId);
       else loadTournaments();
@@ -2651,6 +2707,9 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
     else palGoTab(currentTab);
   }
   function applyHashRoute() {
+    var fxr = fxRouteFromHash();
+    if (fxr) { fxStartForge().then(function () { fxGo(fxr.screen, fxr.id, fxr.q); }); return true; }
+    if (FX.anon) return false;
     var hash = location.hash || "";
     if (hash.slice(0, 2) !== "#/") return false;
     var parts = hash.slice(2).split("/");
@@ -2670,6 +2729,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
   function palCommands() {
     var cmds = [];
     ["tournaments", "repos", "merge", "runs", "settings"].forEach(function (name) {
+      if (FX.anon) return;
       if (!isAdmin && name === "settings") return;
       cmds.push({ group: "Go to", label: "Go to " + TAB_TITLES[name], run: (function (n) { return function () { palGoTab(n); }; })(name) });
     });
@@ -2687,7 +2747,8 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
         else toast("Clipboard unavailable", true);
       } });
     }
-    return cmds;
+    if (FX.anon) cmds = cmds.filter(function (c) { return c.group === "Actions"; });
+    return fxPalCommands().concat(cmds);
   }
   function palMarkActive() {
     var rows = document.getElementById("paletteList").children;
@@ -2697,6 +2758,8 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
       seen++;
       if (seen === palActive) {
         rows[i].className = "pal-row active";
+        var mcpFoot = document.getElementById("palMcp");
+        if (mcpFoot) { var am = palItems[palActive] && palItems[palActive].mcp; mcpFoot.textContent = am ? "→ mcp: " + am : ""; }
         if (rows[i].scrollIntoView) rows[i].scrollIntoView({ block: "nearest" });
       } else rows[i].className = "pal-row";
     }
@@ -2705,7 +2768,15 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
     var list = document.getElementById("paletteList");
     list.textContent = "";
     q = (q || "").toLowerCase();
-    palItems = palCommands().filter(function (c) { return !q || c.label.toLowerCase().indexOf(q) !== -1; }).slice(0, 30);
+    var idq = /^[igtca]-[0-9a-z]*$/.test(q);
+    palItems = palCommands().filter(function (c) {
+      if (c.idMatch && !q) return false;
+      return !q || c.label.toLowerCase().indexOf(q) !== -1 || (c.desc && c.desc.toLowerCase().indexOf(q) !== -1) || (c.mcp && c.mcp.indexOf(q) !== -1);
+    });
+    if (idq) palItems.sort(function (a, b) { return (b.idMatch && b.idMatch.indexOf(q) === 0 ? 1 : 0) - (a.idMatch && a.idMatch.indexOf(q) === 0 ? 1 : 0); });
+    var grouped = [], gseen = {};
+    palItems.forEach(function (c) { if (!gseen[c.group]) { gseen[c.group] = []; grouped.push(gseen[c.group]); } gseen[c.group].push(c); });
+    palItems = [].concat.apply([], grouped).slice(0, 40);
     palActive = 0;
     var lastGroup = "";
     palItems.forEach(function (c) {
@@ -2715,7 +2786,10 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
       }
       var row = el("div"); row.className = "pal-row";
       var label = el("span", c.label); label.className = "pal-label"; row.appendChild(label);
+      if (c.desc) { var dsc = el("span", c.desc); dsc.className = "pal-desc"; row.appendChild(dsc); }
       if (c.kind) { var k = el("span", c.kind); k.className = "pal-kind"; row.appendChild(k); }
+      if (c.key) { var kk = el("kbd", c.key); kk.className = "pal-key"; row.appendChild(kk); }
+      if (c.mcp) row.setAttribute("data-mcp", c.mcp);
       (function (cmd) { row.addEventListener("click", function () { closePalette(); cmd.run(); }); })(c);
       list.appendChild(row);
     });
@@ -2765,6 +2839,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
       return;
     }
     if (typing || e.metaKey || e.ctrlKey || e.altKey || appPane.hidden) return;
+    if (e.key === "Escape" && fxIsScreen(currentTab)) return;
     if (e.key === "Escape") {
       if (!document.getElementById("tournamentDetail").hidden) document.getElementById("backToTournaments").click();
       else if (!document.getElementById("repoDetail").hidden) document.getElementById("backToRepos").click();
@@ -2772,10 +2847,12 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
     }
     if (e.key === "g" || e.key === "G") { gPending = Date.now(); return; }
     if (Date.now() - gPending < 900) {
-      var m = { r: "runs", t: "tournaments", o: "repos", m: "merge", e: "settings" };
+      var m = { r: "runs", t: "tournaments", o: "repos", m: "merge", e: "settings", l: "live", i: "inbox", n: "intents", p: "trains", c: "conflicts", a: "agents", b: "bench" };
       var tab = m[String(e.key || "").toLowerCase()];
       gPending = 0;
-      if (tab) { e.preventDefault(); palGoTab(tab); }
+      e.preventDefault();
+      if (tab && FX.anon && !fxIsScreen(tab)) return;
+      if (tab) palGoTab(tab);
       return;
     }
     if (e.key === "r" || e.key === "R") refreshCurrent();
@@ -2787,6 +2864,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
     for (var i = 0; i < nodes.length; i++) nodes[i].textContent = (nodes[i].getAttribute("data-prefix") || "") + fmtAgo(nodes[i].getAttribute("data-ago"));
   }, 30000);
 
+${FORGE_JS}
   boot();
   startPoll();
 })();
