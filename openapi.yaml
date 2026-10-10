@@ -6035,6 +6035,57 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/goals:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicGoals
+      summary: 'Public goal list'
+      security: []
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A repo the admin designated in forge_public_repos
+      responses:
+        '200':
+          description: Sanitized read-only payload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/public/forge/goals/{goalId}:
+    get:
+      tags:
+        - forge
+      operationId: forgePublicGoal
+      summary: 'Public goal detail'
+      security: []
+      parameters:
+        - name: goalId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sanitized read-only payload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /v1/public/forge/intents:
     get:
       tags:

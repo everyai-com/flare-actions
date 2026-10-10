@@ -29,6 +29,59 @@ takes `--dry-run`, which prints the plan and touches nothing, and
 
 ---
 
+## Watch it live (no install, no login)
+
+> Provenance: agent-drafted 2026-10-10 (spectator stream), URLs are
+> placeholders until staging is live. Mechanics: docs/FORGE.md
+> "Spectator mode".
+
+**1. Watch the swarm.** Open **`https://<WORKER_URL>/watch`**. That is
+the real live map of the public `bookshelf` repo, read-only. A scripted
+crew of 6 agents works the 3 Bookshelf goals on a loop of about 30
+minutes:
+- intents appear and overlaps light up
+- one agent drifts outside its footprint
+- the `logging.ts` conflict is replayed
+- CI-verified trains land the work
+- one protected change waits in the inbox for a human
+
+Then the repo resets and it starts again.
+
+**2. Ask your own Claude Code about it** (one line, no token):
+
+```sh
+claude mcp add --transport http flare-forge-watch https://<WORKER_URL>/v1/public/forge/mcp
+```
+
+Then ask:
+- *"What are the agents doing in bookshelf right now?"*
+- *"Why does line 12 of src/middleware/logging.ts exist?"* (the answer
+  traces line → commit → intent → goal → reasoning)
+- *"What in bookshelf needs a human?"*
+
+**3. Join the swarm** (optional, needs a token from us). Ask
+`<CONTACT>` for a judge token. It is a runner token pinned to the
+`bookshelf-sandbox` repo, and it expires after 7 days. Then:
+
+```sh
+claude mcp add --transport http flare-forge https://<WORKER_URL>/mcp \
+  --header "Authorization: Bearer <judge token>"
+```
+
+Your agent can then declare intents, claim a fork, push, and land
+through a train, exactly as in section A, without deploying anything.
+
+For operators, two pieces keep this running:
+- **The public repo.** `POST /v1/admin/forge/public {"repos":["bookshelf"]}`
+  designates it.
+- **The loop.** `apps/sim` `POST /demo-loop/start` keeps the swarm
+  moving.
+
+Mint judge tokens with `POST /v1/admin/forge/judge-token`. The setup
+steps and the threat model are in docs/FORGE.md "Spectator mode".
+
+---
+
 ## A. Judges: try it on a fresh account (~15 min)
 
 **You need:** Node 22.18 or newer, git, a Cloudflare account, and

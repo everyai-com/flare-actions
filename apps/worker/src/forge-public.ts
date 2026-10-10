@@ -30,9 +30,11 @@ import { apiError, type ErrorCode } from "./errors";
 import { validateRepo } from "./intents";
 import {
   getConflictOp,
+  getGoalOp,
   getIntentOp,
   getTrainOp,
   listConflictsOp,
+  listGoalsOp,
   listIntentsOp,
   listTrainsOp,
   snapshotOp,
@@ -270,7 +272,7 @@ function fail(code: ErrorCode, message: string, status: number, hint?: string): 
   return pjson(apiError(code, message, hint), status);
 }
 
-const OFF_HINT = "spectator mode is off on this deployment (admin: POST /v1/admin/forge/public {\"repos\":[\"bookshelf\"]})";
+const OFF_HINT = "no such public resource: the repo is not designated for spectators, or spectator mode is off (admin: POST /v1/admin/forge/public {\"repos\":[\"bookshelf\"]})";
 
 function notFound(): Response {
   return fail("forge_not_found", "not found", 404, OFF_HINT);
@@ -309,6 +311,7 @@ export function publicPrincipal(namespace: string, repos: string[]): ForgePrinci
 function collectionOp(url: URL): ForgeOp | null {
   if (url.pathname === "/v1/public/forge/snapshot" || url.pathname === "/v1/public/forge/live") return snapshotOp;
   if (url.pathname === "/v1/public/forge/inbox") return storyInboxOp;
+  if (url.pathname === "/v1/public/forge/goals") return listGoalsOp;
   if (url.pathname === "/v1/public/forge/intents") return listIntentsOp;
   if (url.pathname === "/v1/public/forge/trains") return listTrainsOp;
   if (url.pathname === "/v1/public/forge/conflicts") return listConflictsOp;
@@ -317,7 +320,7 @@ function collectionOp(url: URL): ForgeOp | null {
   return null;
 }
 
-const PUBLIC_ENDPOINTS = ["snapshot", "live", "inbox", "intents", "intents/{id}", "trains", "trains/{id}", "conflicts", "conflicts/{id}", "why", "whats-happening", "feed", "join", "mcp"].map(
+const PUBLIC_ENDPOINTS = ["snapshot", "live", "inbox", "goals", "goals/{id}", "intents", "intents/{id}", "trains", "trains/{id}", "conflicts", "conflicts/{id}", "why", "whats-happening", "feed", "join", "mcp"].map(
   (p) => `/v1/public/forge/${p}`,
 );
 
@@ -441,6 +444,8 @@ export async function handleForgePublicRequest(request: Request, url: URL, ctx: 
     if (!repoParam || !repos.includes(repoParam)) return notFound();
     return cached(request, ctx, async () => outcomeResponse(await op(ctx.forge(), principal, publicArgs(url))));
   }
+  const goalMatch = /^\/v1\/public\/forge\/goals\/([^/]+)$/.exec(url.pathname);
+  if (goalMatch) return cached(request, ctx, async () => outcomeResponse(await getGoalOp(ctx.forge(), principal, { goalId: goalMatch[1] })));
   const intentMatch = /^\/v1\/public\/forge\/intents\/([^/]+)$/.exec(url.pathname);
   if (intentMatch) return cached(request, ctx, async () => outcomeResponse(await getIntentOp(ctx.forge(), principal, { intentId: intentMatch[1] })));
   const trainMatch = /^\/v1\/public\/forge\/trains\/([^/]+)$/.exec(url.pathname);
