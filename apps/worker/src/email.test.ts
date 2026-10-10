@@ -55,6 +55,17 @@ describe("magic tokens", () => {
     expect(await consumeMagicToken(db, "not a token!")).toBeNull();
     expect(await consumeMagicToken(db, "missing-token")).toBeNull();
   });
+
+  it("prunes expired magic tokens on issue, keeping live ones", async () => {
+    const db = new MemEmail();
+    const live = await createMagicToken(db, "a@b.co");
+    db.settings.set("email_magic_old", JSON.stringify({ email: "a@b.co", expiresAt: new Date(Date.now() - 1000).toISOString() }));
+    db.settings.set("email_reset_old", JSON.stringify({ email: "a@b.co", expiresAt: new Date(Date.now() - 1000).toISOString() }));
+    await createMagicToken(db, "c@d.co");
+    expect(db.settings.has("email_magic_old")).toBe(false);
+    expect(db.settings.has("email_reset_old")).toBe(true); // other prefix untouched
+    expect(db.settings.has(`email_magic_${live}`)).toBe(true);
+  });
 });
 
 class MemEmail implements Db {
@@ -94,6 +105,19 @@ class MemEmail implements Db {
         run: async () => {
           if (norm.startsWith("INSERT INTO app_settings")) {
             this.settings.set(values[0] as string, values[1] as string);
+            return {};
+          }
+          if (norm.startsWith("DELETE FROM app_settings") && norm.includes("GLOB")) {
+            const prefix = (values[0] as string).replace(/\*$/, "");
+            const now = values[1] as string;
+            let left = values[2] as number;
+            for (const [k, v] of [...this.settings.entries()]) {
+              if (left <= 0) break;
+              if (k.startsWith(prefix) && (JSON.parse(v) as { expiresAt: string }).expiresAt < now) {
+                this.settings.delete(k);
+                left--;
+              }
+            }
             return {};
           }
           if (norm.startsWith("DELETE FROM app_settings")) {

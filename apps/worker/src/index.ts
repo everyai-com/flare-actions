@@ -240,7 +240,7 @@ import {
   getRepoCommits,
   getRepoInfo,
   getRepoTree,
-  listRepos,
+  listAllowedRepos,
   normalizeRepoPath,
   validateRef,
 } from "./repos";
@@ -2761,10 +2761,9 @@ export default {
         }
         const cursor = url.searchParams.get("cursor") ?? undefined;
         if (cursor && cursor.length > 500) return json({ error: "cursor too long" }, 400);
-        const page = await listRepos(env.ARTIFACTS, limit, cursor);
         const namespace = env.ARTIFACTS_NAMESPACE ?? "";
-        const repos = page.repos.filter((r) => repoAllowed(ident, `${namespace}/${r.name}`));
-        return json({ repos, total: repos.length, ...(page.cursor ? { cursor: page.cursor } : {}) });
+        const allow = ident.repos.length > 0 ? (name: string) => repoAllowed(ident, `${namespace}/${name}`) : null;
+        return json(await listAllowedRepos(env.ARTIFACTS, limit, cursor, allow));
       }
       const repoTreeMatch = /^\/v1\/repos\/([^/]+)\/tree$/.exec(url.pathname);
       if (repoTreeMatch && request.method === "GET") {
@@ -4246,8 +4245,10 @@ export default {
         const body = (await request.json().catch(() => ({}))) as { email?: unknown; turnstileToken?: unknown };
         const emailErr = validateEmail(body.email);
         const email = emailErr === null ? normalizeEmail(body.email as string) : "";
+        // Magic keys are namespaced so link requests never spend (or
+        // clear) the shared password-login IP window.
         const ipKey = await ipThrottleKey(request);
-        const keys = [...(email ? [`magic:${email}`] : []), ...(ipKey ? [ipKey] : [])];
+        const keys = [...(email ? [`magic:${email}`] : []), ...(ipKey ? [`magic-${ipKey}`] : [])];
         if (await authThrottleBlocked(env.DB, keys)) {
           return json({ error: "too many attempts — try again later" }, 429);
         }
@@ -4262,7 +4263,7 @@ export default {
         if (eligible && sender && mailer) {
           try {
             const token = await createMagicToken(env.DB, email);
-            const link = new URL(`/v1/admin/magic/consume?token=${encodeURIComponent(token)}`, url).toString();
+            const link = new URL(`/dashboard?magic_token=${encodeURIComponent(token)}`, url).toString();
             await mailer.send({
               from: { name: "Flare Actions", email: sender },
               to: email,
@@ -4284,33 +4285,42 @@ export default {
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/magic/consume") {
-        // Consume in the browser: set the session cookie and land on the
-        // dashboard. Failures redirect with a generic code (no oracle).
-        const fail = (code: string): Response =>
-          Response.redirect(new URL(`/dashboard?magic=${code}`, url).toString(), 302);
+        // Legacy link shape. A GET never consumes: mail scanners prefetch
+        // every link, so redemption needs the explicit POST below.
         const token = url.searchParams.get("token") ?? "";
+        const dest = new URL("/dashboard", url);
+        if (token) dest.searchParams.set("magic_token", token);
+        return new Response(null, { status: 302, headers: { Location: dest.pathname + dest.search, "Cache-Control": "no-store" } });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/admin/magic/consume") {
+        // Redeem from the dashboard confirm screen. JSON + no CORS means a
+        // cross-site page cannot submit this (login CSRF); Sec-Fetch-Site
+        // is an extra guard where browsers send it.
+        const site = request.headers.get("sec-fetch-site");
+        if (site !== null && site !== "same-origin" && site !== "none") return json({ error: "cross-site request refused" }, 403);
+        const body = (await request.json().catch(() => ({}))) as { token?: unknown };
+        const token = typeof body.token === "string" ? body.token : "";
         const ipKey = await ipThrottleKey(request);
-        const keys = ipKey ? [ipKey] : [];
-        if (await authThrottleBlocked(env.DB, keys)) return fail("throttled");
+        const keys = ipKey ? [`magic-${ipKey}`] : [];
+        if (await authThrottleBlocked(env.DB, keys)) return json({ error: "too many attempts — try again later" }, 429);
         const email = await consumeMagicToken(env.DB, token);
         if (!email) {
           await Promise.all(keys.map((k) => recordAuthFailure(env.DB, k)));
-          return fail("expired");
+          return json({ error: "login link invalid or expired" }, 404);
         }
         let user = await getUser(env.DB, email);
         if (!user) {
-          if (!(await isOpenRegistration(env))) return fail("expired");
+          if (!(await isOpenRegistration(env))) return json({ error: "login link invalid or expired" }, 404);
           await createUser(env.DB, { email, passwordHash: await hashPassword(crypto.randomUUID()), isAdmin: false });
           user = await getUser(env.DB, email);
-          if (!user) return fail("expired");
+          if (!user) return json({ error: "login link invalid or expired" }, 404);
         }
-        await clearAuthFailures(env.DB, keys);
         const sessionId = await createLoginSession(env.DB, { kind: "email", login: email, isAdmin: user.is_admin === 1 });
         await audit(env.DB, `email:${email}`, "session.login", "");
-        return new Response(null, {
-          status: 302,
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
           headers: {
-            Location: "/dashboard",
+            "Content-Type": "application/json",
             "Cache-Control": "no-store",
             "Set-Cookie": sessionSetCookie(sessionId, url.protocol === "https:"),
           },

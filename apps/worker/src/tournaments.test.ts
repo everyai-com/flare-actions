@@ -43,6 +43,8 @@ function sqliteDb(): Db {
     prepare(query: string) {
       return {
         bind(...values: unknown[]) {
+          // Mirror D1's bound-parameter cap so oversized IN lists fail here too.
+          if (values.length > 100) throw new Error("D1: too many SQL variables");
           const params = values as (string | number | null)[];
           return {
             all: async <T,>() => ({ results: raw.prepare(query).all(...params) as T[] }),
@@ -304,6 +306,22 @@ describe("appendLedger + getTournamentBoard", () => {
     const byAgent = new Map((board?.attempts ?? []).map((a) => [a.agent, a.run_status]));
     expect(byAgent.get("a1")).toBe("success");
     expect(byAgent.get("a2")).toBeNull();
+  });
+
+  it("renders boards past D1's 100-parameter cap", async () => {
+    const db = sqliteDb();
+    const tid = await seedTournament(db);
+    const now = new Date().toISOString();
+    for (let i = 0; i < 150; i++) {
+      await db
+        .prepare("INSERT INTO attempts (id, tournament_id, agent, fork_repo, run_id, created_at, updated_at) VALUES (?, ?, ?, '', ?, ?, ?)")
+        .bind(`at-${i}`, tid, `agent-${i}`, `run-${i}`, now, now)
+        .run();
+      await db.prepare("INSERT INTO runs (id, status) VALUES (?, 'success')").bind(`run-${i}`).run();
+    }
+    const board = await getTournamentBoard(db, tid);
+    expect(board?.attempts).toHaveLength(150);
+    expect(board?.attempts.every((a) => a.run_status === "success")).toBe(true);
   });
 
   it("resolves the race behind a verification run", async () => {

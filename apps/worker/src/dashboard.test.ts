@@ -66,6 +66,11 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("magicErr");
     expect(DASHBOARD_HTML).toContain("/v1/admin/magic/request");
     expect(DASHBOARD_HTML).toContain('q.get("magic")');
+    // Links land on a confirm screen; only the explicit POST redeems, so
+    // mail scanners that prefetch the link cannot burn it.
+    expect(DASHBOARD_HTML).toContain('q.get("magic_token")');
+    expect(DASHBOARD_HTML).toContain("magicConfirmPane");
+    expect(DASHBOARD_HTML).toMatch(/fetch\("\/v1\/admin\/magic\/consume", \{ method: "POST"/);
     expect(DASHBOARD_HTML).toContain('=== "expired"');
   });
 

@@ -214,6 +214,29 @@ export async function listRepos(
   };
 }
 
+// Allowlist-aware page: scoped tokens filter before paging, refilling
+// from later upstream pages (bounded) so a page is never empty while
+// more allowed repos follow. Each upstream fetch asks only for the
+// slots still open, so the returned cursor never skips a repo. `total`
+// is the namespace total when nothing is filtered, else the page size.
+export async function listAllowedRepos(
+  artifacts: ReposArtifacts,
+  limit: number,
+  cursor: string | undefined,
+  allow: ((name: string) => boolean) | null,
+): Promise<{ repos: RepoSummary[]; total: number; cursor?: string }> {
+  if (!allow) return listRepos(artifacts, limit, cursor);
+  const repos: RepoSummary[] = [];
+  let next = cursor;
+  for (let pages = 0; pages < 10 && repos.length < limit; pages++) {
+    const page = await listRepos(artifacts, limit - repos.length, next);
+    repos.push(...page.repos.filter((r) => allow(r.name)));
+    next = page.cursor;
+    if (!next) break;
+  }
+  return { repos, total: repos.length, ...(next ? { cursor: next } : {}) };
+}
+
 export async function getRepoInfo(artifacts: ReposArtifacts, repo: string): Promise<RepoDetail | null> {
   try {
     return await withHandle(artifacts, repo, async (handle) => {

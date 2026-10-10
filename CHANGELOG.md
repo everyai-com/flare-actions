@@ -15,6 +15,22 @@ tagged on `main` (`v0.1.0` is the first).
   such column" on databases predating the column. Indexes now apply
   after the ALTERs; staging self-healed on redeploy. Regression test
   runs `ensureSchema` against an old-database fake.
+- Magic-link login survives mail scanners: emailed links open a
+  dashboard confirm screen and only a same-origin `POST
+  /v1/admin/magic/consume` redeems (the legacy GET redirects without
+  consuming), which also closes login CSRF. Magic requests throttle on
+  their own `magic-ip:` window instead of the shared login IP window,
+  and expired magic/reset tokens prune on issue.
+- Race boards no longer 500 past ~100 attempts (run status is joined
+  in SQL instead of a D1-capped `IN (?, ...)` list).
+- `GET /v1/repos` for repo-scoped tokens filters before paging and
+  refills from later pages, so pages are never empty while allowed
+  repos remain.
+
+### Changed
+
+- Dependencies: TypeScript 6.0, wrangler 4.149, patch bumps across
+  the tree; Workers compatibility date 2026-10-06 (worker + seats).
 
 ### Added
 

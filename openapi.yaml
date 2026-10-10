@@ -2894,7 +2894,7 @@ paths:
     get:
       tags: [auth]
       operationId: consumeMagicLink
-      summary: Redeem a magic link (sets session cookie, redirects to dashboard)
+      summary: Legacy magic link (never consumes; redirects to the dashboard confirm screen)
       security: []
       parameters:
         - name: token
@@ -2904,7 +2904,38 @@ paths:
             type: string
       responses:
         '302':
-          description: Redirect to /dashboard (or /dashboard?magic=expired)
+          description: Redirect to /dashboard?magic_token=... (the token is not consumed)
+    post:
+      tags: [auth]
+      operationId: redeemMagicLink
+      summary: Redeem a magic-link token (single use; sets the session cookie)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        '200':
+          description: Logged in; session cookie set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '403':
+          description: Cross-site request refused
+        '404':
+          description: Link invalid, expired, or already used
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /v1/admin/reset:
     post:
       tags: [auth]

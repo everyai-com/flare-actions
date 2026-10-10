@@ -362,10 +362,14 @@ export function validateTournamentClaim(body: Record<string, unknown>): { agent:
 export async function getTournamentBoard(db: Db, id: string): Promise<TournamentBoard | null> {
   const tournament = await getTournament(db, id);
   if (!tournament) return null;
+  // Join run status in SQL: a per-run IN (?, ...) list breaks D1's
+  // 100-bound-parameter cap once a race has many attempts.
   const attempts = await db
-    .prepare("SELECT * FROM attempts WHERE tournament_id = ? ORDER BY created_at ASC")
+    .prepare(
+      "SELECT a.*, r.status AS run_status FROM attempts a LEFT JOIN runs r ON r.id = a.run_id WHERE a.tournament_id = ? ORDER BY a.created_at ASC",
+    )
     .bind(id)
-    .all<AttemptRow>();
+    .all<AttemptRow & { run_status: string | null }>();
   const verdict = await db
     .prepare("SELECT * FROM verdicts WHERE tournament_id = ?")
     .bind(id)
@@ -374,19 +378,9 @@ export async function getTournamentBoard(db: Db, id: string): Promise<Tournament
     .prepare("SELECT * FROM ledger WHERE tournament_id = ? ORDER BY created_at ASC LIMIT 100")
     .bind(id)
     .all<LedgerRow>();
-  const runIds = [...new Set(attempts.results.map((a) => a.run_id).filter((r): r is string => !!r))];
-  const runStatus = new Map<string, string>();
-  if (runIds.length > 0) {
-    const placeholders = runIds.map(() => "?").join(",");
-    const runs = await db
-      .prepare(`SELECT id, status FROM runs WHERE id IN (${placeholders})`)
-      .bind(...runIds)
-      .all<{ id: string; status: string }>();
-    for (const row of runs.results) runStatus.set(row.id, row.status);
-  }
   const boardAttempts: TournamentBoardAttempt[] = attempts.results.map((a) => ({
     ...a,
-    run_status: a.run_id ? (runStatus.get(a.run_id) ?? null) : null,
+    run_status: a.run_id ? (a.run_status ?? null) : null,
   }));
   return { tournament, attempts: boardAttempts, verdict, ledger: ledger.results };
 }

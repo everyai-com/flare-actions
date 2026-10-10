@@ -353,6 +353,17 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
 <p id="resetConfirmErr" class="err"></p>
 </div>
 </section>
+<section id="magicConfirmPane" class="card auth-card" hidden>
+<div class="auth-narrow">
+<div class="brand"><span class="brand-mark">F</span><span class="brand-name">Flare Actions</span></div>
+<h2>Finish logging in</h2>
+<p class="muted">This link works once. Continue only if you requested it.</p>
+<form id="magicConfirmForm" class="auth-form">
+<button type="submit" class="btn-block">Continue to Flare Actions</button>
+</form>
+<p id="magicConfirmErr" class="err"></p>
+</div>
+</section>
 <section id="appPane" hidden>
 <section id="runsPane" class="card">
 <div id="connectBanner" hidden>
@@ -671,15 +682,17 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
   var resetPane = document.getElementById("resetPane");
   var resetConfirmPane = document.getElementById("resetConfirmPane");
   var resetToken = null;
+  var magicConfirmPane = document.getElementById("magicConfirmPane");
+  var magicToken = null;
 
   function showInvite() {
     invitePane.hidden = false; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = ""; document.body.classList.remove("app");
-    resetPane.hidden = true; resetConfirmPane.hidden = true;
+    resetPane.hidden = true; resetConfirmPane.hidden = true; magicConfirmPane.hidden = true;
     ensureTurnstile("tsInvite");
   }
 
   function showReset() {
-    resetPane.hidden = false; resetConfirmPane.hidden = true; invitePane.hidden = true; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = ""; document.body.classList.remove("app");
+    resetPane.hidden = false; resetConfirmPane.hidden = true; magicConfirmPane.hidden = true; invitePane.hidden = true; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = ""; document.body.classList.remove("app");
     document.getElementById("resetRequestOk").textContent = "";
     document.getElementById("resetRequestErr").textContent = "";
     ensureTurnstile("tsReset");
@@ -687,7 +700,13 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
 
   function showResetConfirm(token) {
     resetToken = token;
-    resetConfirmPane.hidden = false; resetPane.hidden = true; invitePane.hidden = true; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = ""; document.body.classList.remove("app");
+    resetConfirmPane.hidden = false; magicConfirmPane.hidden = true; resetPane.hidden = true; invitePane.hidden = true; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = ""; document.body.classList.remove("app");
+  }
+
+  function showMagicConfirm(token) {
+    magicToken = token;
+    magicConfirmPane.hidden = false; resetConfirmPane.hidden = true; resetPane.hidden = true; invitePane.hidden = true; authPane.hidden = true; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = ""; document.body.classList.remove("app");
+    document.getElementById("magicConfirmErr").textContent = "";
   }
 
   var emailMode = "login";
@@ -704,7 +723,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
   function showAuth(st) {
     lastStatus = st;
     invitePane.hidden = true;
-    resetPane.hidden = true; resetConfirmPane.hidden = true;
+    resetPane.hidden = true; resetConfirmPane.hidden = true; magicConfirmPane.hidden = true;
     authPane.hidden = false; appPane.hidden = true; logoutBtn.hidden = true; userLabel.textContent = ""; document.body.classList.remove("app");
     document.getElementById("emailPw2Wrap").hidden = st.claimed;
     document.getElementById("emailBtn").textContent = st.claimed ? "Log in" : "Create admin account";
@@ -731,7 +750,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
     isAdmin = !!admin;
     document.getElementById("dispatchBox").hidden = !admin;
     invitePane.hidden = true;
-    resetPane.hidden = true; resetConfirmPane.hidden = true;
+    resetPane.hidden = true; resetConfirmPane.hidden = true; magicConfirmPane.hidden = true;
     authPane.hidden = true; appPane.hidden = false; logoutBtn.hidden = false; document.body.classList.add("app");
     document.getElementById("connectBanner").hidden = !(admin && !githubConnected);
     userLabel.textContent = actor ? actor + " " : "";
@@ -852,9 +871,10 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
       var inv = q.get("invite");
       var rt = q.get("reset");
       var m = q.get("magic");
+      var mt = q.get("magic_token");
       var installed = q.get("installation_id");
       var setupAction = q.get("setup_action");
-      if ((g || inv || rt || m || installed || setupAction) && window.history && window.history.replaceState) window.history.replaceState({}, "", "/dashboard");
+      if ((g || inv || rt || m || mt || installed || setupAction) && window.history && window.history.replaceState) window.history.replaceState({}, "", "/dashboard");
       if (installed) {
         try { sessionStorage.setItem("flare-installed", setupAction || "install"); } catch (e) {}
       }
@@ -870,6 +890,10 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
           route(st);
           document.getElementById("loginErr").textContent = "Invite invalid or expired.";
         });
+        return;
+      }
+      if (mt && !st.user) {
+        showMagicConfirm(mt);
         return;
       }
       if (rt && rt !== "done" && !st.user) {
@@ -941,6 +965,21 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
         ok.textContent = "If an account exists for that email, a login link is on its way (15 min).";
       })
       .catch(function () { err.textContent = "Could not send a link. Try again later."; });
+  });
+
+  document.getElementById("magicConfirmForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var token = magicToken;
+    magicToken = null;
+    fetch("/v1/admin/magic/consume", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: token }) })
+      .then(function (res) {
+        if (!res.ok) throw new Error("bad");
+        boot();
+      })
+      .catch(function () {
+        route(lastStatus || { claimed: true, githubConnected: false, breakGlass: false, installUrl: null, openRegistration: false });
+        document.getElementById("magicErr").textContent = "That link expired or was already used — request a new one.";
+      });
   });
 
   document.getElementById("forgotBtn").addEventListener("click", function (ev) {
