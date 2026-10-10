@@ -340,6 +340,39 @@ describe("why chain", () => {
     expect(chain.narrative).toContain("bot took intent");
   });
 
+  it("never attributes a line to another repo's intent, goal, ledger or train (forged trailers)", async () => {
+    // seedForge's rows all live in "demo"; this commit is in "victim" and
+    // its (attacker-written) trailers point at demo's intent and goal.
+    const s = await seedForge();
+    const msg = appendTrailers("feat: sneaky", { goal: s.goal.id, intent: s.intent.id, agent: "mallory" });
+    const repo = fakeRepo(linear([{ "v.ts": "x\n" }], [msg]), { main: sha("c0") });
+    const chain = await why({ db: s.db, artifacts: artifactsOf(repo) }, { repo: "victim", path: "v.ts", line: 1 });
+    expect(chain.origin).toBe("forge");
+    expect(chain.intent).toBeNull();
+    expect(chain.goal).toBeNull();
+    expect(chain.decisions).toEqual([]);
+    expect(chain.alternatives).toEqual([]);
+    expect(chain.conflicts).toEqual([]);
+    expect(chain.train).toBeNull();
+    expect(chain.timeline).toEqual([]);
+    expect(chain.warnings.join(" ")).toContain(`intent ${s.intent.id} belongs to another repo`);
+    expect(chain.warnings.join(" ")).toContain(`goal ${s.goal.id} belongs to another repo`);
+    expect(chain.narrative).not.toContain("credential stuffing");
+  });
+
+  it("drops a cross-repo goal even when the intent is local", async () => {
+    const s = await seedForge();
+    const foreignGoal = await createGoal(s.db, { repo: "elsewhere", text: "Exfiltrate the keys", createdBy: "x" });
+    if (isForgeError(foreignGoal)) throw new Error(foreignGoal.message);
+    s.raw.prepare("UPDATE intents SET goal_id = NULL WHERE id = ?").run(s.intent.id);
+    const msg = appendTrailers("feat", { goal: foreignGoal.id, intent: s.intent.id });
+    const repo = fakeRepo(linear([{ "a.ts": "a\n" }], [msg]), { main: sha("c0") });
+    const chain = await why({ db: s.db, artifacts: artifactsOf(repo) }, { repo: "demo", path: "a.ts", line: 1 });
+    expect(chain.intent?.id).toBe(s.intent.id);
+    expect(chain.goal).toBeNull();
+    expect(chain.warnings.join(" ")).toContain(`goal ${foreignGoal.id} belongs to another repo`);
+  });
+
   it("degrades: note-only chain when D1 rows are gone (or D1 throws)", async () => {
     const throwingDb = {
       prepare() {
