@@ -100,8 +100,15 @@ export function artifactsRunRepo(push: ArtifactsPush): string {
   return `${push.namespace}/${push.repo}`;
 }
 
+// One delivery id per (repo, commit), shared by the push trigger and
+// the tournament poller: whichever path sees a head first claims it, so
+// a fork that is both subscribed and polled dispatches exactly once.
+export function artifactsDeliveryId(namespace: string, repo: string, sha: string): string {
+  return `artifacts:${namespace}/${repo}:${sha.toLowerCase()}`;
+}
+
 function deliveryId(push: ArtifactsPush): string {
-  return `artifacts:${push.namespace}/${push.repo}:${push.after}`;
+  return artifactsDeliveryId(push.namespace, push.repo, push.after);
 }
 
 // Read the pipeline at the pushed commit (the sha pins the exact tree).

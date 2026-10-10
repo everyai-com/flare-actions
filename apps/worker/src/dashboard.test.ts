@@ -160,6 +160,18 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("tPulse");
   });
 
+  it("routes palette Go to Merge queue through a loading branch", () => {
+    const start = DASHBOARD_HTML.indexOf("function palGoTab(name)");
+    expect(start).toBeGreaterThan(-1);
+    const body = DASHBOARD_HTML.slice(start, DASHBOARD_HTML.indexOf("function refreshCurrent", start));
+    // Every palette tab needs a loader branch, or the pane opens empty.
+    for (const tab of ["runs", "tournaments", "repos", "merge", "settings"]) {
+      expect(body).toContain('name === "' + tab + '"');
+    }
+    expect(body).toContain("openMergeQueue()");
+    expect(DASHBOARD_HTML).toContain("function openMergeQueue()");
+  });
+
   it("keeps hidden-gated flex elements hidden until shown", () => {
     expect(DASHBOARD_HTML).toContain("#paletteOverlay[hidden]");
     expect(DASHBOARD_HTML).toContain(".side-link[hidden]");

@@ -22,7 +22,7 @@ import { jobDurationMs } from "./cost";
 import { parseProfileName } from "./pipeline";
 import type { RunDigest } from "./digest";
 import { runGenerateWithStatus } from "./generate";
-import { getTournamentBoard } from "./tournaments";
+import { getTournamentBoard, tournamentAllowed } from "./tournaments";
 import { SETTING_KEYS, parseAgentTag } from "./settings";
 import type { AiBinding } from "./triage";
 
@@ -209,6 +209,8 @@ export interface McpDeps {
   isAdmin?: boolean;
   // R2 bucket for the artifact tools (env.CACHE); unset = unconfigured.
   artifacts?: R2Bucket;
+  // Artifacts namespace: tournaments scope as `namespace/source_repo`.
+  artifactsNamespace?: string;
   // Env-provided AI Gateway id for generate_pipeline (D1 fills the gap
   // inside the tool). Unset = direct inference.
   gatewayId?: string;
@@ -316,7 +318,7 @@ async function execTool(name: string, args: Record<string, unknown>, deps: McpDe
     case "list_runs": {
       const limit = args.limit === undefined ? 10 : num(args.limit);
       if (limit === null || limit < 1 || limit > 50) return fail(id, -32602, "limit must be 1-50");
-      const runs = await listRuns(deps.db, Math.floor(limit));
+      const runs = await listRuns(deps.db, Math.floor(limit), 0, deps.repos ?? []);
       return toolResult(id, {
         runs: runs.map((r) => ({ id: r.id, repo: r.repo, sha: r.sha, branch: r.branch, event: r.event, status: r.status, created_at: r.created_at })),
       });
@@ -325,7 +327,8 @@ async function execTool(name: string, args: Record<string, unknown>, deps: McpDe
       const runId = str(args.runId);
       if (!runId) return fail(id, -32602, "runId is required");
       const run = await getRun(deps.db, runId);
-      if (!run) return toolResult(id, { error: "run not found" }, true);
+      // Out-of-scope runs answer like unknown ids (no existence leak).
+      if (!run || !reposAllow(deps.repos ?? [], run.repo)) return toolResult(id, { error: "run not found" }, true);
       const jobs = await getJobsForRun(deps.db, runId);
       return toolResult(id, {
         run,
@@ -413,6 +416,10 @@ async function execTool(name: string, args: Record<string, unknown>, deps: McpDe
     case "get_run_digest": {
       const runId = str(args.runId);
       if (!runId) return fail(id, -32602, "runId is required");
+      if ((deps.repos ?? []).length > 0) {
+        const scoped = await getRun(deps.db, runId);
+        if (!scoped || !reposAllow(deps.repos ?? [], scoped.repo)) return toolResult(id, { error: "run not found" }, true);
+      }
       const digest = await deps.digestRun(runId);
       if (!digest) return toolResult(id, { error: "run not found" }, true);
       return toolResult(id, digest);
@@ -421,7 +428,9 @@ async function execTool(name: string, args: Record<string, unknown>, deps: McpDe
       const tournamentId = str(args.tournamentId);
       if (!tournamentId) return fail(id, -32602, "tournamentId is required");
       const board = await getTournamentBoard(deps.db, tournamentId);
-      if (!board) return toolResult(id, { error: "tournament not found" }, true);
+      if (!board || !tournamentAllowed(deps.repos ?? [], deps.artifactsNamespace ?? "", board.tournament.source_repo)) {
+        return toolResult(id, { error: "tournament not found" }, true);
+      }
       return toolResult(id, {
         intent: board.tournament.intent,
         state: board.tournament.state,
@@ -442,6 +451,10 @@ async function execTool(name: string, args: Record<string, unknown>, deps: McpDe
       const runId = str(args.runId);
       const jobId = str(args.jobId);
       if (!runId || !jobId) return fail(id, -32602, "runId and jobId are required");
+      if ((deps.repos ?? []).length > 0) {
+        const target = await getRun(deps.db, runId);
+        if (!target || !reposAllow(deps.repos ?? [], target.repo)) return toolResult(id, { error: "run not found" }, true);
+      }
       const res = await deps.rerunJob(runId, jobId);
       if (!res.ok) return toolResult(id, { error: res.error ?? "rerun failed" }, true);
       return toolResult(id, { ok: true });
@@ -449,6 +462,7 @@ async function execTool(name: string, args: Record<string, unknown>, deps: McpDe
     case "get_flaky": {
       const repo = str(args.repo);
       if (!repo) return fail(id, -32602, "repo is required");
+      if (!reposAllow(deps.repos ?? [], repo)) return toolResult(id, { error: "token is not scoped to that repo" }, true);
       const days = args.days === undefined ? 30 : num(args.days);
       if (days === null || days < 1 || days > 365) return fail(id, -32602, "days must be 1-365");
       return toolResult(id, { stats: await flakyStats(deps.db, repo, Math.floor(days)) });

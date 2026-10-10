@@ -102,7 +102,7 @@ import {
   updateRunningJob,
   usageStats,
 } from "./db";
-import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, getDefaultBranch, getInstallationToken, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, resolveRunnerGroupId, updatePullRequestBranch, verifyGitHubSignature } from "./github";
+import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, getDefaultBranch, getInstallationToken, getPullRequestHead, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, resolveRunnerGroupId, updatePullRequestBranch, verifyGitHubSignature } from "./github";
 import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
 import { DASHBOARD_HTML } from "./dashboard";
@@ -228,9 +228,11 @@ import {
   claimAttempt,
   createTournament,
   getAttemptRace,
+  getTournament,
   getTournamentBoard,
   listTournaments,
   pollTournamentAttempts,
+  tournamentAllowed,
   validateTournamentClaim,
   validateTournamentCreate,
 } from "./tournaments";
@@ -474,6 +476,7 @@ async function serveMcpRequest(
       repos: props.repos,
       isAdmin: props.isAdmin,
       artifacts: env.CACHE,
+      artifactsNamespace: env.ARTIFACTS_NAMESPACE ?? "",
       gatewayId: env.AI_GATEWAY_ID,
       agent: request.headers.get("X-Flare-Agent") ?? request.headers.get("User-Agent") ?? undefined,
       dispatchRun: async (input) => {
@@ -2414,8 +2417,13 @@ async function runMergeQueueTick(
         },
         updateBranch: async (repo, pr) => {
           const token = await mintInstallationTokenFor(env, await latestInstallationId(env.DB, repo));
-          if (!token) return false;
+          if (!token) return "failed";
           return updatePullRequestBranch(token, repo, pr);
+        },
+        prHead: async (repo, pr) => {
+          const token = await mintInstallationTokenFor(env, await latestInstallationId(env.DB, repo));
+          if (!token) return null;
+          return getPullRequestHead(token, repo, pr);
         },
         prFiles: async (repo, pr) => {
           const token = await mintInstallationTokenFor(env, await latestInstallationId(env.DB, repo));
@@ -2747,14 +2755,19 @@ export default {
         if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
           return json({ error: "limit must be an integer 1-100" }, 400);
         }
-        return json({ tournaments: await listTournaments(env.DB, limit) });
+        return json({
+          tournaments: await listTournaments(env.DB, limit, { repos: ident.repos, namespace: env.ARTIFACTS_NAMESPACE ?? "" }),
+        });
       }
       const tournamentMatch = /^\/v1\/tournaments\/([^/]+)$/.exec(url.pathname);
       if (tournamentMatch && request.method === "GET") {
         const ident = await requireScope(request, env, "read");
         if (!ident) return json({ error: "unauthorized" }, 401);
         const board = await getTournamentBoard(env.DB, tournamentMatch[1]);
-        if (!board) return json({ error: "tournament not found" }, 404);
+        // Out-of-scope races answer like unknown ids (no existence leak).
+        if (!board || !tournamentAllowed(ident.repos, env.ARTIFACTS_NAMESPACE ?? "", board.tournament.source_repo)) {
+          return json({ error: "tournament not found" }, 404);
+        }
         return json(board);
       }
       const claimMatch = /^\/v1\/tournaments\/([^/]+)\/claims$/.exec(url.pathname);
@@ -2765,6 +2778,12 @@ export default {
         const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
         const valid = validateTournamentClaim(body);
         if ("error" in valid) return json({ error: valid.error }, 400);
+        if (ident.repos.length > 0) {
+          const target = await getTournament(env.DB, claimMatch[1]);
+          if (!target || !tournamentAllowed(ident.repos, env.ARTIFACTS_NAMESPACE ?? "", target.source_repo)) {
+            return json({ error: "tournament not found" }, 404);
+          }
+        }
         const out = await claimAttempt(env.DB, env.ARTIFACTS, claimMatch[1], valid.agent);
         if ("error" in out) {
           const status = out.error === "already-claimed" ? 409 : out.error === "fork-failed" ? 502 : 400;
