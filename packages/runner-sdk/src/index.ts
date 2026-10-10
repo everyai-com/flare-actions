@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { NeedsContext } from "./outputs.ts";
+import { FlareApiError, type FlareApiErrorBody } from "./api-error.ts";
 
 export { executeSteps, parseDefinition } from "./execute.ts";
 export type { ExecStep, ExecuteOptions, StepResult, StepsOutcome } from "./execute.ts";
@@ -668,29 +669,27 @@ export interface FlareRun {
   updated_at: string;
 }
 
-export interface FlareApiErrorBody {
-  error?: unknown;
-  code?: unknown;
-  hint?: unknown;
-}
-
-// Typed API failure: the server's stable `code` + `hint` ride on the
-// Error so CLIs and agents can switch on the code and print the next
-// step. The message keeps the legacy `<op> failed: <status>` prefix.
-export class FlareApiError extends Error {
-  readonly status: number;
-  readonly code: string | null;
-  readonly hint: string | null;
-
-  constructor(op: string, status: number, body: FlareApiErrorBody) {
-    const serverError = typeof body.error === "string" && body.error ? body.error : null;
-    super(serverError ? `${op} failed: ${status} — ${serverError}` : `${op} failed: ${status}`);
-    this.name = "FlareApiError";
-    this.status = status;
-    this.code = typeof body.code === "string" ? body.code : null;
-    this.hint = typeof body.hint === "string" ? body.hint : null;
-  }
-}
+// FlareApiError lives in api-error.ts so forge.ts can share it without
+// a circular import; re-exported here unchanged.
+export { FlareApiError } from "./api-error.ts";
+export type { FlareApiErrorBody } from "./api-error.ts";
+export { FlareForge, forgeConnectAgent, FORGE_AGENT_PROMPT, FORGE_AGENTS_MD_SNIPPET } from "./forge.ts";
+export type {
+  ForgeAgentClient,
+  ForgeClaimResult,
+  ForgeDeclareResult,
+  ForgeGoal,
+  ForgeIntent,
+  ForgeJson,
+  ForgeLiveIntent,
+  ForgeMailboxMessage,
+  ForgeNextStep,
+  ForgeOptions,
+  ForgeOverlap,
+  ForgePushResult,
+  ForgeReadyResult,
+  ForgeRiskTerm,
+} from "./forge.ts";
 
 // Tolerant claim-decision reader: unknown shapes read as null (no
 // selection) so old runners keep working against newer servers.
