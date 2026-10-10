@@ -14,12 +14,16 @@ paste, submit; then tick the roadmap box.
   the URL into Claude/ChatGPT/Cursor), or `Authorization: Bearer`
   with a runner/readonly API token for headless clients
   (`cli mcp-config` prints the paste-ready config)
-- **Tools (15):** `run_and_wait` (dispatch + block + digest — the
+- **Tools (29):** `run_and_wait` (dispatch + block + digest — the
   agent loop in one call), `dispatch_run`, `rerun_job`,
   `get_run_digest`, `get_run`, `list_runs`, `get_flaky`,
   `generate_pipeline`, `list_artifacts`, `get_artifact`,
   `list_schedules`, `create_schedule`, `set_schedule_enabled`,
-  `delete_schedule`, `tournament_why`
+  `delete_schedule`, `tournament_why` — plus 14 Forge tools
+  (`plan_goal`, `declare_intent`, `whats_happening`, `claim_intent`,
+  `heartbeat`, `report_push`, `mark_ready`, `send_note`, `read_inbox`,
+  `claim_conflict`, `resolve_conflict`, `why`, `fork_session`,
+  `forge_snapshot`; see docs/FORGE-AGENTS.md)
 - **Safety rails (say it — registries ask):** WriteGuard risk tiers
   per tool, optional write-confirm gate, attributed audit rows for
   write-tier calls, token repo-scoping, OAuth scopes
@@ -55,7 +59,7 @@ OAuth clients need only the URL (no token to copy).
 1. Open a PR against the registry repo adding `flare-actions`
    (name, description above, repo link, `streamable-http` transport,
    install snippet).
-2. Confirm the listing renders the tool count (15) and the OAuth
+2. Confirm the listing renders the tool count (29) and the OAuth
    note — mcp.so readers skim for auth difficulty first.
 
 ### Smithery

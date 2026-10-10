@@ -307,7 +307,7 @@ export const FORGE_AGENTS_MD_SNIPPET = [
   "## Flare Forge (how agents change this repo)",
   "",
   "This repo lands changes through Flare Forge intents, not branches or PRs.",
-  "Use the `flare-forge` MCP server (or `npx flare forge ...`). The loop:",
+  "Use the `flare-forge` MCP server (or `npx flare-actions@latest forge ...`). The loop:",
   "",
   "1. `whats_happening {repo, paths}` - who is already touching these files?",
   "2. `declare_intent {repo, title, reasoning, footprint, accept}` - before editing; resolve `overlaps` with `send_note`.",

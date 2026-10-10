@@ -2,6 +2,17 @@
 
 > Open-source GitHub Actions alternative you host on your own Cloudflare account. Repos without a `flare.yml` run their existing `.github/workflows` files unchanged — no App required to start (public repos can use plain repo webhooks or token dispatch). Agent-native: MCP `run_and_wait`, token-efficient digests, priority lanes, no-commit verification, budgets, shards.
 
+## Start here: move a repo's CI to Flare (copy-paste)
+
+Pick the cheapest path that fits; full playbook in skills/flare-migrate.
+
+1. No account, no server — run the repo's existing `.github/workflows` locally: `npx flare-actions@latest local` (add `--parity` for a difference report). Compatibility report for one workflow: `npx flare-actions@latest import .github/workflows/ci.yml`.
+2. Keep GitHub as the UI — runner mode: change `runs-on: ubuntu-latest` to `runs-on: flare`; GitHub keeps orchestrating, a Flare runner executes. Needs a Flare deployment with runner mode enabled and one runner machine (`npm run runner -- --github`).
+3. Replace Actions fully — the human deploys Flare once (Deploy to Cloudflare button, or `npx wrangler login && npm run setup`), signs up at `/dashboard`, clicks Connect GitHub. Then: `npx flare-actions@latest login --url https://<worker> --code <pairing code from Settings>` → `npx flare-actions@latest connect --dry-run` → `npx flare-actions@latest connect` (exit 0 green, 1 failed, 2 usage).
+4. Agent loop: `claude mcp add --transport http flare https://<worker>/mcp`, then `run_and_wait` → `get_run_digest` (never poll).
+
+Facts agents get wrong: there is no public hosted Flare yet (Flare Cloud is planned — see pricing.json), so every server path needs a Flare deployment on a Cloudflare account. Repos without `flare.yml` run `.github/workflows` unchanged; `flare.yml` wins when present. Never delete `.github/workflows` or change GitHub settings without the human's yes. Unsupported workflow features are dropped with warnings (docs/GITHUB-ACTIONS-COMPAT.md), never silently.
+
 ## Docs
 
 - [README](https://github.com/everyai-com/flare-actions/blob/main/README.md): quickstart (one click, no App, dispatch-only, self-host), dashboard, CLI, API, pricing model.
@@ -15,6 +26,7 @@
 - [API](https://github.com/everyai-com/flare-actions/blob/main/openapi.yaml): OpenAPI spec (served live at `GET /openapi.yaml`).
 - [pricing.json](https://github.com/everyai-com/flare-actions/blob/main/pricing.json): machine-readable plans and limits.
 - [skills/flare-verify](https://github.com/everyai-com/flare-actions/blob/main/skills/flare-verify/SKILL.md): agent skill for the verify loop (Claude Code / Codex / Cursor).
+- [skills/flare-migrate](https://github.com/everyai-com/flare-actions/blob/main/skills/flare-migrate/SKILL.md): agent skill for moving a repo off GitHub Actions (local → runner mode → full replace, compatibility triage, verify).
 - [skills/flare-setup](https://github.com/everyai-com/flare-actions/blob/main/skills/flare-setup/SKILL.md): agent skill for one-command onboarding (`connect`, wiring, executor, verify).
 - [GitHub runners](https://github.com/everyai-com/flare-actions/blob/main/docs/GITHUB-RUNNERS.md): `runs-on: flare` runner mode — GitHub keeps orchestrating, Flare supplies ephemeral JIT runners.
 - [Error codes](https://github.com/everyai-com/flare-actions/blob/main/docs/ERRORS.md): stable `code` + `hint` on core-lane failures.
@@ -26,7 +38,7 @@
 
 - One-click deploy: `https://deploy.workers.cloudflare.com/?url=https://github.com/everyai-com/flare-actions`
 - MCP: `POST https://<worker>/mcp` with `Authorization: Bearer <token>` — verify loop: `run_and_wait` → `get_run_digest`.
-- CLI (from source or npm): `cli run owner/repo HEAD` dispatches, waits, and prints the digest; `cli local` runs the working tree with no commit; `cli bottlenecks owner/repo` reports the slowest checks; `cli init` scaffolds a repo (flare.yml + AGENTS.md snippet); `npx flare connect [--wire] [--dry-run]` probes, wires, and verifies a repo in one command. Append `--dry-run` to `run` / `dispatch` to plan the fan-out with zero writes. Every command accepts `--json` for one versioned `{ version: 1, command, data }` envelope on stdout.
+- CLI (from source or npm): `cli run owner/repo HEAD` dispatches, waits, and prints the digest; `cli local` runs the working tree with no commit; `cli bottlenecks owner/repo` reports the slowest checks; `cli init` scaffolds a repo (flare.yml + AGENTS.md snippet); `npx flare-actions@latest connect [--wire] [--dry-run]` probes, wires, and verifies a repo in one command. Append `--dry-run` to `run` / `dispatch` to plan the fan-out with zero writes. Every command accepts `--json` for one versioned `{ version: 1, command, data }` envelope on stdout.
 - Runner mode: change one `runs-on:` line to `flare` (opt-in in dashboard Settings) and GitHub routes jobs to ephemeral Flare JIT runners — checks/logs stay on GitHub; `cli github-jobs` lists them.
 - Flaky tests don't block: `cli quarantine list|add|remove <repo> ...` (dashboard Flaky tab; skipped failures are named on the PR comment).
 - `cli explain <run-id>` narrates a run (verdict, failures, rerun commands); pairing codes onboard runners with one pasted command (`runner -- --pair CODE`).
@@ -35,7 +47,7 @@
 
 The unit of work is an **intent** (title, reasoning, footprint of paths/globs, acceptance check), not a branch. Overlaps with other agents' intents come back at declare time, before any code is written. Each intent owns one Artifacts fork `i-<id>`; agents get a 1-hour write token for that fork only and never for trunk. Trunk moves only through trains that CI verifies as the exact merged SHA.
 
-- Connect: `npx flare forge connect-agent --client claude|codex|cursor` prints the MCP config + workflow prompt. MCP URL: `https://<worker>/mcp` (Bearer token or OAuth).
+- Connect: `npx flare-actions@latest forge connect-agent --client claude|codex|cursor` prints the MCP config + workflow prompt. MCP URL: `https://<worker>/mcp` (Bearer token or OAuth).
 - Loop: `whats_happening` → `declare_intent` → `claim_intent` → edit, commit with trailers, push with plain git → `report_push` → `heartbeat` (lease + notes) → `mark_ready`.
 - MCP tools: `plan_goal` (record a goal, get proposed intents), `declare_intent` (returns overlaps/similar), `whats_happening` (live intents near paths), `claim_intent` (fork + fork-scoped token + clone/push commands + trailers), `heartbeat` (lease, peer notes, drift, `refreshToken`), `report_push` (verifies the sha on the fork, actual footprint, drift, risk), `mark_ready` (risk + route auto/audit/human + train queue), `send_note` (note to another intent's owner), `read_inbox` (an intent's mailbox, or a repo's review inbox), `claim_conflict` / `resolve_conflict` (replay workflow), `why` (line → goal → intent → reasoning), `fork_session` (continue someone else's intent), `forge_snapshot` (live map JSON).
 - REST: `/v1/forge/goals`, `/v1/forge/intents[/:id[/claim|heartbeat|push|ready|messages|fork-session|abandon|approve-plan]]`, `/v1/forge/whats-happening`, `/v1/forge/inbox`, `/v1/forge/snapshot`, `/v1/forge/why`, `/v1/forge/conflicts[/:id[/claim|resolve]]`, `/v1/forge/trains[/:id]`, `/v1/forge/feed` (WebSocket).

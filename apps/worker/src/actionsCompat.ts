@@ -1,5 +1,6 @@
 import { parse as parseYaml } from "yaml";
 import { convertActionsWorkflow, isImportSuccess } from "../../../packages/runner-sdk/src/importActions.ts";
+import { outputEnvName } from "../../../packages/runner-sdk/src/outputs.ts";
 import { MAX_JOBS, normalizeJobCondition, parsePipeline, type PipelineJob } from "./pipeline.ts";
 
 // Native `.github/workflows` compatibility: when a repo has no flare.yml
@@ -261,10 +262,24 @@ export function mapGithubExpressions(text: string): { text: string; dropped: str
       if (re.test(expr)) return replacement;
     }
     if (/^secrets\./i.test(expr) || /^env\./i.test(expr) || /^matrix\./i.test(expr)) return match;
+    // Outputs ride step env (runner-sdk outputs.ts): read the variable,
+    // never paste the value into shell text.
+    const so = /^steps\.([A-Za-z_][\w-]*)\.outputs\.([A-Za-z_][\w-]*)$/.exec(expr);
+    if (so) return "${" + outputEnvName("FLARE_STEPS_", so[1] as string, so[2] as string) + "}";
+    const no = /^needs\.([A-Za-z_][\w-]*)\.(?:outputs\.([A-Za-z_][\w-]*)|(result))$/.exec(expr);
+    if (no) return "${" + outputEnvName("FLARE_NEEDS_", no[1] as string, no[2] ?? "RESULT") + "}";
     dropped.push(expr);
     return "";
   });
   return { text: out, dropped };
+}
+
+// Actions semantics for `${{ matrix.<key> }}`: the cell's value, or ""
+// when this cell lacks the key (include-only keys live only in the cells
+// they extended). The parser already interpolated step runs; this also
+// covers job env, which flare.yml leaves verbatim.
+export function resolveMatrixRefs(text: string, matrix: Record<string, string> | undefined): string {
+  return text.replace(/\$\{\{\s*matrix\.([A-Za-z_][\w-]*)\s*\}\}/g, (_match, key: string) => matrix?.[key] ?? "");
 }
 
 export interface TranslatedWorkflow {
@@ -321,7 +336,7 @@ export function translateWorkflow(
     if (skipped.has(job.base ?? job.name)) continue;
     const steps = [];
     for (const step of job.steps) {
-      const mapped = mapGithubExpressions(step.run);
+      const mapped = mapGithubExpressions(resolveMatrixRefs(step.run, job.matrix));
       step.run = mapped.text.trim();
       for (const expr of mapped.dropped) dropped.add(expr);
       if (step.run) steps.push(step);
@@ -333,7 +348,7 @@ export function translateWorkflow(
     }
     const env = { ...(job.env ?? {}) };
     for (const [key, value] of Object.entries(env)) {
-      const mapped = mapGithubExpressions(value);
+      const mapped = mapGithubExpressions(resolveMatrixRefs(value, job.matrix));
       env[key] = mapped.text;
       for (const expr of mapped.dropped) dropped.add(expr);
     }

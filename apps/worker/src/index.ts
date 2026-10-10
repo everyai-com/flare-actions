@@ -108,6 +108,7 @@ import { judgeFlaky } from "./judge";
 import { DASHBOARD_HTML } from "./dashboard";
 import { apiDocsPage } from "./apidocs";
 import { OPENAPI_YAML } from "./openapi-spec";
+import { llmsTxtFor } from "./llms";
 import { ensureSchema } from "./schema";
 import {
   decryptSettingValue,
@@ -243,6 +244,7 @@ import {
   getRepoCommits,
   getRepoInfo,
   getRepoTree,
+  isScratchRepo,
   listAllowedRepos,
   normalizeRepoPath,
   validateRef,
@@ -2507,6 +2509,11 @@ export default {
           headers: { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "public, max-age=300" },
         });
       }
+      if (request.method === "GET" && url.pathname === "/llms.txt") {
+        return new Response(llmsTxtFor(url.origin), {
+          headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=300" },
+        });
+      }
       if (request.method === "GET" && url.pathname === "/openapi.yaml") {
         return new Response(OPENAPI_YAML, {
           headers: { "Content-Type": "text/yaml; charset=utf-8", "Cache-Control": "public, max-age=3600" },
@@ -2860,7 +2867,8 @@ export default {
         if (cursor && cursor.length > 500) return json({ error: "cursor too long" }, 400);
         const namespace = env.ARTIFACTS_NAMESPACE ?? "";
         const allow = ident.repos.length > 0 ? (name: string) => repoAllowed(ident, `${namespace}/${name}`) : null;
-        return json(await listAllowedRepos(env.ARTIFACTS, limit, cursor, allow));
+        const hide = url.searchParams.get("all") === "1" ? null : isScratchRepo;
+        return json(await listAllowedRepos(env.ARTIFACTS, limit, cursor, allow, hide));
       }
       const repoTreeMatch = /^\/v1\/repos\/([^/]+)\/tree$/.exec(url.pathname);
       if (repoTreeMatch && request.method === "GET") {

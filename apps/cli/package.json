@@ -5,15 +5,24 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "flare": "./bin/flare.mjs"
+    "flare": "./dist/flare.mjs",
+    "flare-actions": "./dist/flare.mjs"
   },
   "files": [
-    "bin",
-    "src"
+    "dist",
+    "README.md"
   ],
   "engines": {
-    "node": ">=22.6"
+    "node": ">=22"
   },
+  "keywords": [
+    "ci",
+    "github-actions",
+    "cloudflare",
+    "workers",
+    "cli",
+    "local-ci"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/everyai-com/flare-actions.git",
@@ -21,9 +30,11 @@
   },
   "homepage": "https://github.com/everyai-com/flare-actions#readme",
   "scripts": {
-    "start": "node --experimental-strip-types src/index.ts"
+    "start": "node --experimental-strip-types src/index.ts",
+    "build": "node scripts/build.mjs",
+    "prepack": "node scripts/build.mjs"
   },
-  "dependencies": {
+  "devDependencies": {
     "flare-actions-runner-sdk": "0.1.0"
   }
 }

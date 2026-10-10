@@ -1,7 +1,20 @@
 import { execFile } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { formatOutputsLine, isValidOutputName, parseStepOutputs, type NeedsContext } from "./outputs.ts";
+import { delimiter } from "node:path";
+import {
+  applyEnvFile,
+  applyPathFile,
+  envFileLogLines,
+  newEnvFileState,
+  prependedPath,
+  stepFileEnv,
+  stepFilePaths,
+  takeSummary,
+  MAX_ENV_FILE_BYTES,
+  MAX_SUMMARY_BYTES,
+  STEP_FILE_ENV_NAMES,
+} from "./envfiles.ts";
+import { buildStepsEnv, formatOutputsLine, isValidOutputName, parseStepOutputs, type NeedsContext } from "./outputs.ts";
 import { dockerArgsForStep } from "./services.ts";
 import { normalizeStepCondition, stepRuns } from "./spec.ts";
 
@@ -64,6 +77,18 @@ interface RunOneOptions {
   container?: string;
   containerEnv?: string[];
   shell: string;
+  // Container only: earlier steps' $GITHUB_PATH entries.
+  pathPrepend?: string[];
+}
+
+// Bounded read of a step file; "" when absent (the step wrote nothing).
+function readStepFile(path: string, maxBytes: number): string {
+  try {
+    const buf = readFileSync(path);
+    return buf.subarray(0, maxBytes).toString("utf8");
+  } catch {
+    return "";
+  }
 }
 
 function runOne(o: RunOneOptions): Promise<StepResult> {
@@ -85,7 +110,7 @@ function runOne(o: RunOneOptions): Promise<StepResult> {
     if (o.container) {
       execFile(
         "docker",
-        dockerArgsForStep(o.container, o.cwd, o.env, o.containerEnv ?? [], o.command, o.shell),
+        dockerArgsForStep(o.container, o.cwd, o.env, o.containerEnv ?? [], o.command, o.shell, o.pathPrepend),
         { timeout: o.timeoutMs, maxBuffer: 4 * 1024 * 1024 },
         finish,
       );
@@ -106,6 +131,8 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
   // notifications) still run.
   let anyFailed = false;
   let jobFailed = false;
+  // $GITHUB_ENV / $GITHUB_PATH / summary state, scoped to this job.
+  const envState = newEnvFileState();
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     // `if:` sees the settled needs plus this job's earlier steps (a
@@ -114,21 +141,38 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
       logParts.push(`--- step ${i + 1}: skipped (${step.if}) ---`);
       continue;
     }
-    // Step outputs: a hidden file under the workdir both sides can see
+    // Step files ($GITHUB_OUTPUT/ENV/PATH/STEP_SUMMARY + FLARE_
+    // aliases): hidden files under the workdir both sides can see
     // (container steps run with cwd mounted at /work, so the in-step
-    // path differs but the bytes land in the same file).
-    const outRel = `.flare-output-${i}`;
-    const outHost = join(opts.cwd, outRel);
-    const outStep = opts.container ? `/work/${outRel}` : outHost;
+    // path differs but the bytes land in the same file). Fresh per step.
+    const host = stepFilePaths(opts.cwd, i, true);
+    const inStep = opts.container ? stepFilePaths("/work", i, true) : host;
+    const hostFiles = [host.output, host.env, host.path, host.summary];
+    for (const f of hostFiles) {
+      try {
+        rmSync(f, { force: true });
+      } catch {
+        // Best effort; `>>` recreates it either way.
+      }
+    }
+    // Earlier steps' $GITHUB_ENV overlays the job env (later steps
+    // only); $GITHUB_PATH prepends to PATH (host) or to the
+    // container's own PATH (trampoline in dockerArgsForStep).
+    const stepsEnv = buildStepsEnv(stepOutputs);
+    const stepEnv: NodeJS.ProcessEnv = { ...opts.env, ...stepsEnv, ...envState.env, ...stepFileEnv(inStep) };
+    if (!opts.container && envState.pathAdds.length > 0) stepEnv.PATH = prependedPath(envState, opts.env.PATH, delimiter);
     const r = await runOne({
       command: step.run,
       cwd: opts.cwd,
-      env: { ...opts.env, FLARE_OUTPUT: outStep, GITHUB_OUTPUT: outStep },
+      env: stepEnv,
       timeoutMs: step.timeoutMinutes !== undefined ? step.timeoutMinutes * 60000 : timeoutMs,
       outputLimit,
       container: opts.container,
-      containerEnv: opts.container ? [...(opts.containerEnv ?? []), "FLARE_OUTPUT", "GITHUB_OUTPUT"] : opts.containerEnv,
+      containerEnv: opts.container
+        ? [...new Set([...(opts.containerEnv ?? []), ...Object.keys(stepsEnv), ...Object.keys(envState.env), ...STEP_FILE_ENV_NAMES])]
+        : opts.containerEnv,
       shell: step.shell ?? "sh",
+      pathPrepend: opts.container ? [...envState.pathAdds] : undefined,
     });
     results.push(r);
     logParts.push(`--- step ${i + 1}: ${step.run} ---\n${r.output}\n(exit ${r.exitCode}, ${r.durationMs}ms)`);
@@ -136,7 +180,7 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
     // steps never ran, so they publish nothing).
     const label = step.id ?? `step${i + 1}`;
     try {
-      const parsed = parseStepOutputs(readFileSync(outHost, "utf8"));
+      const parsed = parseStepOutputs(readFileSync(host.output, "utf8"));
       const names = Object.keys(parsed.outputs);
       if (names.length > 0) {
         stepOutputs[label] = parsed.outputs;
@@ -150,10 +194,17 @@ export async function executeSteps(steps: ExecStep[], opts: ExecuteOptions): Pro
     } catch {
       // No outputs file: the step published nothing.
     }
-    try {
-      rmSync(outHost, { force: true });
-    } catch {
-      // Best effort; a stale file never affects the next step.
+    const envText = readStepFile(host.env, MAX_ENV_FILE_BYTES);
+    const envApplied = envText ? applyEnvFile(envState, envText) : null;
+    const pathAdded = applyPathFile(envState, readStepFile(host.path, MAX_ENV_FILE_BYTES));
+    const summary = takeSummary(envState, readStepFile(host.summary, MAX_SUMMARY_BYTES));
+    logParts.push(...envFileLogLines(label, envApplied, pathAdded, summary));
+    for (const f of hostFiles) {
+      try {
+        rmSync(f, { force: true });
+      } catch {
+        // Best effort; a stale file never affects the next step.
+      }
     }
     if (r.exitCode !== 0) {
       anyFailed = true;

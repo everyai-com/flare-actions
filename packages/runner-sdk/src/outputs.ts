@@ -1,4 +1,5 @@
-// Step/job outputs: steps append KEY=VALUE lines to $FLARE_OUTPUT
+// Step/job outputs: steps append KEY=VALUE lines (or the NAME<<DELIM
+// heredoc form) to $FLARE_OUTPUT
 // ($GITHUB_OUTPUT aliases it); the executor parses (bounded), the job
 // `outputs:` mapping promotes step refs under stable names, and the
 // mapping lands in resultJson for downstream `needs` consumers.
@@ -23,27 +24,69 @@ export interface ParsedStepOutputs {
   ignored: number;
 }
 
-export function parseStepOutputs(text: string): ParsedStepOutputs {
-  const outputs: Record<string, string> = {};
-  const truncated: string[] = [];
+// One `NAME=value` / `NAME<<DELIM ... DELIM` entry in a step file.
+export interface KeyValueEntry {
+  name: string;
+  value: string;
+}
+
+// Shared file grammar for $GITHUB_OUTPUT and $GITHUB_ENV (GitHub
+// parity): `NAME=value` lines plus the heredoc form for multi-line
+// values. A line is a heredoc when `<<` appears before any `=`; the
+// value is every following line up to one equal to DELIM (joined with
+// "\n"). Blank lines and `#` comments skip. Names are NOT validated
+// here (outputs and env use different alphabets); unparseable lines and
+// unterminated heredocs (the whole tail) count as ignored. Entries keep
+// file order, duplicates included — callers pick first/last wins.
+export function parseKeyValueFile(text: string): { entries: KeyValueEntry[]; ignored: number } {
+  const entries: KeyValueEntry[] = [];
   let ignored = 0;
-  let count = 0;
-  const enc = new TextEncoder();
-  const dec = new TextDecoder();
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+  const lines = text.split("\n").map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] as string;
     if (!line.trim() || line.startsWith("#")) continue;
     const eq = line.indexOf("=");
+    const hd = line.indexOf("<<");
+    if (hd > 0 && (eq === -1 || hd < eq)) {
+      const name = line.slice(0, hd);
+      const delim = line.slice(hd + 2);
+      if (!delim) {
+        ignored++;
+        continue;
+      }
+      const end = lines.indexOf(delim, i + 1);
+      if (end === -1) {
+        // Unterminated: GitHub fails the step; we drop the tail.
+        ignored++;
+        break;
+      }
+      entries.push({ name, value: lines.slice(i + 1, end).join("\n") });
+      i = end;
+      continue;
+    }
     if (eq <= 0) {
       ignored++;
       continue;
     }
-    const name = line.slice(0, eq);
+    entries.push({ name: line.slice(0, eq), value: line.slice(eq + 1) });
+  }
+  return { entries, ignored };
+}
+
+export function parseStepOutputs(text: string): ParsedStepOutputs {
+  const outputs: Record<string, string> = {};
+  const truncated: string[] = [];
+  const parsed = parseKeyValueFile(text);
+  let ignored = parsed.ignored;
+  let count = 0;
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+  for (const { name, value: raw } of parsed.entries) {
     if (!isValidOutputName(name) || name in outputs || count >= MAX_STEP_OUTPUTS) {
       ignored++;
       continue;
     }
-    let value = line.slice(eq + 1);
+    let value = raw;
     const bytes = enc.encode(value);
     if (bytes.byteLength > MAX_OUTPUT_VALUE_BYTES) {
       value = dec.decode(bytes.slice(0, MAX_OUTPUT_VALUE_BYTES));
@@ -133,8 +176,27 @@ export function capNeedsContext(needs: NeedsContext): { needs: NeedsContext; tru
   return { needs: out, truncated };
 }
 
-function needsEnvName(prefix: string, base: string, key: string): string {
+// Shared mangling for output env names; actionsCompat maps
+// `${{ needs.* }}` / `${{ steps.* }}` refs onto the same names.
+export function outputEnvName(prefix: string, base: string, key: string): string {
   return `${prefix}${base}_${key}`.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+}
+const needsEnvName = outputEnvName;
+
+// Earlier steps' outputs as step env (`FLARE_STEPS_<ID>_<KEY>`), so a
+// `${{ steps.id.outputs.key }}` ref in a later run reads a variable
+// instead of having the value pasted into shell text (no injection).
+// Collisions: first sorted name wins, like buildNeedsEnv.
+export function buildStepsEnv(steps: Record<string, Record<string, string>>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const id of Object.keys(steps).sort()) {
+    const outputs = steps[id] as Record<string, string>;
+    for (const key of Object.keys(outputs).sort()) {
+      const name = outputEnvName("FLARE_STEPS_", id, key);
+      if (!(name in env)) env[name] = outputs[key] as string;
+    }
+  }
+  return env;
 }
 
 // Needs as step env (`FLARE_NEEDS_<BASE>_<KEY>` + `..._RESULT`).

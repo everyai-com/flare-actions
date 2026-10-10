@@ -20,12 +20,12 @@ const AGENTS_SNIPPET = `${AGENTS_MARKER_START}
 This repo verifies with Flare Actions. Existing \`.github/workflows\` run
 as-is; \`flare.yml\` is the native format and wins when present.
 
-- Inner loop: \`npm run check\` (changed files only) or \`npx flare local\`.
-- Server verify: \`npx flare run <owner/repo> HEAD\` — dispatches, waits,
+- Inner loop: \`npm run check\` (changed files only) or \`npx flare-actions@latest local\`.
+- Server verify: \`npx flare-actions@latest run <owner/repo> HEAD\` — dispatches, waits,
   and prints a compact digest (or MCP \`run_and_wait\`). No polling loops.
 - Never claim CI passed without a run digest; surface failures with the
   digest's failing step + tail instead of full logs.
-- Flaky tests don't block: \`npx flare quarantine list <repo>\`.
+- Flaky tests don't block: \`npx flare-actions@latest quarantine list <repo>\`.
 - Budgets: dashboard → Settings → Budgets (warn/block per repo).
 ${AGENTS_MARKER_END}
 `;

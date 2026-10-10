@@ -6,12 +6,37 @@ import {
   capNeedsContext,
   formatOutputsLine,
   isValidOutputName,
+  parseKeyValueFile,
   parseOutputRef,
   parseStepOutputs,
   resolveJobOutputs,
 } from "./outputs";
 
+describe("parseKeyValueFile", () => {
+  it("parses heredoc values, keeps order and duplicates", () => {
+    const r = parseKeyValueFile("a=1\nnote<<EOF\nx=y\n\nz\nEOF\na=2\nb=c<<d\n");
+    expect(r.entries).toEqual([
+      { name: "a", value: "1" },
+      { name: "note", value: "x=y\n\nz" },
+      { name: "a", value: "2" },
+      { name: "b", value: "c<<d" },
+    ]);
+    expect(r.ignored).toBe(0);
+  });
+
+  it("drops unterminated heredocs and empty delimiters", () => {
+    expect(parseKeyValueFile("x<<\na=1\n").entries).toEqual([{ name: "a", value: "1" }]);
+    const r = parseKeyValueFile("a=1\nlong<<EOF\nnever closed\nb=2\n");
+    expect(r.entries).toEqual([{ name: "a", value: "1" }]);
+    expect(r.ignored).toBe(1);
+  });
+});
+
 describe("parseStepOutputs", () => {
+  it("accepts the heredoc form", () => {
+    expect(parseStepOutputs("notes<<END\nl1\nl2\nEND\n").outputs).toEqual({ notes: "l1\nl2" });
+  });
+
   it("parses KEY=VALUE lines, skipping blanks and comments", () => {
     const parsed = parseStepOutputs("# comment\n\nurl=https://x.example/a\nempty=\n");
     expect(parsed.outputs).toEqual({ url: "https://x.example/a", empty: "" });

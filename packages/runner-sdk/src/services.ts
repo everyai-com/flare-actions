@@ -36,7 +36,10 @@ export function dockerArgsForService(containerName: string, svc: JobServiceSpec)
 
 // Steps run as: docker run --rm -v <cwd>:/work -w /work [-e K=V ...]
 // <image> <shell> -c <command>. Only the listed env keys cross the
-// boundary; the container keeps its own PATH and toolchain.
+// boundary; the container keeps its own PATH and toolchain. Entries
+// from earlier steps' $GITHUB_PATH (`pathPrepend`, highest precedence
+// first) are prepended to the container's own PATH by a tiny sh
+// trampoline, since host PATH must never cross the boundary.
 export function dockerArgsForStep(
   image: string,
   cwd: string,
@@ -44,11 +47,17 @@ export function dockerArgsForStep(
   forwardKeys: string[],
   command: string,
   shell = "sh",
+  pathPrepend: string[] = [],
 ): string[] {
   const args = ["run", "--rm", "-v", `${cwd}:/work`, "-w", "/work"];
   for (const k of forwardKeys) {
     const v = env[k];
     if (v !== undefined) args.push("-e", `${k}=${v}`);
+  }
+  if (pathPrepend.length > 0) {
+    const quoted = `'${pathPrepend.join(":").replace(/'/g, "'\\''")}'`;
+    args.push(image, "sh", "-c", `PATH=${quoted}:"$PATH"; export PATH; exec "$0" -c "$1"`, shell, command);
+    return args;
   }
   args.push(image, shell, "-c", command);
   return args;

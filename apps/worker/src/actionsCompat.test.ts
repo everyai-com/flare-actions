@@ -115,9 +115,15 @@ describe("mapGithubExpressions", () => {
   });
 
   it("scrubs unknown expressions and reports them", () => {
-    const res = mapGithubExpressions("echo ${{ needs.build.outputs.x }}");
+    const res = mapGithubExpressions("echo ${{ github.event.pull_request.title }}");
     expect(res.text).toBe("echo ");
-    expect(res.dropped).toEqual(["needs.build.outputs.x"]);
+    expect(res.dropped).toEqual(["github.event.pull_request.title"]);
+  });
+
+  it("maps step and needs outputs onto env reads, never pasted values", () => {
+    const res = mapGithubExpressions("echo ${{ steps.meta.outputs.tag }} ${{ needs.build-app.outputs.sha }} ${{ needs.build-app.result }}");
+    expect(res.text).toBe("echo ${FLARE_STEPS_META_TAG} ${FLARE_NEEDS_BUILD_APP_SHA} ${FLARE_NEEDS_BUILD_APP_RESULT}");
+    expect(res.dropped).toEqual([]);
   });
 });
 
@@ -137,6 +143,43 @@ describe("translateWorkflow", () => {
     expect(res.warnings.join("\n")).toContain("checkout");
   });
 
+  it("runs matrix include/exclude workflows instead of skipping them", () => {
+    const res = translateWorkflow(
+      `
+name: Matrix
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      NODE: \${{ matrix.node }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        node: [18, 20]
+        include:
+          - node: 22
+            experimental: true
+        exclude:
+          - node: 18
+    steps:
+      - run: echo node-\${{ matrix.node }} exp=\${{ matrix.experimental }} sha=\${{ github.sha }}
+`,
+      "matrix.yml",
+      { event: "push", branch: "main" },
+    );
+    expect(res.warnings.join("\n")).not.toContain("skipped");
+    expect(res.jobs?.map((j) => j.name)).toEqual([
+      "test (os=ubuntu-latest, node=20)",
+      "test (node=22, experimental=true)",
+    ]);
+    expect(res.jobs?.[1].matrix).toEqual({ node: "22", experimental: "true" });
+    expect(res.jobs?.[1].steps[0].run).toBe("echo node-22 exp=true sha=${FLARE_SHA}");
+    // keys a cell lacks resolve to "" like Actions, never a literal ${{ }}
+    expect(res.jobs?.[0].steps[0].run).toBe("echo node-20 exp= sha=${FLARE_SHA}");
+    expect(res.jobs?.[1].env).toEqual({ NODE: "22" });
+  });
+
   it("skips invalid YAML and workflows with no convertible jobs", () => {
     expect(translateWorkflow("jobs: {", "bad").jobs).toBeNull();
     const usesOnly = translateWorkflow(
@@ -149,7 +192,7 @@ describe("translateWorkflow", () => {
 
   it("drops steps whose run was only unsupported expressions", () => {
     const res = translateWorkflow(
-      "on: [push]\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n      - run: ${{ needs.a.outputs.b }}\n      - run: echo ok\n",
+      "on: [push]\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n      - run: ${{ github.event.head_commit.message }}\n      - run: echo ok\n",
       "expr",
     );
     expect(res.jobs).not.toBeNull();

@@ -4456,6 +4456,23 @@ paths:
                 type: string
         '400':
           $ref: '#/components/responses/BadRequest'
+  /llms.txt:
+    get:
+      tags: [admin]
+      operationId: llmsTxt
+      summary: Model-readable index for agents, with this deployment's URL filled in
+      description: |-
+        The repo's llms.txt with `https://<worker>` placeholders replaced
+        by this deployment's origin, so an agent pointed at a Flare URL
+        gets copy-paste commands that already target it.
+      security: []
+      responses:
+        '200':
+          description: llms.txt (plain text)
+          content:
+            text/plain:
+              schema:
+                type: string
   /openapi.yaml:
     get:
       tags: [admin]

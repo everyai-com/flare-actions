@@ -30,6 +30,40 @@ attempt, collision radar, ranked verdict with rationale, immutable ledger.
 demo](https://try-tournaments-flare-actions.everyai-com.workers.dev/dashboard)
 · [try it](docs/TOURNAMENTS.md).
 
+## For AI agents — start here
+
+You're a coding agent and your human wants their CI on Flare. Copy-paste
+path, cheapest first (full playbook: [`skills/flare-migrate`](skills/flare-migrate/SKILL.md)):
+
+```bash
+# 1. No account, no server: run the repo's existing .github/workflows here
+npx flare-actions@latest local
+npx flare-actions@latest import .github/workflows/ci.yml   # compatibility report
+
+# 2. With a Flare deployment (the human deploys once — see Quickstart)
+#    The human mints a one-time code in dashboard Settings → Pair a runner
+npx flare-actions@latest login --url https://<their-worker>.workers.dev --code XXXX-XXXX
+#    (saves FLARE_ACTIONS_URL + RUNNER_TOKEN to ./.env — keep it gitignored)
+npx flare-actions@latest connect --dry-run   # plan, change nothing
+npx flare-actions@latest connect             # dispatch HEAD, report the verdict
+
+# 3. Wire the verify loop into your MCP client (OAuth, or a Bearer token)
+claude mcp add --transport http flare https://<their-worker>.workers.dev/mcp
+```
+
+Then use `run_and_wait` → `get_run_digest` instead of polling. Skills
+for Claude Code / Codex / Cursor live in [`skills/`](skills/) (copy a
+folder into `.claude/skills/`): `flare-migrate` (move off GitHub
+Actions), `flare-setup` (wire a repo), `flare-verify` (the daily loop),
+`flare-forge` (many agents, one repo). Model-readable index:
+[`llms.txt`](llms.txt). Every CLI command takes `--json`; every API
+error carries a stable `code` + `hint` ([docs/ERRORS.md](docs/ERRORS.md)).
+
+**What needs a human:** deploying (a Cloudflare account — there is no
+public hosted Flare yet), the first dashboard sign-up, and clicking
+**Connect GitHub**. Ask before any GitHub-side change (webhooks, App
+installs, `runs-on:` edits); never delete `.github/workflows`.
+
 ## Start here (no experience needed)
 
 Flare checks your code for you: every time you save your work to
@@ -117,7 +151,8 @@ npm run cli -- logs <id>  # run logs
 ```
 
 Manual fallback (if you prefer each step by hand): `wrangler d1 create`,
-`wrangler queues create` × 4 (`-runs`, `-dlq`, `-seats`, `-seats-dlq`),
+`wrangler queues create` × 6 (`-runs`, `-dlq`, `-seats`, `-seats-dlq`,
+`-artifacts`, `-artifacts-dlq`),
 `wrangler r2 bucket create flare-actions-cache`,
 `wrangler d1 migrations apply --remote`, `wrangler secret put` for
 `RUNNER_TOKEN`, then `npm run deploy` — Connect GitHub in the
@@ -146,15 +181,15 @@ optional if you later want the native format. Want zero ops? A hosted
 control plane is on the [roadmap](docs/ROADMAP.md) — the OSS core stays
 free forever.
 
-## One command: `npx flare connect`
+## One command: `npx flare-actions@latest connect`
 
 From any repo, with `FLARE_ACTIONS_URL` pointed at your deployment:
 
 ```bash
-npx flare connect              # probe, explain the wiring, dispatch HEAD, report the verdict
-npx flare connect --dry-run    # print the plan, change nothing
-npx flare connect owner/repo --wire   # also create the repo webhook (needs GITHUB_TOKEN + FLARE_ADMIN_TOKEN)
-npx flare connect owner/repo --init --wire   # also scaffold flare.yml from the auto-detected stack
+npx flare-actions@latest connect              # probe, explain the wiring, dispatch HEAD, report the verdict
+npx flare-actions@latest connect --dry-run    # print the plan, change nothing
+npx flare-actions@latest connect owner/repo --wire   # also create the repo webhook (needs GITHUB_TOKEN + FLARE_ADMIN_TOKEN)
+npx flare-actions@latest connect owner/repo --init --wire   # also scaffold flare.yml from the auto-detected stack
 ```
 
 `connect` detects your stack from repo manifests (Node, Python, Go,
@@ -163,7 +198,7 @@ both run unchanged), probes the deployment (claimed? App connected?
 install URL), prints the exact wiring recipe for your situation, then
 dispatches HEAD with one bounded wait and a compact verdict. With
 `--init` it scaffolds a missing `flare.yml` first (a stack-matched
-starter, or converted from your workflows — same as `npx flare init`,
+starter, or converted from your workflows — same as `npx flare-actions@latest init`,
 safe to re-run). Exit 0 means connected and verified, 1 means the
 verification run failed, 2 means usage or environment error. If nothing
 picks the run up, it tells you how to start an executor instead of
@@ -175,7 +210,7 @@ the same loop):
 
 ```text
 Set up Flare Actions for this repo: probe $FLARE_ACTIONS_URL with
-`npx flare connect --dry-run`, wire whatever is missing (ask me before
+`npx flare-actions@latest connect --dry-run`, wire whatever is missing (ask me before
 any GitHub-side change), start an executor, and verify HEAD with a run
 digest. Report the digest; never claim CI passed without one.
 ```
@@ -643,7 +678,7 @@ See [Workers](https://developers.cloudflare.com/workers/platform/pricing/),
 
 Clone the repo and point any coding agent at it — [AGENTS.md](AGENTS.md)
 teaches it the stack, commands, architecture, and conventions. Scaffold a
-repo in one command with `npx flare init` (writes a stack-matched
+repo in one command with `npx flare-actions@latest init` (writes a stack-matched
 `flare.yml` + an AGENTS.md snippet teaching the verify loop), or install the
 [flare-verify skill](skills/flare-verify/SKILL.md) in Claude Code / Codex
 / Cursor — plus the [flare-setup skill](skills/flare-setup/SKILL.md) for

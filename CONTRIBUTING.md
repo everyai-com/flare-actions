@@ -88,7 +88,7 @@ npm publish --workspace apps/cli                        # depends on the SDK ver
 
 Bump `version` in both manifests together (the CLI pins the SDK version),
 and tag the release (`vX.Y.Z`). The CLI exposes a `flare` bin; after
-publishing, users can `npx flare runs` / `npx flare local` without
+publishing, users can `npx flare-actions@latest runs` / `npx flare-actions@latest local` without
 cloning.
 
 ## License

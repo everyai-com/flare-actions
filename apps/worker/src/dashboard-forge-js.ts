@@ -581,6 +581,7 @@ export const FORGE_JS = String.raw`
   }
   function fxRenderScreen() {
     var s = FX.route.screen;
+    if (!FX.demo && !FX.repo && s !== "bench") { fxRenderNoRepos(); return; }
     fxRenderNotice(s === "intents" && FX.route.id ? "intent" : s);
     if (s === "live") fxLoadLive(false);
     else if (s === "inbox") fxLoadInbox();
@@ -590,6 +591,15 @@ export const FORGE_JS = String.raw`
     else if (s === "agents") fxLoadAgents();
     else if (s === "bench") fxLoadBench();
     else if (s === "why") fxLoadWhyScreen();
+  }
+  function fxRenderNoRepos() {
+    var n = fxClear(document.getElementById("fxNotice"));
+    n.hidden = false;
+    n.setAttribute("data-state", "empty");
+    n.appendChild(h("strong", { text: "No repositories yet." }));
+    n.appendChild(h("span", { text: " Agent forge works on repos Flare hosts. Import one from the Repositories page (or try the guided demo with ?demo=1), then come back." }));
+    var go = h("button", { cls: "ghost", type: "button", text: "Open Repositories", on: { click: function () { location.hash = "#/repos"; } } });
+    n.appendChild(go);
   }
   function fxSetRepo(repo, silent) {
     if (!repo || repo === FX.repo) return;
@@ -621,8 +631,9 @@ export const FORGE_JS = String.raw`
     return fxFetch("/v1/repos?limit=50").then(function (b) {
       FX.repos = ((b && b.repos) || []).map(function (r) { return r.name; });
     }, function () { FX.repos = []; }).then(function () {
-      if (!FX.repos.length) FX.repos = (fxFixtures().repos || []).slice();
-      if (!FX.repo || FX.repos.indexOf(FX.repo) < 0) FX.repo = FX.repos[0];
+      // No real repos: stay empty (fxRenderScreen explains) rather than
+      // silently pointing live screens at fixture repo names.
+      if (!FX.repo || FX.repos.indexOf(FX.repo) < 0) FX.repo = FX.repos[0] || "";
       if (q.get("repo")) FX.repo = q.get("repo");
       fxFillRepos();
     });
@@ -820,7 +831,7 @@ export const FORGE_JS = String.raw`
     FX.mapRetry = 0;
     var cells = fxCells(s);
     if (!cells.length) {
-      map.appendChild(h("div", { style: "padding:16px" }, [fxEmpty("forge_no_active_intents", "No agents are working on " + (FX.repo || "this repo") + ".", "Connect an agent over MCP; its intents show up here as dots on the paths they declare.", "npx flare mcp-config --client claude-code")]));
+      map.appendChild(h("div", { style: "padding:16px" }, [fxEmpty("forge_no_active_intents", "No agents are working on " + (FX.repo || "this repo") + ".", "Connect an agent over MCP; its intents show up here as dots on the paths they declare.", "npx flare-actions@latest mcp-config --client claude-code")]));
       return;
     }
     cells.forEach(function (c) { c.area = Math.pow(c.files, 0.55) + 2.5 * c.intents.length; });
@@ -1126,6 +1137,7 @@ export const FORGE_JS = String.raw`
   function fxStartFeed() {
     fxStopFeed();
     if (document.getElementById("forgePane").hidden) return;
+    if (!FX.demo && !FX.repo) { fxSetBadge("live", "no repo"); return; }
     if (FX.demo || FX.fallback.live) {
       FX.simTimer = setInterval(fxSimTick, 700);
       fxSetBadge("live", "live · demo sim");
@@ -2189,7 +2201,7 @@ export const FORGE_JS = String.raw`
       var card = fxPanel("Connect an agent", [h("div", { cls: "fx-pad" }, [h("p", { style: "margin:0 0 10px;font-size:13px;color:var(--soft)", text: "Plain git and MCP: any agent works. OAuth clients can skip the header; the server supports OAuth 2.1 dynamic clients." }), tabs, pre, h("div", { cls: "fx-actions" }, [copyB])])]);
       box.appendChild(card);
       pick(0);
-      if (!list.length) { box.appendChild(fxEmpty("no_agents", "No agents connected.", "Add the MCP server above, then ask the agent to declare an intent.", "npx flare mcp-config --client claude-code")); return; }
+      if (!list.length) { box.appendChild(fxEmpty("no_agents", "No agents connected.", "Add the MCP server above, then ask the agent to declare an intent.", "npx flare-actions@latest mcp-config --client claude-code")); return; }
       var real = list.filter(function (a) { return a.client !== "sim"; });
       var rows = h("div", {});
       rows.appendChild(h("div", { cls: "fx-agent-row h", "aria-hidden": "true" }, [h("span"), h("span", { text: "Agent" }), h("span", { text: "Client" }), h("span", { text: "Current intent" }), h("span", { text: "Last tool call" }), h("span", { text: "Lease" }), h("span", { text: "Landed" })]));
@@ -2651,6 +2663,7 @@ export const FORGE_JS = String.raw`
       fxProbeBench();
       fxFillRepos();
       // nav badges without visiting the screens
+      if (!FX.demo && !FX.repo) return;
       fxLoad("/v1/forge/inbox?repo=" + encodeURIComponent(FX.repo), function () { return fxFxInbox(FX.repo); }, "inbox").then(function (d) { FX.inbox = fxNormInbox(d); fxUpdateBadges(); }, function () {});
       if (!FX.snap) fxLoad("/v1/forge/snapshot?repo=" + encodeURIComponent(FX.repo), function () { return fxFxSnapshot(FX.repo); }, "live").then(function (d) { if (!FX.snap) FX.snap = fxNormSnapshot(d); fxUpdateBadges(); if (FX.fallback.live && !FX.simTimer && !document.getElementById("forgePane").hidden) fxStartFeed(); }, function () {});
     });

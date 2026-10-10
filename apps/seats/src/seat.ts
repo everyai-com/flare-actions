@@ -51,7 +51,19 @@ import { annotateSpan } from "../../worker/src/trace";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
 import type { AiBinding } from "../../worker/src/triage";
 import { interpolateSecrets, maskSecrets } from "../../../packages/runner-sdk/src/secrets";
-import { buildNeedsEnv, formatOutputsLine, parseStepOutputs, resolveJobOutputs } from "../../../packages/runner-sdk/src/outputs";
+import { buildNeedsEnv, buildStepsEnv, formatOutputsLine, parseStepOutputs, resolveJobOutputs } from "../../../packages/runner-sdk/src/outputs";
+import {
+  applyEnvFile,
+  applyPathFile,
+  envFileLogLines,
+  newEnvFileState,
+  prependedPath,
+  stepFileEnv,
+  stepFilePaths,
+  takeSummary,
+  MAX_ENV_FILE_BYTES,
+  MAX_SUMMARY_BYTES,
+} from "../../../packages/runner-sdk/src/envfiles";
 import { resolveCheckUrl } from "../../../packages/runner-sdk/src/browser";
 import { matrixEnv, parseJobSpec, stepRuns, unsafeTarMember } from "../../../packages/runner-sdk/src/spec";
 import type { JobBrowserActionSpec } from "../../../packages/runner-sdk/src/spec";
@@ -1267,6 +1279,32 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     let jobFailed = false;
     // Collected $FLARE_OUTPUT values by step id (`step<N>` fallback).
     const stepOutputs: Record<string, Record<string, string>> = {};
+    // $GITHUB_ENV / $GITHUB_PATH / summary state, scoped to this job
+    // (same shared rules as BYO runners: runner-sdk envfiles.ts).
+    const envState = newEnvFileState();
+    // Container's own PATH, probed lazily the first time a step adds
+    // to $GITHUB_PATH (job env PATH wins). The step's PATH is set
+    // explicitly as prepends + this base.
+    let basePath: string | undefined = stepEnv["PATH"];
+    const containerPath = async (): Promise<string> => {
+      if (basePath !== undefined) return basePath;
+      const probe = await execBounded(["printenv", "PATH"], {}, 15000).catch(() => null);
+      const found = probe && !probe.timedOut && probe.exitCode === 0 ? decode(probe.stdout).trim() : "";
+      basePath = found || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+      return basePath;
+    };
+    const collectStepFiles = async (index: number, label: string): Promise<void> => {
+      const files = stepFilePaths("/tmp", index, false);
+      const read = async (path: string, max: number): Promise<string> => {
+        const bytes = await readContainerFile(path, max);
+        return bytes ? decode(bytes) : "";
+      };
+      const envText = await read(files.env, MAX_ENV_FILE_BYTES);
+      const envApplied = envText ? applyEnvFile(envState, envText) : null;
+      const pathAdded = applyPathFile(envState, await read(files.path, MAX_ENV_FILE_BYTES));
+      const summary = takeSummary(envState, await read(files.summary, MAX_SUMMARY_BYTES));
+      for (const line of envFileLogLines(label, envApplied, pathAdded, summary)) logParts.push(mask(line));
+    };
     const collectStepOutputs = async (index: number, label: string): Promise<void> => {
       // Killed steps still publish what they wrote before dying; a
       // missing file means the step published nothing.
@@ -1301,10 +1339,18 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       const startedAt = Date.now();
       const shell = step.shell ?? "sh";
       const stepTimeout = step.timeoutMinutes !== undefined ? step.timeoutMinutes * 60000 : timing.stepMs;
-      const outFile = `/tmp/flare-output-${i}`;
+      // Step files ($GITHUB_OUTPUT/ENV/PATH/STEP_SUMMARY + FLARE_
+      // aliases) start fresh: a snapshot-restored container may carry
+      // a previous job's files at these fixed paths.
+      const files = stepFilePaths("/tmp", i, false);
+      await execBounded(["rm", "-f", files.output, files.env, files.path, files.summary], {}, 15000).catch(() => null);
+      // Earlier steps' $GITHUB_ENV overlays the job env (later steps
+      // only); $GITHUB_PATH prepends to the container's PATH.
+      const env: Record<string, string> = { ...stepEnv, ...buildStepsEnv(stepOutputs), ...envState.env, ...stepFileEnv(files) };
+      if (envState.pathAdds.length > 0) env["PATH"] = prependedPath(envState, await containerPath());
       const r = await execBounded(
         ["sh", "-c", `${shell} -s > /tmp/step.log 2>&1; printf 'EXIT:%d' $?`],
-        { stdin: command, env: { ...stepEnv, FLARE_OUTPUT: outFile, GITHUB_OUTPUT: outFile }, cwd: WORKDIR },
+        { stdin: command, env, cwd: WORKDIR },
         stepTimeout,
       );
       const durationMs = Date.now() - startedAt;
@@ -1314,6 +1360,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         records.push({ command: mask(command), exitCode: 124, durationMs, output: limit });
         logParts.push(mask(`--- step ${i + 1}: ${command} ---\n${limit}\n(exit 124, ${durationMs}ms)`));
         await collectStepOutputs(i, label);
+        await collectStepFiles(i, label);
         anyFailed = true;
         if (step.continueOnError) {
           logParts.push(`--- step ${i + 1} failed but continue-on-error is set ---`);
@@ -1338,6 +1385,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       records.push({ command: mask(command), exitCode, durationMs, output });
       logParts.push(mask(`--- step ${i + 1}: ${command} ---\n${output}\n(exit ${exitCode}, ${durationMs}ms)`));
       await collectStepOutputs(i, label);
+      await collectStepFiles(i, label);
       if (exitCode !== 0) {
         anyFailed = true;
         if (step.continueOnError) {

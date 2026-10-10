@@ -360,7 +360,8 @@ class FakeContainer implements ContainerCtl {
       if (out !== undefined) return { exitCode: 0, stdout: bytes(out) };
       // Steps usually publish nothing: a missing outputs file reads as
       // absent (exit 1), not as the default test-XML blob.
-      if ((cmd[1] ?? "").startsWith("/tmp/flare-output-")) return { exitCode: 1, stdout: bytes("") };
+      // Same for the other step files ($GITHUB_ENV/PATH/STEP_SUMMARY).
+      if (/^\/tmp\/flare-(output|env|path|summary)-\d+$/.test(cmd[1] ?? "")) return { exitCode: 1, stdout: bytes("") };
       const hit = this.testXml.get(cmd[1] ?? "");
       return { exitCode: 0, stdout: bytes(hit ?? "blob-bytes-12") };
     }
@@ -375,6 +376,7 @@ class FakeContainer implements ContainerCtl {
     }
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("rm -rf")) return { exitCode: 0 };
     if (cmd[0] === "rm") return { exitCode: 0 };
+    if (cmd[0] === "printenv" && cmd[1] === "PATH") return { exitCode: 0, stdout: bytes("/usr/bin:/bin\n") };
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("test -f")) return { exitCode: 0 };
     if (cmd[0] === "test" && cmd[1] === "-x") return { exitCode: this.shimPresent ? 0 : 1 };
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("grep -qa FLARE_EGRESS_ALLOW")) {
@@ -1927,6 +1929,45 @@ describe("runSeatJob", () => {
     expect(db.jobs.get("j1")?.log as string).toContain("[outputs] missing: missing (build.nope not emitted)");
     expect(JSON.parse((db.jobs.get("j1")?.result ?? "{}") as string).outputs).toEqual({ image: "v1.2.3" });
     expect(container.calls.some((c) => c.cmd[0] === "cat" && c.cmd[1] === "/tmp/flare-output-0")).toBe(true);
+  });
+
+  it("applies $GITHUB_ENV / $GITHUB_PATH to later steps only and logs the step summary", async () => {
+    const db = new MemDb();
+    seed(
+      db,
+      DEF({
+        steps: [{ run: "echo setup", id: "setup" }, { run: "echo mid" }, { run: "echo last" }],
+      }),
+    );
+    const container = new FakeContainer();
+    container.outputFiles.set(
+      "/tmp/flare-env-0",
+      "FOO=bar\nNOTES<<EOF\nl1\nl2\nEOF\nNODE_OPTIONS=--inspect\nLD_PRELOAD=/evil.so\nFLARE_OUTPUT=/x\n",
+    );
+    container.outputFiles.set("/tmp/flare-path-0", "/opt/a\n/opt/b\n");
+    container.outputFiles.set("/tmp/flare-env-1", "FOO=baz\n");
+    container.outputFiles.set("/tmp/flare-summary-1", "## Results\nall green\n");
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("completed");
+    const stepCalls = container.calls.filter((c) => c.cmd[2]?.startsWith("sh -s >"));
+    expect(stepCalls).toHaveLength(3);
+    const envOf = (n: number): Record<string, string> => (stepCalls[n]?.opts?.env ?? {}) as Record<string, string>;
+    expect(envOf(0).FOO).toBeUndefined();
+    expect(envOf(0).GITHUB_ENV).toBe("/tmp/flare-env-0");
+    expect(envOf(0).FLARE_STEP_SUMMARY).toBe("/tmp/flare-summary-0");
+    expect(envOf(0).PATH).toBeUndefined();
+    expect(envOf(1)).toMatchObject({ FOO: "bar", NOTES: "l1\nl2", PATH: "/opt/b:/opt/a:/usr/bin:/bin", GITHUB_PATH: "/tmp/flare-path-1" });
+    expect(envOf(1).NODE_OPTIONS).toBeUndefined();
+    expect(envOf(1).LD_PRELOAD).toBeUndefined();
+    expect(envOf(1).FLARE_OUTPUT).toBe("/tmp/flare-output-1");
+    expect(envOf(2).FOO).toBe("baz");
+    // Fresh files per step: removed before each step runs.
+    expect(container.calls.some((c) => c.cmd[0] === "rm" && c.cmd.includes("/tmp/flare-env-2"))).toBe(true);
+    const log = db.jobs.get("j1")?.log as string;
+    expect(log).toContain("[env] step setup: set FOO, NOTES");
+    expect(log).toContain("ignored (reserved or invalid names): NODE_OPTIONS, LD_PRELOAD, FLARE_OUTPUT");
+    expect(log).toContain("[path] step setup: prepended /opt/a, /opt/b");
+    expect(log).toContain("── step summary ── (step2)\n## Results\nall green");
   });
 
   it("restores through restore-keys and names the matching prefix", async () => {

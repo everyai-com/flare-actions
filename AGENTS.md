@@ -8,7 +8,8 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `npm install` / `npm ci` — install (workspaces: `apps/*`, `packages/*`)
 - `npm run setup [-- --dry-run]` — provision D1 + queues + R2, migrate, set
   secrets, deploy, write gitignored `.env`, and (docker available)
-  provision the managed seats worker. Fully non-interactive;
+  provision the managed seats worker. Non-interactive after
+  `wrangler login` (or with `CLOUDFLARE_API_TOKEN`);
   idempotent, safe to re-run.
 - `npm run dev` — local Worker (`wrangler dev`, simulated D1 + queues)
 - `npm run types` — regenerate `apps/worker/src/worker-configuration.d.ts`.
@@ -34,6 +35,10 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `npm run runner` — external pull-runner (reads `.env` automatically)
 - `npm run cli -- <runs|logs|explain|local|run|watch|cancel|dispatch|rerun|flaky|bottlenecks|quarantine|init|connect|tests|egress|queue|cache|usage|github-jobs|search|artifacts|badge|import|mcp-config|devbox|mcp-serve|credits|signup|login|races|repos|claim|verdict>`
   — CLI (reads `.env` automatically)
+- `npm run cli:build` — bundle the CLI (esbuild, `apps/cli/scripts/build.mjs`)
+  into `apps/cli/dist/flare.mjs`, the only thing the `flare-actions` npm
+  package ships (Node won't strip types under node_modules). `prepack`
+  runs it; dev keeps running the .ts sources. Bins: `flare`, `flare-actions`.
 
 ## Architecture
 
@@ -227,6 +232,14 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   write-confirm gate (D1 `mcp_write_confirm`). Principals thread
   `repos` + `isAdmin` into tools (artifact tools repo-scope like REST;
   schedule tools need an admin API token — OAuth never carries admin).
+- Step files (`runner-sdk/envfiles.ts`, both executors): per-step
+  `$GITHUB_OUTPUT|ENV|PATH|STEP_SUMMARY`; env/PATH reach later steps
+  only (denylist: `NODE_OPTIONS`, `PATH`, `LD_*`, `DYLD_*`, `FLARE_*`,
+  `GITHUB_*`, `RUNNER_*`), summaries append to the log, earlier step
+  outputs ride env as `FLARE_STEPS_<ID>_<KEY>` (`buildStepsEnv`) —
+  actionsCompat maps `${{ steps|needs.*.outputs.* }}` onto those reads.
+  Matrix `include`/`exclude` live in `runner-sdk/matrix.ts` (shared by
+  pipeline.ts + the importer); `runs-on` resolves per cell (`cellLabels`).
 - Step env always includes `CI=true` (GitHub parity: tool retries,
   non-interactive modes); runner process env or job `env` may override.
 - Run notifications (`notify.ts`): on the transition into terminal rollup,

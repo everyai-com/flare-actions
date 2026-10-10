@@ -675,7 +675,7 @@ columns, opened with `?`).
 
 | Screen | Empty copy | Command block | Machine code |
 |---|---|---|---|
-| Live | "No agents are working on acme/shop." | `npx flare mcp-config --client claude-code` | `forge_no_active_intents` |
+| Live | "No agents are working on acme/shop." | `npx flare-actions@latest mcp-config --client claude-code` | `forge_no_active_intents` |
 | Inbox | "Nothing needs you. N auto-landed under `risk ≤ 30`." | none (good news) | `inbox_clear` |
 | Intents | "No goals yet. Write one and the planner proposes intents." | `[New goal c]` | `no_goals` |
 | Trains | "No trains yet. The first ready intent starts one." | `flare intents ready <id>` | `no_trains` |

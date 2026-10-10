@@ -14,6 +14,8 @@ jobs:
     strategy:
       matrix:
         node: [18, 20]             # cartesian fan-out; ${{ matrix.node }} in steps
+        exclude: [{ node: 18 }]    # optional, GitHub semantics: drop matching cells first
+        include: [{ node: 22, experimental: "true" }]  # extend matching cells or add new ones
     concurrency:
       group: main                  # serialize; cancel-in-progress: true cancels old
     container: node:20              # run every step inside this image (needs docker)
@@ -128,9 +130,15 @@ jobs:
   first). With `cancel-in-progress: true`, a new run cancels
   queued/running/blocked same-group jobs from other runs.
 - **Interpolation**: `${{ matrix.key }}` and `${{ env.KEY }}` expand in
-  `run:` lines at dispatch; `${{ secrets.NAME }}` expands executor-side
+  `run:` lines at dispatch (and `runs-on: ${{ matrix.os }}` resolves per
+  cell); `${{ secrets.NAME }}` expands executor-side
   from the repo's secrets (missing names render empty). Anything else
   passes through untouched so shell syntax never breaks.
+- **Step files**: every step gets `$GITHUB_OUTPUT`, `$GITHUB_ENV`,
+  `$GITHUB_PATH`, and `$GITHUB_STEP_SUMMARY` (plus `FLARE_` aliases).
+  Env and PATH additions reach later steps of the same job; earlier
+  steps' outputs are readable as `$FLARE_STEPS_<ID>_<KEY>`; summaries
+  land in the job log.
 - **Secrets** (`${{ secrets.NAME }}` in steps, job `env`, and service
   `env`) are AES-GCM encrypted at rest, delivered only inside
   authenticated job claims, and masked (`***`) in every log and result.
