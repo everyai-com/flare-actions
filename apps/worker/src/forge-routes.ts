@@ -42,6 +42,7 @@ import {
   type ForgeServiceDeps,
 } from "./forge-service";
 import type { FeedPort, ForgeCoordinatorPort, TrainPort, WhyPort } from "./forge-ports";
+import type { GoalPlanner } from "./forge-planner";
 
 export interface ForgeIdentity {
   scope: string; // admin | runner | readonly
@@ -55,6 +56,7 @@ export interface ForgeAdapters {
   why?: WhyPort;
   trains?: TrainPort;
   feed?: FeedPort | null;
+  planner?: GoalPlanner | null;
 }
 
 export function forgeDepsFromEnv(env: WorkerEnv, adapters: ForgeAdapters = {}): ForgeServiceDeps {
@@ -119,7 +121,11 @@ export async function handleForgeRequest(
     respond(await op(deps, p, { ...(await bodyArgs(request)), ...extra }));
 
   // --- goals ---------------------------------------------------------------
-  if (method === "POST" && url.pathname === "/v1/forge/goals") return write(planGoal);
+  if (method === "POST" && url.pathname === "/v1/forge/goals") {
+    // `?plan=1` (or body `plan: true`) asks for the AI planner's split.
+    const plan = url.searchParams.get("plan");
+    return write(planGoal, plan !== null ? { plan } : {});
+  }
   if (method === "GET" && url.pathname === "/v1/forge/goals") return read(listGoalsOp);
   const goalMatch = /^\/v1\/forge\/goals\/([^/]+)$/.exec(url.pathname);
   if (goalMatch && method === "GET") return read(getGoalOp, { goalId: goalMatch[1] });

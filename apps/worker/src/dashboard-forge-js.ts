@@ -2639,7 +2639,7 @@ export const FORGE_JS = String.raw`
     authPane.hidden = true; invitePane.hidden = true; resetPane.hidden = true; resetConfirmPane.hidden = true; magicConfirmPane.hidden = true;
     appPane.hidden = false; logoutBtn.hidden = true; document.body.classList.add("app");
     userLabel.textContent = "Demo · signed out ";
-    ["tabTournaments", "tabRepos", "tabMerge", "tabRuns", "tabSettings"].forEach(function (id) { var b = document.getElementById(id); if (b) b.hidden = true; });
+    ["tabHome", "tabTournaments", "tabRepos", "tabMerge", "tabRuns", "tabSettings"].forEach(function (id) { var b = document.getElementById(id); if (b) b.hidden = true; });
     var groups = document.querySelectorAll(".side-group");
     for (var i = 1; i < groups.length; i++) groups[i].hidden = true;
     fxStartForge().then(function () { if (!applyHashRoute()) fxNav("#/live"); });

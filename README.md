@@ -30,6 +30,26 @@ attempt, collision radar, ranked verdict with rationale, immutable ledger.
 demo](https://try-tournaments-flare-actions.everyai-com.workers.dev/dashboard)
 · [try it](docs/TOURNAMENTS.md).
 
+## Start here (no experience needed)
+
+Flare checks your code for you: every time you save your work to
+GitHub, it runs your project's tests and tells you — in plain words —
+if anything broke.
+
+1. **Get your own Flare.** Press **Deploy to Cloudflare** above and
+   follow the prompts (a free Cloudflare account is enough).
+2. **Open it and make your account.** Go to
+   `https://<your-flare>.workers.dev/dashboard`. The first person to
+   sign up becomes the owner.
+3. **Follow the Home page.** It shows a short checklist with one big
+   button per step: connect GitHub → pick your projects → run your
+   tests. Each step ticks itself off when it's done.
+
+If your tests are waiting for a computer, Home offers **Use my
+computer**: copy one line into the Terminal and that computer starts
+running your tests. When something fails, **See what broke** shows the
+failing step and a suggested fix.
+
 ## Why
 
 - Faster: warm edge dispatch, no 2–3 min hosted queue waits.

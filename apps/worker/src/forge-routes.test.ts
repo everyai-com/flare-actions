@@ -5,6 +5,7 @@ import { forgeServiceDeps, type ForgeServiceDeps } from "./forge-service";
 import { createTrain, openConflict, transitionIntent } from "./intents";
 import { fakeArtifacts, forgeSqliteDb, sha, type FakeArtifacts } from "./forge.testkit";
 import type { FeedPort } from "./forge-ports";
+import type { GoalPlanner } from "./forge-planner";
 
 const RUNNER: ForgeIdentity = { scope: "runner", actor: "token:runner1", repos: [] };
 const ADMIN: ForgeIdentity = { scope: "admin", actor: "email:pat@example.com", repos: [] };
@@ -17,7 +18,7 @@ interface Harness {
   call(method: string, path: string, body?: unknown, ident?: ForgeIdentity | null, headers?: Record<string, string>): Promise<{ status: number; body: Record<string, unknown> }>;
 }
 
-function harness(opts: { artifacts?: boolean; feed?: FeedPort } = {}): Harness {
+function harness(opts: { artifacts?: boolean; feed?: FeedPort; planner?: GoalPlanner } = {}): Harness {
   const db = forgeSqliteDb();
   const fake = fakeArtifacts("demo");
   const deps = forgeServiceDeps({
@@ -26,6 +27,7 @@ function harness(opts: { artifacts?: boolean; feed?: FeedPort } = {}): Harness {
     namespace: "ns",
     accountId: "a".repeat(32),
     feed: opts.feed ?? null,
+    planner: opts.planner ?? null,
   });
   return {
     db,
@@ -127,6 +129,52 @@ describe("forge routes: goals", () => {
     const one = await h.call("GET", `/v1/forge/goals/${String(goal.id)}`);
     expect((one.body.intents as unknown[]).length).toBe(1);
     expect((await h.call("GET", "/v1/forge/goals/missing")).status).toBe(404);
+  });
+
+  it("uses the AI planner's split with ?plan=1 and orders overlaps via after", async () => {
+    const seen: string[] = [];
+    const planner: GoalPlanner = async ({ goal }) => {
+      seen.push(goal);
+      return {
+        model: "@cf/test/model",
+        dropped: 1,
+        intents: [
+          { title: "Add limiter module", footprint: ["src/api/limit.ts"], reasoning: "new module", accept: "npm test", after: [] },
+          { title: "Use limiter in checkout", footprint: ["src/api/checkout.ts"], reasoning: "wire it", accept: "npm test -- checkout", after: [0] },
+        ],
+      };
+    };
+    const h = harness({ planner });
+    const g = await h.call("POST", "/v1/forge/goals?plan=1", { repo: "demo", text: "Rate limit checkout" });
+    expect(g.status).toBe(201);
+    expect(seen).toEqual(["Rate limit checkout"]);
+    expect(rec(g.body.planner)).toEqual({ used: true, model: "@cf/test/model", dropped: 1 });
+    const proposals = g.body.proposals as Array<{ title: string; after: number[] }>;
+    expect(proposals.map((x) => x.title)).toEqual(["Add limiter module", "Use limiter in checkout"]);
+    const s = steps(g.body);
+    expect(s[1].args.accept).toBe("npm test -- checkout");
+    expect(s[1].why).toContain("after proposal(s) 0");
+  });
+
+  it("keeps the heuristic scaffold without plan, without a planner, or on planner failure", async () => {
+    let calls = 0;
+    const throwing: GoalPlanner = async () => {
+      calls += 1;
+      throw new Error("model down");
+    };
+    const h = harness({ planner: throwing });
+    const plain = await h.call("POST", "/v1/forge/goals", { repo: "demo", text: "Touch src/api/checkout.ts" });
+    expect(plain.status).toBe(201);
+    expect(plain.body.planner).toBeUndefined();
+    expect(calls).toBe(0);
+    const failed = await h.call("POST", "/v1/forge/goals", { repo: "demo", text: "Touch src/api/checkout.ts", plan: true });
+    expect(failed.status).toBe(201);
+    expect(calls).toBe(1);
+    expect(rec(failed.body.planner).used).toBe(false);
+    expect((failed.body.proposals as Array<{ footprint: string[] }>)[0].footprint).toEqual(["src/api/checkout.ts"]);
+    const none = await harness().call("POST", "/v1/forge/goals?plan=1", { repo: "demo", text: "Touch src/api/checkout.ts" });
+    expect(none.status).toBe(201);
+    expect(rec(none.body.planner).used).toBe(false);
   });
 });
 

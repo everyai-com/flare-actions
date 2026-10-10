@@ -299,6 +299,9 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import type { OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
 import { buildMcpServer, mcpDiscovery } from "./mcp";
 import { forgeDepsFromEnv, handleForgeRequest } from "./forge-routes";
+import { forgeAdaptersFromEnv } from "./forge-adapters";
+import { listAppRepos, loadSetupFacts, setupSteps } from "./setup";
+import { runnerScript } from "./runner-script";
 import {
   describeScope,
   handleAuthorizeGet,
@@ -513,7 +516,7 @@ async function serveMcpRequest(
         return { timedOut: out ? out.timedOut : true };
       },
       digestRun: async (runId) => buildRunDigest(env.DB, runId),
-      forge: forgeDepsFromEnv(env),
+      forge: forgeDepsFromEnv(env, forgeAdaptersFromEnv(env, ctx ? { waitUntil: (p) => ctx.waitUntil(p) } : {})),
       actor: props.actor,
     }),
   );
@@ -684,12 +687,20 @@ const ZERO_SHA = "0000000000000000000000000000000000000000";
 // is acknowledged without a run — GitHub treats non-2xx as failed delivery.
 const RUN_EVENTS = ["push", "pull_request"];
 
+// pull_request activity types that run CI (GitHub Actions' defaults).
+// closed/labeled/edited/assigned/review_requested… would re-run an
+// unchanged head — merging a PR alone used to fan out a full run.
+const PR_RUN_ACTIONS = ["opened", "synchronize", "reopened"];
+
 // Pure gate for webhook fan-out: returns a skip reason, or null to proceed.
 // Branch/tag deletions carry deleted:true with a zero SHA; fanning those
 // out would create runs that can never check out (and mail failure noise).
 export function webhookSkipReason(event: string, payload: GitHubWebhookPayload): string | null {
   if (!RUN_EVENTS.includes(event)) return `unsupported event: ${event}`;
   if (event === "push" && payload.deleted === true) return "ref deleted";
+  if (event === "pull_request" && payload.action !== undefined && !PR_RUN_ACTIONS.includes(payload.action)) {
+    return `pull_request action: ${payload.action}`;
+  }
   const sha = payload.after ?? payload.pull_request?.head?.sha;
   if (typeof sha === "string" && sha === ZERO_SHA) return "zero sha (deleted ref)";
   return null;
@@ -2486,6 +2497,16 @@ export default {
       }
       // The API serves its own contract (generated module, CI-synced)
       // plus an interactive Redoc reference over it.
+      // One-line runner setup for the dashboard's "Use my computer":
+      // curl -fsSL <origin>/runner.sh | sh -s <PAIR-CODE>. Public — the
+      // single-use pairing code (an argument) is the only secret.
+      if (request.method === "GET" && url.pathname === "/runner.sh") {
+        const script = runnerScript(url.origin);
+        if (!script) return json({ error: "unsupported origin" }, 400);
+        return new Response(script, {
+          headers: { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "public, max-age=300" },
+        });
+      }
       if (request.method === "GET" && url.pathname === "/openapi.yaml") {
         return new Response(OPENAPI_YAML, {
           headers: { "Content-Type": "text/yaml; charset=utf-8", "Cache-Control": "public, max-age=3600" },
@@ -2818,7 +2839,12 @@ export default {
         return json(tick);
       }
       // Flare Forge (intent-native git): every /v1/forge/* route.
-      const forgeResponse = await handleForgeRequest(request, url, forgeDepsFromEnv(env), () => authIdentity(request, env));
+      const forgeResponse = await handleForgeRequest(
+        request,
+        url,
+        forgeDepsFromEnv(env, forgeAdaptersFromEnv(env, { waitUntil: (p) => ctx.waitUntil(p) })),
+        () => authIdentity(request, env),
+      );
       if (forgeResponse) return forgeResponse;
       // Forge repository browsing over the ARTIFACTS namespace.
       // Token-scoped per repo like tournament sources (`namespace/name`).
@@ -3876,6 +3902,31 @@ export default {
         await createAuthServer(url.origin).getOAuthApi(oauthEnv(env)).revokeGrant(grantId, userId);
         await audit(env.DB, ident.actor, "oauth.revoke", `${userId} ${grantId}`);
         return json({ ok: true });
+      }
+      // Guided setup for the dashboard Home screen: done/next steps, the
+      // repos the App can see (a pick-list for "Run my tests"), and
+      // whether queued jobs are waiting on a machine. Repo-scoped.
+      if (request.method === "GET" && url.pathname === "/v1/setup") {
+        const ident = await requireScope(request, env, "read");
+        if (!ident) return json({ error: "unauthorized" }, 401);
+        const creds = await getAppCreds(env);
+        const facts = await loadSetupFacts(env.DB, {
+          githubConnected: creds !== null,
+          allowedRepos: ident.repos,
+          appRepos: () => (creds ? listAppRepos(creds) : Promise.resolve(null)),
+        });
+        const slug = creds ? await getSetting(env.DB, SETTING_KEYS.githubAppSlug) : null;
+        return json({
+          ...setupSteps(facts),
+          githubConnected: facts.githubConnected,
+          installUrl: slug ? installUrl(slug) : null,
+          repos: facts.repos,
+          runs: facts.runs,
+          passed: facts.passed,
+          latest: facts.latest,
+          executorSeen: facts.executorSeen,
+          admin: ident.scope === "admin",
+        });
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/status") {
         const ident = await authIdentity(request, env);

@@ -40,6 +40,16 @@ describe("webhookSkipReason", () => {
 
   it("skips other non-CI events", () => {
     expect(webhookSkipReason("installation", {})).toBe("unsupported event: installation");
+  });
+
+  it("runs only opened/synchronize/reopened pull_request actions", () => {
+    const pr = { pull_request: { head: { sha: SHA, ref: "feat" } } };
+    for (const action of ["opened", "synchronize", "reopened"]) {
+      expect(webhookSkipReason("pull_request", { ...pr, action })).toBeNull();
+    }
+    for (const action of ["closed", "labeled", "edited", "review_requested"]) {
+      expect(webhookSkipReason("pull_request", { ...pr, action })).toBe(`pull_request action: ${action}`);
+    }
     expect(webhookSkipReason("unknown", {})).toBe("unsupported event: unknown");
   });
 });

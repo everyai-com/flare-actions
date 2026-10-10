@@ -35,7 +35,7 @@ export interface ForgeCliDeps {
 
 export const FORGE_USAGE = [
   "usage: cli forge <verb> ... (every verb accepts --json and --agent <name>; env FLARE_AGENT sets a default)",
-  "  forge goal <repo> <text...>                          record a goal; prints proposed intents",
+  "  forge goal <repo> <text...> [--plan]                 record a goal; prints proposed intents (--plan: AI split)",
   "  forge declare <repo> <title...> --path P [--path P] [--reason R] [--accept CMD] [--goal ID]",
   "                                                       declare an intent before editing (overlaps come back)",
   "  forge claim <intentId> [--clone [dir]] [--ttl S]     claim: own fork + 1 h fork token (--clone clones it)",
@@ -172,13 +172,19 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       return verb ? 0 : 2;
     }
     if (verb === "goal") {
-      const f = parseFlags(args, { values: ["agent"] });
+      const f = parseFlags(args, { values: ["agent"], bools: ["plan"] });
       const [repo, ...text] = f.pos;
-      if (!repo || text.length === 0) throw new UsageError("forge goal <repo> <text...>");
-      const out = await d.forge().planGoal(repo, text.join(" "));
+      if (!repo || text.length === 0) throw new UsageError("forge goal <repo> <text...> [--plan]");
+      const out = await d.forge().planGoal(repo, text.join(" "), { plan: f.bools.has("plan") });
       emit(d, "goal", out, () => {
         d.out(`goal ${out.goal.id} (${out.goal.state})`);
-        for (const p of out.proposals) d.out(`  proposal: ${String(p.title)}  [${(p.footprint as string[]).join(", ")}]`);
+        if (out.planner) {
+          d.out(out.planner.used ? `  planned by ${String(out.planner.model)}` : `  heuristic scaffold: ${String(out.planner.reason)}`);
+        }
+        for (const [i, p] of out.proposals.entries()) {
+          const after = Array.isArray(p.after) && p.after.length ? `  (after ${p.after.join(", ")})` : "";
+          d.out(`  proposal ${i}: ${String(p.title)}  [${(p.footprint as string[]).join(", ")}]${after}`);
+        }
         if (out.nearby.length) d.out(`  ${out.nearby.length} live intent(s) already near these paths`);
         printSteps(d, out.nextSteps);
       });

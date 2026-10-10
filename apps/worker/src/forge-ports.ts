@@ -21,6 +21,7 @@ import {
   pathsOverlap,
   protectedMatches,
   routeLanding,
+  type Conflict,
   type ForgePolicy,
   type Footprint,
   type Intent,
@@ -129,6 +130,21 @@ export interface ForgeSnapshot {
   dots: SnapshotDot[];
   track: { current: SnapshotTrain | null; recent: SnapshotTrain[] };
   head: string;
+  // Overlap edges between live intents (pairs = the overlapping
+  // footprint entries, a's then b's). The Coordinator keeps these hot;
+  // the D1 fallback derives them from footprints.
+  edges: SnapshotEdge[];
+  // Coordinator op version at snapshot time (feed deltas with ver <= it
+  // are stale); null on the D1 fallback.
+  ver: number | null;
+}
+
+export interface SnapshotEdge {
+  id: string;
+  a: string;
+  b: string;
+  pairs: Array<{ a: string; b: string }>;
+  origin: "declared" | "actual";
 }
 
 export interface WhyLink {
@@ -145,8 +161,16 @@ export interface WhyAnswer {
   // true when the chain is anchored on the exact commit that last
   // touched the line (blame + notes); false = footprint best effort.
   exact: boolean;
-  source: "notes" | "footprint";
+  // Where the provenance came from: a why note (`notes` ref or the
+  // `flare/why` branch), blame alone (`null`: exact commit, no note),
+  // or the D1 footprint fallback.
+  source: "notes" | "branch" | "footprint" | null;
   chain: WhyLink[];
+  // Exact (blame) answers only: why.ts's narrative, origin and the hops
+  // that degraded.
+  narrative?: string;
+  origin?: "forge" | "human" | "unknown";
+  warnings?: string[];
 }
 
 export interface ReadyOutcome {
@@ -155,6 +179,25 @@ export interface ReadyOutcome {
   trainId: string | null;
   // Ready intents ahead of this one in the repo (best effort).
   position: number | null;
+  note: string;
+  // Held out of trains until a human approves the landing (route human).
+  held?: boolean;
+}
+
+// Conflict replay through the train stream (train.ts). `intent` is the
+// dropped intent (conflicts.intent_a) the resolver rebuilds on trunk.
+export interface ConflictClaimOutcome {
+  conflict: Conflict;
+  intent: Intent;
+  // Fresh trunk fork `r-<conflict>-<n>` the resolver pushes the replay
+  // to (null = it could not be created; fall back to the intent fork).
+  replayFork: string | null;
+}
+
+export interface ConflictResolveOutcome {
+  conflict: Conflict;
+  intent: Intent | null;
+  enqueue: { route: LandingRoute; held: boolean; risk: number; trainIds: string[] } | null;
   note: string;
 }
 
@@ -172,6 +215,9 @@ export interface ForgeCoordinatorPort {
   whatsHappening(repo: string, opts: { paths?: string[]; limit?: number; excludeIntent?: string }): Promise<LiveIntent[]>;
   snapshot(repo: string, opts: { policy: ForgePolicy; head: string; trains: Train[] }): Promise<ForgeSnapshot>;
   release(repo: string, intentId: string): Promise<void>;
+  // Re-read one intent from D1 into the hot index after another module
+  // moved its state (claim, ready, approve-plan, conflicts). D1 = no-op.
+  sync?(repo: string, intentId: string): Promise<void>;
 }
 
 // Stream C: provenance (why.ts): line -> commit -> notes -> intent.
@@ -186,6 +232,18 @@ export interface TrainPort {
   markReady(repo: string, intent: Intent, policy: ForgePolicy): Promise<ReadyOutcome>;
   listTrains(repo: string, opts: { state?: TrainState; limit?: number }): Promise<Train[]>;
   getTrain(id: string): Promise<Train | null>;
+  // Real train stream only (absent on the D1 fallback):
+  // lane intents, CI run, bisect subtree, ledger.
+  getTrainDetail?(id: string): Promise<Record<string, unknown> | null>;
+  // Human approval for a route=human intent (it may ride trains now).
+  approveLanding?(intentId: string, approvedBy: string): Promise<boolean>;
+  claimConflict?(conflictId: string, agent: string): Promise<ConflictClaimOutcome | { error: string; message: string }>;
+  resolveConflict?(
+    conflictId: string,
+    agent: string,
+    sha: string,
+    opts: { forkRepo?: string },
+  ): Promise<ConflictResolveOutcome | { error: string; message: string }>;
 }
 
 // Stream A: the hibernating WebSocket feed. Unset = 501 + poll hint.
@@ -301,6 +359,8 @@ export function buildSnapshot(input: {
   overlapsCaught: number;
   source: ForgeSnapshot["source"];
   now?: string;
+  edges?: SnapshotEdge[];
+  ver?: number | null;
 }): ForgeSnapshot {
   const byCell = new Map<string, Intent[]>();
   const dots: SnapshotDot[] = [];
@@ -359,6 +419,7 @@ export function buildSnapshot(input: {
     cells = keep;
   }
   dots.sort((a, b) => a.intent.localeCompare(b.intent));
+  const edges = input.edges ?? derivedEdges(input.intents);
   const trains = [...input.trains].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
   const current = trains.find((t) => !TRAIN_TERMINAL.includes(t.state)) ?? null;
   const recent = trains.filter((t) => TRAIN_TERMINAL.includes(t.state)).slice(0, 5);
@@ -382,7 +443,29 @@ export function buildSnapshot(input: {
     dots,
     track: { current: current ? snapTrain(current) : null, recent: recent.map(snapTrain) },
     head: input.head,
+    edges,
+    ver: input.ver ?? null,
   };
+}
+
+const MAX_EDGES = 500;
+
+// Pairwise overlap edges over held footprints (D1 fallback; ≤ 200
+// intents by construction, capped at MAX_EDGES).
+export function derivedEdges(intents: readonly Intent[]): SnapshotEdge[] {
+  const out: SnapshotEdge[] = [];
+  const sorted = [...intents].sort((x, y) => x.id.localeCompare(y.id));
+  for (let i = 0; i < sorted.length && out.length < MAX_EDGES; i++) {
+    for (let j = i + 1; j < sorted.length && out.length < MAX_EDGES; j++) {
+      const a = sorted[i];
+      const b = sorted[j];
+      const pairs = overlapPairs(heldFootprint(a), heldFootprint(b));
+      if (!pairs.length) continue;
+      const viaActual = pairs.some(([pa, pb]) => !a.footprint.paths.includes(pa) || !b.footprint.paths.includes(pb));
+      out.push({ id: `${a.id}~${b.id}`, a: a.id, b: b.id, pairs: pairs.slice(0, 20).map(([pa, pb]) => ({ a: pa, b: pb })), origin: viaActual ? "actual" : "declared" });
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

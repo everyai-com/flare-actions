@@ -45,6 +45,20 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("/v1/cache/stats");
   });
 
+  it("lands on a guided Home with plain-language steps and status", () => {
+    expect(DASHBOARD_HTML).toContain('id="tabHome"');
+    expect(DASHBOARD_HTML.indexOf('id="tabHome"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabLive"'));
+    expect(DASHBOARD_HTML).toContain('id="homePane"');
+    expect(DASHBOARD_HTML).toContain('api("/v1/setup")');
+    expect(DASHBOARD_HTML).toContain("Your tests are waiting for a computer");
+    expect(DASHBOARD_HTML).toContain("All good! Your latest tests passed.");
+    expect(DASHBOARD_HTML).toContain("See what broke");
+    expect(DASHBOARD_HTML).toContain("Run my tests");
+    // First run is account-only and says what comes next.
+    expect(DASHBOARD_HTML).toContain("Step 1 of 2: make your account");
+    expect(DASHBOARD_HTML).toContain('getElementById("magicForm").hidden = !st.claimed');
+  });
+
   it("renders the first-run onboarding checklist", () => {
     expect(DASHBOARD_HTML).toContain("three steps to the first one");
     expect(DASHBOARD_HTML).toContain("setupStep");
@@ -80,7 +94,7 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("pairCmd");
     expect(DASHBOARD_HTML).toContain("copyPairBtn");
     expect(DASHBOARD_HTML).toContain("/v1/admin/pair-codes");
-    expect(DASHBOARD_HTML).toContain("--pair ");
+    expect(DASHBOARD_HTML).toContain("/runner.sh | sh -s ");
   });
 
   it("renders the savings counter strip", () => {
@@ -190,7 +204,10 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("side-group");
     expect(DASHBOARD_HTML).not.toContain("nav.tabs");
     expect(DASHBOARD_HTML.indexOf('id="tabTournaments"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabRuns"'));
-    expect(DASHBOARD_HTML).toContain('if (!applyHashRoute()) palGoTab("live")');
+    // Signed-in users land on Home (guided setup / plain status); the
+    // signed-out demo tour still opens the forge Live screen.
+    expect(DASHBOARD_HTML).toContain('else if (!applyHashRoute()) palGoTab("home")');
+    expect(DASHBOARD_HTML).toContain('if (!applyHashRoute()) fxNav("#/live")');
     expect(DASHBOARD_HTML).toContain("No races yet");
   });
 

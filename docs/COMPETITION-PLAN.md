@@ -16,6 +16,29 @@
 
 ---
 
+## Status board (integration branch `feat/forge-intents`)
+
+| Area | State | Notes |
+|---|---|---|
+| Day 0 spikes S1–S6 | ✅ | See §8.2. Extra finding: Artifacts can't resolve `refs/notes/*` by name, so the train records the notes tip sha |
+| Audit bug fixes (6 + 5 extra scope leaks) | ✅ merged | |
+| Foundation: schema 0045, `intents-core`, `intents` | ✅ merged | |
+| Demo repo `examples/forge-demo` | ✅ merged | 25/25 designed scenarios verified |
+| Provenance: blame, why chain, sessions, notes | ✅ merged | |
+| Coordinator DO, live feed, push-trigger Workflow | ✅ merged | Index-only bench at 100k intents: query p50 0.19 ms, p99 1.1 ms |
+| API: REST, MCP (14 tools), SDK, CLI, agent docs, skill | ✅ merged | |
+| Trains (stacked lanes, exact-SHA CI, bisect), conflict replay, races | ✅ merged | |
+| Simulator and load harness, benchmark doc | ✅ merged | Simulated: ~74× time-to-80% vs serial queue, −72% human minutes at 10k |
+| Dashboard (Live, Inbox, Intent, Train, Conflict, Why, Composer, Bench, Agents) | ✅ merged | Fixture fallback; needs signed-in check against the real API |
+| Wiring: ports → DO/why/feed/trains, AI planner, contract reconciliation, live e2e | 🔄 in progress | |
+| Speculative stacked trains + honest benchmark rerun | 🔄 in progress | Fixes the throughput plateau the sim exposed at ≥10k agents |
+| `forge:demo`, `forge:agents`, `forge:director`, DEMO.md | 🔄 in progress | |
+| Adversarial review of the whole branch | 🔄 in progress | |
+| Staging deploy and live run with real Claude Code agents | ⏳ next | |
+| README "start here", video, submission | ⏳ Mon Oct 13 | Varun to confirm eligibility (student status vs "legal resident") with git-competition@cloudflare.com |
+
+---
+
 ## 0. The whole plan on one page
 
 **Thesis.** When agents write the code, the code is cheap and can be
