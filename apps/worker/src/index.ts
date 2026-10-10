@@ -102,7 +102,7 @@ import {
   updateRunningJob,
   usageStats,
 } from "./db";
-import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, getDefaultBranch, getInstallationToken, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, resolveRunnerGroupId, updatePullRequestBranch, verifyGitHubSignature } from "./github";
+import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, getDefaultBranch, getInstallationToken, getPullRequestHead, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, resolveRunnerGroupId, updatePullRequestBranch, verifyGitHubSignature } from "./github";
 import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
 import { DASHBOARD_HTML } from "./dashboard";
@@ -2414,8 +2414,13 @@ async function runMergeQueueTick(
         },
         updateBranch: async (repo, pr) => {
           const token = await mintInstallationTokenFor(env, await latestInstallationId(env.DB, repo));
-          if (!token) return false;
+          if (!token) return "failed";
           return updatePullRequestBranch(token, repo, pr);
+        },
+        prHead: async (repo, pr) => {
+          const token = await mintInstallationTokenFor(env, await latestInstallationId(env.DB, repo));
+          if (!token) return null;
+          return getPullRequestHead(token, repo, pr);
         },
         prFiles: async (repo, pr) => {
           const token = await mintInstallationTokenFor(env, await latestInstallationId(env.DB, repo));

@@ -49,15 +49,16 @@ const HEAD_A = "a".repeat(40);
 const HEAD_B = "b".repeat(40);
 const BASE = "c".repeat(40);
 
-function fakeGithub(over: Partial<MergeQueueGithub> = {}): MergeQueueGithub & { merged: { repo: string; pr: number }[] } {
-  const merged: { repo: string; pr: number }[] = [];
+function fakeGithub(over: Partial<MergeQueueGithub> = {}): MergeQueueGithub & { merged: { repo: string; pr: number; headSha: string }[] } {
+  const merged: { repo: string; pr: number; headSha: string }[] = [];
   return {
     merged,
     baseHead: async () => BASE,
-    updateBranch: async () => true,
+    updateBranch: async () => "current",
+    prHead: async () => HEAD_A,
     prFiles: async () => ["src/a.ts"],
-    mergePr: async (repo, pr) => {
-      merged.push({ repo, pr });
+    mergePr: async (repo, pr, headSha) => {
+      merged.push({ repo, pr, headSha });
       return { merged: true, detail: `PR #${pr} merged` };
     },
     ...over,
@@ -223,7 +224,7 @@ describe("processMergeQueue", () => {
     await db.prepare("UPDATE runs SET status = 'success' WHERE id = 'run-1'").bind().run();
     const out = await processMergeQueue(deps);
     expect(out).toEqual({ started: 0, landed: 1, failed: 0, requeued: 0 });
-    expect(github.merged).toEqual([{ repo: "o/r", pr: 1 }]);
+    expect(github.merged).toEqual([{ repo: "o/r", pr: 1, headSha: HEAD_A }]);
     expect((await getMergeEntry(db, id))!.status).toBe("landed");
   });
 
@@ -294,7 +295,7 @@ describe("processMergeQueue", () => {
     expect((await getMergeEntry(db, blind))!.status).toBe("queued");
     expect((await getMergeEntry(db, blind))!.note).toContain("unreadable");
     // Rebase failure and dispatch throw park the same way.
-    await processMergeQueue({ db, dispatch: async () => ({ runId: "x" }), github: fakeGithub({ updateBranch: async () => false }) });
+    await processMergeQueue({ db, dispatch: async () => ({ runId: "x" }), github: fakeGithub({ updateBranch: async () => "failed" }) });
     expect((await getMergeEntry(db, blind))!.note).toContain("rebase");
     await processMergeQueue({
       db,
@@ -311,5 +312,65 @@ describe("processMergeQueue", () => {
     await processMergeQueue(deps);
     expect(await processMergeQueue(deps)).toMatchObject({ failed: 1 });
     expect((await getMergeEntry(db, id))!.status).toBe("failed");
+  });
+
+  it("verifies and merges the post-update PR head, not the enqueued SHA", async () => {
+    const db = sqliteDb();
+    const id = await queued(db, 1);
+    const POST = "e".repeat(40);
+    let prHead = HEAD_A;
+    const github = fakeGithub({
+      prHead: async () => prHead,
+      updateBranch: async () => {
+        prHead = POST; // update-branch adds a merge commit on the PR
+        return "updated";
+      },
+    });
+    const dispatched: string[] = [];
+    await seedRun(db, "run-1", "running");
+    const deps = {
+      db,
+      dispatch: async (input: { sha: string }) => {
+        dispatched.push(input.sha);
+        return { runId: "run-1" };
+      },
+      github,
+    };
+    await processMergeQueue(deps);
+    expect(dispatched).toEqual([POST]);
+    const row = (await getMergeEntry(db, id))!;
+    expect(row.head_sha).toBe(POST);
+    expect(row.note).toContain(POST.slice(0, 7));
+    await db.prepare("UPDATE runs SET status = 'success' WHERE id = 'run-1'").bind().run();
+    expect(await processMergeQueue(deps)).toMatchObject({ landed: 1 });
+    expect(github.merged).toEqual([{ repo: "o/r", pr: 1, headSha: POST }]);
+  });
+
+  it("waits while an accepted branch update has not moved the head yet", async () => {
+    const db = sqliteDb();
+    const id = await queued(db, 1);
+    const dispatched: string[] = [];
+    const deps = {
+      db,
+      dispatch: async (input: { sha: string }) => {
+        dispatched.push(input.sha);
+        return { runId: "run-1" };
+      },
+      github: fakeGithub({ updateBranch: async () => "updated" }),
+    };
+    expect(await processMergeQueue(deps)).toMatchObject({ started: 0 });
+    expect(dispatched).toEqual([]);
+    const row = (await getMergeEntry(db, id))!;
+    expect(row.status).toBe("queued");
+    expect(row.note).toContain("pending");
+  });
+
+  it("parks when the PR head is unreadable after the update", async () => {
+    const db = sqliteDb();
+    const id = await queued(db, 1);
+    await processMergeQueue({ db, dispatch: async () => ({ runId: "x" }), github: fakeGithub({ prHead: async () => null }) });
+    const row = (await getMergeEntry(db, id))!;
+    expect(row.status).toBe("queued");
+    expect(row.note).toContain("PR head unreadable");
   });
 });

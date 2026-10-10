@@ -178,14 +178,22 @@ export function detectMergeCollisions(entries: { id: string; pr: number; files: 
   return out;
 }
 
+export type BranchUpdate = "updated" | "current" | "failed";
+
 export interface MergeQueueGithub {
   // Current head of the base branch; null when unreadable.
   baseHead(repo: string, branch: string): Promise<string | null>;
-  // Fold the current base into the PR (rebase onto head); false parks.
-  updateBranch(repo: string, pr: number): Promise<boolean>;
+  // Fold the current base into the PR (rebase onto head). "updated"
+  // = GitHub accepted an update (the PR head will move), "current" =
+  // already up to date (no-op), "failed" parks.
+  updateBranch(repo: string, pr: number): Promise<BranchUpdate>;
+  // The PR's current head SHA; null when unreadable. Read after the
+  // update so verification and merge target the exact post-update head.
+  prHead(repo: string, pr: number): Promise<string | null>;
   // PR file list for the radar; empty = unknown (verification proceeds).
   prFiles(repo: string, pr: number): Promise<string[]>;
-  // Merge the PR; detail lands in the visible note either way.
+  // Merge the PR, pinned to the verified head SHA (GitHub rejects the
+  // merge if the head moved since); detail lands in the note either way.
   mergePr(repo: string, pr: number, headSha: string): Promise<{ merged: boolean; detail: string }>;
 }
 
@@ -289,6 +297,8 @@ async function finalizeVerifying(
     entry.status = MQ_QUEUED;
     return;
   }
+  // head_sha is the SHA the green run verified (stamped at start), so
+  // the merge is pinned to exactly what CI saw.
   const landed = await deps.github.mergePr(entry.repo, entry.pr_number, entry.head_sha).catch(() => ({
     merged: false as const,
     detail: "merge call failed",
@@ -316,23 +326,40 @@ async function startVerifying(deps: MergeQueueDeps, entry: MergeQueueRow): Promi
     await stampNote(deps.db, entry.id, "base head unreadable; will retry");
     return false;
   }
-  const rebased = await deps.github.updateBranch(entry.repo, entry.pr_number).catch(() => false);
-  if (!rebased) {
+  const before = await deps.github.prHead(entry.repo, entry.pr_number).catch(() => null);
+  const update = await deps.github.updateBranch(entry.repo, entry.pr_number).catch((): BranchUpdate => "failed");
+  if (update === "failed") {
     await stampNote(deps.db, entry.id, `rebase onto ${entry.base_branch}@${short(head)} failed; will retry`);
+    return false;
+  }
+  // Verify exactly what will land: the PR head after the update, not
+  // the SHA captured at enqueue time.
+  const verified = (await deps.github.prHead(entry.repo, entry.pr_number).catch(() => null))?.toLowerCase() ?? null;
+  if (!verified || !SHA_RE.test(verified)) {
+    await stampNote(deps.db, entry.id, "PR head unreadable after branch update; will retry");
+    return false;
+  }
+  // GitHub applies update-branch asynchronously: an accepted update
+  // whose head has not moved yet is still in flight. Retry next tick
+  // (the follow-up call answers "already up to date") instead of
+  // verifying the pre-update head.
+  if (update === "updated" && before && before.toLowerCase() === verified) {
+    await stampNote(deps.db, entry.id, `branch update onto ${entry.base_branch}@${short(head)} pending; will retry`);
     return false;
   }
   const files = await deps.github.prFiles(entry.repo, entry.pr_number).catch(() => [] as string[]);
   let runId: string;
   try {
-    runId = (await deps.dispatch({ repo: entry.repo, sha: entry.head_sha, ref: entry.base_branch, agent: entry.agent })).runId;
+    runId = (await deps.dispatch({ repo: entry.repo, sha: verified, ref: entry.base_branch, agent: entry.agent })).runId;
   } catch (err) {
     await stampNote(deps.db, entry.id, `verification dispatch failed: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`);
     return false;
   }
   await deps.db
-    .prepare("UPDATE merge_queue SET status = 'verifying', run_id = ?, base_sha = ?, changed_files = ?, note = ?, updated_at = ? WHERE id = ?")
-    .bind(runId, head.toLowerCase(), serializeMergeFiles(files), `verifying ${short(entry.head_sha)} against ${entry.base_branch}@${short(head)}`, nowIso(), entry.id)
+    .prepare("UPDATE merge_queue SET status = 'verifying', run_id = ?, head_sha = ?, base_sha = ?, changed_files = ?, note = ?, updated_at = ? WHERE id = ?")
+    .bind(runId, verified, head.toLowerCase(), serializeMergeFiles(files), `verifying ${short(verified)} against ${entry.base_branch}@${short(head)}`, nowIso(), entry.id)
     .run();
+  entry.head_sha = verified;
   entry.status = MQ_VERIFYING;
   return true;
 }

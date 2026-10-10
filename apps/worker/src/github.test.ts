@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, listMergedPulls, resolveRefToSha, resolveRunnerGroupId, timingSafeEqualHex, verifyGitHubSignature } from "./github";
+import { deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, getPullRequestHead, listMergedPulls, mergePullRequest, updatePullRequestBranch, resolveRefToSha, resolveRunnerGroupId, timingSafeEqualHex, verifyGitHubSignature } from "./github";
 
 async function sign(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -389,6 +389,74 @@ describe("resolveRunnerGroupId", () => {
       await generateJitConfig("tok", "o/r", { name: "n", labels: [] });
       expect(JSON.parse(seen[0]).runner_group_id).toBe(7);
       expect(JSON.parse(seen[1]).runner_group_id).toBe(1);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+describe("merge queue GitHub calls", () => {
+  const realFetch = globalThis.fetch;
+  const calls: { url: string; init?: RequestInit }[] = [];
+
+  function stub(status: number, body: unknown) {
+    calls.length = 0;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+  }
+
+  it("treats an accepted update-branch as updated", async () => {
+    stub(202, { message: "Updating pull request branch." });
+    try {
+      expect(await updatePullRequestBranch("tok", "o/r", 4)).toBe("updated");
+      expect(calls[0].url).toContain("/repos/o/r/pulls/4/update-branch");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("treats 422 already-up-to-date as a no-op success", async () => {
+    stub(422, { message: "There are no new commits on the base branch." });
+    try {
+      expect(await updatePullRequestBranch("tok", "o/r", 4)).toBe("current");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("still fails other 422s and 5xx", async () => {
+    try {
+      stub(422, { message: "merge conflict between base and head" });
+      expect(await updatePullRequestBranch("tok", "o/r", 4)).toBe("failed");
+      stub(403, { message: "Resource not accessible by integration" });
+      expect(await updatePullRequestBranch("tok", "o/r", 4)).toBe("failed");
+      stub(502, { message: "Server Error" });
+      expect(await updatePullRequestBranch("tok", "o/r", 4)).toBe("failed");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("reads the PR head SHA", async () => {
+    const sha = "f".repeat(40);
+    try {
+      stub(200, { head: { sha } });
+      expect(await getPullRequestHead("tok", "o/r", 9)).toBe(sha);
+      stub(404, { message: "Not Found" });
+      expect(await getPullRequestHead("tok", "o/r", 9)).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("pins the merge to the given head SHA", async () => {
+    const sha = "e".repeat(40);
+    stub(200, { merged: true });
+    try {
+      expect(await mergePullRequest("tok", "o/r", 9, sha)).toEqual({ merged: true, detail: "PR #9 merged" });
+      expect(JSON.parse(String(calls[0].init?.body))).toMatchObject({ sha });
     } finally {
       globalThis.fetch = realFetch;
     }

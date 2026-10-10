@@ -434,20 +434,42 @@ export async function resolveRunnerGroupId(token: string, org: string, name: str
 }
 
 // Merge queue: fold the base branch into the PR (the queue's "rebase
-// onto current head") and merge the PR on green. Both best-effort —
-// false/null parks the entry visibly, never throws.
-export async function updatePullRequestBranch(token: string, repo: string, pr: number): Promise<boolean> {
+// onto current head") and merge the PR on green. All best-effort —
+// "failed"/null parks the entry visibly, never throws.
+export async function updatePullRequestBranch(
+  token: string,
+  repo: string,
+  pr: number,
+): Promise<"updated" | "current" | "failed"> {
   try {
     const res = await fetch(`https://api.github.com/repos/${repo}/pulls/${pr}/update-branch`, {
       method: "PUT",
       headers: githubHeaders(token),
       body: JSON.stringify({}),
     });
-    // 422 = already up to date or unmergeable; the verify-then-land
-    // checks decide, so only transport success counts here.
-    return res.ok;
+    if (res.ok) return "updated";
+    // 422 covers both "already up to date" (a no-op success: the base
+    // is already folded in) and real refusals (conflicts, head
+    // mismatch). Only the former proceeds to verification.
+    if (res.status === 422) {
+      const data = (await res.json().catch(() => null)) as { message?: unknown } | null;
+      const message = typeof data?.message === "string" ? data.message : "";
+      if (/no new commits|already up[ -]to[ -]date|is up[ -]to[ -]date/i.test(message)) return "current";
+    }
+    return "failed";
   } catch {
-    return false;
+    return "failed";
+  }
+}
+
+// The PR's current head SHA; null on any failure.
+export async function getPullRequestHead(token: string, repo: string, pr: number): Promise<string | null> {
+  try {
+    const data = (await githubJson(token, `/repos/${repo}/pulls/${pr}`)) as { head?: { sha?: unknown } } | null;
+    const sha = data?.head?.sha;
+    return typeof sha === "string" && /^[0-9a-f]{40,64}$/i.test(sha) ? sha.toLowerCase() : null;
+  } catch {
+    return null;
   }
 }
 
