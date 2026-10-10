@@ -1727,7 +1727,17 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
   document.getElementById("cachePurgeBtn").addEventListener("click", function () {
     purgeCachePrefix();
   });
-  tabMerge.addEventListener("click", function () { selectTab("merge"); });
+  tabMerge.addEventListener("click", function () { selectTab("merge"); openMergeQueue(); });
+  // Merge queue is per repo: reload the last loaded repo, or put the
+  // cursor in the repo field so the pane never opens blank and inert.
+  function openMergeQueue() {
+    var input = document.getElementById("mergeRepo");
+    if (!input.value.trim()) {
+      try { input.value = localStorage.getItem("flare.mergeRepo") || ""; } catch (e) { input.value = ""; }
+    }
+    if (input.value.trim()) loadMergeQueue();
+    else input.focus();
+  }
   document.getElementById("mergeForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
     loadMergeQueue();
@@ -1759,6 +1769,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
     body.textContent = "";
     radar.textContent = "";
     if (!repo) return;
+    try { localStorage.setItem("flare.mergeRepo", repo); } catch (e) { /* storage unavailable */ }
     api("/v1/merge-queue?repo=" + encodeURIComponent(repo)).then(function (res) {
       var entries = (res && res.entries) || [];
       if (entries.length === 0) {
@@ -2628,6 +2639,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
     if (name === "runs") loadRuns();
     else if (name === "tournaments") loadTournaments();
     else if (name === "repos") loadRepos();
+    else if (name === "merge") openMergeQueue();
     else if (name === "settings") { loadSettings(); loadTokens(); loadUsers(); }
   }
   function refreshCurrent() {
