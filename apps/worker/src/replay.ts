@@ -355,7 +355,7 @@ async function mintToken(deps: ReplayDeps, repo: string, scope: "read" | "write"
   }
 }
 
-async function forkTrunk(deps: ReplayDeps, trunk: string, name: string): Promise<boolean> {
+export async function forkTrunk(deps: ReplayDeps, trunk: string, name: string): Promise<boolean> {
   if (!deps.artifacts) return false;
   let handle: TrainRepoHandle | null = null;
   try {

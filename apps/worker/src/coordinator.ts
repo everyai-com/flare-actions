@@ -10,7 +10,7 @@
 // job). RPC contracts: docs/FORGE.md "Coordinator".
 import { DurableObject } from "cloudflare:workers";
 import type { WorkerEnv } from "./env";
-import type { Intent } from "./intents-core";
+import type { Intent, RiskTerm } from "./intents-core";
 import { validateRepo } from "./intents";
 import {
   declare as coreDeclare,
@@ -19,6 +19,7 @@ import {
   getMeta,
   heartbeat as coreHeartbeat,
   hydrate as coreHydrate,
+  indexPush as coreIndexPush,
   hydratedAt,
   nextAlarmAt,
   release as coreRelease,
@@ -171,6 +172,17 @@ export class RepoCoordinator extends DurableObject<WorkerEnv> {
 
   async reportPush(repo: string, intentId: string, input: ReportPushInput): Promise<ReportPushResult | CoordinatorError> {
     const out = await coreReportPush(await this.ready(repo), intentId, input);
+    await this.rearm();
+    return out;
+  }
+
+  // Agent report_push already recorded the push in D1: index it only.
+  async indexPush(
+    repo: string,
+    intent: Intent,
+    input: { drift: string[]; risk: number; riskTerms: RiskTerm[] },
+  ): Promise<ReportPushResult | CoordinatorError> {
+    const out = await coreIndexPush(await this.ready(repo), intent, input);
     await this.rearm();
     return out;
   }
@@ -374,6 +386,7 @@ export function coordinatorFor(env: CoordinatorEnv, repo: string) {
     sync: (intentId: string) => stub.sync(repo, intentId),
     heartbeat: (intentId: string, agent: string, ttlSeconds?: number) => stub.heartbeat(repo, intentId, agent, ttlSeconds),
     reportPush: (intentId: string, input: ReportPushInput) => stub.reportPush(repo, intentId, input),
+    indexPush: (intent: Intent, input: { drift: string[]; risk: number; riskTerms: RiskTerm[] }) => stub.indexPush(repo, intent, input),
     release: (intentId: string) => stub.release(repo, intentId),
     similar: (goalText: string, limit?: number) => stub.similar(repo, goalText, limit),
     snapshot: (opts?: { maxIntents?: number; forFeed?: boolean }) => stub.snapshot(repo, opts),

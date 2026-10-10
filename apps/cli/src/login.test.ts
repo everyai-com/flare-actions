@@ -46,7 +46,7 @@ describe("runLogin", () => {
   it("prompts for missing url and code", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "flare-login-"));
     const saved = process.env["FLARE_ACTIONS_URL"];
-    delete process.env["FLARE_ACTIONS_URL"];
+    Reflect.deleteProperty(process.env, "FLARE_ACTIONS_URL");
     try {
     const asked: string[] = [];
     const out = await runLogin({
@@ -60,7 +60,7 @@ describe("runLogin", () => {
     expect(asked.length).toBe(2);
     expect(out.baseUrl).toBe("https://w.example");
     } finally {
-      if (saved === undefined) delete process.env["FLARE_ACTIONS_URL"];
+      if (saved === undefined) Reflect.deleteProperty(process.env, "FLARE_ACTIONS_URL");
       else process.env["FLARE_ACTIONS_URL"] = saved;
     }
   });
