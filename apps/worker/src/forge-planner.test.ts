@@ -76,6 +76,7 @@ describe("forge planner: parsing + validation", () => {
     expect(sys.content).toMatch(/after/);
     expect(sys.content).toMatch(/No generic advice/);
     expect(user.content).toContain("src/auth/**");
+    for (const builtin of ["flare.yml", ".flare/**", ".github/workflows/**"]) expect(user.content).toContain(builtin);
     expect(user.content).toContain("src/api/b.ts");
   });
 
