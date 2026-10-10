@@ -2442,6 +2442,11 @@ async function runMergeQueueTick(
   }
 }
 
+// --- Forge coordinator (stream A): Durable Object + Workflow classes ---
+export { RepoCoordinator, ForgeFeed } from "./coordinator";
+export { ForgePushWorkflow } from "./forge-push-workflow";
+// --- end Forge coordinator ---
+
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
