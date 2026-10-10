@@ -30,12 +30,32 @@
 | Trains (stacked lanes, exact-SHA CI, bisect), conflict replay, races | ✅ merged | |
 | Simulator and load harness, benchmark doc | ✅ merged | Simulated: ~74× time-to-80% vs serial queue, −72% human minutes at 10k |
 | Dashboard (Live, Inbox, Intent, Train, Conflict, Why, Composer, Bench, Agents) | ✅ merged | Fixture fallback; needs signed-in check against the real API |
-| Wiring: ports → DO/why/feed/trains, AI planner, contract reconciliation, live e2e | 🔄 in progress | |
+| Everything above on `main` | ✅ PR #12, #13 | Includes adapter wiring and the AI planner (`e59a63c`, verified on `wrangler dev`: coordinator snapshot, feed returns 101) |
+| Dogfood CI, seat sizing, Easy mode (guided Home, one-line runner) | ✅ PR #14–17 | Merged by parallel sessions |
+| Wiring extras: index sync, train conflict ports, approve-landing, session routes, `/llms.txt`, audit dedupe, dashboard↔API contract | 🔄 in progress | Server-side only |
 | Speculative stacked trains + honest benchmark rerun | 🔄 in progress | Fixes the throughput plateau the sim exposed at ≥10k agents |
 | `forge:demo`, `forge:agents`, `forge:director`, DEMO.md | 🔄 in progress | |
-| Adversarial review of the whole branch | 🔄 in progress | |
+| UX polish (demo-link redirect, judge CTA, master–detail lists, hot-cell sizing, agent rail, guided tour) | 🔄 in progress | From the integrator's hands-on review, 2026-10-10 |
+| Adversarial review of the whole branch | 🔄 in progress | Findings will be fixed before staging |
 | Staging deploy and live run with real Claude Code agents | ⏳ next | |
 | README "start here", video, submission | ⏳ Mon Oct 13 | Varun to confirm eligibility (student status vs "legal resident") with git-competition@cloudflare.com |
+
+**How work lands now.** Each stream works on its own branch, which merges into `feat/forge-intents`. That branch goes to `main` by PR, which is also how the parallel sessions on other accounts land their work. Every branch rebases on `origin/main` before its PR.
+
+### Updated roadmap (from Fri Oct 10 evening)
+
+| When (PDT) | Milestone | Exit criteria |
+|---|---|---|
+| Fri night | **Integration complete.** Wiring extras, speculative trains, demo tooling, UX polish, and review fixes are all merged to `main` | All gates green. Signed-in dashboard renders real data on `wrangler dev` with no fixture fallback |
+| Sat AM | **Staging live.** `npm run setup` on staging, `forge:demo` bootstraps the Bookshelf trunk (lane refs + notes ref), and the namespace push trigger is subscribed | A scripted run lands all 13 intents: the conflict is replayed, the semantic red is bisected, and the protected intent waits for plan approval. Main never red |
+| Sat PM | **Real agents.** 6 real Claude Code agents via `forge:agents --mode real` against staging | At least 1 goal landed end to end by real agents. Transcript and timings recorded |
+| Sat night | **Live load numbers.** `apps/sim` harness: 100k coordination-only and 1k → 10k full-git | Measured table in `FORGE-BENCH.md` (provenance line). Artifacts ops and $ captured |
+| Sun | **Hardening.** Fix everything Saturday surfaced. Measure seat CI wall time (S7). Director stages 1–6 are reliable, three clean rehearsals in a row | Every video beat reproducible within 60 s |
+| Sun night | **Docs.** README "start here", `DEMO.md`, `FORGE.md`, `FORGE-AGENTS.md`, refreshed bench, and the ROADMAP non-goal reconciled | A fresh person goes from clone to a dashboard with demo data in under 5 min |
+| Mon 14:00 | **Freeze.** Fresh-account dry run of the judge path | Passes untouched |
+| Mon PM | **Video:** record, edit, caption (§9) | 8–9 min, numbers measured or labelled |
+| Mon 23:00 | **Submit by hand**, screenshot the confirmation | ✅ |
+| Oct 15–21 | **Finals prep.** Hosted demo hardened, Q&A drills, the stage fallback rehearsed offline | Ready for Moscone, Oct 21 |
 
 ---
 
