@@ -9,6 +9,12 @@ description: >-
 
 # Flare setup
 
+## Start here
+
+1. Discover: `npx flare-forge doctor` says what is set up and ends with one `next:` command.
+2. Onboard: `npx flare-forge login`, then `npx flare-forge connect --dry-run`, then `npx flare-forge connect` (first green check).
+3. Daily loop: `npx flare-forge run <owner/repo> HEAD` per change; expert tools (Forge, runner mode, budgets) come after the first green.
+
 One-command adoption: `npx flare-forge connect` does the probing, wiring, and
 verification. Drive it; don't hand-roll the steps below except to explain
 what needs a human click.

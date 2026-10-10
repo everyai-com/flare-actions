@@ -20,6 +20,8 @@ export interface RunExplanation {
   totalJobs: number;
   failing: ExplainedFailure[];
   narrative: string;
+  // The one next move, copy-pasteable (also the narrative's last line).
+  next: string;
 }
 
 function fmtDuration(ms: number | null): string {
@@ -46,7 +48,8 @@ function fmtBytes(bytes: number): string {
   return `${u === 0 ? Math.round(n) : Math.round(n * 10) / 10} ${units[u]}`;
 }
 
-export function explainDigest(digest: FlareRunDigest): RunExplanation {
+// `cli` is how the user invoked the CLI (default: the short `cli` form).
+export function explainDigest(digest: FlareRunDigest, cli = "cli"): RunExplanation {
   const pendingStates = new Set(["queued", "running", "blocked"]);
   const okStates = new Set(["success", "skipped"]);
   // Anything neither ok nor pending is a terminal failure — including
@@ -68,7 +71,6 @@ export function explainDigest(digest: FlareRunDigest): RunExplanation {
   } else if (verdict === "pending") {
     const done = digest.totalJobs - pending.length;
     lines.push(`Run ${digest.runId} is ${digest.status}: ${done}/${digest.totalJobs} jobs finished in ${where}.`);
-    lines.push(`Follow it with: cli watch ${digest.runId}`);
   } else {
     lines.push(
       `Run ${digest.runId} failed: ${digest.failedJobs}/${digest.totalJobs} jobs failed in ${where} after ${fmtDuration(digest.durationMs)}.`,
@@ -86,9 +88,9 @@ export function explainDigest(digest: FlareRunDigest): RunExplanation {
         const first = job.triage.split("\n").filter((l) => l.trim())[0]?.slice(0, 300);
         if (first) lines.push(`  triage: ${first}`);
       }
-      lines.push(`  rerun: cli rerun ${digest.runId} ${job.id}`);
+      lines.push(`  rerun: ${cli} rerun ${digest.runId} ${job.id}`);
     }
-    if (failing.length > 5) lines.push("", `…and ${failing.length - 5} more failing jobs (see: cli logs ${digest.runId})`);
+    if (failing.length > 5) lines.push("", `…and ${failing.length - 5} more failing jobs (see: ${cli} logs ${digest.runId})`);
   }
   const heaviest = [...digest.jobs]
     .filter((j): j is FlareDigestJob & { peakRssBytes: number } => typeof j.peakRssBytes === "number")
@@ -101,14 +103,25 @@ export function explainDigest(digest: FlareRunDigest): RunExplanation {
   if (digest.testSelection && digest.testSelection.jobs > 0) {
     const sel = digest.testSelection;
     const noun = sel.jobs === 1 ? "job" : "jobs";
-    lines.push("", `Smart test selection ran in ${sel.jobs} ${noun}: ${sel.selected} test(s) selected, ${sel.skipped} skipped (see: cli selection ${digest.runId}).`);
+    lines.push("", `Smart test selection ran in ${sel.jobs} ${noun}: ${sel.selected} test(s) selected, ${sel.skipped} skipped (see: ${cli} selection ${digest.runId}).`);
   }
   if (digest.attestation?.reused) {
-    lines.push("", `Reused verdict ${digest.attestation.verdict}: this exact tree + suite + environment already ran — zero compute spent (receipt: cli attestation ${digest.attestation.receiptId}).`);
+    lines.push("", `Reused verdict ${digest.attestation.verdict}: this exact tree + suite + environment already ran — zero compute spent (receipt: ${cli} attestation ${digest.attestation.receiptId}).`);
   }
+
+  // Failed: fix, then verify the working tree without a commit. Still
+  // going: keep watching. Green: nothing to fix, see recent checks.
+  const next =
+    verdict === "failure"
+      ? `next: fix the failing step, then ${cli} run ${digest.repo} --source   (checks your local changes, no commit needed)`
+      : verdict === "pending"
+        ? `next: ${cli} watch ${digest.runId}`
+        : `next: ${cli} runs   (all green)`;
+  lines.push("", next);
 
   return {
     runId: digest.runId,
+    next,
     verdict,
     failedJobs: digest.failedJobs,
     totalJobs: digest.totalJobs,

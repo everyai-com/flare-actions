@@ -118,3 +118,18 @@ describe("explainDigest", () => {
     expect(out.narrative).toContain("…and 2 more failing jobs");
   });
 });
+
+describe("explain next move", () => {
+  it("ends every verdict with exactly one next line", () => {
+    const failed = explainDigest(digest(), "npx flare-forge");
+    expect(failed.next).toMatch(/^next: fix the failing step, then npx flare-forge run .+ --source/);
+    expect(failed.narrative.split("\n").pop()).toBe(failed.next);
+    expect(failed.narrative).toContain("rerun: npx flare-forge rerun run-1 job-bad");
+    const pending = explainDigest(digest({ status: "running", failedJobs: 0, jobs: digest().jobs.map((j) => ({ ...j, status: "running", failing: undefined })) }));
+    expect(pending.next).toBe("next: cli watch run-1");
+    const green = explainDigest(digest({ status: "success", failedJobs: 0, jobs: digest().jobs.map((j) => ({ ...j, status: "success", failing: undefined })) }));
+    expect(green.next).toMatch(/^next: cli runs/);
+    for (const out of [failed, pending, green]) expect(out.narrative.split("\n").filter((l) => l.startsWith("next:"))).toHaveLength(1);
+  });
+});
+

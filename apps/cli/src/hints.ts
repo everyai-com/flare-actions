@@ -46,14 +46,74 @@ export function describeEnvLocation(loc: EnvLocation | undefined): string {
 }
 
 // One message for every command that needs a deployment + token.
-export function missingConfigMessage(missing: string[], loc: EnvLocation | undefined): string {
+// `cli` is how the user invoked the CLI (see cliInvocation).
+export function missingConfigMessage(missing: string[], loc: EnvLocation | undefined, cli = "npm run cli --"): string {
   return [
-    `Not configured: missing ${missing.join(" and ")}.`,
+    `Not set up yet: missing ${missing.join(" and ")}.`,
     `  ${describeEnvLocation(loc)}`,
-    "  fix: `npm run cli -- login` (pair with a code from dashboard Settings) or `npm run setup` (new deployment),",
+    `  fix: \`${cli} login\` (pair with a code from dashboard Settings), or \`npm run setup\` for a new deployment,`,
     "       or export FLARE_ACTIONS_URL and RUNNER_TOKEN (FLARE_TOKEN also works).",
-    "  then: `npm run cli -- doctor` to verify.",
+    nextLine(cli, "login", "then `doctor` to check"),
   ].join("\n");
+}
+
+// How the user ran the CLI, so every "next:" line is copy-pasteable:
+// `npm run cli --` from a clone, `npx flare-forge` via npx, or the
+// installed bin name (`flare`, `flare-forge`). Falls back to the
+// in-repo form.
+export function cliInvocation(argv: readonly string[], env: Env): string {
+  if (env["npm_lifecycle_event"] === "cli") return "npm run cli --";
+  if (env["npm_lifecycle_event"] === "start" && env["npm_package_name"] === "flare-forge") return "npm start --";
+  const script = (argv[1] ?? "").split(/[\\/]/).pop() ?? "";
+  const bin = script.replace(/\.m?js$/, "");
+  if (env["npm_command"] === "exec") return "npx flare-forge";
+  if (bin === "flare" || bin === "flare-forge") return bin;
+  if (script === "cli.mjs") return "npx flare-forge";
+  return "npm run cli --";
+}
+
+// The one "next move" line that ends every human-facing outcome.
+// `command` is a CLI command (prefixed with the invocation); `why` is
+// an optional short reason in plain words.
+export function nextLine(cli: string, command: string, why?: string): string {
+  return `next: ${cli} ${command}${why ? `   (${why})` : ""}`;
+}
+
+// A next move that is not a CLI command (open a page, edit a file).
+export function nextText(text: string): string {
+  return `next: ${text}`;
+}
+
+export interface DigestLike {
+  runId: string;
+  status: string;
+  repo: string;
+}
+
+// After a run finishes (run, watch, logs): failed -> explain it, still
+// going -> keep watching, green -> see recent checks.
+export function nextAfterRun(cli: string, d: DigestLike): string {
+  if (d.status === "success") return nextLine(cli, "runs", "all green; see recent checks");
+  if (d.status === "queued" || d.status === "running" || d.status === "blocked") return nextLine(cli, `watch ${d.runId}`, "still running");
+  return nextLine(cli, `explain ${d.runId}`, "what broke and how to fix it");
+}
+
+export interface ApiErrorLike {
+  status: number;
+  code: string | null;
+}
+
+// The next command after an error. API errors switch on the status:
+// auth problems and outages go to `doctor` (it names the fix), unknown
+// ids go back to the run list, budget/pause go to usage/paused.
+export function nextAfterError(cli: string, err: ApiErrorLike | null): string {
+  if (!err) return nextLine(cli, "doctor", "checks the URL, token and runners");
+  if (err.status === 401 || err.status === 403) return nextLine(cli, "doctor", "checks your token and its scope");
+  if (err.status === 404) return nextLine(cli, "runs", "find the right id");
+  if (err.code === "repo_paused") return nextLine(cli, "paused", "see why the project is paused");
+  if (err.status === 429) return nextLine(cli, "usage", "see what used the budget");
+  if (err.status === 400 || err.status === 422) return nextLine(cli, "--help", "check the arguments");
+  return nextLine(cli, "doctor", "checks the deployment");
 }
 
 export function levenshtein(a: string, b: string): number {

@@ -591,6 +591,88 @@ a.fx-btn-primary:hover { background: var(--accent-hover); }
 @keyframes fxPop { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.7); } }
 .fx-main-rule.fx-pulse { animation: fxGlow 1.2s ease-out 2; }
 @keyframes fxGlow { 0%, 100% { box-shadow: none; } 50% { box-shadow: 0 0 0 3px var(--tint-landed), 0 0 18px var(--st-landed); } }
+/* Simple detail views (plan, landing, clash, why, speed test). */
+.fx-sv { max-width: 760px; display: flex; flex-direction: column; gap: var(--s-gap, 14px); padding: 20px 22px; background: var(--s-card-bg, var(--card)); border: 1px solid var(--s-border, var(--line)); border-radius: var(--s-radius, 12px); }
+.fx-sv-top { display: flex; flex-direction: column; gap: 8px; }
+.fx-sv-h { margin: 0; font-size: var(--s-h1, 22px); line-height: 1.25; font-weight: 650; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.fx-sv-who { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: var(--s-body, 14px); color: var(--s-muted, var(--soft)); }
+.fx-sv-say { margin: 0; font-size: var(--s-body, 15px); line-height: 1.5; color: var(--ink); }
+.fx-sv-goal, .fx-sv-note, .fx-sv-file { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--s-muted, var(--soft)); }
+.fx-sv .fx-actions { margin-top: 0; }
+.fx-ssec { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--s-border, var(--line)); }
+.fx-ssec-h { margin: 0; font-size: var(--s-h2, 15px); font-weight: 650; color: var(--ink); }
+.fx-sv-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: var(--s-body, 14px); }
+.fx-sv-list li { overflow-wrap: anywhere; }
+.fx-sv-ink { color: var(--ink); }
+.fx-sv-risk { font-weight: 600; }
+.fx-sv-risk.low { color: var(--s-ok, var(--risk-low)); } .fx-sv-risk.med { color: var(--risk-med); } .fx-sv-risk.high { color: var(--s-bad, var(--risk-high)); }
+.fx-sv-plans li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.fx-sv-plans a, .fx-sv-plans .fx-sv-ink { color: var(--ink); font-weight: 600; }
+.fx-sv-st { flex: none; font-weight: 600; white-space: nowrap; }
+.fx-sfiles { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.fx-sfiles li[hidden] { display: none; }
+.fx-slink { padding: 4px 10px; font-size: 13px; }
+.fx-strack { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.fx-sstep { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--s-border, var(--line-strong)); font-size: 13.5px; color: var(--s-muted, var(--muted)); }
+.fx-sstep .g { font-weight: 700; }
+.fx-sstep.done { color: var(--soft); }
+.fx-sstep.done .g { color: var(--s-ok, var(--st-landed)); }
+.fx-sstep.cur { color: var(--ink); font-weight: 650; }
+.fx-sstep.cur[data-tone="train"], .fx-sstep.cur[data-tone="working"] { border-color: var(--s-wait, var(--st-train)); background: var(--tint-train); }
+.fx-sstep.cur[data-tone="train"] .g, .fx-sstep.cur[data-tone="working"] .g { color: var(--s-wait, var(--st-train)); }
+.fx-sstep.cur[data-tone="landed"] { border-color: var(--s-ok, var(--st-landed)); background: var(--tint-landed); }
+.fx-sstep.cur[data-tone="landed"] .g { color: var(--s-ok, var(--st-landed)); }
+.fx-sstep.cur[data-tone="overlap"] { border-color: var(--st-overlap); background: var(--tint-overlap); }
+.fx-sstep.cur[data-tone="overlap"] .g { color: var(--st-overlap); }
+.fx-sstep.cur[data-tone="conflict"] { border-color: var(--s-bad, var(--st-conflict)); background: var(--tint-conflict); }
+.fx-sstep.cur[data-tone="conflict"] .g { color: var(--s-bad, var(--st-conflict)); }
+.fx-schain { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+.fx-schain li { position: relative; display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; padding: 8px 0 8px 18px; border-left: 2px solid var(--s-border, var(--line-strong)); font-size: var(--s-body, 14px); }
+.fx-schain li::before { content: ""; position: absolute; left: -6px; top: 13px; width: 10px; height: 10px; border-radius: 999px; background: var(--soft); }
+.fx-schain li[data-kind="goal"]::before { background: var(--st-human); }
+.fx-schain li[data-kind="intent"]::before { background: var(--st-train); }
+.fx-schain li[data-kind="agent"]::before { background: var(--st-working); }
+.fx-schain li[data-kind="evidence"]::before { background: var(--st-landed); }
+.fx-schain .k { font-weight: 650; color: var(--ink); }
+.fx-schain .v { color: var(--soft); overflow-wrap: anywhere; }
+.fx-schain .v a { color: var(--ink); font-weight: 600; }
+.fx-sv-why { padding: 0; border: none; background: transparent; }
+.fx-smore { margin-top: 12px; max-width: 100%; }
+.fx-smore > summary { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; padding: 6px 12px; border: 1px solid var(--s-border, var(--line-strong)); border-radius: var(--s-radius, 8px); font-size: 13px; font-weight: 600; color: var(--soft); list-style: none; }
+.fx-smore > summary::-webkit-details-marker { display: none; }
+.fx-smore > summary::before { content: "▸"; color: var(--s-muted, var(--faint)); }
+.fx-smore[open] > summary::before { content: "▾"; }
+.fx-smore > summary:hover { color: var(--ink); background: var(--hover); }
+.fx-smore-b { margin-top: 12px; }
+.fx-error-simple .fx-smore p { margin: 8px 0 0; font-size: 12.5px; }
+.fx-error .fx-code { font: 500 11px var(--mono); color: var(--faint); margin-top: 8px; }
+.fx-celebrate { border-color: var(--s-ok, var(--st-landed)); box-shadow: 0 0 0 3px var(--tint-landed); animation: fxCheer 900ms ease-out 1; }
+@keyframes fxCheer { 0% { transform: scale(0.98); box-shadow: 0 0 0 0 var(--tint-landed); } 60% { transform: scale(1.01); box-shadow: 0 0 0 10px var(--tint-landed); } 100% { transform: scale(1); box-shadow: 0 0 0 3px var(--tint-landed); } }
+.fx-sv-bench .fx-big3 { margin: 0; }
+/* Simple look: the shared Simple tokens from dashboard.ts (html.ui-simple),
+   with fallbacks; mono stays only for code, paths and ids. Pro unchanged. */
+html.ui-simple #forgePane, html.ui-simple #forgePane *, html.ui-simple #fxDrawer *, html.ui-simple #fxComposerOverlay *, html.ui-simple #fxTour * { font-family: var(--s-font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif); }
+html.ui-simple #forgePane :is(code, pre, kbd, .mono, .fx-cmd, .fx-cmd *, .fx-hunk, .fx-hunk *, .fx-code, .fx-code *, .fx-sha, .fx-idchip, .fx-fp, .fx-fp *, .fx-sfiles .mono, .fx-map, .fx-map *, .fx-table-twin *, .fx-lanerow .ln, .fx-lanerow .lp, .fx-steplog .t, .fx-note-b, .fx-prop .fps *, select),
+html.ui-simple #fxDrawer :is(code, pre, kbd, .mono, .fx-cmd, .fx-cmd *, .fx-code, .fx-code *, .fx-sha, .fx-idchip),
+html.ui-simple #fxComposerOverlay :is(code, .mono, .fx-fpchip, .fx-prop .fps *) { font-family: var(--mono); }
+html.ui-simple #forgePane .fx-panel, html.ui-simple #forgePane .fx-empty, html.ui-simple #forgePane .fx-error, html.ui-simple #forgePane .fx-qcard, html.ui-simple #forgePane .fx-big, html.ui-simple #fxDrawer .fx-empty { border-radius: var(--s-radius, 12px); background-color: var(--s-card-bg, var(--card)); border-color: var(--s-border, var(--line)); }
+html.ui-simple #forgePane .fx-panel-head, html.ui-simple #forgePane .fx-sec-h, html.ui-simple #forgePane .fx-kv dt, html.ui-simple #forgePane .fx-mgroup, html.ui-simple #fxDrawer .fx-chain .k { text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 650; color: var(--ink); }
+html.ui-simple #forgePane .fx-mrow .m2, html.ui-simple #forgePane .fx-mrow .mr, html.ui-simple #forgePane .fx-stage, html.ui-simple #forgePane .fx-step, html.ui-simple #forgePane .fx-evidence { font-size: 12.5px; }
+html.ui-simple #forgePane .fx-sh-h, html.ui-simple #forgePane .fx-head h1 { font-size: var(--s-h1, 22px); }
+html.ui-simple #forgePane .fx-sh-p, html.ui-simple #forgePane .fx-empty p, html.ui-simple #forgePane .fx-error p { font-size: var(--s-body, 14px); color: var(--s-muted, var(--soft)); }
+html.ui-simple #forgePane button:not(.ghost):not(.fx-fchip):not(.fx-cell):not(.fx-dot):not(.gut):not([role="tab"]), html.ui-simple #forgePane a.fx-btn-primary, html.ui-simple #fxDrawer button:not(.ghost), html.ui-simple #fxPlanBtn, html.ui-simple #fxLaunchBtn { background: var(--s-primary, var(--accent)); color: var(--s-primary-fg, var(--accent-fg)); border-color: var(--s-primary, var(--accent)); border-radius: var(--s-radius, 8px); }
+html.ui-simple #forgePane button.fx-sv-primary { min-height: 40px; padding: 8px 18px; font-size: 14px; font-weight: 650; }
+html.ui-simple #forgePane .fx-fchip[aria-pressed="true"] { background: var(--s-primary, var(--ink)); border-color: var(--s-primary, var(--ink)); color: var(--s-primary-fg, var(--bg)); }
+html.ui-simple #forgePane .st-landed, html.ui-simple #fxDrawer .st-landed { color: var(--s-ok, var(--st-landed)); }
+html.ui-simple #forgePane .st-conflict, html.ui-simple #fxDrawer .st-conflict { color: var(--s-bad, var(--st-conflict)); }
+html.ui-simple #forgePane .st-train, html.ui-simple #fxDrawer .st-train { color: var(--s-wait, var(--st-train)); }
+html.ui-simple #forgePane .muted, html.ui-simple #fxDrawer .muted { color: var(--s-muted, var(--muted)); }
+html.ui-simple .fx-error .fx-code { display: none; }
+html.ui-simple #fxDrawer .fx-drawer-h h2 { font-size: var(--s-h2, 16px); }
+/* Keyboard: every Simple control shows where focus is. */
+html.ui-simple #forgePane :is(a, button, summary, input, select, textarea, [tabindex]):focus-visible,
+html.ui-simple #fxDrawer :is(a, button, summary, [tabindex]):focus-visible,
+html.ui-simple #fxComposerOverlay :is(a, button, input, textarea):focus-visible { outline: 2px solid var(--s-primary, var(--ring)); outline-offset: 2px; }
 @media (max-width: 640px) {
   .fx-big .v { font-size: 26px; line-height: 30px; }
   .fx-big { padding: 10px 12px; }
@@ -605,6 +687,7 @@ a.fx-btn-primary:hover { background: var(--accent-hover); }
   .fx-tour-ring { transition: none; }
   .fx-landing { display: none; }
   .fx-main-rule.fx-pulse { animation: none; }
+  .fx-celebrate { animation: none; }
 }
 body.fx-stagemode header { width: 60px; padding: 14px 8px; }
 body.fx-stagemode header h1.brand-head span:last-child, body.fx-stagemode .side-link span:not(.fx-badge), body.fx-stagemode .side-group, body.fx-stagemode .side-foot { display: none; }

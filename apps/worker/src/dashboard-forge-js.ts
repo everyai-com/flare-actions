@@ -216,7 +216,127 @@ export const FORGE_JS = String.raw`
     quest3_prompt: "Say hello to Flare Forge and make a plan for a small change.",
     quest_wait: "○ Waiting for your agent…",
     quest_ok: "✓ Your agent is connected!",
-    toast_first_agent: "🎉 Your first agent is here!"
+    toast_first_agent: "🎉 Your first agent is here!",
+    // Detail views: one job each (docs/UX-BUDGET.md), the rest under Show more.
+    md_open: "Open full page",
+    files_less: "Show fewer",
+    plan_files_h: "Files it will touch",
+    plan_no_files: "No files listed yet.",
+    plan_goal: "Part of this goal:",
+    plan_safe_h: "Is it safe?",
+    plan_ask_owner: "Ask a project owner to approve it.",
+    plan_near_h: "Other agents nearby",
+    near_one: "{n} is also working on {m}.",
+    near_clash: "{n} also changed {m}, and the two changes clashed.",
+    near_none: "No other agent is working on these files right now.",
+    near_someone: "Another agent",
+    plan_st_draft: "The plan is written. An agent will pick it up soon.",
+    plan_st_awaiting_plan: "It changes files that need a person's OK before work starts.",
+    plan_st_claimed: "An agent just picked this up.",
+    plan_st_working: "An agent is making these changes right now.",
+    plan_st_ready: "The work is done. It waits to be tested with other plans.",
+    plan_st_in_train: "It is being tested together with other finished plans.",
+    plan_st_landed: "Done! It is part of the main version now.",
+    plan_st_conflicted: "It bumped into another change. An agent will redo it.",
+    plan_st_replaying: "It bumped into another change. An agent is redoing it now.",
+    plan_st_bisected: "Its group had a problem. We are finding which plan caused it.",
+    plan_st_failed: "Its tests failed, so it did not join the main version.",
+    plan_st_expired: "The agent stopped answering. Another agent can pick it up.",
+    plan_st_abandoned: "The agent stopped working on this plan.",
+    plan_st_other: "This is where the plan is right now.",
+    land_h_running: "Testing a group of plans",
+    land_h_forming: "Getting a group ready",
+    land_h_landed: "Landed! 🎉",
+    land_h_bisected: "Partly landed",
+    land_h_failed: "This group did not land",
+    land_p_running: "These plans are tested together. Only work that passes joins the main version.",
+    land_p_forming: "Finished plans are lining up to be tested together.",
+    land_p_landed: "Every plan passed its tests and joined the main version.",
+    land_p_some: "{n} plans joined the main version. {m} did not pass the tests.",
+    land_p_failed: "The tests failed, so nothing joined the main version.",
+    land_plans_h: "Plans in this group",
+    land_sim: "{n} pretend plans are in this group.",
+    progress: "Progress",
+    step_ready: "Getting ready",
+    step_test: "Testing",
+    step_joined: "Joined the main version",
+    step_some: "Partly joined",
+    step_failed: "Did not join",
+    clash_h: "Two plans clash",
+    clash_fixed_h: "Clash fixed 🎉",
+    clash_what: "{n} and {m} changed the same lines in one file.",
+    clash_first: "The change by {n} joined the main version first.",
+    clash_plans_h: "The two plans",
+    clash_who_h: "Who is fixing it?",
+    clash_open: "Nobody is fixing it yet.",
+    clash_open_ask: "Ask a project owner to start a fix.",
+    clash_fixing: "{n} is redoing one plan on top of the other.",
+    clash_race: "{n} agents each tried a fix. The best one that passes wins.",
+    clash_winner: "The fix by {n} passed the tests and was picked.",
+    clash_resolved: "An agent redid the work. Both changes are in the main version now.",
+    clash_failed: "The fix did not work. A person needs to take a look.",
+    btn_claim: "Start a fix",
+    cstep_claimed: "Started",
+    cstep_replaying: "Redoing the work",
+    cstep_test: "Testing the fix",
+    cstep_train: "Joining the main version",
+    cstep_landed: "Fixed",
+    cstep_other: "Working",
+    why_line_h: "Why is line {n} here?",
+    why_screen_p: "Click a line number to see who wrote it, and why.",
+    why_goal: "Goal",
+    why_plan: "Plan",
+    why_who: "Who",
+    why_tests: "Tests",
+    why_who_v: "{n} wrote it.",
+    why_none_h: "No reason saved for this line",
+    why_none: "This line is older than Flare. The file's history may explain it.",
+    nopreview_h: "No preview for this file",
+    nopreview: "It is too big to show here, or it is not text.",
+    bench_h: "How fast is Flare?",
+    bench_p: "We ran many pretend agents on one project, with and without Flare.",
+    bench_n_more: "more changes per minute",
+    bench_n_quick: "quicker from plan to done",
+    bench_n_red: "minutes the main version was broken",
+    bench_sim: "These numbers come from a simulation with pretend agents, not real projects.",
+    bench_demo: "This is pretend demo data. Nothing here was measured.",
+    bench_none_h: "No speed test yet",
+    bench_none: "Run the speed test to see numbers here.",
+    err_h: "Something went wrong",
+    err_network: "We could not reach Flare. Check your connection and try again.",
+    err_auth: "Please sign in again to see this.",
+    err_missing: "We could not find this. It may have been removed.",
+    err_p: "Something broke on our side. Please try again.",
+    btn_retry: "Try again",
+    btn_undo: "Undo",
+    copied_short: "Copied!",
+    copy_fail: "Could not copy. Select the text and copy it yourself.",
+    toast_paused: "Paused. Nothing moves until you press Resume.",
+    toast_resumed: "Moving again.",
+    toast_goal_first: "Write your goal first.",
+    toast_need_files: "Each plan needs a name and at least one file.",
+    nf_plan_h: "We could not find this plan",
+    nf_land_h: "We could not find this landing",
+    nf_clash_h: "We could not find this clash",
+    nf_p: "It may be finished and cleaned up already.",
+    nf_back: "Back to the list",
+    trains_none_btn: "See the plans",
+    back_live: "See who is working",
+    comp_note: "We suggest plans. You can change them before they start.",
+    comp_planning: "Making plans…",
+    comp_demo: "Pretend plans for the demo. Change them freely.",
+    comp_fail: "Could not make plans. Please try again.",
+    comp_col_plan: "Plan",
+    comp_col_files: "Files it will touch",
+    comp_col_risk: "Risk",
+    comp_col_ok: "Needs OK",
+    comp_needs_ok: "! needs OK",
+    comp_same: "Plans {n} and {m} touch the same files. Both agents will be told.",
+    comp_add: "+ Add plan",
+    comp_add_path: "+ file or folder",
+    comp_launch0: "Start plans",
+    comp_launch: "Start {n} plans",
+    comp_sum: "{n} plans. {m} need a person's OK first."
   };
   var FX = {
     demo: false, demoScale: false, anon: false, stage: false, repo: "", repos: [], paused: false, buffer: [],
@@ -295,7 +415,10 @@ export const FORGE_JS = String.raw`
   function fxShort(sha) { return sha ? String(sha).slice(0, 7) : ""; }
   function fxReduced() { try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { return false; } }
   function fxCopy(text, okMsg) {
-    function done(ok) { toast(ok ? (okMsg || "Copied") : "Copy failed", !ok); }
+    function done(ok) {
+      if (fxSimple()) { fxToast(ok ? (okMsg || fxS("copied_short")) : fxS("copy_fail"), !ok, ok ? "" : "copy_failed"); return; }
+      toast(ok ? (okMsg || "Copied") : "Copy failed", !ok);
+    }
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
     else done(false);
   }
@@ -320,6 +443,83 @@ export const FORGE_JS = String.raw`
   function fxFilterDefs(defs, kind) {
     if (!fxSimple()) return defs;
     return defs.map(function (f) { return [f[0], fxS("f_" + kind + "_" + f[0]) || f[1], f[2], f[3], f[4]]; });
+  }
+  // Simple toasts: plain words only; the machine code rides data-code.
+  // #toasts is aria-live="polite"; errors also get role="alert".
+  function fxToast(text, isErr, code, kind) {
+    var box = document.getElementById("toasts");
+    if (!box) { toast(text, isErr); return; }
+    var t = h("div", { cls: "toast" + (isErr ? " err" : ""), role: isErr ? "alert" : "status", "data-code": code || null, "data-kind": kind || null, text: text });
+    box.appendChild(t);
+    while (box.children.length > 4) box.removeChild(box.firstChild);
+    setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 4200);
+  }
+  // Simple shows a person only the moves they can make. The server
+  // enforces permissions either way; demo visitors may try everything.
+  function fxCanAct() { return FX.demo || (typeof isAdmin !== "undefined" && !!isAdmin); }
+  // "Show more" for Simple detail views: a native details/summary (keyboard
+  // and screen-reader ready) that renders the full Pro view on first open
+  // and remembers its open state across live re-renders.
+  function fxShowMore(key, render) {
+    FX.smore = FX.smore || {};
+    var body = h("div", { cls: "fx-smore-b" });
+    var sum = h("summary", { "data-action": "show_more", "data-target": key, text: fxS("more") });
+    var det = h("details", { cls: "fx-smore", "data-kind": "show-more", "data-id": key }, [sum, body]);
+    var drawn = false;
+    function sync() {
+      sum.textContent = fxS(det.open ? "less" : "more");
+      if (det.open && !drawn) { drawn = true; render(body); }
+    }
+    det.addEventListener("toggle", function () { FX.smore[key] = det.open; sync(); });
+    if (FX.smore[key]) { det.open = true; sync(); }
+    return det;
+  }
+  // A plain step track (colour + icon + words): steps [[key, glyph]],
+  // cur = index of the current step, tone = its colour family.
+  function fxTrackSimple(steps, cur, tone, label) {
+    var ol = h("ol", { cls: "fx-strack", "aria-label": label || fxS("progress") });
+    steps.forEach(function (s, i) {
+      var state = i < cur ? "done" : i === cur ? "cur" : "todo";
+      var glyph = i < cur ? "✓" : i === cur ? (s[1] || "▶") : "○";
+      ol.appendChild(h("li", { cls: "fx-sstep " + state, "data-state": state, "data-tone": i === cur ? tone : (i < cur ? "landed" : "idle"), "aria-current": i === cur ? "step" : null }, [h("span", { cls: "g", "aria-hidden": "true", text: glyph }), h("span", { cls: "w", text: fxS(s[0]) || s[0] })]));
+    });
+    return ol;
+  }
+  // Up to five files, then a button that shows the rest in place.
+  function fxFileList(paths, max) {
+    paths = paths || [];
+    max = max || 5;
+    var ul = h("ul", { cls: "fx-sfiles" });
+    if (!paths.length) { ul.appendChild(h("li", { cls: "muted", text: fxS("plan_no_files") })); return ul; }
+    var extra = [];
+    paths.forEach(function (p, i) {
+      var li = h("li", { cls: "mono", "data-kind": "path", "data-id": p, text: p });
+      if (i >= max) { li.hidden = true; extra.push(li); }
+      ul.appendChild(li);
+    });
+    if (extra.length) {
+      var b = h("button", { type: "button", cls: "ghost fx-slink", "aria-expanded": "false", text: fxS("more_n", extra.length) });
+      b.addEventListener("click", function () {
+        var open = b.getAttribute("aria-expanded") !== "true";
+        extra.forEach(function (li) { li.hidden = !open; });
+        b.setAttribute("aria-expanded", open ? "true" : "false");
+        b.textContent = open ? fxS("files_less") : fxS("more_n", extra.length);
+      });
+      ul.appendChild(h("li", { cls: "fx-sfiles-more" }, [b]));
+    }
+    return ul;
+  }
+  // Simple empty / not-found card: plain headline, one sentence, one next
+  // move. data-code stays for agents; the [code] line is hidden by CSS.
+  function fxEmptySimple(code, hKey, pKey, href, btnKey, hero) {
+    var box = h("div", { cls: "fx-empty fx-empty-simple" + (hero ? " hero" : ""), "data-state": "empty", "data-code": code }, [h("h3", { text: fxS(hKey) }), pKey ? h("p", { text: fxS(pKey) }) : null]);
+    if (href) box.appendChild(h("div", { cls: "fx-actions" }, [h("a", { cls: "fx-btn-primary", href: href, "data-action": "open_detail", text: fxS(btnKey) })]));
+    box.appendChild(h("div", { cls: "fx-code", text: "[" + code + "]" }));
+    return box;
+  }
+  // Section inside a Simple detail card: small plain heading + content.
+  function fxSSec(hKey, kids, extra) {
+    return h("section", { cls: "fx-ssec", "aria-label": fxS(hKey) }, [h("h3", { cls: "fx-ssec-h", text: fxS(hKey) })].concat(kids, extra || []));
   }
 
   // ---------- shared components ----------
@@ -454,6 +654,20 @@ export const FORGE_JS = String.raw`
   }
   function fxErrorCard(err, retry) {
     var code = (err && err.code) || "request_failed";
+    if (fxSimple()) {
+      // Plain words and one next move (Try again). The server's message,
+      // hint and [code] stay reachable under Show more / data-*.
+      var st = err ? err.status : undefined;
+      var pk = code === "network_error" || st === 0 ? "err_network" : st === 401 || st === 403 ? "err_auth" : st === 404 ? "err_missing" : "err_p";
+      var sbox = h("div", { cls: "fx-error fx-error-simple", role: "alert", "data-state": "error", "data-code": code, "data-hint": (err && err.hint) || "", "data-message": (err && err.message) || "" }, [
+        h("h3", {}, [h("span", { "aria-hidden": "true", text: "✕ " }), fxS("err_h")]),
+        h("p", { text: fxS(pk) })
+      ]);
+      if (retry) sbox.appendChild(h("div", { cls: "fx-actions" }, [h("button", { type: "button", text: fxS("btn_retry"), on: { click: retry } })]));
+      sbox.appendChild(h("details", { cls: "fx-smore" }, [h("summary", { text: fxS("more") }), h("p", { text: ((err && err.message) || "") + (err && err.hint ? " " + err.hint : "") })]));
+      sbox.appendChild(h("div", { cls: "fx-code", text: "[" + code + "]" }));
+      return sbox;
+    }
     var box = h("div", { cls: "fx-error", role: "alert", "data-state": "error", "data-code": code, "data-hint": (err && err.hint) || "" }, [
       h("h3", { text: "Could not load this screen" }),
       h("p", { text: (err && err.message) || "Request failed." })
@@ -1109,7 +1323,7 @@ export const FORGE_JS = String.raw`
     var g = FX.game, now = Date.now();
     if (now - (g.at[kind] || 0) < gap) return;
     g.at[kind] = now;
-    toast(fxS("toast_" + kind));
+    fxToast(fxS("toast_" + kind), false, "", "game");
   }
   function fxApplyPulse() {
     var p = FX.pulse;
@@ -1850,10 +2064,12 @@ export const FORGE_JS = String.raw`
       var buf = FX.buffer; FX.buffer = [];
       buf.forEach(fxApplyFeed);
       fxSetBadge(FX.ws || FX.simTimer ? "live" : FX.pollTimer ? "polling" : "off", FX.simTimer ? "live · demo sim" : null);
-      toast("Live updates resumed" + (buf.length ? " · applied " + buf.length + " buffered" : ""));
+      if (fxSimple()) fxToast(fxS("toast_resumed"));
+      else toast("Live updates resumed" + (buf.length ? " · applied " + buf.length + " buffered" : ""));
     } else {
       fxSetBadge("paused");
-      toast("Live updates paused · press p to resume");
+      if (fxSimple()) fxToast(fxS("toast_paused"));
+      else toast("Live updates paused · press p to resume");
     }
   }
   // Demo simulator: emits the same {v:1,type:"delta"} messages a Feed DO
@@ -2334,7 +2550,7 @@ export const FORGE_JS = String.raw`
     fxRenderInbox();
     var box = document.getElementById("toasts");
     var t = h("div", { cls: "toast", role: "status" }, fxSimple() ? [label + " ", h("span", { cls: "muted", text: fxS("toast_wait") })] : [label + " · ", h("span", { cls: "muted", text: "sending in 5s" })]);
-    var u = h("button", { type: "button", cls: "ghost fx-undo", "aria-keyshortcuts": "z" }, ["Undo ", h("kbd", { text: "z" })]);
+    var u = h("button", { type: "button", cls: "ghost fx-undo", "aria-keyshortcuts": "z" }, [fxSimple() ? fxS("btn_undo") + " " : "Undo ", h("kbd", { text: "z" })]);
     t.appendChild(u);
     box.appendChild(t);
     var entry = { it: it, commit: commit, node: t, timer: null };
@@ -2374,7 +2590,7 @@ export const FORGE_JS = String.raw`
     for (var k in args) if (Object.prototype.hasOwnProperty.call(args, k)) body[k] = args[k];
     if (!body.repo) body.repo = FX.repo;
     return fxFetch(path, { method: spec.m, body: body }).then(function (r) { toast(fxSimple() ? fxS("toast_ok") : tool + (target ? " · " + target : "") + " done"); return r; }, function (err) {
-      if (fxSimple()) { toast(fxS("toast_fail") + " " + err.message + " [" + err.code + "]", true); throw err; }
+      if (fxSimple()) { fxToast(fxS("toast_fail"), true, err.code); throw err; }
       toast(tool + " failed: " + err.message + (err.hint ? " · " + err.hint : "") + " [" + err.code + "]", true);
       throw err;
     });
@@ -2509,7 +2725,7 @@ export const FORGE_JS = String.raw`
     a.items.forEach(function (x) { if (a.opts.keyOf(x) === st.sel) it = x; });
     fxClear(mount);
     if (!it) { mount.appendChild(h("p", { cls: "muted", text: "Select a row to see its detail." })); return; }
-    mount.appendChild(h("div", { cls: "fx-md-dhead" }, [h("span", { text: "Selected" }), h("a", { href: a.opts.href(it), "data-action": "open_detail", "data-target": st.sel, text: "Open full page ↗" })]));
+    mount.appendChild(h("div", { cls: "fx-md-dhead" }, [h("span", { text: "Selected" }), h("a", { href: a.opts.href(it), "data-action": "open_detail", "data-target": st.sel, text: fxSimple() ? fxS("md_open") + " ↗" : "Open full page ↗" })]));
     var body = h("div", { "data-md": kind });
     mount.appendChild(body);
     a.opts.detail(it, body);
@@ -2656,12 +2872,62 @@ export const FORGE_JS = String.raw`
       if (!fxMountLive("intents", id, mount)) return;
       if (!mount) fxRenderNotice("intent");
       fxClear(box);
-      if (!d) { box.appendChild(fxEmpty("intent_not_found", "No intent " + id + ".", "IDs look like i-7f3a. Jump to one from ⌘K by typing its prefix.", null)); return; }
+      if (!d) { box.appendChild(fxSimple() ? fxEmptySimple("intent_not_found", "nf_plan_h", "nf_p", "#/intents", "nf_back") : fxEmpty("intent_not_found", "No intent " + id + ".", "IDs look like i-7f3a. Jump to one from ⌘K by typing its prefix.", null)); return; }
       fxRenderIntent(box, fxNormIntent(d.intent || d));
       if (!mount) fxSyncChrome();
     }, function (err) { fxClear(box).appendChild(fxErrorCard(err, function () { fxLoadIntent(id, mount); })); });
   }
   function fxRenderIntent(box, i) {
+    if (fxSimple()) { fxRenderIntentSimple(box, i); return; }
+    fxRenderIntentFull(box, i);
+  }
+  // Simple plan detail. Job: "What is this agent doing, and is it safe?"
+  // Title, who, state (colour + icon + words), the files it will touch,
+  // who else is near them (CD5), and one move only if this viewer can
+  // make it. Risk terms, notes, steps and ids live under Show more.
+  function fxRenderIntentSimple(box, i) {
+    FX.current = { kind: "intent", id: i.id, state: i.state };
+    var a = fxAgent(i.agent);
+    var fp = i.footprint || { declared: [], actual: [] };
+    var files = (fp.declared || []).slice();
+    (fp.actual || []).forEach(function (p) { if (files.indexOf(p) < 0) files.push(p); });
+    var card = h("article", { cls: "fx-sv", "data-kind": "intent", "data-id": i.id, "data-state": i.state, "data-risk": i.risk, "data-job": "is_this_plan_safe", "aria-labelledby": "fxSvTitle-" + i.id });
+    card.appendChild(h("div", { cls: "fx-sv-top" }, [
+      h("h1", { cls: "fx-sv-h", id: "fxSvTitle-" + i.id, text: i.title }),
+      h("p", { cls: "fx-sv-who" }, [fxPill(i.state), i.agent ? h("span", { text: fxS("inbox_by", fxAgentName(a)) }) : null])
+    ]));
+    card.appendChild(h("p", { cls: "fx-sv-say", text: fxS("plan_st_" + i.state) || fxS("plan_st_other") }));
+    if (i.goal && i.goal.text) card.appendChild(h("p", { cls: "fx-sv-goal" }, [h("span", { cls: "muted", text: fxS("plan_goal") + " " }), i.goal.text]));
+    // the one move: approving is a person's job; agents do the rest
+    if (i.state === "awaiting_plan") {
+      if (fxCanAct()) card.appendChild(h("div", { cls: "fx-actions" }, [h("button", { type: "button", cls: "fx-sv-primary", "data-action": "approve_plan", "data-target": i.id, text: fxS("btn_approve"), on: { click: function () { fxCall("approve_plan", i.id, {}).then(function () { fxLoadIntent(i.id, box.getAttribute("data-md") ? box : null); }, function () {}); } } })]));
+      else card.appendChild(h("p", { cls: "fx-sv-note", text: fxS("plan_ask_owner") }));
+    }
+    var band = fxBand(i.risk);
+    var ev = i.evidence;
+    var tests = !ev ? "tests_none" : ev.status === "success" ? (Number(ev.tests) === 0 ? "tests_weak" : "tests_ok") : ev.status === "failure" || ev.status === "error" ? "tests_bad" : "tests_run";
+    var testTone = { tests_none: "idle", tests_ok: "landed", tests_weak: "overlap", tests_bad: "conflict", tests_run: "train" }[tests];
+    card.appendChild(fxSSec("plan_safe_h", [h("ul", { cls: "fx-sv-list" }, [
+      h("li", { cls: "fx-sv-risk " + band, "data-risk": i.risk }, [h("span", { "aria-hidden": "true", text: (band === "high" ? "▲" : band === "med" ? "◐" : "●") + " " }), fxS("risk_" + band)]),
+      h("li", { cls: "st-" + testTone, "data-kind": "evidence", "data-state": ev ? ev.status : "none", text: fxS(tests) })
+    ])]));
+    card.appendChild(fxSSec("plan_files_h", [fxFileList(files, 5)]));
+    // CD5: who else is near these files, in plain words
+    var near = h("ul", { cls: "fx-sv-list" });
+    (i.overlaps || []).forEach(function (o) {
+      var oid = fxIdOf(o.intent || o.id);
+      var other = fxIntentById(oid);
+      var who = o.agent ? fxAgentName(fxAgent(fxIdOf(o.agent))) : other && other.agent ? fxAgentName(fxAgent(other.agent)) : fxS("near_someone");
+      var where = (o.paths || [])[0] || "";
+      var clash = o.state === "conflict";
+      near.appendChild(h("li", { cls: clash ? "st-conflict" : "st-overlap", "data-kind": "overlap", "data-id": oid || "", "data-state": o.state || "" }, [h("span", { "aria-hidden": "true", text: clash ? "✕ " : "◐ " }), h("span", { cls: "fx-sv-ink", text: fxS(clash ? "near_clash" : "near_one", who, where) })]));
+    });
+    if (!near.firstChild) near.appendChild(h("li", { cls: "st-landed" }, [h("span", { "aria-hidden": "true", text: "✓ " }), h("span", { cls: "fx-sv-ink", text: fxS("near_none") })]));
+    card.appendChild(fxSSec("plan_near_h", [near]));
+    box.appendChild(card);
+    box.appendChild(fxShowMore("intent:" + i.id, function (more) { fxRenderIntentFull(more, i); }));
+  }
+  function fxRenderIntentFull(box, i) {
     FX.current = { kind: "intent", id: i.id, state: i.state };
     var a = fxAgent(i.agent);
     var lease = i.lease_expires_at ? Math.max(0, Math.round((Date.parse(i.lease_expires_at) - Date.now()) / 1000)) : null;
@@ -2793,7 +3059,7 @@ export const FORGE_JS = String.raw`
       var simple = fxSimple();
       if (!list.length) {
         fxClear(box);
-        if (simple) { box.appendChild(fxSimpleHead("trains_h", "trains_explain")); box.appendChild(fxEmpty("no_trains", fxS("trains_none_h"), fxS("trains_none"), null)); }
+        if (simple) { box.appendChild(fxSimpleHead("trains_h", "trains_explain")); box.appendChild(fxEmptySimple("no_trains", "trains_none_h", "trains_none", "#/intents", "trains_none_btn")); }
         else box.appendChild(fxEmpty("no_trains", "No trains yet.", "The first ready intent starts one.", "flare intents ready <id>"));
         return;
       }
@@ -2841,11 +3107,75 @@ export const FORGE_JS = String.raw`
       if (!mount) fxRenderNotice("trains");
       fxClear(box);
       t = t && (t.train || t);
-      if (!t) { box.appendChild(fxEmpty("train_not_found", "No train " + id + ".", "Train IDs look like t-142.", null)); return; }
+      if (!t) { box.appendChild(fxSimple() ? fxEmptySimple("train_not_found", "nf_land_h", "nf_p", "#/trains", "nf_back") : fxEmpty("train_not_found", "No train " + id + ".", "Train IDs look like t-142.", null)); return; }
       fxRenderTrain(box, t);
     }, function (err) { if (!quiet) fxClear(box).appendChild(fxErrorCard(err, function () { fxLoadTrain(id, false, mount); })); });
   }
   function fxRenderTrain(box, t) {
+    if (fxSimple()) { fxRenderTrainSimple(box, t); return; }
+    fxRenderTrainFull(box, t);
+  }
+  // Simple landing detail. Job: "Is this batch safe to join the main
+  // version?" A three-step track, the plans in it, and the result; a
+  // landed batch is celebrated (CD2). Lanes, SHAs, CAS and the bisect
+  // tree live under Show more.
+  function fxRenderTrainSimple(box, t) {
+    FX.current = { kind: "train", id: t.id, state: t.state };
+    var st = t.state;
+    var running = st === "forming" || st === "merging" || st === "verifying" || st === "running";
+    var kind = st === "landed" ? "landed" : st === "bisected" ? "bisected" : running ? (st === "verifying" || st === "running" ? "running" : "forming") : "failed";
+    var res = t.result || {};
+    // per-plan outcome: lane CI, the bisect culprit, and CAS
+    var culprit = {}, okBis = {};
+    (function walk(n) { if (!n) return; if (n.culprit) (n.intents || []).forEach(function (x) { culprit[fxIdOf(x)] = true; }); else if (n.status === "success" && !(n.children || []).length) (n.intents || []).forEach(function (x) { okBis[fxIdOf(x)] = true; }); (n.children || []).forEach(walk); })(t.bisect);
+    var plans = [];
+    (t.lanes || []).forEach(function (l) {
+      var ls = l.stages || {}, ci = ls.ci || {};
+      (l.intents || []).forEach(function (x) {
+        var id = fxIdOf(x);
+        var k = culprit[id] ? ["conflict", "land_bad"] : okBis[id] || ls.cas === "done" ? ["landed", st === "landed" || st === "bisected" ? "land_done" : "land_ok"] : ci.status === "failure" || ci.status === "error" ? ["conflict", "land_bad"] : ci.status === "running" || ls.push === "running" ? ["train", "land_test"] : ci.status === "success" ? ["landed", "land_ok"] : ["idle", "land_wait"];
+        plans.push({ id: id, title: fxTitleOf(x), agent: fxAgentOf(x), tone: k[0], word: k[1] });
+      });
+    });
+    var nOk = res.landed !== undefined ? Number(res.landed) || 0 : plans.filter(function (p) { return p.tone === "landed"; }).length;
+    var nBad = res.failed !== undefined ? Number(res.failed) || 0 : plans.filter(function (p) { return p.tone === "conflict"; }).length;
+    // Budget: plan titles are plain text here (at most 3 links per
+    // screen); each plan's own page is one click away under Show more.
+    var card = h("article", { cls: "fx-sv" + (kind === "landed" ? " fx-celebrate" : ""), "data-kind": "train", "data-id": t.id, "data-state": st, "data-job": "is_this_batch_safe", "aria-labelledby": "fxSvTitle-" + t.id });
+    var glyph = kind === "landed" ? "✓" : kind === "bisected" ? "◐" : kind === "failed" ? "✕" : "▶";
+    var tone = kind === "landed" ? "landed" : kind === "bisected" ? "overlap" : kind === "failed" ? "conflict" : "train";
+    card.appendChild(h("div", { cls: "fx-sv-top" }, [h("h1", { cls: "fx-sv-h", id: "fxSvTitle-" + t.id }, [h("span", { cls: "st-" + tone, "aria-hidden": "true", text: glyph + " " }), fxS("land_h_" + kind)])]));
+    var say = kind === "bisected" ? fxS("land_p_some", fxNum(nOk), fxNum(nBad)) : fxS("land_p_" + kind);
+    card.appendChild(h("p", { cls: "fx-sv-say", role: kind === "landed" ? "status" : null, text: say }));
+    var cur = kind === "forming" ? 0 : kind === "running" ? 1 : 2;
+    var last = kind === "landed" ? ["step_joined", "✓"] : kind === "bisected" ? ["step_some", "◐"] : kind === "failed" ? ["step_failed", "✕"] : ["step_joined", "○"];
+    var track = fxTrackSimple([["step_ready", "▶"], ["step_test", "▶"], last], cur, tone);
+    card.appendChild(track);
+    var ul = h("ul", { cls: "fx-sv-list fx-sv-plans" });
+    var sim = !!t.sim || plans.every(function (p) { return !p.title; });
+    if (sim && plans.length) ul.appendChild(h("li", { text: fxS("land_sim", fxNum(plans.length)) }));
+    else {
+      var extra = [];
+      plans.forEach(function (p, i) {
+        var li = h("li", { "data-kind": "intent", "data-id": p.id, "data-state": p.word }, [
+          h("span", { cls: "fx-sv-st st-" + p.tone, text: fxS(p.word) }),
+          h("span", { cls: "fx-sv-ink", text: p.title }),
+          p.agent ? h("span", { cls: "muted", text: " " + fxS("inbox_by", fxAgentName(fxAgent(p.agent))) }) : null
+        ]);
+        if (i >= 5) { li.hidden = true; extra.push(li); }
+        ul.appendChild(li);
+      });
+      if (extra.length) {
+        var mb = h("button", { type: "button", cls: "ghost fx-slink", "aria-expanded": "false", text: fxS("more_n", extra.length) });
+        mb.addEventListener("click", function () { var open = mb.getAttribute("aria-expanded") !== "true"; extra.forEach(function (li) { li.hidden = !open; }); mb.setAttribute("aria-expanded", open ? "true" : "false"); mb.textContent = open ? fxS("files_less") : fxS("more_n", extra.length); });
+        ul.appendChild(h("li", {}, [mb]));
+      }
+    }
+    card.appendChild(fxSSec("land_plans_h", [ul]));
+    box.appendChild(card);
+    box.appendChild(fxShowMore("train:" + t.id, function (more) { if (box.getAttribute("data-md")) more.setAttribute("data-md", "trains"); fxRenderTrainFull(more, t); }));
+  }
+  function fxRenderTrainFull(box, t) {
     FX.current = { kind: "train", id: t.id, state: t.state };
     var n = 0; (t.lanes || []).forEach(function (l) { n += (l.intents || []).length; });
     box.appendChild(h("div", { cls: "fx-head", "data-kind": "train", "data-id": t.id, "data-state": t.state }, [
@@ -2932,7 +3262,7 @@ export const FORGE_JS = String.raw`
       var caught = fxNum((FX.snap && FX.snap.counters.overlaps_caught) || 0);
       if (!list.length) {
         fxClear(box);
-        if (simple) { box.appendChild(fxSimpleHead("conflicts_h", "conflicts_explain")); box.appendChild(fxEmpty("no_conflicts", fxS("conflicts_none_h"), fxS("conflicts_none", caught), null, true)); }
+        if (simple) { box.appendChild(fxSimpleHead("conflicts_h", "conflicts_explain")); var ce = fxEmpty("no_conflicts", fxS("conflicts_none_h"), fxS("conflicts_none", caught), null, true); ce.insertBefore(h("div", { cls: "fx-actions" }, [h("a", { cls: "fx-btn-primary", href: "#/live", "data-action": "open_detail", text: fxS("back_live") })]), ce.lastChild); box.appendChild(ce); }
         else box.appendChild(fxEmpty("no_conflicts", "No open conflicts.", caught + " overlaps were caught at declare time.", null));
         return;
       }
@@ -2981,11 +3311,73 @@ export const FORGE_JS = String.raw`
       if (!mount) fxRenderNotice("conflicts");
       fxClear(box);
       c = c && (c.conflict || c);
-      if (!c) { box.appendChild(fxEmpty("conflict_not_found", "No conflict " + id + ".", "Conflict IDs look like c-9.", null)); return; }
+      if (!c) { box.appendChild(fxSimple() ? fxEmptySimple("conflict_not_found", "nf_clash_h", "nf_p", "#/conflicts", "nf_back") : fxEmpty("conflict_not_found", "No conflict " + id + ".", "Conflict IDs look like c-9.", null)); return; }
       fxRenderConflict(box, c);
     }, function (err) { if (!quiet) fxClear(box).appendChild(fxErrorCard(err, function () { fxLoadConflict(id, false, mount); })); });
   }
   function fxRenderConflict(box, c) {
+    if (fxSimple()) { fxRenderConflictSimple(box, c); return; }
+    fxRenderConflictFull(box, c);
+  }
+  // Simple clash detail. Job: "Two plans clash. Who fixes it?" One plain
+  // sentence of what clashed, the two plans, who is fixing it (the redo
+  // and the try-several-fixes race in plain words), and one move only if
+  // this viewer can make it. Hunks, policy and race cards: Show more.
+  var FX_CSTEP = { claimed: "cstep_claimed", replaying: "cstep_replaying", ci: "cstep_test", "CI on exact SHA": "cstep_test", train: "cstep_train", landed: "cstep_landed" };
+  function fxRenderConflictSimple(box, c) {
+    FX.current = { kind: "conflict", id: c.id, state: c.state };
+    var A = c.a || {}, B = c.b || {};
+    var nameOf = function (s) { return s && s.agent ? fxAgentName(fxAgent(fxIdOf(s.agent))) : fxS("near_someone"); };
+    var fixed = c.state === "resolved";
+    var gave = c.state === "failed" || c.state === "abandoned";
+    var card = h("article", { cls: "fx-sv" + (fixed ? " fx-celebrate" : ""), "data-kind": "conflict", "data-id": c.id, "data-state": c.state, "data-job": "who_fixes_this_clash", "aria-labelledby": "fxSvTitle-" + c.id });
+    card.appendChild(h("div", { cls: "fx-sv-top" }, [
+      h("h1", { cls: "fx-sv-h", id: "fxSvTitle-" + c.id }, [h("span", { cls: fixed ? "st-landed" : "st-conflict", "aria-hidden": "true", text: fixed ? "✓ " : "✕ " }), fxS(fixed ? "clash_fixed_h" : "clash_h")]),
+      h("p", { cls: "fx-sv-who" }, [fxPill(c.state === "claimed" ? "replaying" : c.state)])
+    ]));
+    card.appendChild(h("p", { cls: "fx-sv-say", text: fxS("clash_what", nameOf(A), nameOf(B)) }));
+    if ((c.files || []).length) card.appendChild(h("p", { cls: "fx-sv-file" }, [h("span", { cls: "mono fx-shared", text: (c.files || []).join(", ") })]));
+    var two = h("ul", { cls: "fx-sv-list fx-sv-plans" });
+    [A, B].forEach(function (s) {
+      if (!s.intent && !s.title) return;
+      var id = fxIdOf(s.intent);
+      two.appendChild(h("li", { "data-kind": "intent", "data-id": id || "" }, [
+        s.landed ? h("span", { cls: "fx-sv-st st-landed", text: "✓ " + fxS("st_landed") }) : h("span", { cls: "fx-sv-st st-conflict", text: "✕ " + fxS("st_conflicted") }),
+        id ? h("a", { href: "#/intents/" + id, "data-action": "open_detail", "data-target": id, text: s.title || id }) : h("span", { text: s.title }),
+        h("span", { cls: "muted", text: " " + fxS("inbox_by", nameOf(s)) })
+      ]));
+    });
+    if (B.landed) two.appendChild(h("li", { cls: "muted", text: fxS("clash_first", nameOf(B)) }));
+    card.appendChild(fxSSec("clash_plans_h", [two]));
+    // who is fixing it
+    var who = [];
+    var r = c.replay;
+    var winner = null;
+    (c.race || []).forEach(function (x) { if (x.winner) winner = x; });
+    if (fixed) who.push(h("p", { cls: "fx-sv-say st-landed", role: "status", text: fxS("clash_resolved") }));
+    else if (gave) who.push(h("p", { cls: "fx-sv-say st-conflict", text: fxS("clash_failed") }));
+    else if (c.state === "open") {
+      who.push(h("p", { cls: "fx-sv-say", text: fxS("clash_open") }));
+      if (fxCanAct()) who.push(h("div", { cls: "fx-actions" }, [h("button", { type: "button", cls: "fx-sv-primary", "data-action": "claim_conflict", "data-target": c.id, text: fxS("btn_claim"), on: { click: function () { fxCall("claim_conflict", c.id, {}).then(function () { if (FX.route.id) fxLoadConflict(c.id); else fxLoadConflicts(true); }, function () {}); } } })]));
+      else who.push(h("p", { cls: "fx-sv-note", text: fxS("clash_open_ask") }));
+    } else {
+      var by = r && r.by ? fxAgentName(fxAgent(fxIdOf(r.by))) : nameOf(A);
+      who.push(h("p", { cls: "fx-sv-say", text: fxS("clash_fixing", by) }));
+      if ((c.race || []).length > 1) who.push(h("p", { cls: "fx-sv-say", text: fxS("clash_race", fxNum(c.race.length)) }));
+      if (winner) who.push(h("p", { cls: "fx-sv-say st-landed" }, [h("span", { "aria-hidden": "true", text: "★ " }), fxS("clash_winner", fxAgentName(fxAgent(fxIdOf(winner.agent))))]));
+    }
+    var stages = (r && r.stages) || [];
+    if (stages.length) {
+      var cur = stages.length, steps = [];
+      stages.forEach(function (sx, i) { steps.push([FX_CSTEP[sx.name] || "cstep_other", "▶"]); if (cur === stages.length && sx.status !== "done") cur = i; });
+      if (fixed) cur = stages.length;
+      who.push(fxTrackSimple(steps, cur, gave ? "conflict" : "train"));
+    }
+    card.appendChild(fxSSec("clash_who_h", who));
+    box.appendChild(card);
+    box.appendChild(fxShowMore("conflict:" + c.id, function (more) { fxRenderConflictFull(more, c); }));
+  }
+  function fxRenderConflictFull(box, c) {
     FX.current = { kind: "conflict", id: c.id, state: c.state };
     var claim = h("button", { type: "button", "data-action": "claim_conflict", "data-target": c.id, "aria-keyshortcuts": "Shift+C", disabled: c.state !== "open" ? true : null, on: { click: function () { fxCall("claim_conflict", c.id, {}).then(function () { if (FX.route.id) fxLoadConflict(c.id); else fxLoadConflicts(true); }); } } }, [c.state === "open" ? "Claim " : "Claimed ", h("kbd", { text: "⇧C" })]);
     box.appendChild(h("div", { cls: "fx-head", "data-kind": "conflict", "data-id": c.id, "data-state": c.state }, [
@@ -3203,15 +3595,48 @@ export const FORGE_JS = String.raw`
     p.then(function (b) {
       fxRenderNotice("bench");
       fxClear(box);
-      if (!b || !(b.modes || []).length) { box.appendChild(fxEmpty("bench_not_found", "No bench run recorded.", "Run the simulator to record one; this panel renders only measured runs.", "npm run forge:bench -- --agents 10000 --mode all")); return; }
+      if (!b || !(b.modes || []).length) { if (fxSimple()) { box.appendChild(fxSimpleNoBench()); return; } box.appendChild(fxEmpty("bench_not_found", "No bench run recorded.", "Run the simulator to record one; this panel renders only measured runs.", "npm run forge:bench -- --agents 10000 --mode all")); return; }
       fxRenderBench(box, b);
     }, function (err) {
       fxClear(box);
-      if (fxMissing(err)) box.appendChild(fxEmpty("bench_not_found", "No bench run recorded.", "GET /v1/forge/bench returned " + err.status + ". This panel never shows placeholder numbers outside demo mode.", "npm run forge:bench -- --agents 10000 --mode all"));
+      if (fxMissing(err) && fxSimple()) box.appendChild(fxSimpleNoBench());
+      else if (fxMissing(err)) box.appendChild(fxEmpty("bench_not_found", "No bench run recorded.", "GET /v1/forge/bench returned " + err.status + ". This panel never shows placeholder numbers outside demo mode.", "npm run forge:bench -- --agents 10000 --mode all"));
       else box.appendChild(fxErrorCard(err, fxLoadBench));
     });
   }
+  function fxSimpleNoBench() {
+    var e = fxEmptySimple("bench_not_found", "bench_none_h", "bench_none", null, null);
+    e.insertBefore(fxCmd("npm run forge:bench -- --agents 10000 --mode all"), e.lastChild);
+    return e;
+  }
   function fxRenderBench(box, b) {
+    if (fxSimple()) { fxRenderBenchSimple(box, b); return; }
+    fxRenderBenchFull(box, b);
+  }
+  // Simple speed test. Job: "How much faster is Flare?" One sentence,
+  // three numbers (baseline vs the best measured Flare mode), and a
+  // plain note that it is a simulation. The table and bars: Show more.
+  function fxRenderBenchSimple(box, b) {
+    var modes = b.modes || [];
+    var base = null, fx = null;
+    modes.forEach(function (m) { if (m.mode === "baseline") base = m; });
+    modes.forEach(function (m) { if (m === base) return; var v = Number((m.metrics || {}).changes_per_min) || 0; if (!m.projected && (!fx || v > (Number(fx.metrics.changes_per_min) || 0))) fx = m; });
+    if (!fx) modes.forEach(function (m) { if (m !== base && !fx) fx = m; });
+    if (!base) base = modes[0];
+    var bm = (base && base.metrics) || {}, fm = (fx && fx.metrics) || {};
+    function ratio(a, c) { a = Number(a) || 0; c = Number(c) || 0; if (!a || !c) return "—"; var r = a / c; return (r >= 10 ? Math.round(r) : Math.round(r * 10) / 10) + "×"; }
+    var card = h("article", { cls: "fx-sv fx-sv-bench", "data-kind": "bench", "data-id": b.run || "", "data-job": "compare_speed", "data-mode": fx ? fx.mode : "" });
+    card.appendChild(fxSimpleHead("bench_h", "bench_p"));
+    var stats = h("ul", { cls: "fx-big3", "aria-label": fxS("bench_h") });
+    [[ratio(fm.changes_per_min, bm.changes_per_min), "bench_n_more", "landed", "changes_per_min"], [ratio(bm.median_declare_to_land_s, fm.median_declare_to_land_s), "bench_n_quick", "working", "median_declare_to_land_s"], [fxNum(fm.main_red_integration_min || 0), "bench_n_red", "landed", "main_red_integration_min"]].forEach(function (d) {
+      stats.appendChild(h("li", { cls: "fx-big", "data-metric": d[3], "data-tone": d[2] }, [h("span", { cls: "v", text: d[0] }), h("span", { cls: "l", text: fxS(d[1]) })]));
+    });
+    card.appendChild(stats);
+    card.appendChild(h("p", { cls: "fx-sv-note", "data-state": b.demo || FX.demo ? "demo" : "measured" }, [h("span", { "aria-hidden": "true", text: "ⓘ " }), fxS("bench_sim") + (b.demo || FX.demo ? " " + fxS("bench_demo") : "")]));
+    box.appendChild(card);
+    box.appendChild(fxShowMore("bench:" + (b.run || ""), function (more) { fxRenderBenchFull(more, b); }));
+  }
+  function fxRenderBenchFull(box, b) {
     box.appendChild(h("div", { cls: "fx-head", "data-kind": "bench", "data-id": b.run }, [
       h("h1", { text: "Bench · run " + b.run + " · " + fxNum(b.agents) + " agents" }),
       h("div", { cls: "meta" }, [h("span", { cls: "mono muted", text: (b.demo || FX.demo ? "demo fixture, not measured" : "measured") + " " + new Date(b.measured_at).toLocaleString() + " @" }), fxSha(b.sha), h("span", { cls: "mono muted", text: "· italic rows are projected" })])
@@ -3248,7 +3673,7 @@ export const FORGE_JS = String.raw`
   function fxOpenWhy(repo, path, line) {
     var dr = document.getElementById("fxDrawer");
     var body = fxClear(document.getElementById("fxDrawerBody"));
-    document.getElementById("fxDrawerTitle").textContent = "Why · line " + line;
+    document.getElementById("fxDrawerTitle").textContent = fxSimple() ? fxS("why_line_h", line) : "Why · line " + line;
     FX.drawerReturn = document.activeElement;
     dr.hidden = false;
     fxSkeleton(body, 4);
@@ -3269,6 +3694,49 @@ export const FORGE_JS = String.raw`
     return true;
   }
   function fxRenderWhy(body, d, path, line) {
+    if (fxSimple()) { fxRenderWhySimple(body, d, path, line); return; }
+    fxRenderWhyFull(body, d, path, line);
+  }
+  // Simple why drawer. Job: "Why does this line exist?" A plain chain,
+  // one line each: goal -> plan -> who -> tests. Commit, trailers,
+  // alternatives, review and the agent's work log live under Show more.
+  function fxRenderWhySimple(body, d, path, line) {
+    var by = {};
+    (d.chain || []).forEach(function (n) { if (!by[n.kind]) by[n.kind] = n; });
+    var iid = d.intent || (by.intent && by.intent.id) || "";
+    var it = iid ? fxIntentById(iid) : null;
+    var wrap = h("div", { cls: "fx-sv fx-sv-why", "data-kind": "why", "data-id": path + ":" + line, "data-job": "explain_line" });
+    wrap.appendChild(h("p", { cls: "mono muted", style: "margin:0;font-size:12px", text: path + ":" + line }));
+    if (d.empty || !iid) {
+      var code = (d.empty && d.empty.code) || "why_not_found";
+      var e = fxEmpty(code, fxS("why_none_h"), fxS("why_none"), d.empty && d.empty.command ? d.empty.command : null);
+      e.setAttribute("data-hint", (d.empty && d.empty.hint) || "");
+      wrap.appendChild(e);
+      body.appendChild(wrap);
+      body.appendChild(fxShowMore("why:" + path + ":" + line, function (more) { fxRenderWhyFull(more, d, path, line); }));
+      return;
+    }
+    // tests: the evidence node's status, else the plan's own evidence
+    var evn = by.evidence || null;
+    var status = evn ? (evn.status || evn.state || ((/\b(success|failure|error|running)\b/.exec(String(evn.text || "")) || [])[1] || "")) : "";
+    if (!status && it && it.evidence) status = it.evidence.status;
+    var weak = it && it.evidence && status === "success" && Number(it.evidence.tests) === 0;
+    var tests = !status ? "tests_none" : status === "success" ? (weak ? "tests_weak" : "tests_ok") : status === "failure" || status === "error" ? "tests_bad" : "tests_run";
+    var testTone = { tests_none: "idle", tests_ok: "landed", tests_weak: "overlap", tests_bad: "conflict", tests_run: "train" }[tests];
+    var agentId = it ? it.agent : "";
+    if (!agentId && by.commit) { var m = /Flare-Agent:\s*([^\s(]+)/.exec(String(by.commit.text || "")); if (m) { agentId = m[1]; ((FX.snap && FX.snap.agents) || fxFixtures().agents || []).forEach(function (ag) { if (ag.label === m[1]) agentId = ag.id; }); } }
+    var agentName = agentId ? fxAgentName(fxAgent(agentId)) : fxS("near_someone");
+    var ol = h("ol", { cls: "fx-schain", "aria-label": fxS("scr_why_h") });
+    function row(kind, labelKey, kids) { ol.appendChild(h("li", { "data-kind": kind }, [h("span", { cls: "k", text: fxS(labelKey) }), h("span", { cls: "v" }, kids)])); }
+    if (by.goal) row("goal", "why_goal", [by.goal.text || ""]);
+    row("intent", "why_plan", [h("a", { href: "#/intents/" + iid, "data-action": "open_detail", "data-target": iid, text: (by.intent && by.intent.text) || (it && it.title) || iid })]);
+    row("agent", "why_who", [fxS("why_who_v", agentName)]);
+    row("evidence", "why_tests", [h("span", { cls: "st-" + testTone, "data-state": status || "none", text: fxS(tests) })]);
+    wrap.appendChild(ol);
+    body.appendChild(wrap);
+    body.appendChild(fxShowMore("why:" + path + ":" + line, function (more) { fxRenderWhyFull(more, d, path, line); }));
+  }
+  function fxRenderWhyFull(body, d, path, line) {
     body.appendChild(h("p", { cls: "mono muted", style: "margin:0 0 12px;font-size:12px", text: path + ":" + line }));
     var ol = h("ol", { cls: "fx-chain", "aria-label": "Why chain" });
     (d.chain || []).forEach(function (n) {
@@ -3313,7 +3781,9 @@ export const FORGE_JS = String.raw`
     var path = FX.route.q.get("path") || w.path || "";
     var line = Number(FX.route.q.get("line") || 0) || 0;
     if (!FX.route.q.get("path")) { FX.route.q.set("path", path); fxWriteHash(); fxSyncChrome(); }
-    var head = h("div", { cls: "fx-head" }, [h("h1", { cls: "mono", style: "font-size:16px", text: path }), h("p", { cls: "muted", style: "margin:0;font-size:13px", text: "Click a line number (or focus one and press Enter) to see goal → intent → reasoning → alternatives → evidence → review → session." })]);
+    var head = fxSimple()
+      ? h("div", { cls: "fx-head" }, [fxSimpleHead("scr_why_h", "why_screen_p"), h("p", { cls: "mono muted", style: "margin:0;font-size:13px", text: path })])
+      : h("div", { cls: "fx-head" }, [h("h1", { cls: "mono", style: "font-size:16px", text: path }), h("p", { cls: "muted", style: "margin:0;font-size:13px", text: "Click a line number (or focus one and press Enter) to see goal → intent → reasoning → alternatives → evidence → review → session." })]);
     box.appendChild(head);
     var mount = h("div", {});
     box.appendChild(mount);
@@ -3321,7 +3791,7 @@ export const FORGE_JS = String.raw`
     var src = useFixture && w.path === path ? Promise.resolve({ text: (w.source || []).join("\n") }) : fxFetch("/v1/repos/" + encodeURIComponent(FX.repo) + "/blob?ref=main&path=" + encodeURIComponent(path));
     src.then(function (b) {
       if (b && typeof b.text === "string") mount.appendChild(fxCodeView(b.text, FX.repo, path, line, w.path === path ? w.blame : null));
-      else mount.appendChild(fxEmpty("source_unavailable", "No preview for this file.", "Binary or too large to preview. The why chain still works per line.", "flare why " + path + ":1"));
+      else mount.appendChild(fxSimple() ? fxEmptySimple("source_unavailable", "nopreview_h", "nopreview", null, null) : fxEmpty("source_unavailable", "No preview for this file.", "Binary or too large to preview. The why chain still works per line.", "flare why " + path + ":1"));
       if (line) fxOpenWhy(FX.repo, path, line);
     }, function (err) {
       if (w.path === path) { mount.appendChild(fxCodeView((w.source || []).join("\n"), FX.repo, path, line, w.blame)); FX.fallback.why = "GET /v1/repos/.../blob returned " + (err.status || "an error"); fxRenderNotice("why"); if (line) fxOpenWhy(FX.repo, path, line); }
@@ -3345,6 +3815,8 @@ export const FORGE_JS = String.raw`
     var ov = document.getElementById("fxComposerOverlay");
     FX.composerReturn = document.activeElement;
     ov.hidden = false;
+    // Simple keeps the composer's static Pro words out of sight.
+    if (fxSimple() && !FX.proposals.length) document.getElementById("fxPlannerNote").textContent = fxS("comp_note");
     fxRenderProposals();
     setTimeout(function () { document.getElementById("fxGoalText").focus(); }, 0);
   }
@@ -3357,13 +3829,15 @@ export const FORGE_JS = String.raw`
   }
   function fxPlan() {
     var text = document.getElementById("fxGoalText").value.trim();
-    if (!text) { document.getElementById("fxGoalText").focus(); toast("Write the goal first", true); return; }
+    if (!text) { document.getElementById("fxGoalText").focus(); if (fxSimple()) fxToast(fxS("toast_goal_first"), true); else toast("Write the goal first", true); return; }
     var note = document.getElementById("fxPlannerNote");
-    note.textContent = "planning…";
+    var simple = fxSimple();
+    note.textContent = simple ? fxS("comp_planning") : "planning…";
     var done = function (d, label) { FX.proposals = ((d && d.proposals) || []).map(function (p) { return { title: p.title, footprint: (p.footprint || []).slice() }; }); note.textContent = label; fxRenderProposals(); };
-    if (FX.demo) { done(fxFxPlan(text), "demo planner: fixture proposals, edit freely"); return; }
-    fxFetch("/v1/forge/goals/plan", { method: "POST", body: { repo: FX.repo, text: text } }).then(function (d) { done(d, "planner: " + ((d && d.planner) || "workers-ai") + " · proposes intents, you edit"); }, function (err) {
-      if (fxMissing(err)) done(fxFxPlan(text), "planner endpoint returned " + err.status + ": showing demo proposals");
+    if (FX.demo) { done(fxFxPlan(text), simple ? fxS("comp_demo") : "demo planner: fixture proposals, edit freely"); return; }
+    fxFetch("/v1/forge/goals/plan", { method: "POST", body: { repo: FX.repo, text: text } }).then(function (d) { done(d, simple ? fxS("comp_note") : "planner: " + ((d && d.planner) || "workers-ai") + " · proposes intents, you edit"); }, function (err) {
+      if (fxMissing(err)) done(fxFxPlan(text), simple ? fxS("comp_demo") : "planner endpoint returned " + err.status + ": showing demo proposals");
+      else if (simple) { note.textContent = fxS("comp_fail"); note.setAttribute("data-code", err.code || ""); }
       else { note.textContent = "planner failed: " + err.message + " [" + err.code + "]"; }
     });
   }
@@ -3371,8 +3845,11 @@ export const FORGE_JS = String.raw`
     var box = fxClear(document.getElementById("fxProposals"));
     var launch = document.getElementById("fxLaunchBtn");
     var props = FX.proposals;
-    if (!props.length) { document.getElementById("fxComposerSummary").textContent = ""; launch.disabled = true; launch.textContent = "Launch intents"; return; }
-    box.appendChild(h("div", { cls: "fx-prophead", "aria-hidden": "true" }, [h("span", { text: "#" }), h("span", { text: "Proposed intents (" + props.length + ")" }), h("span", { text: "Footprint" }), h("span", { text: "Risk" }), h("span", { text: "Needs" }), h("span")]));
+    var simple = fxSimple();
+    if (!props.length) { document.getElementById("fxComposerSummary").textContent = ""; launch.disabled = true; launch.textContent = simple ? fxS("comp_launch0") : "Launch intents"; return; }
+    box.appendChild(simple
+      ? h("div", { cls: "fx-prophead", "aria-hidden": "true" }, [h("span", { text: "#" }), h("span", { text: fxS("comp_col_plan") }), h("span", { text: fxS("comp_col_files") }), h("span", { text: fxS("comp_col_risk") }), h("span", { text: fxS("comp_col_ok") }), h("span")])
+      : h("div", { cls: "fx-prophead", "aria-hidden": "true" }, [h("span", { text: "#" }), h("span", { text: "Proposed intents (" + props.length + ")" }), h("span", { text: "Footprint" }), h("span", { text: "Risk" }), h("span", { text: "Needs" }), h("span")]));
     var needPlan = 0;
     props.forEach(function (p, idx) {
       var rk = fxPreviewRisk(p.footprint);
@@ -3384,11 +3861,11 @@ export const FORGE_JS = String.raw`
         var prot = fxProtectedHits([fp]).length > 0;
         fps.appendChild(h("span", { cls: "fx-fpchip" + (prot ? " prot" : ""), title: prot ? "protected path" : fp }, [fp + (prot ? " !" : ""), h("button", { type: "button", "aria-label": "Remove " + fp, text: "×", on: { click: function () { p.footprint.splice(j, 1); fxRenderProposals(); } } })]));
       });
-      var add = h("input", { type: "text", placeholder: "+ path or glob", "aria-label": "Add footprint path to intent " + (idx + 1), list: "fxPathList" });
+      var add = h("input", { type: "text", placeholder: simple ? fxS("comp_add_path") : "+ path or glob", "aria-label": "Add footprint path to intent " + (idx + 1), list: "fxPathList" });
       add.addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); var v = add.value.trim().replace(/^\.?\/+/, ""); if (v && p.footprint.indexOf(v) < 0) { p.footprint.push(v); fxRenderProposals(); var again = box.querySelectorAll(".fps input")[idx]; if (again) again.focus(); } } });
       fps.appendChild(add);
       var del = h("button", { type: "button", cls: "del", "aria-label": "Delete intent " + (idx + 1), text: "✕", on: { click: function () { props.splice(idx, 1); fxRenderProposals(); } } });
-      box.appendChild(h("div", { cls: "fx-prop", "data-kind": "proposal", "data-id": String(idx + 1), "data-risk": rk.risk }, [h("span", { cls: "ix", text: String(idx + 1) }), title, fps, fxRisk(rk.risk), h("span", { cls: "needs" + (rk.protected.length ? " on" : ""), text: rk.protected.length ? "! plan" : "—" }), del]));
+      box.appendChild(h("div", { cls: "fx-prop", "data-kind": "proposal", "data-id": String(idx + 1), "data-risk": rk.risk }, [h("span", { cls: "ix", text: String(idx + 1) }), title, fps, fxRisk(rk.risk), h("span", { cls: "needs" + (rk.protected.length ? " on" : ""), text: rk.protected.length ? (simple ? fxS("comp_needs_ok") : "! plan") : "—" }), del]));
     });
     var dl = h("datalist", { id: "fxPathList" });
     var seen = {};
@@ -3402,20 +3879,20 @@ export const FORGE_JS = String.raw`
       props[a].footprint.forEach(function (x) { props[b].footprint.forEach(function (y) { if (!hit && fxPathsOverlap(x, y)) hit = fxGlobBase(x).length >= fxGlobBase(y).length ? x : y; }); });
       if (hit) {
         comps[root(a)] = root(b);
-        box.appendChild(h("p", { cls: "fx-warn", "data-kind": "overlap", "data-id": (a + 1) + "~" + (b + 1) }, [h("span", { cls: "g", text: "◐ " }), (a + 1) + " ↔ " + (b + 1) + " overlap on " + hit + " (advisory: both agents are told at declare time)"]));
+        box.appendChild(h("p", { cls: "fx-warn", "data-kind": "overlap", "data-id": (a + 1) + "~" + (b + 1), "data-path": hit }, [h("span", { cls: "g", text: "◐ " }), simple ? fxS("comp_same", a + 1, b + 1) : (a + 1) + " ↔ " + (b + 1) + " overlap on " + hit + " (advisory: both agents are told at declare time)"]));
       }
     }
-    box.appendChild(h("div", { cls: "fx-actions" }, [h("button", { type: "button", cls: "ghost", text: "+ Add intent", on: { click: function () { props.push({ title: "", footprint: [] }); fxRenderProposals(); var ins = box.querySelectorAll("input.t"); if (ins.length) ins[ins.length - 1].focus(); } } })]));
+    box.appendChild(h("div", { cls: "fx-actions" }, [h("button", { type: "button", cls: "ghost", text: simple ? fxS("comp_add") : "+ Add intent", on: { click: function () { props.push({ title: "", footprint: [] }); fxRenderProposals(); var ins = box.querySelectorAll("input.t"); if (ins.length) ins[ins.length - 1].focus(); } } })]));
     var lanes = {}; props.forEach(function (_, i) { lanes[root(i)] = 1; });
-    document.getElementById("fxComposerSummary").textContent = props.length + " intents · " + needPlan + " need plan approval · est. 1 train, " + Object.keys(lanes).length + " lanes";
+    document.getElementById("fxComposerSummary").textContent = simple ? fxS("comp_sum", props.length, needPlan) : props.length + " intents · " + needPlan + " need plan approval · est. 1 train, " + Object.keys(lanes).length + " lanes";
     launch.disabled = false;
-    fxClear(launch).appendChild(document.createTextNode("Launch " + props.length + " intents "));
+    fxClear(launch).appendChild(document.createTextNode(simple ? fxS("comp_launch", props.length) + " " : "Launch " + props.length + " intents "));
     launch.appendChild(h("kbd", { text: "⏎" }));
   }
   function fxLaunch() {
     var text = document.getElementById("fxGoalText").value.trim();
     var props = FX.proposals.filter(function (p) { return p.title.trim() && p.footprint.length; });
-    if (!props.length) { toast("Each intent needs a title and at least one footprint path", true); return; }
+    if (!props.length) { if (fxSimple()) fxToast(fxS("toast_need_files"), true); else toast("Each intent needs a title and at least one footprint path", true); return; }
     fxCall("declare_intent", null, { goal: text, intents: props }).then(function (r) {
       fxCloseComposer();
       FX.proposals = [];

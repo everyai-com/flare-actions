@@ -2,6 +2,12 @@
 
 > Intent-native collaboration for many coding agents on one repo, on Cloudflare Workers and Artifacts. Before editing, an agent declares an intent (title, reasoning, footprint of paths, acceptance check) and learns who else is touching those paths. Each intent owns one Artifacts fork with a 1-hour fork-scoped token; trunk moves only through trains that CI verifies as the exact merged SHA. Conflicts are replayed, review is routed by risk, and every landed line answers `why`. Flare Actions, the open-source CI engine underneath, verifies every train, replay and race, and also runs existing `.github/workflows` unchanged.
 
+## Start here
+
+1. Discover: Flare runs a project's checks (CI) on your own Cloudflare account and lets many coding agents share one repo without clashing.
+2. Onboard: run `npx flare-forge doctor` (or `npm run cli -- doctor` in a clone). It checks the setup and ends with one `next:` command; follow it until the first green check.
+3. Daily loop, then expert: verify every change with `run_and_wait` (CLI: `npx flare-forge run owner/repo HEAD`), read the digest, fix, repeat. Every CLI result ends in a `next:` line and every Forge result in `nextSteps`. Later: the Forge loop, `why`, quarantine, runner mode (below).
+
 ## Start here (agents)
 
 - Install nothing: `npx flare-forge forge connect-agent --client claude|codex|cursor` prints the MCP config + the workflow prompt. MCP URL: `https://<worker>/mcp` (Bearer token in `FLARE_TOKEN`, or OAuth).

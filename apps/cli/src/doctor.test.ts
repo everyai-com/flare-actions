@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDoctor, repoFromRemote, runDoctor } from "./doctor.ts";
+import { doctorNext, formatDoctor, repoFromRemote, runDoctor, type DoctorCheck } from "./doctor.ts";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -111,5 +111,65 @@ describe("runDoctor", () => {
     expect(report.ok).toBe(true);
     expect(report.checks.find((c) => c.id === "repo")?.status).toBe("warn");
     expect(report.checks.find((c) => c.id === "runners")?.status).toBe("warn");
+  });
+});
+
+describe("doctor next move", () => {
+  const lastLine = (text: string): string => text.split("\n").pop() ?? "";
+  const base = { envLocation: { path: "/r/.env", searchedFrom: "/r" }, cli: "npx flare-forge" };
+
+  it("not configured → login", async () => {
+    const report = await runDoctor({ ...base, env: {}, gitOrigin: () => null, fetchFn: (async () => jsonResponse(200, {})) as typeof fetch });
+    expect(report.next.command).toBe("npx flare-forge login");
+    expect(lastLine(formatDoctor(report))).toBe("next: npx flare-forge login");
+  });
+
+  it("unreachable → log in with the right URL", async () => {
+    const report = await runDoctor({
+      ...base,
+      env: { FLARE_ACTIONS_URL: "https://down.example", RUNNER_TOKEN: "good" },
+      gitOrigin: () => null,
+      fetchFn: (async () => {
+        throw new Error("ENOTFOUND");
+      }) as typeof fetch,
+    });
+    expect(report.next.command).toBe("npx flare-forge login --url https://<your-worker>.workers.dev");
+    expect(report.next.why).toContain("https://down.example");
+  });
+
+  it("rejected token → login", async () => {
+    const report = await runDoctor({ ...base, env: { FLARE_ACTIONS_URL: "https://w.example", RUNNER_TOKEN: "bad" }, gitOrigin: () => null, fetchFn: fakeFetch(healthy) });
+    expect(report.next.command).toBe("npx flare-forge login");
+    expect(report.next.why).toMatch(/rejected/);
+  });
+
+  it("no runner online → start one", async () => {
+    const report = await runDoctor({
+      ...base,
+      env: { FLARE_ACTIONS_URL: "https://w.example", RUNNER_TOKEN: "good" },
+      gitOrigin: () => "https://github.com/a/b",
+      fetchFn: fakeFetch({ ...healthy, "/v1/setup": () => jsonResponse(200, { executorSeen: false }) }),
+    });
+    expect(report.next.command).toBe("npm run runner");
+    expect(lastLine(formatDoctor(report))).toBe("next: npm run runner");
+  });
+
+  it("repo with no runs → connect", async () => {
+    const report = await runDoctor({ ...base, env: { FLARE_ACTIONS_URL: "https://w.example", RUNNER_TOKEN: "good" }, gitOrigin: () => "https://github.com/a/b", fetchFn: fakeFetch(healthy) });
+    expect(report.next.command).toBe("npx flare-forge connect");
+  });
+
+  it("all good → run HEAD (or list runs outside a repo)", async () => {
+    const report = await runDoctor({ ...base, env: { FLARE_ACTIONS_URL: "https://w.example", RUNNER_TOKEN: "good" }, gitOrigin: () => "git@github.com:o/r.git", fetchFn: fakeFetch(healthy) });
+    expect(report.ok).toBe(true);
+    expect(lastLine(formatDoctor(report))).toBe("next: npx flare-forge run o/r HEAD");
+    const pass = (id: DoctorCheck["id"]): DoctorCheck => ({ id, label: id, status: "pass", critical: true, detail: "" });
+    expect(doctorNext([pass("url"), pass("token")], null, "https://w").command).toBe("npm run cli -- runs");
+  });
+
+  it("every outcome ends in exactly one next line", async () => {
+    const report = await runDoctor({ ...base, env: {}, gitOrigin: () => null, fetchFn: (async () => jsonResponse(200, {})) as typeof fetch });
+    const text = formatDoctor(report);
+    expect(text.split("\n").filter((l) => l.startsWith("next:"))).toHaveLength(1);
   });
 });

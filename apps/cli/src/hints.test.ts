@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { applyTokenAlias, levenshtein, missingConfigMessage, missingConfigVars, resolveToken, suggestCommand } from "./hints.ts";
+import {
+  applyTokenAlias,
+  cliInvocation,
+  levenshtein,
+  missingConfigMessage,
+  missingConfigVars,
+  nextAfterError,
+  nextAfterRun,
+  resolveToken,
+  suggestCommand,
+} from "./hints.ts";
 
 const COMMANDS = ["runs", "logs", "run", "watch", "dispatch", "doctor", "login", "status-x"];
 
@@ -51,5 +61,35 @@ describe("suggestCommand", () => {
   it("stays quiet when nothing is close", () => {
     expect(suggestCommand("zzzzzzzz", COMMANDS)).toBeNull();
     expect(suggestCommand("x", COMMANDS)).toBeNull();
+  });
+});
+
+describe("next-move helpers", () => {
+  it("detects how the CLI was invoked", () => {
+    expect(cliInvocation(["node", "/r/apps/cli/src/index.ts"], { npm_lifecycle_event: "cli" })).toBe("npm run cli --");
+    expect(cliInvocation(["node", "/x/node_modules/.bin/flare-forge"], { npm_command: "exec" })).toBe("npx flare-forge");
+    expect(cliInvocation(["node", "/usr/local/bin/flare"], {})).toBe("flare");
+    expect(cliInvocation(["node", "/usr/local/bin/flare-forge"], {})).toBe("flare-forge");
+    expect(cliInvocation(["node", "/p/dist/cli.mjs"], {})).toBe("npx flare-forge");
+    expect(cliInvocation(["node", "/r/apps/cli/src/index.ts"], {})).toBe("npm run cli --");
+  });
+
+  it("missing config ends with one login next line in the caller's form", () => {
+    const msg = missingConfigMessage(["FLARE_ACTIONS_URL"], undefined, "flare-forge");
+    expect(msg.split("\n").pop()).toMatch(/^next: flare-forge login/);
+  });
+
+  it("after a run: failed → explain, running → watch, green → runs", () => {
+    expect(nextAfterRun("cli", { runId: "r1", status: "failure", repo: "o/r" })).toMatch(/^next: cli explain r1/);
+    expect(nextAfterRun("cli", { runId: "r1", status: "running", repo: "o/r" })).toMatch(/^next: cli watch r1/);
+    expect(nextAfterRun("cli", { runId: "r1", status: "success", repo: "o/r" })).toMatch(/^next: cli runs/);
+  });
+
+  it("after an error: auth → doctor, unknown id → runs, budget → usage", () => {
+    expect(nextAfterError("cli", null)).toMatch(/^next: cli doctor/);
+    expect(nextAfterError("cli", { status: 401, code: null })).toMatch(/^next: cli doctor/);
+    expect(nextAfterError("cli", { status: 404, code: "run_not_found" })).toMatch(/^next: cli runs/);
+    expect(nextAfterError("cli", { status: 429, code: "budget_exceeded" })).toMatch(/^next: cli usage/);
+    expect(nextAfterError("cli", { status: 409, code: "repo_paused" })).toMatch(/^next: cli paused/);
   });
 });

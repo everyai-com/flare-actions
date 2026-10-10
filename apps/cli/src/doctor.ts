@@ -6,6 +6,15 @@
 
 import { describeEnvLocation, resolveToken, type EnvLocation } from "./hints.ts";
 
+// The single next move doctor ends on, mirroring the dashboard's
+// next-move rules: not configured → login; unreachable → fix the URL;
+// token bad → login; no runner → start one; repo has no runs → connect;
+// all good → run HEAD. `command` is copy-pasteable as printed.
+export interface DoctorNext {
+  command: string;
+  why: string;
+}
+
 export type CheckStatus = "pass" | "fail" | "warn" | "skip";
 
 export interface DoctorCheck {
@@ -24,6 +33,7 @@ export interface DoctorReport {
   admin: boolean | null;
   repo: string | null;
   checks: DoctorCheck[];
+  next: DoctorNext;
 }
 
 export interface DoctorDeps {
@@ -36,9 +46,13 @@ export interface DoctorDeps {
   // or no origin.
   gitOrigin: () => string | null;
   timeoutMs?: number;
+  // How the user invoked the CLI (`npm run cli --`, `npx flare-forge`).
+  cli?: string;
 }
 
-const LOGIN_FIX = "run `npm run cli -- login` (pair with a code from dashboard Settings) or `npm run setup`";
+function loginFix(cli: string): string {
+  return `run \`${cli} login\` (pair with a code from dashboard Settings) or \`npm run setup\``;
+}
 
 // owner/name from a GitHub-style remote (https, ssh, scp-like), else null.
 export function repoFromRemote(remote: string | null): string | null {
@@ -73,6 +87,8 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   const fetchFn = deps.fetchFn ?? fetch;
   const timeoutMs = deps.timeoutMs ?? 10000;
+  const cli = deps.cli ?? "npm run cli --";
+  const LOGIN_FIX = loginFix(cli);
   const checks: DoctorCheck[] = [];
   const add = (c: DoctorCheck): DoctorCheck => {
     checks.push(c);
@@ -210,13 +226,39 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
             status: "warn",
             critical: false,
             detail: `${repo}: no recent runs`,
-            fix: `wire it: \`npm run cli -- connect\`, or try one now: \`npm run cli -- run ${repo} HEAD\``,
+            fix: `wire it: \`${cli} connect\`, or try one now: \`${cli} run ${repo} HEAD\``,
           },
     );
   }
 
   const ok = checks.every((c) => !c.critical || c.status === "pass");
-  return { ok, baseUrl, envPath: deps.envLocation.path, admin, repo, checks };
+  return { ok, baseUrl, envPath: deps.envLocation.path, admin, repo, checks, next: doctorNext(checks, repo, baseUrl, cli) };
+}
+
+// First matching rule wins; the order is the setup chain.
+export function doctorNext(checks: DoctorCheck[], repo: string | null, baseUrl: string | null, cli = "npm run cli --"): DoctorNext {
+  const status = (id: DoctorCheck["id"]): CheckStatus | undefined => checks.find((c) => c.id === id)?.status;
+  if (status("url") === "fail" || status("token") === "fail") {
+    return { command: `${cli} login`, why: "This machine is not set up yet. Pair it with a code from dashboard Settings." };
+  }
+  if (status("reachable") === "fail") {
+    return {
+      command: `${cli} login --url https://<your-worker>.workers.dev`,
+      why: `Cannot reach ${baseUrl ?? "the deployment"}. Open it in a browser to check the URL, then log in with the right one.`,
+    };
+  }
+  const auth = checks.find((c) => c.id === "auth");
+  if (auth?.status === "fail") {
+    return /HTTP (401|403)\b/.test(auth.detail)
+      ? { command: `${cli} login`, why: "Your token was rejected. Pair again for a fresh one." }
+      : { command: `${cli} doctor`, why: "The deployment answered oddly. Try again in a minute." };
+  }
+  if (status("runners") === "warn") {
+    return { command: "npm run runner", why: "No computer is running checks yet. Start one here, or pair one from dashboard Settings." };
+  }
+  if (status("repo") === "warn") return { command: `${cli} connect`, why: "This project has no checks yet. Connect it and run the first one." };
+  if (repo) return { command: `${cli} run ${repo} HEAD`, why: "Check your latest commit." };
+  return { command: `${cli} runs`, why: "See your recent checks." };
 }
 
 const MARK: Record<CheckStatus, string> = { pass: "✓", fail: "✗", warn: "!", skip: "-" };
@@ -233,9 +275,8 @@ export function formatDoctor(report: DoctorReport): string {
       lines.push(`  ${" ".repeat(width)}  → ${c.fix}`);
     }
   }
-  const next = report.checks.find((c) => c.status === "fail" && c.fix) ?? report.checks.find((c) => c.status === "warn" && c.fix);
   lines.push("");
-  if (report.ok) lines.push(next ? `ready. next: ${next.fix}` : "ready. try: `npm run cli -- runs`");
-  else lines.push(`not ready. fix first: ${next?.fix ?? LOGIN_FIX}`);
+  lines.push(`${report.ok ? "Ready." : "Not ready."} ${report.next.why}`);
+  lines.push(`next: ${report.next.command}`);
   return lines.join("\n");
 }

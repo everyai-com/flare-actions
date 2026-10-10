@@ -71,6 +71,7 @@ your browser tab; nothing is written anywhere.
 ```bash
 export FLARE_ACTIONS_URL=https://<your-flare>.workers.dev
 export FLARE_TOKEN=<runner token>                     # never commit it
+npx flare-forge doctor                                # checks setup; ends with one next: command
 npx flare-forge forge connect-agent --client claude   # or codex | cursor
 npx flare-forge forge init                            # AGENTS.md block + .mcp.json for this repo
 ```
@@ -358,9 +359,13 @@ generation, and the Forge tools ([docs/MCP.md](docs/MCP.md)).
 ### CLI
 
 The CLI ships on npm as `flare-forge` (bins `flare-forge` and `flare`);
-from a clone, `npm run cli -- <command>` runs the same thing.
+from a clone, `npm run cli -- <command>` runs the same thing. Start with
+`doctor`: it checks your setup and ends with one `next:` command. Every
+command ends the same way (a failed run points at `explain`, an empty
+list at `connect`, an error at the fix), in the form you typed.
 
 ```bash
+npx flare-forge doctor                     # start here: what is set up, and the one next step
 npx flare-forge forge <verb>               # Forge: goal|declare|claim|push|ready|status|why|inbox|conflicts|trains|connect-agent|init
 npx flare-forge runs                       # list runs
 npx flare-forge local [job]                # run flare.yml here (no server, warm cache)
@@ -373,7 +378,8 @@ npx flare-forge login                      # pair this machine (writes .env)
 ```
 
 `npx flare-forge --help` lists every command. Every command accepts
-`--json` (one versioned envelope on stdout).
+`--json` (one versioned envelope on stdout; `next:` lines are for
+people and never appear in it).
 
 <details>
 <summary>HTTP API (selected routes; full spec at <code>/openapi.yaml</code>)</summary>

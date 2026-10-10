@@ -116,14 +116,14 @@ matches wins:
 | 3 | No project picked | "Pick a project" | Onboarding |
 | 4 | Checks queued, no computer | "Use my computer" | Onboarding / Scaffolding |
 | 5 | No check yet | "Run your first check" | Onboarding |
-| 6 | Newest check broke | "See what broke" | Scaffolding |
+| 6 | Newest check broke | "See what broke" | Onboarding until the first green check, then Scaffolding |
 | 7 | Inbox has items | "Review N waiting" | Scaffolding |
 | 8 | Check running | "Watch it run" | Scaffolding |
 | 9 | All green, no agent ever connected | "Connect an AI agent" | Scaffolding → Endgame |
 | 10 | All green, no teammate | "Invite a teammate" | Endgame |
 | 11 | Otherwise | "Run a check" | Scaffolding |
 
-The engine shows the same answer on Home (big) and as a "Next:" chip in
+Onboarding ends at the first win, so a person stays in the quest until their first green check, even if an early check breaks. The engine shows the same answer on Home (big) and as a "Next:" chip in
 the side bar, so people can go anywhere and still find the way back.
 
 ## Agents are players too

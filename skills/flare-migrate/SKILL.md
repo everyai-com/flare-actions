@@ -10,6 +10,12 @@ description: >-
 
 # Migrate from GitHub Actions to Flare
 
+## Start here
+
+1. Discover: `npx flare-forge local` runs the existing `.github/workflows` on this machine; no account needed.
+2. Onboard: pick a path below and prove one green run (`npx flare-forge doctor` names the next setup step).
+3. Daily loop, then expert: `npx flare-forge run <owner/repo> HEAD` per change; runner mode (`runs-on: flare`) or a full replace later.
+
 Flare runs existing `.github/workflows/*.yml` files **unchanged** when a
 repo has no `flare.yml`. Migration is mostly choosing a path and proving
 it green. Never delete or rewrite `.github/workflows` as part of this —

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DASHBOARD_HTML, DASHBOARD_UI_ACTIONS, FORGE_MCP_TOOL_NAMES } from "./dashboard";
+import { FORGE_JS } from "./dashboard-forge-js";
+import { NEXT_MOVE_JS } from "./next-move";
 
 // Static guards for the cognitive-load budget (docs/UX-BUDGET.md).
 // Runtime-free: the head mode script runs against stubs; everything else
@@ -14,7 +16,17 @@ import { DASHBOARD_HTML, DASHBOARD_UI_ACTIONS, FORGE_MCP_TOOL_NAMES } from "./da
 // - SC (between simple-copy:start/end) holds all dynamic Simple copy:
 //   h_ = headline, l_ = label, t_ = sentences.
 
-const JARGON = /\b(intents?|footprints?|trains?|trunk|fixtures?|executors?|runners?|dispatch\w*|sha|pipelines?)\b/i;
+// Pro words with a plain Simple word (docs/UX-BUDGET.md table). "Key" is
+// the plain word for token; "project" for repo; "race" for tournament;
+// "try" for attempt; "waiting to land" for merge queue.
+const JARGON =
+  /\b(intents?|footprints?|trains?|trunk|fixtures?|executors?|runners?|dispatch\w*|sha|pipelines?|tokens?|scopes?|webhooks?|hmac|tournaments?|attempts?|ledgers?|merge queues?|repos?|repositor(?:y|ies)|artifacts?|cron)\b/i;
+// Case-sensitive: "CI" the acronym, not the letters inside a word.
+const JARGON_CASED = /\bCI\b/;
+function jargonFree(text: string, where: string): void {
+  expect(text, where).not.toMatch(JARGON);
+  expect(text, where).not.toMatch(JARGON_CASED);
+}
 
 function words(s: string): number {
   return s.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
@@ -32,6 +44,30 @@ function headScript(): string {
 function mainScript(): string {
   const parts = DASHBOARD_HTML.split("<script>");
   return parts[parts.length - 1].split("</script>")[0];
+}
+// The dashboard's own script: without the Forge screens' code (owned and
+// budget-tested in dashboard-forge-*) and the spliced next-move engine.
+function ownScript(): string {
+  const js = mainScript();
+  expect(js).toContain(FORGE_JS);
+  return js.replace(FORGE_JS, "").replace(NEXT_MOVE_JS, "");
+}
+// Balanced-paren argument text of a call starting at `open` (index of "(").
+function callArgs(js: string, open: number): string {
+  let depth = 0;
+  let quote = "";
+  for (let i = open; i < js.length; i++) {
+    const c = js[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = "";
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "(") depth++;
+    else if (c === ")" && --depth === 0) return js.slice(open + 1, i);
+  }
+  return js.slice(open + 1);
 }
 function simpleCopy(): Map<string, string> {
   const js = mainScript();
@@ -161,8 +197,31 @@ describe("ux budget: words", () => {
   });
 
   it("uses no jargon in Simple copy", () => {
-    for (const { text } of markedCopy()) expect(text, text).not.toMatch(JARGON);
-    for (const [key, text] of simpleCopy()) expect(text, key).not.toMatch(JARGON);
+    for (const { text } of markedCopy()) jargonFree(text, text);
+    for (const [key, text] of simpleCopy()) jargonFree(text, key);
+  });
+
+  it("catches the extended jargon list, and lets the plain words through", () => {
+    for (const bad of ["Make a token", "Pick scopes", "Webhook secret", "HMAC check", "Open tournament", "Each attempt", "The ledger", "Merge queue", "CI ready", "My repo", "Repositories", "Head SHA", "Build artifact", "A cron line"]) {
+      expect(JARGON.test(bad) || JARGON_CASED.test(bad), bad).toBe(true);
+    }
+    for (const ok of ["Make a key", "Waiting to land", "Start a race", "Your projects", "Every check", "Decide", "specific"]) {
+      expect(JARGON.test(ok) || JARGON_CASED.test(ok), ok).toBe(false);
+    }
+  });
+
+  it("keeps every SC entry in use (no dead copy)", () => {
+    const js = ownScript();
+    const block = js.slice(js.indexOf("// simple-copy:start"), js.indexOf("// simple-copy:end"));
+    const rest = js.replace(block, "");
+    // Keys looked up by prefix + a value: statuses, levels, race and try
+    // states, merge states, key powers, tab titles, nav tooltips, options.
+    const dynamic = /^(l_st_|l_lvl_|l_race_|l_try_|l_mq_|l_can_|l_tab_|t_nav_|l_notify_)/;
+    for (const key of simpleCopy().keys()) {
+      if (dynamic.test(key)) continue;
+      const used = new RegExp("\\bSC\\." + key + "\\b").test(rest) || rest.includes('"' + key + '"');
+      expect(used, key).toBe(true);
+    }
   });
 
   it("references only SC keys that exist", () => {
@@ -170,6 +229,8 @@ describe("ux budget: words", () => {
     const js = mainScript();
     for (const m of js.matchAll(/\bSC\.([a-z0-9_]+)/g)) expect(sc.has(m[1]), "SC." + m[1]).toBe(true);
     for (const m of js.matchAll(/\bscf\("([a-z0-9_]+)"/g)) expect(sc.has(m[1]), "scf " + m[1]).toBe(true);
+    for (const m of js.matchAll(/\bplainf?\("([a-z0-9_]+)"/g)) expect(sc.has(m[1]), "plain " + m[1]).toBe(true);
+    for (const m of js.matchAll(/: "(l_ph_[a-z0-9_]+|l_pal_ph)"/g)) expect(sc.has(m[1]), "placeholder " + m[1]).toBe(true);
     // Dynamic lookups: every run status and quest level has a word.
     for (const st of ["success", "failure", "error", "running", "queued", "blocked", "cancelled", "skipped"]) {
       expect(sc.has("l_st_" + st), st).toBe(true);
@@ -225,5 +286,154 @@ describe("ux budget: game rules", () => {
     expect(greenStreak([{ status: "running" }, { status: "success" }, { status: "success" }, { status: "failure" }, { status: "success" }])).toBe(2);
     expect(greenStreak([{ status: "failure" }, { status: "success" }])).toBe(0);
     expect(greenStreak([])).toBe(0);
+  });
+});
+
+describe("ux budget: errors and toasts", () => {
+  // Every person-facing error line and toast in the dashboard's own
+  // script reaches Simple mode through SC: plain("key", proText),
+  // plainf(...), scf(...), or SC.x. A bare string literal (or a raw
+  // server message) at a toast( or an error/status line would show Pro
+  // words, or a dead end, in Simple mode.
+  const routed = /\b(plain|plainf|scf)\(|\bSC\./;
+  const literal = /"[^"]*[A-Za-z][^"]*"/;
+  const rawServer = /\b(?:e|fail)\.message\b/;
+  // Documented exceptions (Pro-only by construction): none today. Add
+  // "snippet": "why" pairs here rather than loosening the rule.
+  const ALLOW: Record<string, string> = {};
+
+  function check(where: string, expr: string): void {
+    const t = expr.trim();
+    if (ALLOW[t]) return;
+    if (literal.test(t) || rawServer.test(t)) expect(routed.test(t), where + ": " + t).toBe(true);
+  }
+
+  it("routes every toast through SC", () => {
+    const js = ownScript();
+    let n = 0;
+    for (const m of js.matchAll(/\btoast\(/g)) {
+      const at = m.index ?? 0;
+      if (js.slice(at - 9, at) === "function ") continue;
+      check("toast", callArgs(js, at + 5));
+      n++;
+    }
+    expect(n).toBeGreaterThan(15);
+  });
+
+  it("routes every error and status line through SC", () => {
+    const js = ownScript();
+    const lines = [
+      ...js.matchAll(/(?:\b(?:err|ok|msg|errEl)|(?:Err|Ok|Msg|Info)"\))\.textContent =\s*([^;]+);/g),
+      // stateRow(body, cols, text, cls): table empty/loading/error rows.
+      ...js.matchAll(/\bstateRow\([^,]+, \d, ((?:plain\([^)]*\))|"[^"]*"|[^,]+), "(?:err|muted)"\)/g),
+    ];
+    expect(lines.length).toBeGreaterThan(60);
+    for (const m of lines) {
+      if (/^"Loading…"$/.test(m[1].trim())) continue; // a progress word, same in both modes
+      check("line", m[1]);
+    }
+  });
+
+  it("never swallows a failed click silently in Simple mode", () => {
+    const js = ownScript();
+    // Revoke/remove/re-run used to .catch(function () {}): Simple now says so.
+    for (const fn of ["/revoke", '"/rerun", { method: "POST" })', "/v1/admin/users/email", 'action: "remove"']) {
+      const at = js.indexOf(fn);
+      expect(at, fn).toBeGreaterThan(-1);
+      const tail = js.slice(at, js.indexOf(".catch(", at) + 80);
+      expect(tail, fn).toMatch(/\.catch\(function \(\) \{ if \(uiSimple\(\)\) toast\(SC\.t_\w+, true\); \}\)/);
+    }
+  });
+
+  it("asks twice before destructive Simple clicks (safe to explore)", () => {
+    const js = ownScript();
+    const fn = js.slice(js.indexOf("function twoClick("), js.indexOf("var SIMPLE_PH"));
+    expect(fn).toContain("if (!uiSimple()) { btn.addEventListener(\"click\", fn); return; }");
+    expect(fn).toContain("SC.l_sure");
+    expect((js.match(/twoClick\(btn, function/g) || []).length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe("ux budget: screens", () => {
+  const js = ownScript();
+  const section = (id: string, end: string) => DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('<section id="' + id + '"'), DASHBOARD_HTML.indexOf(end, DASHBOARD_HTML.indexOf('<section id="' + id + '"')));
+
+  it("defines the shared Simple design tokens on html.ui-simple", () => {
+    const css = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf("html.ui-simple {"), DASHBOARD_HTML.indexOf("}", DASHBOARD_HTML.indexOf("html.ui-simple {")));
+    for (const name of ["--s-font", "--s-radius", "--s-gap", "--s-primary", "--s-primary-fg", "--s-ok", "--s-bad", "--s-wait", "--s-muted", "--s-card-bg", "--s-border", "--s-h1", "--s-h2", "--s-body"]) {
+      expect(css, name).toContain(name + ":");
+    }
+    expect(css).toContain("--s-radius: 12px");
+    expect(css).toContain("--s-gap: 16px");
+    expect(css).toContain("--s-h1: 24px");
+    expect(css).toContain("--s-h2: 18px");
+    expect(css).toContain("--s-body: 15px");
+    // Every non-Forge screen opts into the shared Simple look.
+    for (const id of ["authPane", "invitePane", "resetPane", "resetConfirmPane", "magicConfirmPane", "homePane", "runsPane", "teamPane", "settingsPane", "tournamentsPane", "reposPane", "mergePane"]) {
+      expect(DASHBOARD_HTML, id).toMatch(new RegExp('<section id="' + id + '" class="card s-pane'));
+    }
+  });
+
+  it("gives each open Settings section at most one primary form", () => {
+    const panes = section("teamPane", "</section>") + section("settingsPane", "</section>");
+    const ids = ["setTokens", "setRunner", "setPeople", "setWebhook", "setNotify", "setGithub"];
+    for (let i = 0; i < ids.length; i++) {
+      const start = panes.indexOf('<h2 id="' + ids[i] + '"');
+      const next = i + 1 < ids.length ? panes.indexOf('<h2 id="' + ids[i + 1] + '"') : panes.length;
+      expect(start, ids[i]).toBeGreaterThan(-1);
+      const body = panes.slice(start, next);
+      const forms = [...body.matchAll(/<form [^>]*class="([^"]*)"/g)].filter((m) => !/\bsimple-more\b/.test(m[1]));
+      expect(forms.length, ids[i]).toBeLessThanOrEqual(1);
+      // Advanced inputs are Pro-only, never just unlabeled in Simple.
+      expect(body, ids[i]).not.toMatch(/<(?:input|select) id="(?:tokenScope|tokenRepos)"(?![^>]*pro-only)/);
+    }
+  });
+
+  it("swaps placeholders, options, tooltips, and the palette to plain words", () => {
+    expect(js).toContain("function syncSimpleWords()");
+    expect(js).toMatch(/function setUiMode\([^]*syncSimpleWords\(\);[^]*function syncModeBtn/);
+    const pal = js.slice(js.indexOf("function palCommands("), js.indexOf("function palMarkActive("));
+    expect(pal).toContain("tabTitle(name)");
+    expect(pal).toContain("SC.l_pal_go");
+    expect(pal).toContain("SC.l_pal_refresh");
+    for (const tab of ["home", "live", "inbox", "intents", "trains", "conflicts", "agents", "repos", "tournaments", "runs", "merge", "settings", "bench"]) {
+      expect(simpleCopy().has("t_nav_" + tab), tab).toBe(true);
+    }
+  });
+
+  it("keeps the Home health screen to three numbers and three links", () => {
+    const fn = js.slice(js.indexOf("function renderHealth("), js.indexOf("function everywhereCard("));
+    // Latest checks show icon + word; the time is a tooltip, not a number.
+    expect(fn).not.toContain('className = "when"');
+    expect(fn).toContain("badges.slice(0, 3)");
+    // The agent shortcut leaves once an agent connected (endgame link budget).
+    expect(js).toContain('document.getElementById("homeAgentLink").hidden = moveState(st).agentSeen;');
+  });
+
+  it("answers 'What's in this project?' with a status, files, and three checks", () => {
+    expect(js).toContain("function renderRepoStatus()");
+    const fn = js.slice(js.indexOf("function renderRepoStatus()"), js.indexOf("function renderRepoHead("));
+    expect(fn).toContain("SC.l_checked");
+    expect(fn).toContain("SC.l_not_setup");
+    expect(fn).toContain("SC.h_project_q");
+    expect(js).toContain("runs.slice(0, 3).forEach");
+    expect(DASHBOARD_HTML).toContain('<div id="repoCommits" class="simple-more"></div>');
+  });
+
+  it("shows a race's winner and why first, internals under Show more", () => {
+    const fn = js.slice(js.indexOf("function renderTournamentReviewSimple("), js.indexOf("function renderTournamentReview("));
+    expect(fn).toContain("SC.l_winner");
+    expect(fn).toContain("SC.l_why_won");
+    expect(fn).toContain("SC.h_who_wins");
+    for (const id of ["tLanes", "tRadar", "tActivity"]) expect(DASHBOARD_HTML).toContain('<div id="' + id + '" class="simple-more"></div>');
+    expect(section("tournamentsPane", "</section>")).toContain('data-more-for="tournamentsPane"');
+  });
+
+  it("keeps Waiting to land to one job and one action", () => {
+    const pane = section("mergePane", "</section>");
+    expect(pane).toContain('data-simple="head">Waiting to land<');
+    expect(pane).toMatch(/<form id="mergeEnqueueForm" class="inline simple-more">/);
+    expect(pane).toMatch(/<div id="mergeCollisions" class="simple-more">/);
+    expect(js).toContain('plain("t_merge_empty", "Queue is empty.")');
   });
 });
