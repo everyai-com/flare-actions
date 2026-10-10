@@ -6,6 +6,7 @@
 //     --agents 1000,10000,100000 --seed 7 [--modes baseline,trains,forge] \
 //     [--json] [--out docs/bench] [--markdown] [--max-parallel N]
 //     [--speculation-depth N] [--trains-speculation-depth N]
+//     [--p-interaction X] [--p-flake X]
 //   Prints a table per agent count; --json also writes
 //   docs/bench/forge-sim-seed<seed>.json (the GET /v1/forge/bench shape).
 //
@@ -90,6 +91,17 @@ async function simulated(args) {
   const tdepth = intKnob("trains-speculation-depth", 1, 8);
   if (tdepth !== undefined) constants.trainsSpeculationDepth = tdepth;
   if (mp !== undefined || depth !== undefined) constants.policy = { ...DEFAULT_CONSTANTS.policy, lanes };
+  const probKnob = (flag) => {
+    if (args[flag] === undefined) return undefined;
+    const v = Number(args[flag]);
+    if (!(v >= 0 && v <= 1)) die(`--${flag} must be 0-1`);
+    knobs.push(`--${flag} ${v}`);
+    return v;
+  };
+  const pi = probKnob("p-interaction");
+  if (pi !== undefined) constants.pInteraction = pi;
+  const pf = probKnob("p-flake");
+  if (pf !== undefined) constants.pFlake = pf;
   const sha = gitSha();
   const date = new Date().toISOString().slice(0, 10);
   const command = `node --experimental-strip-types scripts/forge-bench.mjs --agents ${agentsList.join(",")} --seed ${seed}${args.modes ? ` --modes ${modes.join(",")}` : ""}${knobs.length ? ` ${knobs.join(" ")}` : ""}`;
@@ -106,7 +118,7 @@ async function simulated(args) {
   if (args.json) {
     const outDir = resolve(ROOT, typeof args.out === "string" ? args.out : "docs/bench");
     mkdirSync(outDir, { recursive: true });
-    const suffix = [mp !== undefined ? `-mp${mp}` : "", depth !== undefined ? `-d${depth}` : "", tdepth !== undefined ? `-td${tdepth}` : ""].join("");
+    const suffix = [mp !== undefined ? `-mp${mp}` : "", depth !== undefined ? `-d${depth}` : "", tdepth !== undefined ? `-td${tdepth}` : "", pi !== undefined ? `-pi${pi}` : "", pf !== undefined ? `-pf${pf}` : ""].join("");
     const file = join(outDir, `forge-sim-seed${seed}${suffix}.json`);
     const body = {
       kind: "simulated",
