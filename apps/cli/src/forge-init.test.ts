@@ -12,7 +12,7 @@ import {
   planForgeInit,
   upsertBlock,
 } from "./forge-init.ts";
-import { FORGE_SKILL_MD } from "./forge-skill.gen.ts";
+import { FLARE_SKILLS, FORGE_SKILL_MD } from "./forge-skill.gen.ts";
 import { runForge, type ForgeCliDeps } from "./forge.ts";
 
 const URL_ = "https://flare.example.workers.dev";
@@ -170,5 +170,42 @@ describe("cli forge init", () => {
     expect(h.err.join("\n")).toMatch(/not valid JSON/);
     expect(files.get("/w/.mcp.json")).toBe("{broken");
     expect(files.has("/w/AGENTS.md")).toBe(false);
+  });
+});
+
+describe("forge init --global", () => {
+  it("embeds every repo skill verbatim (re-run apps/cli/scripts/gen-skill.mjs on drift)", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    for (const [name, text] of Object.entries(FLARE_SKILLS)) {
+      expect(text, name).toBe(readFileSync(join(here, "..", "..", "..", "skills", name, "SKILL.md"), "utf8"));
+    }
+    expect(Object.keys(FLARE_SKILLS).sort()).toEqual(["flare-forge", "flare-migrate", "flare-setup", "flare-verify"]);
+  });
+
+  it("writes user-level files under HOME, keeps existing content, and is idempotent", async () => {
+    const files = new Map<string, string>([["/home/me/.claude/CLAUDE.md", "# Mine\n\nKeep this.\n"]]);
+    const { d, out } = deps(files, { env: { FLARE_ACTIONS_URL: URL_, HOME: "/home/me" } });
+    expect(await runForge(["init", "--global"], d)).toBe(0);
+    const claude = files.get("/home/me/.claude/CLAUDE.md") ?? "";
+    expect(claude.startsWith("# Mine\n\nKeep this.\n")).toBe(true);
+    expect(claude).toContain("<!-- flare-global:start -->");
+    expect(claude).toContain(URL_);
+    expect(files.get("/home/me/.codex/AGENTS.md")).toContain("run_and_wait");
+    for (const n of ["flare-forge", "flare-verify", "flare-setup", "flare-migrate"]) {
+      expect(files.get(`/home/me/.claude/skills/${n}/SKILL.md`)).toBe(FLARE_SKILLS[n]);
+    }
+    expect(out.join("\n")).toContain(`claude mcp add --scope user --transport http flare-forge ${URL_}/mcp`);
+    // nothing written inside the working directory
+    expect([...files.keys()].some((k) => k.startsWith("/w/"))).toBe(false);
+    const snapshot = new Map(files);
+    expect(await runForge(["init", "--global"], d)).toBe(0);
+    expect(files).toEqual(snapshot);
+  });
+
+  it("--dry-run writes nothing", async () => {
+    const files = new Map<string, string>();
+    const { d } = deps(files, { env: { HOME: "/home/me" } });
+    expect(await runForge(["init", "--global", "--dry-run"], d)).toBe(0);
+    expect(files.size).toBe(0);
   });
 });

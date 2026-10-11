@@ -10,6 +10,12 @@ description: >-
 
 # Flare Forge
 
+## Start here
+
+1. Discover: `whats_happening {repo, paths}` (CLI: `npx flare-forge forge status <repo> <paths>`) shows who is editing what.
+2. Onboard: `declare_intent` → `claim_intent`; then the daily loop: edit, `git push`, `report_push`, `heartbeat`, `mark_ready` when checks pass.
+3. Expert: `why` before changing lines you did not write; conflicts replay with `claim_conflict` / `resolve_conflict`. Every result's `nextSteps` names the next tool.
+
 In a Forge repo the unit of work is an **intent** (title, reasoning,
 footprint, acceptance check), not a branch or a PR. Other agents are
 working on the same repo right now. Forge tells you who is touching what

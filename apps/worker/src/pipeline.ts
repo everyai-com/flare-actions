@@ -3,6 +3,8 @@ import { validatePreviewTemplate } from "../../../packages/runner-sdk/src/browse
 import { normalizeCondition } from "../../../packages/runner-sdk/src/conditions.ts";
 import { MAX_JOB_OUTPUTS, isValidOutputName, parseOutputRef } from "../../../packages/runner-sdk/src/outputs.ts";
 import { MAX_RESTORE_KEYS, isValidCacheKey, isValidRestoreKey } from "../../../packages/runner-sdk/src/parity.ts";
+import { expandMatrix, parseMatrixSpec, type MatrixSpec } from "../../../packages/runner-sdk/src/matrix.ts";
+import { outputEnvName } from "../../../packages/runner-sdk/src/outputs.ts";
 import { parseTestSelectionConfig, type TestSelectionConfig } from "./testselect.ts";
 
 export interface PipelineStep {
@@ -159,8 +161,9 @@ export const MAX_RUN_LENGTH = 8000;
 export const MAX_DEFINITION_BYTES = 64 * 1024;
 export const FETCH_TIMEOUT_MS = 5000;
 export const FLARE_YML_PATH = "flare.yml";
-export const MAX_MATRIX_KEYS = 8;
-export const MAX_MATRIX_VALUES = 16;
+// Matrix bounds + include/exclude expansion live in runner-sdk/matrix.ts
+// (shared with the Actions importer so it only emits parseable matrices).
+export { MAX_MATRIX_KEYS, MAX_MATRIX_VALUES, expandMatrixAxes } from "../../../packages/runner-sdk/src/matrix.ts";
 export const MAX_LABELS = 8;
 export const MAX_ENV_VARS = 32;
 export const MAX_SERVICES = 8;
@@ -215,49 +218,49 @@ function asStringMap(v: unknown, max: number, keyRe: RegExp, keyMax: number, val
   return out;
 }
 
-function parseMatrix(v: unknown): Record<string, string[]> | null {
-  if (!isRecord(v)) return null;
-  const entries = Object.entries(v);
-  if (entries.length === 0 || entries.length > MAX_MATRIX_KEYS) return null;
-  const out: Record<string, string[]> = {};
-  for (const [k, vals] of entries) {
-    if (!/^[A-Za-z_][\w-]*$/.test(k) || k.length > 32) return null;
-    if (!Array.isArray(vals) || vals.length === 0 || vals.length > MAX_MATRIX_VALUES) return null;
-    const list: string[] = [];
-    for (const val of vals) {
-      if (typeof val !== "string" && typeof val !== "number" && typeof val !== "boolean") return null;
-      const s = String(val);
-      if (!s || s.length > 128) return null;
-      list.push(s);
-    }
-    out[k] = list;
-  }
-  return out;
-}
-
-// Cartesian product of matrix axes: [{node:'18',os:'linux'}, ...].
-export function expandMatrixAxes(axes: Record<string, string[]>): Record<string, string>[] {
-  let combos: Record<string, string>[] = [{}];
-  for (const [key, values] of Object.entries(axes)) {
-    const next: Record<string, string>[] = [];
-    for (const combo of combos) {
-      for (const value of values) next.push({ ...combo, [key]: value });
-    }
-    combos = next;
-  }
-  return combos;
-}
-
-// Minimal `${{ matrix.key }}` / `${{ env.KEY }}` interpolation. Unknown
-// expressions pass through untouched so shell syntax never breaks.
+// Minimal `${{ matrix.key }}` / `${{ env.KEY }}` interpolation, plus
+// output refs rewritten to the step-env reads both executors provide
+// (`steps.<id>.outputs.<key>` → `${FLARE_STEPS_<ID>_<KEY>}`,
+// `needs.<job>.outputs.<key>|result` → `${FLARE_NEEDS_<JOB>_<KEY>}`), so
+// values never get pasted into shell text. In a matrix cell, a key the
+// cell lacks (include-only keys) is "" like Actions. Other expressions
+// pass through untouched so shell syntax never breaks.
 export function interpolateRun(run: string, matrix: Record<string, string>, env: Record<string, string>): string {
+  const inMatrix = Object.keys(matrix).length > 0;
   return run.replace(/\$\{\{\s*([^}]+?)\s*\}\}/g, (match, expr: string) => {
     const m = /^matrix\.([A-Za-z_][\w-]*)$/.exec(expr.trim());
     if (m && matrix[m[1]] !== undefined) return matrix[m[1]];
+    if (m && inMatrix) return "";
+    const so = /^steps\.([A-Za-z_][\w-]*)\.outputs\.([A-Za-z_][\w-]*)$/.exec(expr.trim());
+    if (so) return "${" + outputEnvName("FLARE_STEPS_", so[1], so[2]) + "}";
+    const no = /^needs\.([A-Za-z_][\w-]*)\.(?:outputs\.([A-Za-z_][\w-]*)|(result))$/.exec(expr.trim());
+    if (no) return "${" + outputEnvName("FLARE_NEEDS_", no[1], no[2] ?? "RESULT") + "}";
     const e = /^env\.([A-Za-z_]\w*)$/.exec(expr.trim());
     if (e && env[e[1]] !== undefined) return env[e[1]];
     return match;
   });
+}
+
+// Per-cell `runs-on`: `${{ matrix.os }}` is the common GitHub shape.
+// Matrix refs resolve per cell; a label that came from an expression and
+// names a GitHub-hosted image maps to the portable OS label the importer
+// uses (ubuntu-* → linux, macos-* → macos, windows-* → windows). Literal
+// labels never change. Fails closed (null) when a ref resolves to
+// nothing or to something that isn't a label: an unlabeled job matches
+// any runner, so a dropped label would silently change where it runs.
+export function cellLabels(labels: string[], matrix: Record<string, string>): string[] | null {
+  const out: string[] = [];
+  for (const raw of labels) {
+    if (!raw.includes("${{")) { out.push(raw); continue; }
+    const label = interpolateRun(raw, matrix, {}).trim();
+    // Labels are stored comma-joined, so a comma would split one into two.
+    if (!label || label.length > 64 || label.includes("${{") || /[,\s]/.test(label)) return null;
+    if (/^ubuntu-/.test(label)) out.push("linux");
+    else if (/^macos-/.test(label)) out.push("macos");
+    else if (/^windows-/.test(label)) out.push("windows");
+    else out.push(label);
+  }
+  return [...new Set(out)];
 }
 
 interface RawJob {
@@ -289,7 +292,7 @@ interface RawJob {
   testSelection?: PipelineTestSelection;
 }
 
-function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<string, string[]> }) | null {
+function parseOneJob(name: string, def: unknown): (RawJob & { matrixSpec?: MatrixSpec }) | null {
   if (!name || name.length > 64 || !isRecord(def)) return null;
   const stepsRaw = def.steps;
   if (!Array.isArray(stepsRaw) || stepsRaw.length === 0 || stepsRaw.length > MAX_STEPS_PER_JOB) return null;
@@ -325,7 +328,7 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
     }
     steps.push(step);
   }
-  const job: RawJob & { axes?: Record<string, string[]> } = { name, steps, env: {}, needs: [], cancelInProgress: false };
+  const job: RawJob & { matrixSpec?: MatrixSpec } = { name, steps, env: {}, needs: [], cancelInProgress: false };
   if (def.tags !== undefined) {
     const tags = asStringArray(def.tags, MAX_TAGS, 64);
     if (!tags || tags.some((t) => !PROFILE_NAME_RE.test(t))) return null;
@@ -548,9 +551,9 @@ function parseOneJob(name: string, def: unknown): (RawJob & { axes?: Record<stri
   }
   if (def.strategy !== undefined) {
     if (!isRecord(def.strategy) || def.strategy.matrix === undefined) return null;
-    const axes = parseMatrix(def.strategy.matrix);
-    if (!axes) return null;
-    job.axes = axes;
+    const spec = parseMatrixSpec(def.strategy.matrix);
+    if (typeof spec === "string") return null;
+    job.matrixSpec = spec;
   }
   return job;
 }
@@ -664,7 +667,7 @@ export function parsePipelineWithProfiles(text: string): ParsedPipeline | null {
   if (!parsedProfiles) return null;
   const entries = Object.entries(jobs);
   if (entries.length === 0 || entries.length > MAX_JOBS) return null;
-  const raws: (RawJob & { axes?: Record<string, string[]> })[] = [];
+  const raws: (RawJob & { matrixSpec?: MatrixSpec })[] = [];
   for (const [name, def] of entries) {
     const parsed = parseOneJob(name, def);
     if (!parsed) return null;
@@ -683,7 +686,7 @@ export function parsePipelineWithProfiles(text: string): ParsedPipeline | null {
   // Expand matrices and shards; the expanded total obeys the job cap.
   const out: PipelineJob[] = [];
   for (const r of raws) {
-    const combos = r.axes ? expandMatrixAxes(r.axes) : [null];
+    const combos = r.matrixSpec ? expandMatrix(r.matrixSpec) : [null];
     const shardCount = r.shards ?? 1;
     for (const combo of combos) {
       const matrix = combo ?? undefined;
@@ -698,7 +701,11 @@ export function parsePipelineWithProfiles(text: string): ParsedPipeline | null {
         const job: PipelineJob = { name, steps };
         if (combo || shardCount > 1) job.base = r.name;
         if (r.tags) job.tags = r.tags;
-        if (r.labels) job.labels = r.labels;
+        if (r.labels) {
+          const labels = matrix ? cellLabels(r.labels, matrix) : r.labels;
+          if (!labels) return null;
+          job.labels = labels;
+        }
         if (matrix) job.matrix = matrix;
         const env = { ...r.env };
         if (shardCount > 1) {

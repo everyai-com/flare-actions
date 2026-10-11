@@ -11,6 +11,9 @@ import {
   seatInstanceFrom,
   type SeatArtifactsNamespace,
   seatTokenAuthorized,
+  TRUNK_SYNC_MARKERS,
+  trunkSyncBranchOk,
+  trunkSyncScript,
   type BrowserDriver,
   type ContainerCtl,
   type ContainerSnapshot,
@@ -46,6 +49,8 @@ class MemDb implements Db {
   egress: Row[] = [];
   settings = new Map<string, { value: string }>();
   cacheStats = new Map<string, { hits: number; misses: number }>();
+  // artifacts_mirrors rows keyed by GitHub repo (trunk-sync claims).
+  mirrors = new Map<string, Row>();
 
   prepare(sql: string) {
     const norm = sql.replace(/\s+/g, " ").trim();
@@ -213,6 +218,26 @@ class MemDb implements Db {
       });
       return {};
     }
+    if (norm.startsWith("UPDATE artifacts_mirrors SET trunk_sha = ?, trunk_detail = 'syncing'")) {
+      const [sha, at, repo, branch, sha2] = values as string[];
+      const row = this.mirrors.get(repo);
+      if (!row || row.status !== "ready" || row.default_branch !== branch || !branch || row.trunk_sha === sha2) {
+        return { meta: { changes: 0 } };
+      }
+      row.trunk_sha = sha;
+      row.trunk_detail = "syncing";
+      row.trunk_at = at;
+      return { meta: { changes: 1 } };
+    }
+    if (norm.startsWith("UPDATE artifacts_mirrors SET trunk_detail = ?")) {
+      const [detail, at, repo, sha] = values as string[];
+      const row = this.mirrors.get(repo);
+      if (row && row.trunk_sha === sha) {
+        row.trunk_detail = detail;
+        row.trunk_at = at;
+      }
+      return {};
+    }
     throw new Error(`unrouted run: ${norm}`);
   }
 }
@@ -262,6 +287,10 @@ class FakeContainer implements ContainerCtl {
   // successful sync heals later mirror checkouts, like the real thing.
   syncExit = 0;
   mirrorSynced = false;
+  // Trunk-sync answer (stdin fetching refs/flare/trunk).
+  trunkExit = 0;
+  trunkStdout = "FLARE_TRUNK_PUSHED\n";
+  trunkStderr = "";
   coStderr = "";
   // Test-report scan listing (one absolute path per line) and the bytes
   // served for cat calls that hit those paths.
@@ -336,6 +365,9 @@ class FakeContainer implements ContainerCtl {
     if (cmd[0] === "sh" && cmd[1] === "-s") {
       const stdin = opts?.stdin;
       const text = typeof stdin === "string" ? stdin : stdin ? new TextDecoder().decode(stdin) : "";
+      if (text.includes("refs/flare/trunk")) {
+        return { exitCode: this.trunkExit, stdout: bytes(this.trunkStdout), stderr: bytes(this.trunkStderr) };
+      }
       if (text.includes("refs/heads/flare-mirror")) {
         if (this.syncExit === 0) this.mirrorSynced = true;
         return { exitCode: this.syncExit, stderr: bytes(this.coStderr) };
@@ -360,7 +392,8 @@ class FakeContainer implements ContainerCtl {
       if (out !== undefined) return { exitCode: 0, stdout: bytes(out) };
       // Steps usually publish nothing: a missing outputs file reads as
       // absent (exit 1), not as the default test-XML blob.
-      if ((cmd[1] ?? "").startsWith("/tmp/flare-output-")) return { exitCode: 1, stdout: bytes("") };
+      // Same for the other step files ($GITHUB_ENV/PATH/STEP_SUMMARY).
+      if (/^\/tmp\/flare-(output|env|path|summary)-\d+$/.test(cmd[1] ?? "")) return { exitCode: 1, stdout: bytes("") };
       const hit = this.testXml.get(cmd[1] ?? "");
       return { exitCode: 0, stdout: bytes(hit ?? "blob-bytes-12") };
     }
@@ -375,6 +408,7 @@ class FakeContainer implements ContainerCtl {
     }
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("rm -rf")) return { exitCode: 0 };
     if (cmd[0] === "rm") return { exitCode: 0 };
+    if (cmd[0] === "printenv" && cmd[1] === "PATH") return { exitCode: 0, stdout: bytes("/usr/bin:/bin\n") };
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("test -f")) return { exitCode: 0 };
     if (cmd[0] === "test" && cmd[1] === "-x") return { exitCode: this.shimPresent ? 0 : 1 };
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("grep -qa FLARE_EGRESS_ALLOW")) {
@@ -1929,6 +1963,45 @@ describe("runSeatJob", () => {
     expect(container.calls.some((c) => c.cmd[0] === "cat" && c.cmd[1] === "/tmp/flare-output-0")).toBe(true);
   });
 
+  it("applies $GITHUB_ENV / $GITHUB_PATH to later steps only and logs the step summary", async () => {
+    const db = new MemDb();
+    seed(
+      db,
+      DEF({
+        steps: [{ run: "echo setup", id: "setup" }, { run: "echo mid" }, { run: "echo last" }],
+      }),
+    );
+    const container = new FakeContainer();
+    container.outputFiles.set(
+      "/tmp/flare-env-0",
+      "FOO=bar\nNOTES<<EOF\nl1\nl2\nEOF\nNODE_OPTIONS=--inspect\nLD_PRELOAD=/evil.so\nFLARE_OUTPUT=/x\n",
+    );
+    container.outputFiles.set("/tmp/flare-path-0", "/opt/a\n/opt/b\n");
+    container.outputFiles.set("/tmp/flare-env-1", "FOO=baz\n");
+    container.outputFiles.set("/tmp/flare-summary-1", "## Results\nall green\n");
+    const out = await runSeatJob(deps(db, container), "j1");
+    expect(out.status).toBe("completed");
+    const stepCalls = container.calls.filter((c) => c.cmd[2]?.startsWith("sh -s >"));
+    expect(stepCalls).toHaveLength(3);
+    const envOf = (n: number): Record<string, string> => (stepCalls[n]?.opts?.env ?? {}) as Record<string, string>;
+    expect(envOf(0).FOO).toBeUndefined();
+    expect(envOf(0).GITHUB_ENV).toBe("/tmp/flare-env-0");
+    expect(envOf(0).FLARE_STEP_SUMMARY).toBe("/tmp/flare-summary-0");
+    expect(envOf(0).PATH).toBeUndefined();
+    expect(envOf(1)).toMatchObject({ FOO: "bar", NOTES: "l1\nl2", PATH: "/opt/b:/opt/a:/usr/bin:/bin", GITHUB_PATH: "/tmp/flare-path-1" });
+    expect(envOf(1).NODE_OPTIONS).toBeUndefined();
+    expect(envOf(1).LD_PRELOAD).toBeUndefined();
+    expect(envOf(1).FLARE_OUTPUT).toBe("/tmp/flare-output-1");
+    expect(envOf(2).FOO).toBe("baz");
+    // Fresh files per step: removed before each step runs.
+    expect(container.calls.some((c) => c.cmd[0] === "rm" && c.cmd.includes("/tmp/flare-env-2"))).toBe(true);
+    const log = db.jobs.get("j1")?.log as string;
+    expect(log).toContain("[env] step setup: set FOO, NOTES");
+    expect(log).toContain("ignored (reserved or invalid names): NODE_OPTIONS, LD_PRELOAD, FLARE_OUTPUT");
+    expect(log).toContain("[path] step setup: prepended /opt/a, /opt/b");
+    expect(log).toContain("── step summary ── (step2)\n## Results\nall green");
+  });
+
   it("restores through restore-keys and names the matching prefix", async () => {
     const db = new MemDb();
     seed(db, DEF({ cache: { key: "node-missing", paths: ["node_modules"], restoreKeys: ["zzz-", "node-"] } }));
@@ -2137,5 +2210,137 @@ describe("seatInstanceFrom", () => {
   it("accepts the runtime's named sizes", () => {
     expect(seatInstanceFrom(" standard-4 ")).toBe("standard-4");
     expect(seatInstanceFrom("lite")).toBe("lite");
+  });
+});
+
+describe("mirror trunk sync", () => {
+  const TEMPLATE = MIRROR_TEMPLATE.replace("/git/mirrors/", "/git/flare-tournaments/");
+
+  function trunkArtifacts(scopes: string[]): SeatArtifactsNamespace {
+    return {
+      get: async () => ({
+        createToken: async (scope: "read" | "write") => {
+          scopes.push(scope);
+          return { plaintext: `job-${scope}?expires=9999999999` };
+        },
+        [Symbol.dispose]: () => undefined,
+      }),
+    };
+  }
+
+  function setup(over: { event?: string; branch?: string; defaultBranch?: string; status?: string } = {}) {
+    const db = new MemDb();
+    seed(db, DEF());
+    const run = db.runs.get("r1") as Row;
+    run.event = over.event ?? "push";
+    run.branch = over.branch ?? "main";
+    db.mirrors.set("o/r", {
+      repo: "o/r",
+      mirror: "o-r",
+      status: over.status ?? "ready",
+      default_branch: over.defaultBranch ?? "main",
+      trunk_sha: "",
+      trunk_detail: "",
+    });
+    const container = new FakeContainer();
+    const scopes: string[] = [];
+    const d = deps(db, container, { mirrorRemote: TEMPLATE, artifacts: trunkArtifacts(scopes), artifactsNamespace: "flare-tournaments" });
+    return { db, container, scopes, d };
+  }
+
+  const trunkCalls = (c: FakeContainer) => c.calls.filter((x) => stdinText(x).includes("refs/flare/trunk"));
+
+  it("builds a non-force, fast-forward-only script in its own directory", () => {
+    const script = trunkSyncScript({ mirrorRemote: "https://m", githubRemote: "https://g", branch: "main", sha: "abc123" });
+    expect(script).toContain("git fetch -q --depth 1 https://m +refs/heads/main:refs/flare/trunk");
+    expect(script).toContain("git fetch -q --depth 50 https://g abc123");
+    expect(script).toContain("git fetch -q --deepen 1000 https://g abc123");
+    expect(script).toContain('git merge-base --is-ancestor "$T" FETCH_HEAD');
+    expect(script).toContain("git push -q https://m FETCH_HEAD:refs/heads/main\n");
+    expect(script).not.toContain("+FETCH_HEAD");
+    expect(script).not.toMatch(/--force|-f /);
+    expect(script).not.toContain("/workspace");
+    expect(script).toContain(TRUNK_SYNC_MARKERS.diverged);
+    expect(trunkSyncBranchOk("main")).toBe(true);
+    expect(trunkSyncBranchOk("release/1.x")).toBe(true);
+    for (const bad of ["", "a b", "x;rm", "../x", "a..b", "$(id)", "x.lock"]) expect(trunkSyncBranchOk(bad)).toBe(false);
+  });
+
+  it("fast-forwards the mirror's default branch after the job's result is recorded", async () => {
+    const { db, container, scopes, d } = setup();
+    const out = await runSeatJob(d, "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("success");
+    const calls = trunkCalls(container);
+    expect(calls).toHaveLength(1);
+    const text = stdinText(calls[0]);
+    expect(text).toContain("x-access-token:job-write@");
+    expect(text).toContain("git/flare-tournaments/o-r.git");
+    expect(text).toContain("github.com/o/r.git abc123");
+    expect(text).toContain("FETCH_HEAD:refs/heads/main");
+    // Runs after the steps (post-terminal), never before them.
+    const idx = container.calls.indexOf(calls[0]);
+    const stepIdx = container.calls.map((c, i) => ((c.cmd[2] ?? "").startsWith("sh -s >") ? i : -1)).filter((i) => i >= 0);
+    expect(stepIdx.length).toBeGreaterThan(0);
+    expect(idx).toBeGreaterThan(Math.max(...stepIdx));
+    expect(scopes).toContain("write");
+    expect(db.mirrors.get("o/r")).toMatchObject({ trunk_sha: "abc123", trunk_detail: "pushed" });
+    expect(db.jobs.get("j1")?.log as string).toContain("[seat] mirror trunk main@abc123: pushed");
+  });
+
+  it("syncs once per push: a second job of the same run loses the claim", async () => {
+    const { db, container, d } = setup();
+    db.jobs.set("j2", { ...(db.jobs.get("j1") as Row), id: "j2", name: "test-2" });
+    await runSeatJob(d, "j1");
+    const second = new FakeContainer();
+    await runSeatJob({ ...d, container: second }, "j2");
+    expect(trunkCalls(container)).toHaveLength(1);
+    expect(trunkCalls(second)).toHaveLength(0);
+  });
+
+  it("records divergence without forcing and never fails the job", async () => {
+    const { db, container, d } = setup();
+    container.trunkStdout = `${TRUNK_SYNC_MARKERS.diverged}\n`;
+    const out = await runSeatJob(d, "j1");
+    expect(out.status).toBe("completed");
+    expect(db.jobs.get("j1")?.status).toBe("success");
+    expect(db.mirrors.get("o/r")?.trunk_detail as string).toMatch(/^diverged/);
+  });
+
+  it("maps a rejected push to diverged and scrubs tokens from errors", async () => {
+    const { db, container, d } = setup();
+    container.trunkExit = 1;
+    container.trunkStdout = "";
+    container.trunkStderr = " ! [rejected] FETCH_HEAD -> main (non-fast-forward) https://x-access-token:job-write@host";
+    await runSeatJob(d, "j1");
+    expect(db.mirrors.get("o/r")?.trunk_detail as string).toMatch(/^diverged: push rejected/);
+
+    const s2 = setup();
+    s2.container.trunkExit = 128;
+    s2.container.trunkStdout = "";
+    s2.container.trunkStderr = "fatal: auth failed for https://x-access-token:job-write@host/git/x.git";
+    const out = await runSeatJob(s2.d, "j1");
+    expect(out.status).toBe("completed");
+    const detail = s2.db.mirrors.get("o/r")?.trunk_detail as string;
+    expect(detail).toMatch(/^error: /);
+    expect(detail).not.toContain("job-write");
+    expect(s2.db.jobs.get("j1")?.log as string).not.toContain("job-write");
+  });
+
+  it("skips non-default branches, pull_request runs, and mirrors that are not ready", async () => {
+    for (const over of [{ branch: "feat" }, { event: "pull_request" }, { status: "importing" }, { defaultBranch: "" }]) {
+      const { db, container, d } = setup(over);
+      const out = await runSeatJob(d, "j1");
+      expect(out.status).toBe("completed");
+      expect(trunkCalls(container)).toHaveLength(0);
+      expect(db.mirrors.get("o/r")?.trunk_sha).toBe("");
+    }
+  });
+
+  it("does nothing without a same-namespace mirror (shared-token or GitHub-only seats)", async () => {
+    const { db, container } = setup();
+    const out = await runSeatJob(deps(db, container, { mirrorRemote: MIRROR_TEMPLATE, mirrorToken: "shared" }), "j1");
+    expect(out.status).toBe("completed");
+    expect(trunkCalls(container)).toHaveLength(0);
   });
 });

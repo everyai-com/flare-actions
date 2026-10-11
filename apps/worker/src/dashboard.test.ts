@@ -47,9 +47,10 @@ describe("dashboard", () => {
 
   it("lands on a guided Home with plain-language steps and status", () => {
     expect(DASHBOARD_HTML).toContain('id="tabHome"');
-    // Forge leads the nav (competition story); Home heads the CI group
-    // right under it and stays the signed-in landing screen.
-    expect(DASHBOARD_HTML.indexOf('id="tabLive"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabHome"'));
+    // Home (the signed-in landing screen + setup checklist) is pinned
+    // first; the Forge group leads every other section.
+    expect(DASHBOARD_HTML.indexOf('id="tabHome"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabLive"'));
+    expect(DASHBOARD_HTML.indexOf('id="tabLive"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabRuns"'));
     expect(DASHBOARD_HTML.indexOf('id="tabHome"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabRuns"'));
     expect(DASHBOARD_HTML).toContain('id="homePane"');
     expect(DASHBOARD_HTML).toContain('api("/v1/setup")');
@@ -63,11 +64,21 @@ describe("dashboard", () => {
   });
 
   it("renders the first-run onboarding checklist", () => {
-    expect(DASHBOARD_HTML).toContain("three steps to the first one");
+    // Home owns the guided checklist; the empty Runs pane points there.
+    expect(DASHBOARD_HTML).toContain("Finish setup on Home");
     expect(DASHBOARD_HTML).toContain("setupStep");
     expect(DASHBOARD_HTML).toContain("ol.steps");
-    expect(DASHBOARD_HTML).toContain("Start an executor");
     expect(DASHBOARD_HTML).toContain("Dispatch a run");
+  });
+
+  it("keeps settings navigable and repo inputs autocompleted", () => {
+    expect(DASHBOARD_HTML).toContain('class="settings-jump"');
+    expect(DASHBOARD_HTML).toContain('list="ghRepoList"');
+    expect(DASHBOARD_HTML).toContain('<datalist id="flareRepoList">');
+    expect(DASHBOARD_HTML).toContain("[hidden] { display: none !important; }");
+    // Home hands agents this deployment's llms.txt in one copyable line.
+    expect(DASHBOARD_HTML).toContain('id="homeAgentPrompt"');
+    expect(DASHBOARD_HTML).toContain('location.origin + "/llms.txt');
   });
 
   it("polishes auth and small screens", () => {

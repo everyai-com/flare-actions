@@ -681,6 +681,12 @@ export async function claimWebhookDelivery(db: Db, id: string): Promise<boolean>
   return (res?.meta?.changes ?? 0) > 0;
 }
 
+// Give back a claim whose work failed (the push/PR pair claim: the twin
+// webhook must be free to run if this one's fan-out threw).
+export async function releaseWebhookDelivery(db: Db, id: string): Promise<void> {
+  await db.prepare("DELETE FROM webhook_deliveries WHERE id = ?").bind(id).run();
+}
+
 export async function pruneWebhookDeliveries(db: Db, maxAgeHours = 24): Promise<number> {
   const cutoff = new Date(Date.now() - maxAgeHours * 3600000).toISOString();
   const res = (await db.prepare("DELETE FROM webhook_deliveries WHERE created_at < ?").bind(cutoff).run()) as {
@@ -1255,6 +1261,11 @@ export interface ArtifactsMirrorRow {
   status: string;
   detail: string;
   updated_at: string;
+  // Trunk sync columns (listMirrorRows only; see claimMirrorTrunkSync).
+  default_branch?: string;
+  trunk_sha?: string;
+  trunk_detail?: string;
+  trunk_at?: string;
 }
 
 export async function getMirrorRow(db: Db, repo: string): Promise<ArtifactsMirrorRow | null> {
@@ -1281,10 +1292,49 @@ export async function setMirrorRow(
 
 export async function listMirrorRows(db: Db): Promise<ArtifactsMirrorRow[]> {
   const res = await db
-    .prepare("SELECT repo, mirror, status, detail, updated_at FROM artifacts_mirrors ORDER BY repo ASC")
+    .prepare("SELECT repo, mirror, status, detail, updated_at, default_branch, trunk_sha, trunk_detail, trunk_at FROM artifacts_mirrors ORDER BY repo ASC")
     .bind()
     .all<ArtifactsMirrorRow>();
   return res.results;
+}
+
+// Mirror trunk sync (seats fast-forward the mirror's default branch on
+// default-branch pushes). The webhook stamps GitHub's default branch on
+// the mirror row; a no-op when unchanged or when no row exists yet.
+export async function setMirrorDefaultBranch(db: Db, repo: string, branch: string): Promise<void> {
+  await db
+    .prepare("UPDATE artifacts_mirrors SET default_branch = ? WHERE repo = ? AND default_branch != ?")
+    .bind(branch, repo, branch)
+    .run();
+}
+
+// Conditional claim: exactly one executor syncs a given (repo, sha),
+// and only for a ready mirror whose recorded default branch is the
+// pushed branch. True = this caller owns the sync.
+export async function claimMirrorTrunkSync(db: Db, repo: string, branch: string, sha: string): Promise<boolean> {
+  const res = (await db
+    .prepare(
+      "UPDATE artifacts_mirrors SET trunk_sha = ?, trunk_detail = 'syncing', trunk_at = ? WHERE repo = ? AND status = 'ready' AND default_branch = ? AND default_branch != '' AND trunk_sha != ?",
+    )
+    .bind(sha, nowIso(), repo, branch, sha)
+    .run()) as { meta?: { changes?: number } };
+  return (res?.meta?.changes ?? 0) > 0;
+}
+
+// Outcome of a claimed sync (only while the row still names this sha:
+// a newer push's claim wins the detail).
+export async function recordMirrorTrunkSync(db: Db, repo: string, sha: string, detail: string): Promise<void> {
+  await db
+    .prepare("UPDATE artifacts_mirrors SET trunk_detail = ?, trunk_at = ? WHERE repo = ? AND trunk_sha = ?")
+    .bind(detail.slice(0, 300), nowIso(), repo, sha)
+    .run();
+}
+
+// Is this Artifacts repo name a hands-free GitHub mirror? (Pushes to a
+// mirror are GitHub commits Flare already ran via the webhook.)
+export async function isMirrorRepo(db: Db, name: string): Promise<boolean> {
+  const row = await db.prepare("SELECT repo FROM artifacts_mirrors WHERE mirror = ? LIMIT 1").bind(name).first<{ repo: string }>();
+  return row !== null;
 }
 
 export interface DevBoxRow {

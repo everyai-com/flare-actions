@@ -158,6 +158,26 @@ describe("handleArtifactsPush", () => {
     expect(await handleArtifactsPush(deps, pushMsg())).toEqual({ status: "dispatched", runId: "run-1" });
     expect(await handleArtifactsPush(deps, pushMsg())).toEqual({ status: "skipped", reason: "duplicate" });
   });
+  it("skips pushes to hands-free GitHub mirrors (trunk sync) before claiming", async () => {
+    const db = sqliteDb();
+    let dispatched = 0;
+    const deps = {
+      db,
+      artifacts: fakeArtifacts(yaml, { disposed: false }),
+      dispatch: async () => {
+        dispatched++;
+        return { runId: "run-1" };
+      },
+      isMirror: async (repo: string) => repo === "race-1",
+    };
+    expect(await handleArtifactsPush(deps, pushMsg())).toEqual({ status: "skipped", reason: "mirror" });
+    expect(dispatched).toBe(0);
+    // Delivery id not burned; a non-mirror lookup failure fails open.
+    expect(await handleArtifactsPush({ ...deps, isMirror: async () => Promise.reject(new Error("db")) }, pushMsg())).toEqual({
+      status: "dispatched",
+      runId: "run-1",
+    });
+  });
   it("skips invalid envelopes without touching the binding", async () => {
     let calls = 0;
     const out = await handleArtifactsPush(

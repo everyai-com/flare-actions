@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { mergeLoginEnv, runLogin } from "./login.ts";
+import { loginMissingArgs, mergeLoginEnv, runLogin } from "./login.ts";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -99,5 +99,13 @@ describe("runLogin", () => {
         fetchFn: (async () => jsonResponse(500, { hint: "seats are down" })) as typeof fetch,
       }),
     ).rejects.toThrow("seats are down");
+  });
+});
+
+describe("loginMissingArgs", () => {
+  it("names the flags a non-interactive login needs", () => {
+    expect(loginMissingArgs({}, {})).toEqual(["--url <worker-url>", "--code <pairing-code>"]);
+    expect(loginMissingArgs({}, { FLARE_ACTIONS_URL: "https://w" })).toEqual(["--code <pairing-code>"]);
+    expect(loginMissingArgs({ baseUrl: "w", code: "AB-CD" }, {})).toEqual([]);
   });
 });

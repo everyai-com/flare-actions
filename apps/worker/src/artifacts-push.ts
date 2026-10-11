@@ -59,11 +59,16 @@ export interface ArtifactsPushDeps {
   db: Db;
   artifacts?: ArtifactsNamespace | null;
   dispatch: (input: ArtifactsDispatchInput) => Promise<{ runId: string }>;
+  // Hands-free GitHub mirror lookup (artifacts_mirrors.mirror). Pushes
+  // to a mirror are GitHub commits the webhook already ran — the lazy
+  // `flare-mirror` sync and the seat's trunk fast-forward — so a
+  // subscribed mirror must not dispatch a second run. Absent = no check.
+  isMirror?: (repo: string) => Promise<boolean>;
 }
 
 export type ArtifactsPushOutcome =
   | { status: "dispatched"; runId: string }
-  | { status: "skipped"; reason: "invalid" | "duplicate" | "no-binding" | "no-pipeline" | "dispatch-failed" };
+  | { status: "skipped"; reason: "invalid" | "duplicate" | "no-binding" | "no-pipeline" | "dispatch-failed" | "mirror" };
 
 const NAME_RE = /^[\w.-]{1,100}$/;
 const SHA_RE = /^[0-9a-f]+$/i;
@@ -142,6 +147,7 @@ export async function handleArtifactsPush(deps: ArtifactsPushDeps, msg: unknown)
   // Binding check before the claim: an unconfigured worker must not burn
   // the delivery id — a later configured redelivery should dispatch.
   if (!deps.artifacts) return { status: "skipped", reason: "no-binding" };
+  if (deps.isMirror && (await deps.isMirror(push.repo).catch(() => false))) return { status: "skipped", reason: "mirror" };
   if (!(await claimWebhookDelivery(deps.db, deliveryId(push)))) return { status: "skipped", reason: "duplicate" };
   const pipeline = await loadArtifactsPipeline(deps.artifacts, push.repo, push.after);
   if (!pipeline) return { status: "skipped", reason: "no-pipeline" };

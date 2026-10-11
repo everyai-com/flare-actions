@@ -13,7 +13,8 @@ import {
   type ForgeNextStep,
 } from "flare-actions-runner-sdk";
 import { printJson } from "./json.ts";
-import { applyForgeInit, ForgeInitError, PLACEHOLDER_URL, planForgeInit } from "./forge-init.ts";
+import { applyForgeInit, ForgeInitError, PLACEHOLDER_URL, planForgeGlobal, planForgeInit } from "./forge-init.ts";
+import { missingConfigMessage, missingConfigVars, resolveToken, suggestCommand, type EnvLocation } from "./hints.ts";
 
 export interface GitResult {
   status: number;
@@ -36,6 +37,8 @@ export interface ForgeCliDeps {
   /** Writes a normal repo file (0644, parent dirs created): `forge init`. */
   writeFile: (path: string, text: string) => void;
   cwd: string;
+  /** How the user invoked the CLI (`npm run cli --`, `npx flare-forge`); default `cli`. */
+  cli?: string;
 }
 
 export const FORGE_USAGE = [
@@ -55,16 +58,24 @@ export const FORGE_USAGE = [
   "  forge conflicts <repo> [state] | claim <id> | resolve <id> <sha>",
   "  forge trains <repo> [trainId]                        trains (lanes verified as the exact SHA)",
   "  forge snapshot <repo>                                live map JSON (counters, cells, track)",
+  "  forge done <intentId>                                close an intent you finished elsewhere (alias: abandon)",
   "  forge fork <intentId>                                continue someone else's intent on a new one",
   "  forge approve <intentId>                             approve a protected-path plan (admin)",
   "  forge connect-agent --client claude|codex|cursor [--agent name] [--agents-md]",
   "                                                       ready-to-paste MCP config + agent workflow prompt",
   "  forge init [--client claude|codex|cursor] [--repo name] [--url U] [--skill] [--dry-run]",
+  "  forge init --global [--url U] [--dry-run]            every repo on this machine: ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, skills",
   "                                                       wire this repo: AGENTS.md block + MCP config (token via env ref)",
   "intentId defaults to `git config flare.intent` (set by `forge claim --clone`) or FLARE_INTENT.",
 ].join("\n");
 
 class UsageError extends Error {}
+
+const FORGE_VERB_NAMES = ["goal", "declare", "claim", "push", "heartbeat", "ready", "note", "inbox", "status", "why", "conflicts", "trains", "snapshot", "done", "abandon", "fork", "approve", "connect-agent", "init"];
+
+// Missing URL/token: the message already ends in its own next line, so
+// the top-level error handler prints it as-is.
+export class ForgeConfigError extends Error {}
 
 // Flags: --name value (repeatable via `multi`), bare --flag booleans.
 export function parseFlags(
@@ -106,13 +117,83 @@ export function parseFlags(
   return { pos, values, multi, bools };
 }
 
-function printSteps(d: ForgeCliDeps, steps: ForgeNextStep[] | undefined): void {
-  if (!steps || steps.length === 0) return;
-  d.out("next:");
-  for (const s of steps.slice(0, 6)) {
-    const args = Object.keys(s.args).length ? ` ${JSON.stringify(s.args)}` : "";
-    d.out(`  ${s.tool}${args}  — ${s.why}`);
+// Shell-quote a value only when it needs it (globs, spaces).
+function q(v: string): string {
+  return /^[\w./:@-]+$/.test(v) ? v : `"${v.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
+// A server nextStep (an MCP tool + args) as the equivalent CLI verb, so
+// a human's "next:" line is copy-pasteable. Placeholder args ("<...>")
+// stay placeholders. null when the step has no CLI twin (shell steps).
+export function forgeStepCommand(step: ForgeNextStep): string | null {
+  const a = step.args;
+  const str = (k: string, fallback: string): string => {
+    const v = a[k];
+    return typeof v === "string" && v && !v.startsWith("<") ? v : fallback;
+  };
+  const list = (k: string): string[] => (Array.isArray(a[k]) ? (a[k] as unknown[]).filter((x): x is string => typeof x === "string") : []);
+  const repo = str("repo", "<repo>");
+  const intent = str("intentId", "<intentId>");
+  switch (step.tool) {
+    case "plan_goal":
+      return `forge goal ${q(repo)} "<goal>"`;
+    case "declare_intent": {
+      const paths = list("footprint");
+      return `forge declare ${q(repo)} "<title>" ${(paths.length ? paths : ["<path>"]).slice(0, 4).map((p) => `--path ${q(p)}`).join(" ")}`;
+    }
+    case "claim_intent":
+      return `forge claim ${intent} --clone`;
+    case "report_push":
+      return `forge push${a["intentId"] ? ` ${intent}` : ""}`;
+    case "mark_ready":
+      return `forge ready ${intent}`;
+    case "heartbeat":
+      return `forge heartbeat ${intent}`;
+    case "send_note":
+      return `forge note ${str("toIntent", "<intentId>")} "<text>"`;
+    case "read_inbox":
+      return typeof a["intentId"] === "string" ? `forge inbox --intent ${intent}` : `forge inbox ${q(repo)}`;
+    case "whats_happening":
+      return `forge status ${q(repo)}${list("paths").slice(0, 4).map((p) => ` ${q(p)}`).join("")}`;
+    case "why":
+      return `forge why ${q(repo)} ${q(str("path", "<path>"))}`;
+    case "claim_conflict":
+      return `forge conflicts claim ${str("conflictId", "<conflictId>")}`;
+    case "resolve_conflict":
+      return `forge conflicts resolve ${str("conflictId", "<conflictId>")} <sha>`;
+    case "fork_session":
+      return `forge fork ${intent}`;
+    case "forge_snapshot":
+      return `forge snapshot ${q(repo)}`;
+    default:
+      return null;
   }
+}
+
+function cliOf(d: ForgeCliDeps): string {
+  return d.cli ?? "cli";
+}
+
+function next(d: ForgeCliDeps, command: string, why?: string): void {
+  d.out(`next: ${cliOf(d)} ${command}${why ? `   (${why})` : ""}`);
+}
+
+// Suggested steps as the agent sees them, then ONE copy-pasteable next
+// line (the first step with a CLI twin), or `fallback` when none maps.
+function printSteps(d: ForgeCliDeps, steps: ForgeNextStep[] | undefined, fallback?: { command: string; why?: string }): void {
+  const list = steps ?? [];
+  if (list.length > 1) {
+    d.out("steps:");
+    for (const s of list.slice(0, 6)) {
+      const args = Object.keys(s.args).length ? ` ${JSON.stringify(s.args)}` : "";
+      d.out(`  ${s.tool}${args}  — ${s.why}`);
+    }
+  }
+  for (const s of list) {
+    const command = forgeStepCommand(s);
+    if (command) return next(d, command, s.why);
+  }
+  if (fallback) next(d, fallback.command, fallback.why);
 }
 
 function printNotes(d: ForgeCliDeps, inbox: Array<{ text: string }> | undefined): void {
@@ -176,6 +257,7 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
   try {
     if (!verb || verb === "--help" || verb === "help" || verb === "-h") {
       d.out(FORGE_USAGE);
+      if (!verb) next(d, "forge status <repo>", "see who is working on what");
       return verb ? 0 : 2;
     }
     if (verb === "goal") {
@@ -193,7 +275,7 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
           d.out(`  proposal ${i}: ${String(p.title)}  [${(p.footprint as string[]).join(", ")}]${after}`);
         }
         if (out.nearby.length) d.out(`  ${out.nearby.length} live intent(s) already near these paths`);
-        printSteps(d, out.nextSteps);
+        printSteps(d, out.nextSteps, { command: `forge declare ${q(repo)} "<title>" --path <path>`, why: "one intent per proposal" });
       });
       return 0;
     }
@@ -217,7 +299,7 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
         if (out.protectedHits.length) d.out(`  protected: ${out.protectedHits.join(", ")} — awaiting human plan approval`);
         for (const o of out.overlaps) d.out(`  OVERLAP ${o.intentId} "${o.title}" (${o.state}, ${o.agent || "unclaimed"}): ${o.paths.map((p) => p.join(" ~ ")).join("; ")}`);
         for (const s of out.similar) d.out(`  similar ${s.intentId} "${s.title}" (${s.score})`);
-        printSteps(d, out.nextSteps);
+        printSteps(d, out.nextSteps, { command: `forge claim ${out.intent.id} --clone` });
       });
       return 0;
     }
@@ -236,14 +318,12 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       // agents (it is fork-scoped and expires in an hour).
       emit(d, "claim", { ...out, clonedTo: cloned }, () => {
         d.out(`claimed ${out.intent.id} -> fork ${out.forkRepo} (token expires ${out.tokenExpiresAt}, lease ${out.leaseExpiresAt ?? "?"})`);
-        if (cloned) {
-          d.out(`  cloned into ./${cloned} (auth + flare.intent stored in its .git/config)`);
-          d.out(`  cd ${cloned} && <edit> && git commit && cli forge push`);
-        } else {
-          d.out(`  re-run with --clone to clone it, or --json to get the token for: ${out.cloneCommand}`);
-        }
+        if (cloned) d.out(`  cloned into ./${cloned} (auth + flare.intent stored in its .git/config)`);
+        else d.out(`  re-run with --clone to clone it, or --json to get the token for: ${out.cloneCommand}`);
         d.out(`  commit trailers:\n    ${out.trailers.replace(/\n/g, "\n    ")}`);
         printNotes(d, out.inbox);
+        if (cloned) d.out(`next: cd ${q(cloned)}, edit, git commit, then ${cliOf(d)} forge push`);
+        else next(d, `forge claim ${out.intent.id} --clone`, "get your own copy to edit");
       });
       return 0;
     }
@@ -268,7 +348,7 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
         if (out.drift.length) d.out(`  DRIFT (undeclared): ${out.drift.join(", ")}`);
         for (const o of out.overlaps) d.out(`  overlaps ${o.intentId} "${o.title}" (${o.state})`);
         printNotes(d, out.inbox);
-        printSteps(d, out.nextSteps);
+        printSteps(d, out.nextSteps, { command: `forge ready ${out.intent.id}`, why: "when your check passes" });
       });
       return 0;
     }
@@ -291,6 +371,7 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
         d.out(`lease renewed until ${out.leaseExpiresAt}${out.forkToken ? ` · fork token refreshed (expires ${out.forkToken.tokenExpiresAt}${stored ? ", stored in this clone" : ""})` : ""}`);
         if (out.drift.length) d.out(`  drift: ${out.drift.join(", ")}`);
         printNotes(d, out.inbox);
+        next(d, `forge push ${id}`, "after your next git push");
       });
       return 0;
     }
@@ -301,7 +382,7 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       emit(d, "ready", out, () => {
         d.out(`ready ${out.intent.id} risk ${out.risk.score} route ${out.route} — ${out.train.note}`);
         for (const t of out.risk.terms) d.out(`  +${t.weight} ${t.term}: ${t.detail}`);
-        printSteps(d, out.nextSteps);
+        printSteps(d, out.nextSteps, { command: `forge trains ${q(out.intent.repo)}`, why: "watch it land" });
       });
       return 0;
     }
@@ -310,7 +391,10 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       const [to, ...text] = f.pos;
       if (!to || text.length === 0) throw new UsageError("forge note <toIntent> <text...>");
       const out = await d.forge().sendNote(to, text.join(" "), { fromIntent: f.values["from"], agent: agentOf(d, f.values) });
-      emit(d, "note", out, () => d.out(`note ${out.messageId} queued for ${to}`));
+      emit(d, "note", out, () => {
+        d.out(`note ${out.messageId} queued for ${to}`);
+        printSteps(d, out.nextSteps, { command: `forge status --intent ${to}`, why: "see their progress" });
+      });
       return 0;
     }
     if (verb === "inbox") {
@@ -320,7 +404,7 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
         emit(d, "inbox", out, () => {
           printNotes(d, out.messages);
           if (out.messages.length === 0) d.out("no notes");
-          printSteps(d, out.nextSteps);
+          printSteps(d, out.nextSteps, { command: `forge status --intent ${f.values["intent"]}` });
         });
         return 0;
       }
@@ -335,6 +419,9 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
           d.out(`STORY ${g.goal ? `${g.goal.id} "${g.goal.text.slice(0, 80)}"` : "(no goal)"}`);
           for (const it of g.items) d.out(`  ${String(it.risk).padStart(3)} ${it.bucket.padEnd(9)} ${it.intent.id} ${it.intent.title} (${it.intent.state}) — ${it.why ?? it.reason}`);
         }
+        const first = (out.groups as Array<{ items: Array<{ intent: { id: string } }> }>).flatMap((g) => g.items)[0];
+        if (first) next(d, `forge status --intent ${first.intent.id}`, "review the top story");
+        else next(d, `forge status ${q(repo)}`, "nothing needs you; see live work");
       });
       return 0;
     }
@@ -349,7 +436,7 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
           d.out(`  declared: ${fp.declared.join(", ")}`);
           if (fp.actual.length) d.out(`  actual:   ${fp.actual.join(", ")}`);
           if (fp.drift.length) d.out(`  drift:    ${fp.drift.join(", ")}`);
-          printSteps(d, out.nextSteps);
+          printSteps(d, out.nextSteps, { command: `forge why ${q(i.repo)} ${q(fp.declared[0] ?? "<path>")}` });
         });
         return 0;
       }
@@ -362,7 +449,7 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
           d.out(`${i.intentId} ${i.state.padEnd(13)} ${(i.agent || "-").padEnd(12)} ${i.title}`);
           d.out(`    ${(i.matchedPaths.length ? i.matchedPaths : i.footprint).slice(0, 5).join(", ")}`);
         }
-        printSteps(d, out.nextSteps);
+        printSteps(d, out.nextSteps, { command: `forge declare ${q(repo)} "<title>" ${(paths.length ? paths : ["<path>"]).slice(0, 4).map((p) => `--path ${q(p)}`).join(" ")}`, why: "say what you will change" });
       });
       return 0;
     }
@@ -374,6 +461,7 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       emit(d, "why", out, () => {
         if (!out.exact) d.out("(best effort from footprints: no why note for this exact line yet)");
         for (const link of out.chain) d.out(`  ${link.kind.padEnd(8)} ${link.id}  ${link.text.split("\n")[0].slice(0, 120)}`);
+        next(d, `forge status ${q(repo)} ${q(m?.[1] ?? target)}`, "who is changing it now");
       });
       return 0;
     }
@@ -384,13 +472,16 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
         const out = await d.forge().claimConflict(b, { agent: agentOf(d, f.values) });
         emit(d, "conflicts claim", out, () => {
           d.out(`claimed conflict ${b}`);
-          printSteps(d, out.nextSteps);
+          printSteps(d, out.nextSteps, { command: `forge conflicts resolve ${b} <sha>`, why: "after you replay and push" });
         });
         return 0;
       }
       if (a === "resolve" && b && c) {
         const out = await d.forge().resolveConflict(b, c, { agent: agentOf(d, f.values) });
-        emit(d, "conflicts resolve", out, () => d.out(`resolved ${b} with ${c.slice(0, 12)}; the replay rides the next train`));
+        emit(d, "conflicts resolve", out, () => {
+          d.out(`resolved ${b} with ${c.slice(0, 12)}; the replay rides the next train`);
+          printSteps(d, out.nextSteps, { command: "forge trains <repo>", why: "watch it land" });
+        });
         return 0;
       }
       if (!a) throw new UsageError("forge conflicts <repo> [state] | claim <id> | resolve <id> <sha>");
@@ -398,7 +489,7 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       emit(d, "conflicts", out, () => {
         if (out.conflicts.length === 0) d.out("no conflicts");
         for (const x of out.conflicts) d.out(`${String(x.id)} ${String(x.state).padEnd(9)} ${String(x.intentA)} x ${String(x.intentB)}  ${(x.files as string[]).join(", ")}`);
-        printSteps(d, out.nextSteps);
+        printSteps(d, out.nextSteps, { command: `forge status ${q(a)}`, why: "no clashes; see live work" });
       });
       return 0;
     }
@@ -407,13 +498,19 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       if (!repo) throw new UsageError("forge trains <repo> [trainId]");
       if (trainId) {
         const out = await d.forge().getTrain(trainId);
-        emit(d, "trains", out, () => d.out(JSON.stringify(out, null, 2)));
+        emit(d, "trains", out, () => {
+          d.out(JSON.stringify(out, null, 2));
+          next(d, `forge trains ${q(repo)}`, "all trains");
+        });
         return 0;
       }
       const out = await d.forge().listTrains(repo);
       emit(d, "trains", out, () => {
         if (out.trains.length === 0) d.out("no trains yet (mark_ready queues intents for the next one)");
         for (const t of out.trains) d.out(`${String(t.id)} lane ${String(t.lane)} ${String(t.state).padEnd(9)} ${(t.intentIds as string[]).length} intents head ${String(t.headSha).slice(0, 12) || "-"}`);
+        const first = out.trains[0];
+        if (first) next(d, `forge trains ${q(repo)} ${String(first.id)}`, "the latest train in detail");
+        else next(d, `forge status ${q(repo)}`, "see what is still in progress");
       });
       return 0;
     }
@@ -426,6 +523,7 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
         for (const c of out.cells as Array<{ path: string; state: string; intents: string[] }>) d.out(`  ${c.path.padEnd(28)} ${c.state.padEnd(13)} ${c.intents.length} intent(s)`);
         const head = typeof out.headSha === "string" ? out.headSha : typeof out.head === "string" ? out.head : "";
         d.out(`main ${head.slice(0, 12) || "-"}`);
+        next(d, `forge status ${q(repo)}`, "the same map as a list");
       });
       return 0;
     }
@@ -435,7 +533,18 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       const out = await d.forge().forkSession(f.pos[0], { agent: agentOf(d, f.values) });
       emit(d, "fork", out, () => {
         d.out(`new intent ${out.intent.id} continues ${f.pos[0]}`);
-        printSteps(d, out.nextSteps);
+        printSteps(d, out.nextSteps, { command: `forge claim ${out.intent.id} --clone` });
+      });
+      return 0;
+    }
+    if (verb === "done" || verb === "abandon") {
+      const f = parseFlags(args, { values: ["agent"] });
+      const id = f.pos[0];
+      if (!id) throw new UsageError("forge done <intentId>");
+      const out = await d.forge().abandon(id, { agent: agentOf(d, f.values) });
+      emit(d, verb, out, () => {
+        d.out(`intent ${id} closed: it no longer shows in whats_happening or on the Live map`);
+        next(d, "forge status <repo>", "see what is still in progress");
       });
       return 0;
     }
@@ -443,11 +552,37 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
       const id = parseFlags(args, {}).pos[0];
       if (!id) throw new UsageError("forge approve <intentId>");
       const out = await d.forge().approvePlan(id);
-      emit(d, "approve", out, () => d.out(`plan approved: ${out.intent.id} is ${out.intent.state} (claimable)`));
+      emit(d, "approve", out, () => {
+        d.out(`plan approved: ${out.intent.id} is ${out.intent.state} (claimable)`);
+        next(d, `forge inbox ${q(out.intent.repo)}`, "the rest of your review inbox");
+      });
       return 0;
     }
     if (verb === "init") {
-      const f = parseFlags(args, { values: ["client", "repo", "url"], bools: ["skill", "dry-run"] });
+      const f = parseFlags(args, { values: ["client", "repo", "url"], bools: ["skill", "dry-run", "global"] });
+      if (f.bools.has("global")) {
+        const home = d.env["HOME"] ?? d.env["USERPROFILE"];
+        if (!home) throw new UsageError("--global needs HOME set");
+        const url = (f.values["url"] ?? d.env["FLARE_ACTIONS_URL"] ?? PLACEHOLDER_URL).replace(/\/+$/, "");
+        if (url !== PLACEHOLDER_URL && !/^https?:\/\/[^\s"'`$]+$/.test(url)) throw new UsageError("--url must be an http(s) URL");
+        const abs = (p: string): string => (p.startsWith("~/") ? join(home, p.slice(2)) : p);
+        let plan: ReturnType<typeof planForgeGlobal>;
+        try {
+          plan = planForgeGlobal({ url }, (p) => d.readText(abs(p)));
+        } catch (e) {
+          if (!(e instanceof ForgeInitError)) throw e;
+          d.err(`error: ${e.message}`);
+          return 1;
+        }
+        const report = applyForgeInit(plan, { client: "claude", repo: "*", url, skill: true, dryRun: f.bools.has("dry-run"), quiet: d.json }, {
+          write: (p, text) => d.writeFile(abs(p), text),
+          out: d.out,
+        });
+        if (d.json) printJson("forge init", report);
+        else if (f.bools.has("dry-run")) next(d, `forge init --global${f.values["url"] ? ` --url ${q(url)}` : ""}`, "write it for real");
+        else d.out("next: open a new agent session in any repo; it now knows the Flare loop");
+        return 0;
+      }
       const client = (f.values["client"] ?? "claude") as ForgeAgentClient;
       if (!["claude", "codex", "cursor"].includes(client)) throw new UsageError("--client must be claude, codex or cursor");
       const repo = f.values["repo"] ?? defaultForgeRepo(d);
@@ -469,6 +604,8 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
         out: d.out,
       });
       if (d.json) printJson("forge init", report);
+      else if (f.bools.has("dry-run")) next(d, `forge init${args.filter((x) => x !== "--dry-run").map((x) => ` ${q(x)}`).join("")}`, "write it for real");
+      else next(d, `forge status ${q(repo)}`, "check the connection; restart your agent to load the MCP server");
       return 0;
     }
     if (verb === "connect-agent") {
@@ -485,13 +622,20 @@ export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number>
         d.out(out.config);
         d.out(`\n# 3. give your agent this workflow prompt:\n${out.prompt}`);
         if (f.bools.has("agents-md")) d.out(`\n# 4. AGENTS.md snippet for the target repo:\n${FORGE_AGENTS_MD_SNIPPET}`);
+        d.out("\nnext: paste the config, restart your agent, then give it the prompt above");
       });
       return 0;
     }
-    throw new UsageError(`unknown forge verb: ${verb}`);
+    const close = suggestCommand(verb, FORGE_VERB_NAMES);
+    throw new UsageError(`unknown forge verb: ${verb}${close ? ` (did you mean \`forge ${close}\`?)` : ""}`);
   } catch (e) {
     if (e instanceof UsageError) {
-      d.err(`${e.message}\n\n${FORGE_USAGE}`);
+      // Usage last-but-one, then what went wrong, then the one next move.
+      const sig = /^forge \S+/.test(e.message) ? e.message.split(" | ")[0] : null;
+      d.err(`${FORGE_USAGE}\n`);
+      d.err(sig ? `Missing or wrong arguments for \`${verb ?? "forge"}\`.` : `${e.message.charAt(0).toUpperCase()}${e.message.slice(1)}.`);
+      const meant = /did you mean `(forge [\w-]+)`/.exec(e.message)?.[1];
+      d.err(`next: ${cliOf(d)} ${sig ?? meant ?? "forge --help"}`);
       return 2;
     }
     throw e;
@@ -510,15 +654,17 @@ function defaultForgeRepo(d: ForgeCliDeps): string {
 }
 
 // Production wiring for apps/cli/src/index.ts.
-export function forgeCliDeps(json: boolean): ForgeCliDeps {
+export function forgeCliDeps(json: boolean, envLocation?: EnvLocation, cli = "npm run cli --"): ForgeCliDeps {
   const env = process.env;
   return {
     json,
+    cli,
     env,
     forge: () => {
       const baseUrl = env["FLARE_ACTIONS_URL"];
-      const token = env["RUNNER_TOKEN"];
-      if (!baseUrl || !token) throw new Error("Not logged in: run `cli login`, `npm run setup`, or set FLARE_ACTIONS_URL and RUNNER_TOKEN");
+      const token = resolveToken(env);
+      const missing = missingConfigVars(env);
+      if (missing.length > 0 || !baseUrl || !token) throw new ForgeConfigError(missingConfigMessage(missing, envLocation, cli));
       return new FlareForge(baseUrl, token, { agent: env["FLARE_AGENT"] });
     },
     git: (args, opts = {}) => {

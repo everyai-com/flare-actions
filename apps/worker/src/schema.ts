@@ -365,7 +365,11 @@ export const SCHEMA_STATEMENTS = [
     mirror TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'importing',
     detail TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    default_branch TEXT NOT NULL DEFAULT '',
+    trunk_sha TEXT NOT NULL DEFAULT '',
+    trunk_detail TEXT NOT NULL DEFAULT '',
+    trunk_at TEXT NOT NULL DEFAULT ''
   )`,
   `CREATE TABLE IF NOT EXISTS devboxes (
     name TEXT PRIMARY KEY,
@@ -523,6 +527,10 @@ export const ALTER_STATEMENTS = [
   `ALTER TABLE attempts ADD COLUMN polled_at TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE intents ADD COLUMN owner_principal TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE trains ADD COLUMN group_seq INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE artifacts_mirrors ADD COLUMN default_branch TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE artifacts_mirrors ADD COLUMN trunk_sha TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE artifacts_mirrors ADD COLUMN trunk_detail TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE artifacts_mirrors ADD COLUMN trunk_at TEXT NOT NULL DEFAULT ''`,
 ];
 
 let schemaPromise: Promise<void> | null = null;

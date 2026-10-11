@@ -9,6 +9,12 @@ description: >-
 
 # Flare verify
 
+## Start here
+
+1. Discover: `npx flare-forge doctor` checks the setup and ends with one `next:` command.
+2. Daily loop: `npx flare-forge local`, then `npx flare-forge run <owner/repo> HEAD` (or MCP `run_and_wait`); read the digest, fix, repeat.
+3. Expert: `npx flare-forge explain <runId>` for a failure, `flaky` / `quarantine` for random ones. Every CLI result ends in a `next:` line.
+
 Flare Actions is the CI this repo verifies with. Agents get a one-call
 verify loop — never poll, never sleep.
 

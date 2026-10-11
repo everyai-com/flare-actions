@@ -2,6 +2,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { normalizeJobCondition, normalizeStepCondition } from "./spec.ts";
 import { MAX_JOB_OUTPUTS, isValidOutputName } from "./outputs.ts";
 import { MAX_RESTORE_KEYS } from "./parity.ts";
+import { expandMatrix, isValidMatrixKey, matrixScalar, parseMatrixSpec } from "./matrix.ts";
 
 // GitHub Actions workflow -> flare.yml translator. Pure and lossless
 // where the models overlap; everything else becomes a warning so the
@@ -171,8 +172,18 @@ function convertStep(step: unknown, acc: JobAcc, warnings: string[], jobId: stri
     }
   }
   const stepEnv = isRecord(step.env) ? step.env : null;
+  const isRun = typeof step.run === "string" && !!step.run.trim();
+  // `run` steps keep their env step-scoped (exports at the top of the
+  // script), so it wins over an earlier $GITHUB_ENV and never leaks into
+  // sibling steps, like Actions. `uses` steps become job config, so
+  // their env still folds into job env.
+  const exports: string[] = [];
   if (stepEnv) {
     for (const [k, v] of Object.entries(stepEnv)) {
+      if (isRun && /^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) {
+        exports.push(`export ${k}=${shellEnvValue(String(v))}`);
+        continue;
+      }
       if (acc.env[k] !== undefined) warnings.push(`${jobId}: step env ${k} overrode job env`);
       acc.env[k] = String(v);
     }
@@ -184,6 +195,7 @@ function convertStep(step: unknown, acc: JobAcc, warnings: string[], jobId: stri
   if (typeof step.run === "string" && step.run.trim()) {
     let run = step.run.trim();
     if (workdir) run = `(cd ${JSON.stringify(workdir)} &&\n${run}\n)`;
+    if (exports.length > 0) run = `${exports.join("\n")}\n${run}`;
     const out: { run: string; id?: string; "continue-on-error"?: boolean; if?: string; "timeout-minutes"?: number; shell?: string } = { run };
     if (typeof step.id === "string" && isValidOutputName(step.id)) {
       out.id = step.id;
@@ -202,6 +214,120 @@ function convertStep(step: unknown, acc: JobAcc, warnings: string[], jobId: stri
     return;
   }
   warnings.push(`${jobId}: dropped a step with neither run nor uses`);
+}
+
+// `runs-on: ${{ matrix.os }}` with a cell that lacks `os` (an include
+// entry that added a new cell) has no runner label; Actions fails that
+// job, and flare.yml rejects the file rather than run it anywhere. Say
+// which cell, so the warning is actionable.
+function warnEmptyMatrixLabels(runsOn: unknown, matrix: Record<string, unknown>, jobId: string, warnings: string[]): void {
+  const labels = typeof runsOn === "string" ? [runsOn] : Array.isArray(runsOn) ? runsOn : [];
+  const keys = new Set<string>();
+  for (const l of labels) {
+    if (typeof l !== "string") continue;
+    for (const m of l.matchAll(/\$\{\{\s*matrix\.([A-Za-z_][\w-]*)\s*\}\}/g)) keys.add(m[1] as string);
+  }
+  if (keys.size === 0) return;
+  const spec = parseMatrixSpec(matrix);
+  if (typeof spec === "string") return;
+  for (const cell of expandMatrix(spec)) {
+    const missing = [...keys].filter((k) => !cell[k]);
+    if (missing.length === 0) continue;
+    const name = Object.entries(cell).map(([k, v]) => `${k}=${v}`).join(", ");
+    warnings.push(`${jobId}: runs-on needs matrix.${missing.join(", matrix.")} but cell (${name}) has none — add it to that include entry (GitHub fails this job too)`);
+  }
+}
+
+// Env values are literal in Actions (no shell expansion): single-quote
+// the literal parts; `${{ }}` parts stay double-quoted so the parser's
+// matrix/env/output rewrites and executor-side secrets still land.
+export function shellEnvValue(v: string): string {
+  const parts = v.split(/(\$\{\{[^}]*\}\})/).filter((p) => p !== "");
+  if (parts.length === 0) return "''";
+  return parts.map((p) => (p.startsWith("${{") ? `"${p}"` : `'${p.replace(/'/g, "'\\''")}'`)).join("");
+}
+
+function isExpression(v: unknown): boolean {
+  return typeof v === "string" && /\$\{\{/.test(v);
+}
+
+// Translate `strategy.matrix` into flare.yml's bounded matrix (axes plus
+// GitHub-semantics `include`/`exclude`, see matrix.ts). Unconvertible
+// parts are dropped with a warning; whatever is emitted is re-validated
+// with the parser's own rules, so the output never fails validation on
+// account of the matrix. Null = no matrix (the job runs once).
+function convertMatrix(raw: unknown, jobId: string, warnings: string[]): Record<string, unknown> | null {
+  if (!isRecord(raw)) {
+    const shown = typeof raw === "string" ? ` \`${raw.trim().slice(0, 80)}\`` : "";
+    warnings.push(
+      `${jobId}: dropped matrix${shown} — ${isExpression(raw) ? "expression-generated matrices (fromJSON etc.) are unsupported" : "matrix must be a map"}; the job runs once, without matrix values`,
+    );
+    return null;
+  }
+  const axes: Record<string, string[]> = {};
+  for (const [k, vals] of Object.entries(raw)) {
+    if (k === "include" || k === "exclude") continue;
+    if (!isValidMatrixKey(k)) {
+      warnings.push(`${jobId}: dropped matrix axis ${k} (invalid key)`);
+      continue;
+    }
+    if (isExpression(vals)) {
+      warnings.push(`${jobId}: dropped matrix axis ${k} (expression-generated values are unsupported)`);
+      continue;
+    }
+    const list = Array.isArray(vals) ? vals.map(matrixScalar) : null;
+    if (!list || list.length === 0 || list.some((x) => x === null)) {
+      warnings.push(`${jobId}: dropped matrix axis ${k} (needs a non-empty list of scalar values)`);
+      continue;
+    }
+    axes[k] = list.filter((x): x is string => x !== null);
+  }
+  const entries = (key: "include" | "exclude"): Record<string, string>[] => {
+    const v = raw[key];
+    if (v === undefined) return [];
+    if (!Array.isArray(v)) {
+      warnings.push(
+        `${jobId}: dropped matrix ${key} (${isExpression(v) ? "expression-generated lists are unsupported" : "needs a list of maps"})`,
+      );
+      return [];
+    }
+    const out: Record<string, string>[] = [];
+    for (const e of v) {
+      const mapped: Record<string, string> = {};
+      let ok = isRecord(e) && Object.keys(e).length > 0;
+      if (isRecord(e)) {
+        for (const [k, val] of Object.entries(e)) {
+          const s = matrixScalar(val);
+          if (!isValidMatrixKey(k) || s === null) ok = false;
+          else mapped[k] = s;
+        }
+      }
+      // GitHub rejects exclude keys that are not axes; a key whose axis
+      // was dropped above cannot be honored either.
+      if (ok && key === "exclude" && Object.keys(mapped).some((k) => !(k in axes))) ok = false;
+      if (!ok) {
+        warnings.push(`${jobId}: dropped a matrix ${key} entry (needs scalar values${key === "exclude" ? " on matrix axes" : ""})`);
+        continue;
+      }
+      out.push(mapped);
+    }
+    return out;
+  };
+  const include = entries("include");
+  const exclude = entries("exclude");
+  const matrix: Record<string, unknown> = { ...axes };
+  if (include.length > 0) matrix.include = include;
+  if (exclude.length > 0) matrix.exclude = exclude;
+  if (Object.keys(axes).length === 0 && include.length === 0) {
+    warnings.push(`${jobId}: dropped matrix (no convertible axes or include entries); the job runs once`);
+    return null;
+  }
+  const checked = parseMatrixSpec(matrix);
+  if (typeof checked === "string") {
+    warnings.push(`${jobId}: dropped matrix (${checked}); the job runs once, without matrix values`);
+    return null;
+  }
+  return matrix;
 }
 
 export function convertActionsWorkflow(text: string): ImportResult {
@@ -265,13 +391,14 @@ export function convertActionsWorkflow(text: string): ImportResult {
       if (needs) out.needs = needs.length === 1 ? needs[0] : needs;
       else warnings.push(`${jobId}: dropped unparseable needs`);
     }
-    if (isRecord(jobDef.strategy) && isRecord(jobDef.strategy.matrix)) {
-      const matrix: Record<string, unknown[]> = {};
-      for (const [k, vals] of Object.entries(jobDef.strategy.matrix)) {
-        if (Array.isArray(vals) && vals.length > 0) matrix[k] = vals;
-        else warnings.push(`${jobId}: dropped matrix axis ${k} (needs a non-empty list)`);
+    if (isRecord(jobDef.strategy)) {
+      if (jobDef.strategy.matrix !== undefined) {
+        const matrix = convertMatrix(jobDef.strategy.matrix, jobId, warnings);
+        if (matrix) {
+          out.strategy = { matrix };
+          warnEmptyMatrixLabels(jobDef["runs-on"], matrix, jobId, warnings);
+        }
       }
-      if (Object.keys(matrix).length > 0) out.strategy = { matrix };
       if (jobDef.strategy["fail-fast"] !== undefined) warnings.push(`${jobId}: strategy.fail-fast ignored`);
       if (jobDef.strategy["max-parallel"] !== undefined) warnings.push(`${jobId}: strategy.max-parallel ignored`);
     }

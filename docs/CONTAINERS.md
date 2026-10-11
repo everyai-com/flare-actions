@@ -199,7 +199,17 @@ retry next push, day-old stuck imports reset) and listed at
 `GET /v1/admin/mirrors` + dashboard Settings. Seats lazily sync
 missing shas (fetch from GitHub, force-push to the mirror's rolling
 `flare-mirror` branch with a 1h binding write token) and retry the
-mirror once before falling back. No binding configured = GitHub-only,
+mirror once before falling back. Pushes to the repo's GitHub default
+branch also fast-forward the mirror's same-named branch (trunk sync),
+so Forge reads a current trunk: the webhook records the default branch
+on the registry row, and after a push run's job reports its result one
+seat wins a conditional D1 claim (once per sha, not per job/cell),
+fetches the mirror tip at depth 1 plus the new commits from GitHub,
+checks the tip is an ancestor, and pushes without force. A diverged
+mirror trunk (e.g. Forge trains landed there) is recorded and skipped,
+never overwritten; the outcome shows under `trunk` in
+`GET /v1/admin/mirrors`. Only seat-executed push runs sync; BYO-only
+pipelines leave the mirror trunk where it is. No binding configured = GitHub-only,
 silent. Put mirrors in the binding namespace (one mirror repo per
 GitHub repo, named owner-name) and nothing is ever stored: per-job
 1h tokens, memory-only.
