@@ -52,6 +52,8 @@ export interface FixtureIntent {
   escalation: string | null;
   evidence: { run_id: string; sha: string; status: string; tests: number; duration_s: number; reviewer: string; note?: string } | null;
   created_at: string;
+  // Artifacts fork name (the API's forkRepo); null until the intent is claimed.
+  forkRepo?: string | null;
 }
 
 const BOOKSHELF = "flare/bookshelf";
@@ -448,7 +450,7 @@ export const FORGE_FIXTURES = {
   repos: [BOOKSHELF, "sim/monorepo"],
   agents,
   goals,
-  intents,
+  intents: intents.map((i) => ({ ...i, forkRepo: i.agent && i.state !== "draft" && i.state !== "awaiting_plan" ? i.id + "-fork" : null })),
   trains,
   conflicts,
   snapshot: { [BOOKSHELF]: bookshelfSnapshot(), "sim/monorepo": monorepoSpec() },

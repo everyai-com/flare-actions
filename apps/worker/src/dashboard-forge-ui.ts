@@ -19,6 +19,9 @@ export const FORGE_ICONS = {
 };
 
 export const FORGE_CSS = String.raw`
+/* [hidden] always wins on Forge surfaces: component display rules
+   (flex/grid) must never resurrect a hidden element as an empty bar. */
+#forgePane[hidden], #forgePane [hidden], .fx-overlay[hidden], .fx-overlay [hidden], .fx-drawer[hidden], .fx-drawer [hidden], .fx-tip[hidden], .fx-tour[hidden], .fx-tour [hidden], .fx-tour-ring[hidden], .side-nav [hidden] { display: none !important; }
 :root { --st-working: #7db4f7; --st-overlap: #fbbf24; --st-conflict: #f87171; --st-landed: #4ade80; --st-train: #a78bfa; --st-human: #fb923c; --st-idle: #52525b;
   --risk-low: #4ade80; --risk-med: #fbbf24; --risk-high: #f87171;
   --tint-working: rgba(125,180,247,0.12); --tint-overlap: rgba(251,191,36,0.12); --tint-conflict: rgba(248,113,113,0.12); --tint-landed: rgba(74,222,128,0.12); --tint-train: rgba(167,139,250,0.12); --tint-human: rgba(251,146,60,0.12); --tint-idle: rgba(82,82,91,0.18);
@@ -161,7 +164,8 @@ tbody tr.clickable:hover, .run-row:hover, .run-row.selected { background: var(--
 .fx-stage.failure::before { content: "✕"; }
 .fx-stage.skipped { text-decoration: line-through; }
 .fx-stage-arrow { color: var(--faint); font-size: 10px; }
-.fx-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.fx-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; min-width: 0; }
+.fx-chips .fx-idchip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .fx-recent { list-style: none; margin: 0; padding: 0; }
 .fx-recent li { display: flex; align-items: center; gap: 8px; padding: 5px 0; font: 500 12px var(--mono); color: var(--soft); border-top: 1px solid var(--line); }
 .fx-recent li:first-child { border-top: none; }
@@ -307,7 +311,10 @@ button kbd { margin-left: 6px; }
 .fx-li .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fx-li .r { font: 500 12px var(--mono); color: var(--muted); white-space: nowrap; }
 .fx-lanes { display: flex; flex-direction: column; }
-.fx-lanerow { display: grid; grid-template-columns: 240px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.fx-lanerow { display: grid; grid-template-columns: minmax(160px, 240px) minmax(0, 1fr) minmax(0, max-content); gap: 12px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.fx-lanerow > * { min-width: 0; }
+.fx-lanerow .fx-chips { margin-top: 0; }
+.fx-lanerow .fx-cichip { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; }
 .fx-lanerow:last-child { border-bottom: none; }
 .fx-lanerow.red { background: var(--tint-conflict); }
 .fx-lanerow .ln { font: 600 12px var(--mono); }
@@ -550,6 +557,33 @@ body.fx-stagemode .fx-legend { font-size: 14px; position: sticky; bottom: 0; }
 body.fx-stagemode .fx-map { height: calc(100vh - 330px); }
 body.fx-stagemode .fx-cell-label { font-size: 13px; }
 body.fx-stagemode .fx-notice { display: none; }
+/* Spectator mode (GET /watch): banner + no write affordance anywhere. */
+.fx-pub { border: 1px solid var(--line-strong); border-left: 3px solid var(--st-landed); border-radius: 8px; background: var(--card); padding: 8px 12px; margin: 8px 0 4px; }
+.fx-pub[data-state="offline"] { border-left-color: var(--st-conflict); }
+.fx-pub[data-state="slow"], .fx-pub[data-state="connecting"] { border-left-color: var(--st-overlap); }
+.fx-pub-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13.5px; }
+.fx-pub-t strong { font-family: var(--mono); font-weight: 600; }
+.fx-pub-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-landed); flex: none; }
+.fx-pub[data-state="offline"] .fx-pub-dot { background: var(--st-conflict); }
+.fx-pub[data-state="slow"] .fx-pub-dot, .fx-pub[data-state="connecting"] .fx-pub-dot { background: var(--st-overlap); }
+.fx-pub[data-state="live"] .fx-pub-dot { animation: fx-pulse 2s ease-in-out infinite; }
+@keyframes fx-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .fx-pub-dot { animation: none !important; } }
+.fx-pub-st { font-size: 11.5px; color: var(--muted); }
+.fx-askbtn { white-space: nowrap; }
+.fx-pub-off { margin-top: 8px; font-size: 13px; color: var(--soft); }
+.fx-pub-off strong { color: var(--st-conflict); }
+.fx-pub-off code { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.fx-ask { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.fx-ask-h { margin: 0 0 6px; font-size: 12.5px; color: var(--muted); }
+.fx-ask-cmd { display: flex; align-items: center; gap: 8px; }
+.fx-ask-cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; background: var(--code-bg); color: var(--code-ink); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; font-size: 12.5px; user-select: all; }
+.fx-ask-try { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--soft); }
+.fx-whyform { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.fx-whyfiles { list-style: none; margin: 0; padding: 0; columns: 2 240px; font-size: 12.5px; }
+.fx-whyfiles li { padding: 2px 0; break-inside: avoid; }
+body.fx-public [data-action="approve_plan"], body.fx-public [data-action="send_back"], body.fx-public [data-action="review_sample"], body.fx-public [data-action="mark_ready"], body.fx-public [data-action="send_note"], body.fx-public [data-action="fork_session"], body.fx-public [data-action="claim_conflict"], body.fx-public [data-action="plan_goal"], body.fx-public [data-action="declare_intent"], body.fx-public [data-action="select_item"], body.fx-public [data-action="explore_demo"], body.fx-public #fxBulk, body.fx-public #fxComposerOverlay, body.fx-public #fxNoteInput, body.fx-public #tabAgents, body.fx-public #tabBench, body.fx-public #tabSettings, body.fx-public #tabRuns, body.fx-public #tabHome, body.fx-public #tabRepos, body.fx-public #tabMerge, body.fx-public #tabTournaments, body.fx-public #logoutBtn, body.fx-public .fx-demo-tag { display: none !important; }
+body.fx-public #fxRepo:disabled { opacity: 1; cursor: default; }
 body.fx-stagemode .fx-live-grid { grid-template-columns: minmax(0, 1fr) 380px; }
 @media (max-width: 1100px) {
   .fx-md { grid-template-columns: minmax(0, 1fr); }
@@ -627,6 +661,15 @@ export const FORGE_NAV_BENCH_HTML = NAV_BTN("tabBench", "bench", FORGE_ICONS.ben
 
 export const FORGE_PANE_HTML = String.raw`
 <section id="forgePane" class="fx-root" hidden aria-label="Forge">
+<div class="fx-pub" id="fxPub" role="region" aria-label="Spectator mode" data-state="connecting" hidden>
+<div class="fx-pub-row"><span class="fx-pub-dot" aria-hidden="true"></span><span class="fx-pub-t">Watching <strong id="fxPubRepo"></strong> live · read-only</span><span class="fx-pub-st mono" id="fxPubState" role="status">connecting</span><span class="fx-spacer"></span><button type="button" id="fxAskBtn" class="fx-askbtn" data-action="copy_mcp_config" aria-expanded="false" aria-controls="fxAsk">Ask your Claude Code</button></div>
+<div class="fx-pub-off" id="fxPubOffline" role="alert" hidden></div>
+<div class="fx-ask" id="fxAsk" hidden>
+<p class="fx-ask-h">Paste this in a terminal, then ask your Claude Code about this repo. Read-only, no token.</p>
+<div class="fx-ask-cmd"><code id="fxAskCmd" class="mono"></code><button type="button" class="ghost" id="fxAskCopy" data-action="copy_mcp_config">Copy</button><button type="button" class="ghost" id="fxAskClose" aria-label="Close">✕</button></div>
+<ul class="fx-ask-try" id="fxAskTry" aria-label="Things to ask"></ul>
+</div>
+</div>
 <div class="fx-bar" role="toolbar" aria-label="Forge toolbar">
 <nav class="fx-crumbs" id="fxCrumbs" aria-label="Breadcrumb"></nav>
 <label><span class="sr">Repository</span><select id="fxRepo" aria-label="Repository"></select></label>

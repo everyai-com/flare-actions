@@ -202,8 +202,13 @@ describe("forge dashboard", () => {
       expect(DASHBOARD_UI_ACTIONS as readonly string[]).toContain(a);
       expect(FORGE_MCP_TOOL_NAMES as readonly string[]).not.toContain(a);
     }
-    const steps = FORGE_JS.slice(FORGE_JS.indexOf("var FX_TOUR = ["), FORGE_JS.indexOf("var FX_TOUR_KEY"));
+    const tourStart = FORGE_JS.indexOf("var FX_TOUR = [");
+    const steps = FORGE_JS.slice(tourStart, FORGE_JS.indexOf("];", tourStart));
     expect(steps.match(/\{ hash: "/g)).toHaveLength(4);
+    // the spectator tour asks the same four questions on live ids
+    const pubSteps = FORGE_JS.slice(FORGE_JS.indexOf("function fxTourSteps()"), FORGE_JS.indexOf("var FX_TOUR_KEY"));
+    expect(pubSteps.match(/\{ hash: /g)).toHaveLength(4);
+    for (const q of ["Who's doing what?", "What do humans review?", "What happens when they collide?", "Why does this line exist?"]) expect(pubSteps).toContain(q);
     for (const q of ["Who's doing what?", "What do humans review?", "What happens when they collide?", "Why does this line exist?"]) expect(steps).toContain(q);
     // the tour never calls the API, persists via guarded storage, and honors ?tour
     const tourJs = FORGE_JS.slice(FORGE_JS.indexOf("// ---------- first-run tour"), FORGE_JS.indexOf("// ---------- palette, keys"));
