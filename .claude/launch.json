@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "forge-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["wrangler", "dev", "--port", "8799", "--persist-to", "/tmp/forge-ux-check"],
+      "port": 8799
+    }
+  ]
+}
