@@ -167,3 +167,54 @@ describe("cli forge", () => {
     expect(await runForge(["connect-agent", "--client", "vim"], harness().deps)).toBe(2);
   });
 });
+
+describe("cli forge: GitHub bridge verbs", () => {
+  const LINK = {
+    repo: "gh-acme-widgets",
+    githubRepo: "acme/widgets",
+    githubUrl: "https://github.com/acme/widgets",
+    defaultBranch: "main",
+    syncMode: "pr",
+    syncBranch: "flare/trunk",
+    pullUpstream: true,
+    status: "ready",
+    detail: "",
+    lastPushedSha: "",
+    lastPulledSha: "a".repeat(40),
+    prNumber: null,
+    prUrl: null,
+    remote: "https://x.artifacts.cloudflare.net/git/ns/gh-acme-widgets.git",
+    lastSyncAt: "2026-10-12T00:00:00Z",
+  };
+
+  it("imports a GitHub URL with sync flags and prints next steps", async () => {
+    const h = harness({ reply: () => ({ status: "ready", repo: LINK.repo, link: LINK, remote: LINK.remote, warnings: ["no App"], nextSteps: [{ tool: "plan_goal", args: { repo: LINK.repo }, why: "split" }] }) });
+    const code = await runForge(["import", "https://github.com/acme/widgets", "--sync", "branch", "--no-pull"], h.deps);
+    expect(code).toBe(0);
+    expect(h.fetches[0]).toMatchObject({ url: "https://ci.example.com/v1/forge/github/links", method: "POST", body: { github: "https://github.com/acme/widgets", syncMode: "branch", pullUpstream: false } });
+    expect(h.out.join("\n")).toContain("ready: github.com/acme/widgets -> trunk gh-acme-widgets");
+    expect(h.out.join("\n")).toContain("plan_goal");
+    expect(h.err).toEqual(["warning: no App"]);
+    expect(await runForge(["import", "acme/widgets", "--sync", "yolo"], h.deps)).toBe(2);
+  });
+
+  it("syncs in one direction and fails the exit code on divergence", async () => {
+    const h = harness({ reply: () => ({ repo: LINK.repo, pull: { status: "diverged", detail: "merge the PR" }, push: null, link: LINK }) });
+    expect(await runForge(["sync", LINK.repo, "--pull"], h.deps)).toBe(1);
+    expect(h.fetches[0]).toMatchObject({ url: `https://ci.example.com/v1/forge/github/links/${LINK.repo}/sync`, body: { direction: "pull" } });
+    expect(h.out[0]).toBe("pull: diverged — merge the PR");
+  });
+
+  it("lists links, updates settings, unlinks", async () => {
+    const h = harness({
+      reply: (url, method) => (method === "DELETE" ? { repo: LINK.repo, unlinked: true } : url.endsWith("/links") ? { links: [LINK], wired: true } : { link: { ...LINK, syncMode: "direct" } }),
+    });
+    expect(await runForge(["links"], h.deps)).toBe(0);
+    expect(h.out[0]).toContain("sync pr -> flare/trunk");
+    expect(await runForge(["link-set", LINK.repo, "--sync", "direct", "--pull", "off"], h.deps)).toBe(0);
+    expect(h.fetches[1]).toMatchObject({ method: "PATCH", body: { syncMode: "direct", pullUpstream: false } });
+    expect(h.out.join("\n")).toContain("sync direct -> main");
+    expect(await runForge(["unlink", LINK.repo], h.deps)).toBe(0);
+    expect(h.out.at(-1)).toContain("untouched");
+  });
+});

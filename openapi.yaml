@@ -5865,6 +5865,240 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/forge/github/links:
+    get:
+      tags:
+        - forge
+      operationId: forgeListGithubLinks
+      summary: Forge trunks linked to GitHub repos (sync mode, last push/pull, rolling PR)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Links visible to the token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  links:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForgeGithubLink'
+                  wired:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+        - forge
+      operationId: forgeImportGithub
+      summary: Import a GitHub repo as a Forge trunk and link the two (admin)
+      description: >-
+        Server-side Artifacts import (private repos through the GitHub App
+        installation). Trains verify with the repo's own CI (flare.yml, else
+        .github/workflows). Landed work flows back per syncMode; GitHub
+        commits fast-forward in. Idempotent for the same GitHub repo.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - github
+              properties:
+                github:
+                  type: string
+                  description: owner/name or any github.com URL
+                name:
+                  type: string
+                  description: Trunk name (default gh-<owner>-<name>)
+                syncMode:
+                  type: string
+                  enum: [off, branch, pr, direct]
+                syncBranch:
+                  type: string
+                pullUpstream:
+                  type: boolean
+      responses:
+        '200':
+          description: Already linked (status exists)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForgeGithubImport'
+        '201':
+          description: Imported (status ready, importing or failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForgeGithubImport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ForgeConflict'
+        '501':
+          $ref: '#/components/responses/ForgeNotImplemented'
+  /v1/forge/github/links/{repo}:
+    parameters:
+      - name: repo
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - forge
+      operationId: forgeGetGithubLink
+      summary: One GitHub link
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Link
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  link:
+                    $ref: '#/components/schemas/ForgeGithubLink'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags:
+        - forge
+      operationId: forgeUpdateGithubLink
+      summary: Change sync mode, sync branch or upstream pulls (admin)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                syncMode:
+                  type: string
+                  enum: [off, branch, pr, direct]
+                syncBranch:
+                  type: string
+                pullUpstream:
+                  type: boolean
+      responses:
+        '200':
+          description: Updated link
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  link:
+                    $ref: '#/components/schemas/ForgeGithubLink'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags:
+        - forge
+      operationId: forgeUnlinkGithub
+      summary: Drop the link; the trunk and the GitHub repo stay untouched (admin)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Unlinked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo:
+                    type: string
+                  unlinked:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/forge/github/links/{repo}/sync:
+    post:
+      tags:
+        - forge
+      operationId: forgeSyncGithub
+      summary: Sync a linked trunk with GitHub now (pull = fast-forward only, push = per sync mode)
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: repo
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                direction:
+                  type: string
+                  enum: [pull, push, both]
+      responses:
+        '200':
+          description: Per-direction outcome
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo:
+                    type: string
+                  pull:
+                    type: object
+                    nullable: true
+                  push:
+                    type: object
+                    nullable: true
+                  link:
+                    $ref: '#/components/schemas/ForgeGithubLink'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/ForgeNotImplemented'
   /v1/forge/feed:
     get:
       tags:
@@ -6042,6 +6276,66 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
   schemas:
+    ForgeGithubLink:
+      type: object
+      description: A Forge trunk linked to a GitHub repo (forge-github.ts)
+      properties:
+        repo:
+          type: string
+        githubRepo:
+          type: string
+        githubUrl:
+          type: string
+        defaultBranch:
+          type: string
+        syncMode:
+          type: string
+          enum: [off, branch, pr, direct]
+        syncBranch:
+          type: string
+        pullUpstream:
+          type: boolean
+        status:
+          type: string
+          enum: [importing, ready, failed]
+        detail:
+          type: string
+        lastPushedSha:
+          type: string
+        lastPulledSha:
+          type: string
+        prNumber:
+          type: integer
+          nullable: true
+        prUrl:
+          type: string
+          nullable: true
+        remote:
+          type: string
+          nullable: true
+        lastSyncAt:
+          type: string
+    ForgeGithubImport:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ready, importing, failed, exists]
+        repo:
+          type: string
+        link:
+          $ref: '#/components/schemas/ForgeGithubLink'
+        remote:
+          type: string
+          nullable: true
+        sync:
+          type: object
+        warnings:
+          type: array
+          items:
+            type: string
+        nextSteps:
+          $ref: '#/components/schemas/ForgeNextSteps'
     ForgeNextSteps:
       type: array
       description: 'What to call next: MCP tool name (or `shell`), arguments, and why'

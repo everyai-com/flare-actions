@@ -487,6 +487,27 @@ export const SCHEMA_STATEMENTS = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_forge_ledger_subject ON forge_ledger(subject_kind, subject_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_forge_ledger_repo ON forge_ledger(repo, created_at)`,
+  // Forge <-> GitHub bridge (migration 0047, forge-github.ts).
+  `CREATE TABLE IF NOT EXISTS forge_github_links (
+    repo TEXT PRIMARY KEY,
+    github_repo TEXT NOT NULL,
+    default_branch TEXT NOT NULL DEFAULT 'main',
+    sync_mode TEXT NOT NULL DEFAULT 'pr' CHECK (sync_mode IN ('off', 'branch', 'pr', 'direct')),
+    sync_branch TEXT NOT NULL DEFAULT 'flare/trunk',
+    pull_upstream INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'importing' CHECK (status IN ('importing', 'ready', 'failed')),
+    detail TEXT NOT NULL DEFAULT '',
+    installation_id INTEGER,
+    is_private INTEGER NOT NULL DEFAULT 0,
+    last_pushed_sha TEXT NOT NULL DEFAULT '',
+    last_pulled_sha TEXT NOT NULL DEFAULT '',
+    pr_number INTEGER,
+    last_sync_at TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_forge_github_links_github ON forge_github_links(github_repo)`,
 ];
 
 // Additive columns for databases created before the matching migration.

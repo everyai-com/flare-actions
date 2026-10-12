@@ -23,7 +23,9 @@
 import type { FsClient, HttpClient } from "isomorphic-git";
 import type git from "isomorphic-git";
 import { type Db, claimWebhookDelivery, getRun, isTerminal, nowIso } from "./db";
-import { ARTIFACTS_EVENT, artifactsDeliveryId, loadArtifactsPipeline } from "./artifacts-push";
+import { ARTIFACTS_EVENT, artifactsDeliveryId } from "./artifacts-push";
+import type { PipelineJob } from "./pipeline";
+import { loadTrunkCi, type TrunkCi } from "./trunk-ci";
 import {
   pathCovers,
   parsePolicy,
@@ -103,7 +105,10 @@ export interface TrainDispatchInput {
   repo: string;
   sha: string;
   ref: string;
-  pipeline: string;
+  // flare.yml text, or (repos without one, e.g. imported from GitHub)
+  // jobs translated from the trunk's own `.github/workflows`.
+  pipeline?: string;
+  jobs?: PipelineJob[];
   event: string;
   agent: string;
   priority: number;
@@ -302,10 +307,14 @@ export async function loadPolicy(deps: TrainDeps, repo: string): Promise<ForgePo
   return parsed.ok ? parsed.value : DEFAULT_POLICY;
 }
 
-async function loadPipelineAt(deps: TrainDeps, repo: string, sha: string): Promise<string | null> {
-  if (deps.loadPipeline) return deps.loadPipeline(repo, sha).catch(() => null);
-  if (!deps.artifacts) return null;
-  return loadArtifactsPipeline(deps.artifacts, repo, sha);
+// What verifies a commit: flare.yml, else the repo's translated GitHub
+// Actions workflows (trunk-ci.ts). null = nothing may land.
+async function loadCiAt(deps: TrainDeps, repo: string, sha: string): Promise<TrunkCi | null> {
+  if (deps.loadPipeline) {
+    const text = await deps.loadPipeline(repo, sha).catch(() => null);
+    return text ? { kind: "flare", pipeline: text } : null;
+  }
+  return loadTrunkCi(deps.artifacts, repo, sha);
 }
 
 async function runStatusOf(deps: TrainDeps, runId: string): Promise<{ status: string; sha: string } | null> {
@@ -531,7 +540,7 @@ export async function cutTrain(deps: TrainDeps, repo: string): Promise<CutResult
   if (!baseSha) return { status: "unavailable" };
   // CI is the gate: without a pipeline at trunk there is nothing to
   // verify, so nothing may land (invariant 2).
-  if (!(await loadPipelineAt(deps, repo, baseSha))) return { status: "no-pipeline" };
+  if (!(await loadCiAt(deps, repo, baseSha))) return { status: "no-pipeline" };
   const plan = planTrain(candidates, policy);
   const trainIds: string[] = [];
   const lanes: string[][] = [];
@@ -820,9 +829,9 @@ export async function dispatchTrains(deps: TrainDeps, repo: string): Promise<num
       continue;
     }
     if (t.runId) continue;
-    const pipeline = await loadPipelineAt(deps, repo, t.headSha);
-    if (!pipeline || !deps.dispatch) {
-      broken = pipeline ? "no dispatcher" : "no pipeline at lane head";
+    const ci = await loadCiAt(deps, repo, t.headSha);
+    if (!ci || !deps.dispatch) {
+      broken = ci ? "no dispatcher" : "no pipeline at lane head";
       await abortTrain(deps.db, t, broken);
       continue;
     }
@@ -831,7 +840,7 @@ export async function dispatchTrains(deps: TrainDeps, repo: string): Promise<num
         repo: `${deps.namespace}/${repo}`,
         sha: t.headSha,
         ref: `refs/heads/${laneRef(t.lane)}`,
-        pipeline,
+        ...(ci.kind === "flare" ? { pipeline: ci.pipeline } : { jobs: ci.jobs }),
         event: ARTIFACTS_EVENT,
         agent: TRAIN_RUN_AGENT,
         priority: TRAIN_RUN_PRIORITY,

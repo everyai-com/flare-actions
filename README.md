@@ -30,6 +30,20 @@ attempt, collision radar, ranked verdict with rationale, immutable ledger.
 demo](https://try-tournaments-flare-actions.everyai-com.workers.dev/dashboard)
 · [try it](docs/TOURNAMENTS.md).
 
+### Bring your GitHub repo to Forge
+
+Keep GitHub. Import a repo once, and agents work on it through Forge.
+Their landed work comes back as one rolling pull request. Your
+existing `.github/workflows` verify every train, so you don't need a
+`flare.yml`. Human commits and merged PRs flow back in by fast-forward.
+
+```bash
+npm run cli -- forge import https://github.com/acme/widgets   # or: dashboard → Agent forge → Import from GitHub
+```
+
+Sync modes (`pr`, `branch`, `direct`, `off`), safety rules and
+permissions: [docs/FORGE-GITHUB.md](docs/FORGE-GITHUB.md).
+
 ## Start here (no experience needed)
 
 Flare checks your code for you: every time you save your work to
@@ -558,6 +572,7 @@ npm run cli -- github-jobs [repo]      # ephemeral runner-mode jobs (status, dur
 npm run cli -- login [--url U] [--code C]  # pair this machine (writes .env)
 npm run cli -- races [raceId]         # list agent races, or one race board
 npm run cli -- repos [name] [path]    # list forge repos, or browse one
+npm run cli -- forge import owner/repo   # import a GitHub repo as a Forge trunk (two-way sync)
 npm run cli -- claim <raceId> <agent>  # claim a race lane (forks a workspace)
 npm run cli -- verdict <raceId>        # winner ranking + why-it-won rationale
 ```

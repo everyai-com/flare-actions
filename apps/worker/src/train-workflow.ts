@@ -14,6 +14,7 @@ import git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
 import type { WorkerEnv } from "./env";
 import { validateRepo } from "./intents";
+import { syncLandedToGithub } from "./forge-github-env";
 import { MemoryFS } from "./memory-fs";
 import { artifactsRemoteFor } from "./promote";
 import { replayTick, startReplay, type ReplayDeps } from "./replay";
@@ -110,6 +111,10 @@ export class TrainWorkflow extends WorkflowEntrypoint<WorkerEnv, TrainWorkflowPa
         break;
       }
       await step.do(`notes-${round}`, STEP, () => writeNotes(deps, repo));
+      // GitHub bridge: deliver what just landed (no-op for unlinked trunks).
+      if (decided?.status === "decided" && decided.landed.length) {
+        await step.do(`github-${round}`, STEP, async () => ({ status: await syncLandedToGithub(this.env, repo) }));
+      }
       await step.do(`revoke-${round}`, STEP, () => revokeLandedTokens(deps, repo));
       await step.do(`races-${round}`, STEP, () => replayTick(deps, repo));
       if (!decided || decided.status === "idle") break;
@@ -154,6 +159,7 @@ export async function runTrainTick(env: WorkerEnv): Promise<{ repos: number; adv
         const res = await advanceRepo(deps, repo);
         if (res.cut?.status === "cut") out.cut += 1;
         out.advanced += 1;
+        if (res.check?.status === "decided" && res.check.landed.length) await syncLandedToGithub(env, repo);
       }
       await replayTick(deps, repo);
     } catch (err) {

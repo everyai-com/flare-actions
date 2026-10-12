@@ -6,7 +6,25 @@ tagged on `main` (`v0.1.0` is the first).
 
 ## [Unreleased]
 
+### Added
+
+- Forge <-> GitHub bridge (`docs/FORGE-GITHUB.md`): import any GitHub
+  repo as a Forge trunk from the dashboard (Agent forge → Import from
+  GitHub), `cli forge import`, MCP `import_github_repo` or
+  `POST /v1/forge/github/links`. Landed work flows back after every
+  train as one rolling PR (or a branch, or a fast-forward of the
+  default branch: never forced), and GitHub pushes fast-forward the
+  trunk, so merged sync PRs close the loop. `cli forge
+  links|sync|link-set|unlink`, MCP `github_links` / `sync_github`.
+- Trains (and Artifacts push CI) verify repos with no `flare.yml` using
+  their own `.github/workflows`, read from the trunk and translated by
+  the Actions-compat layer, so imported repos land on day one.
+
 ### Fixed
+
+- Forge `trunkHead` read the Artifacts default branch instead of
+  `main`, so a trunk whose default branch is not `main` reported the
+  wrong base for new intents.
 
 - Two deploy blockers that 500'd every route on fresh preview deploys
   (and would have hit prod next): index.ts exported a non-function

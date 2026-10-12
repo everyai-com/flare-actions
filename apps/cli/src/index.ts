@@ -66,7 +66,7 @@ function usage(): never {
       "  cli login [--url U] [--code C]              pair this machine (writes .env, 0600)",
       "  cli races [raceId]                          list agent races, or one race board",
       "  cli repos [name] [path] [--ref R]           list forge repos, or browse one",
-      "  cli forge <verb> ...                        Flare Forge: goal|declare|claim|push|ready|inbox|status|why|conflicts|trains|snapshot|connect-agent (cli forge --help)",
+      "  cli forge <verb> ...                        Flare Forge: import|goal|declare|claim|push|ready|inbox|status|why|conflicts|trains|sync|connect-agent (cli forge --help)",
       "  cli claim <raceId> <agent>                  claim a race lane (forks a workspace)",
       "  cli verdict <raceId>                        winner ranking + why-it-won rationale",
       "  cli egress <runId>                          per-job egress (uploads/downloads by host)",

@@ -28,6 +28,11 @@ default agent identity on every verb.
 Drop the snippet from §8 into the target repo's `AGENTS.md`. Install the
 skill `skills/flare-forge/SKILL.md` for Claude Code.
 
+No trunk yet? Import the GitHub repo you already have (admin token):
+`npx flare forge import owner/name` or MCP `import_github_repo`. Landed
+work goes back to GitHub as one rolling PR, and the repo's own
+`.github/workflows` verify every train. See `docs/FORGE-GITHUB.md`.
+
 ## 2. The loop
 
 ```

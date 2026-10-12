@@ -47,6 +47,8 @@ export const ERROR_CODES = [
   "conflict_not_claimable",
   "admin_required",
   "not_implemented",
+  "github_repo_unavailable",
+  "github_link_exists",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -94,6 +96,8 @@ export const ERROR_HINTS: Record<ErrorCode, string> = {
   conflict_not_claimable: "the conflict is already claimed, resolved, or out of replay attempts — list open ones with GET /v1/forge/conflicts?repo=<repo>&state=open",
   admin_required: "plan approval is a human decision — an admin approves it in the dashboard Inbox (or with an admin token)",
   not_implemented: "that forge capability is not wired on this deployment yet — use the suggested fallback in the error message",
+  github_repo_unavailable: "check owner/name; private repos need the Flare GitHub App installed on them (dashboard Home → Connect GitHub), then retry",
+  github_link_exists: "that trunk name is linked to another GitHub repo — pass a different name, or unlink it first (DELETE /v1/forge/github/links/<repo>)",
 };
 
 export interface ApiErrorBody {

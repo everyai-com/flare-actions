@@ -393,6 +393,9 @@ button kbd { margin-left: 6px; }
 .fx-modal-b { padding: 14px 16px; overflow-y: auto; }
 .fx-modal-f { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); flex-wrap: wrap; }
 .fx-modal-f .fx-spacer { min-width: 8px; }
+.fx-modal-b input[type=text], .fx-modal-b select { width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; }
+.fx-link-row { border-top: 1px solid var(--line); padding: 8px 0; font-size: 13px; display: grid; gap: 4px; }
+.fx-link-row .fx-actions { margin-top: 2px; }
 .fx-prop { display: grid; grid-template-columns: 22px minmax(180px, 1.2fr) minmax(200px, 1.4fr) 48px 80px 32px; gap: 8px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); }
 .fx-prop input.t { width: 100%; padding: 6px 8px; font-size: 13px; }
 .fx-prop .fps { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
@@ -519,6 +522,7 @@ export const FORGE_PANE_HTML = String.raw`
 <div class="fx-bar" role="toolbar" aria-label="Forge toolbar">
 <nav class="fx-crumbs" id="fxCrumbs" aria-label="Breadcrumb"></nav>
 <label><span class="sr">Repository</span><select id="fxRepo" aria-label="Repository"></select></label>
+<button class="ghost fx-tb" id="fxImportBtn" type="button" data-action="import_github_repo" title="Bring an existing GitHub repo into Forge">Import from GitHub</button>
 <span class="fx-demo-tag" id="fxDemoTag" hidden title="Fixture data: not measurements">Demo data</span>
 <span class="fx-spacer"></span>
 <span class="fx-livebadge" id="fxLiveBadge" data-state="off" role="status">offline</span>
@@ -576,6 +580,22 @@ export const FORGE_OVERLAYS_HTML = String.raw`
 <div id="fxProposals"></div>
 </div>
 <div class="fx-modal-f"><span id="fxComposerSummary" class="num"></span><span class="fx-spacer" style="flex:1"></span><button class="ghost" id="fxComposerCancel" type="button">Cancel</button><button id="fxLaunchBtn" type="button" data-action="declare_intent" disabled>Launch intents</button></div>
+</div>
+</div>
+<div class="fx-overlay" id="fxImportOverlay" hidden>
+<div class="fx-modal" role="dialog" aria-modal="true" aria-labelledby="fxImportTitle" style="max-width: 640px">
+<div class="fx-modal-h"><h2 id="fxImportTitle">Bring a GitHub repo into Forge</h2><button class="ghost fx-tb" id="fxImportClose" type="button" aria-label="Close import">esc</button></div>
+<div class="fx-modal-b">
+<p class="muted" style="margin:0 0 12px;font-size:13px">Forge imports the repo as a trunk your agents fork from. Trains verify every change with the repo's own CI (flare.yml, or your existing .github/workflows). Landed work goes back to GitHub, and GitHub commits flow in. Private repos need the Flare GitHub App installed.</p>
+<label class="field" for="fxImportRepo"><span>GitHub repo</span></label>
+<input id="fxImportRepo" type="text" placeholder="owner/name or https://github.com/owner/name" autocomplete="off" spellcheck="false">
+<label class="field" for="fxImportMode" style="margin-top:10px"><span>Send landed work back to GitHub as</span></label>
+<select id="fxImportMode"><option value="pr" selected>One rolling pull request (recommended)</option><option value="branch">A branch only (flare/trunk)</option><option value="direct">Fast-forward the default branch</option><option value="off">Nothing: keep work in Forge</option></select>
+<label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:13px"><input id="fxImportPull" type="checkbox" checked> Bring new GitHub commits into Forge (fast-forward only)</label>
+<div class="fx-actions" style="margin-top:12px"><button id="fxImportGo" type="button" data-action="import_github_repo">Import</button><span class="muted" id="fxImportNote" role="status" style="align-self:center;font-size:12.5px"></span></div>
+<h3 style="font-size:13px;margin:18px 0 4px">Linked repos</h3>
+<div id="fxImportLinks"></div>
+</div>
 </div>
 </div>
 <div class="fx-overlay" id="fxKeysOverlay" hidden>
