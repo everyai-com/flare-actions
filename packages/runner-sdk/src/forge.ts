@@ -126,6 +126,26 @@ export interface ForgeLiveIntent {
 
 export type ForgeJson = Record<string, unknown>;
 
+export type ForgeSyncMode = "off" | "branch" | "pr" | "direct";
+
+export interface ForgeGithubLink {
+  repo: string;
+  githubRepo: string;
+  githubUrl: string;
+  defaultBranch: string;
+  syncMode: ForgeSyncMode;
+  syncBranch: string;
+  pullUpstream: boolean;
+  status: "importing" | "ready" | "failed";
+  detail: string;
+  lastPushedSha: string;
+  lastPulledSha: string;
+  prNumber: number | null;
+  prUrl: string | null;
+  remote: string | null;
+  lastSyncAt: string;
+}
+
 export interface ForgeOptions {
   agent?: string;
   timeoutMs?: number;
@@ -278,6 +298,32 @@ export class FlareForge {
   }
   getTrain(trainId: string): Promise<ForgeJson> {
     return this.req("getTrain", "GET", `/v1/forge/trains/${this.id(trainId)}`);
+  }
+
+  // GitHub bridge: import a GitHub repo as a trunk, two-way sync.
+  importGithub(input: {
+    github: string;
+    name?: string;
+    syncMode?: ForgeSyncMode;
+    syncBranch?: string;
+    pullUpstream?: boolean;
+  }): Promise<ForgeJson & { status: string; repo: string; link: ForgeGithubLink; remote: string | null; warnings: string[]; nextSteps: ForgeNextStep[] }> {
+    return this.req("importGithub", "POST", "/v1/forge/github/links", input);
+  }
+  githubLinks(): Promise<{ links: ForgeGithubLink[]; wired: boolean }> {
+    return this.req("githubLinks", "GET", "/v1/forge/github/links");
+  }
+  githubLink(repo: string): Promise<{ link: ForgeGithubLink }> {
+    return this.req("githubLink", "GET", `/v1/forge/github/links/${this.id(repo)}`);
+  }
+  updateGithubLink(repo: string, patch: { syncMode?: ForgeSyncMode; syncBranch?: string; pullUpstream?: boolean }): Promise<{ link: ForgeGithubLink }> {
+    return this.req("updateGithubLink", "PATCH", `/v1/forge/github/links/${this.id(repo)}`, patch);
+  }
+  syncGithub(repo: string, direction: "pull" | "push" | "both" = "both"): Promise<{ repo: string; pull: ForgeJson | null; push: ForgeJson | null; link: ForgeGithubLink | null }> {
+    return this.req("syncGithub", "POST", `/v1/forge/github/links/${this.id(repo)}/sync`, { direction });
+  }
+  unlinkGithub(repo: string): Promise<{ repo: string; unlinked: boolean }> {
+    return this.req("unlinkGithub", "DELETE", `/v1/forge/github/links/${this.id(repo)}`);
   }
 }
 

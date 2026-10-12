@@ -32,7 +32,7 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
 - `npm test` — vitest, colocated `*.test.ts`, must pass
 - `npm run deploy` / `npm run deploy:dry` — deploy / validate only
 - `npm run runner` — external pull-runner (reads `.env` automatically)
-- `npm run cli -- <runs|logs|explain|local|run|watch|cancel|dispatch|rerun|flaky|bottlenecks|quarantine|init|connect|tests|egress|queue|cache|usage|github-jobs|search|artifacts|badge|import|mcp-config|devbox|mcp-serve|credits|signup|login|races|repos|claim|verdict>`
+- `npm run cli -- <runs|logs|explain|local|run|watch|cancel|dispatch|rerun|flaky|bottlenecks|quarantine|init|connect|tests|egress|queue|cache|usage|github-jobs|search|artifacts|badge|import|mcp-config|devbox|mcp-serve|credits|signup|login|races|repos|claim|verdict|forge>`
   — CLI (reads `.env` automatically)
 
 ## Architecture
@@ -76,6 +76,22 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   + `cli usage` savings line surface it. Needs App `actions:read` +
   `administration:write` (manifest in `connect.ts`); existing installs
   re-run Connect. Docs: `docs/GITHUB-RUNNERS.md`.
+- Forge <-> GitHub bridge (`forge-github.ts` runtime-free, `forge-github-env.ts`
+  wiring, `docs/FORGE-GITHUB.md`): `POST /v1/forge/github/links` (admin;
+  MCP `import_github_repo`, `cli forge import`) imports a GitHub repo
+  into an Artifacts trunk server-side (`gh-<owner>-<name>`, installation
+  token for private repos, never logged) and records
+  `forge_github_links` (migration 0047). Trunk work is on `main` (a
+  non-main default branch gets a `main` alias on first sync). Push
+  sync runs after every landing train (`github-<round>` Workflow step +
+  cron path): `pr` (default; force-updates only `sync_branch` +
+  one rolling PR), `branch`, `direct` (ff-only, never force), `off`.
+  Pull sync fast-forwards trunk main from the GitHub push webhook
+  (`syncPushFromGithub`, before CI gates); diverged = reported, never
+  rewritten. Settling imports finish in the cron (`reconcileBridge`).
+  Trains verify trunks with `flare.yml`, else the trunk's own
+  `.github/workflows` read from Artifacts (`trunk-ci.ts`, push +
+  pull_request contexts; dispatch takes pre-translated `jobs`).
 - `cli connect` (`apps/cli/src/connect.ts`): one-command adoption —
   probes `GET /v1/admin/status`, detects the pipeline, prints the
   wiring recipe (or `--wire`s the webhook with GITHUB_TOKEN +
@@ -133,7 +149,7 @@ MIT licensed. One Worker serves the API + dashboard; runners are external pull c
   takes `--json` (`apps/cli/src/json.ts`, `{ version: 1, command, data }`).
 - `apps/worker/src/errors.ts` — stable `code` + next-step `hint` on
   dispatch/dry-run/claim/webhook/auth/pairing failures (`docs/ERRORS.md`
-  catalogs all 22; messages keep their wording). The SDK throws
+  catalogs every code; messages keep their wording). The SDK throws
   `FlareApiError` (status/code/hint); the CLI prints `hint [code]`.
 - `apps/worker/src/checks.ts` — per-job GitHub Check Runs (failing
   command + bounded tail + `file:line` annotations on the PR page).

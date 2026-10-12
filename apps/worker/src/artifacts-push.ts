@@ -15,6 +15,8 @@
 // Runs store repo as "namespace/name" (fits the owner/name shape); seats
 // render the Artifacts remote verbatim for event "artifacts".
 import { type Db, claimWebhookDelivery } from "./db";
+import type { PipelineJob } from "./pipeline";
+import { loadTrunkCi } from "./trunk-ci";
 
 export const ARTIFACTS_EVENT = "artifacts";
 export const ARTIFACTS_PUSH_TYPE = "cf.artifacts.repo.pushed";
@@ -51,7 +53,10 @@ export interface ArtifactsDispatchInput {
   repo: string;
   sha: string;
   ref: string;
-  pipeline: string;
+  // flare.yml text, or jobs translated from the repo's own
+  // `.github/workflows` when it has no flare.yml (trunk-ci.ts).
+  pipeline?: string;
+  jobs?: PipelineJob[];
   event: string;
 }
 
@@ -143,14 +148,15 @@ export async function handleArtifactsPush(deps: ArtifactsPushDeps, msg: unknown)
   // the delivery id — a later configured redelivery should dispatch.
   if (!deps.artifacts) return { status: "skipped", reason: "no-binding" };
   if (!(await claimWebhookDelivery(deps.db, deliveryId(push)))) return { status: "skipped", reason: "duplicate" };
-  const pipeline = await loadArtifactsPipeline(deps.artifacts, push.repo, push.after);
-  if (!pipeline) return { status: "skipped", reason: "no-pipeline" };
+  const branch = push.ref.startsWith("refs/heads/") ? push.ref.slice("refs/heads/".length) : "main";
+  const ci = await loadTrunkCi(deps.artifacts, push.repo, push.after, { branch });
+  if (!ci) return { status: "skipped", reason: "no-pipeline" };
   try {
     const out = await deps.dispatch({
       repo: artifactsRunRepo(push),
       sha: push.after,
       ref: push.ref,
-      pipeline,
+      ...(ci.kind === "flare" ? { pipeline: ci.pipeline } : { jobs: ci.jobs }),
       event: ARTIFACTS_EVENT,
     });
     return { status: "dispatched", runId: out.runId };

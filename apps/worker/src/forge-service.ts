@@ -13,6 +13,23 @@
 // are minted only on `i-<id>` forks (invariant 1).
 //
 // Runtime-free: vitest drives it with node:sqlite + fake Artifacts.
+import {
+  defaultTrunkName,
+  deleteGithubLink,
+  getGithubLink,
+  importGithubRepo,
+  isSyncMode,
+  listGithubLinks,
+  parseGithubRepo,
+  patchGithubLink,
+  reconcileGithubLinks,
+  SYNC_MODES,
+  syncFromGithub,
+  syncToGithub,
+  validSyncBranch,
+  type BridgeDeps,
+  type GithubLink,
+} from "./forge-github";
 import { audit, type Db, nowIso } from "./db";
 import { apiError, type ApiErrorBody, type ErrorCode } from "./errors";
 import {
@@ -124,6 +141,8 @@ export interface ForgeServiceDeps {
   feed: FeedPort | null;
   // AI goal planner for `plan_goal` with `plan: true` (null = heuristic only).
   planner: GoalPlanner | null;
+  // GitHub bridge (forge-github.ts); null = import/sync not wired.
+  github: BridgeDeps | null;
   loadPolicy(repo: string): Promise<{ policy: ForgePolicy; warning: string | null }>;
   trunkHead(repo: string): Promise<string>;
 }
@@ -152,6 +171,7 @@ export function forgeServiceDeps(input: {
   trains?: TrainPort;
   feed?: FeedPort | null;
   planner?: GoalPlanner | null;
+  github?: BridgeDeps | null;
 }): ForgeServiceDeps {
   const artifacts = input.artifacts ?? null;
   return {
@@ -164,6 +184,7 @@ export function forgeServiceDeps(input: {
     trains: input.trains ?? d1Trains(input.db),
     feed: input.feed ?? null,
     planner: input.planner ?? null,
+    github: input.github ?? null,
     // `.flare/policy.yml` from trunk; missing = default, invalid =
     // default plus a warning surfaced to the agent (never a 500).
     async loadPolicy(repo) {
@@ -188,7 +209,9 @@ export function forgeServiceDeps(input: {
       let handle: Awaited<ReturnType<ForgeArtifacts["get"]>> | null = null;
       try {
         handle = await artifacts.get(repo);
-        const log = await handle.log({ limit: 1 });
+        // Trunk work always lands on `main` (an imported repo's default
+        // branch may be named otherwise; the GitHub bridge aliases it).
+        const log = await handle.log({ ref: "main", limit: 1 });
         const hash = log[0]?.hash ?? "";
         return /^[0-9a-f]{40}$/.test(hash) ? hash : "";
       } catch {
@@ -226,6 +249,8 @@ const STATUS: Record<string, number> = {
   conflict_not_claimable: 409,
   admin_required: 403,
   not_implemented: 501,
+  github_repo_unavailable: 404,
+  github_link_exists: 409,
 };
 
 export function forgeFail(code: ErrorCode, message: string, hint?: string): ForgeOutcome {
@@ -1366,6 +1391,144 @@ export async function forkSessionOp(deps: ForgeServiceDeps, p: ForgePrincipal, a
 // Registry: MCP tool name -> operation (REST maps routes onto the same)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// GitHub bridge (forge-github.ts, docs/FORGE-GITHUB.md)
+// ---------------------------------------------------------------------------
+
+const BRIDGE_UNWIRED = "this deployment has no ARTIFACTS binding for Forge trunks; see docs/FORGE-GITHUB.md";
+
+function linkView(deps: ForgeServiceDeps, l: GithubLink): Record<string, unknown> {
+  return {
+    ...l,
+    githubUrl: `https://github.com/${l.githubRepo}`,
+    prUrl: l.prNumber ? `https://github.com/${l.githubRepo}/pull/${l.prNumber}` : null,
+    remote: deps.github?.remoteFor(l.repo) ?? null,
+  };
+}
+
+function bridgeOf(deps: ForgeServiceDeps): BridgeDeps | ForgeOutcome {
+  return deps.github ?? forgeFail("not_implemented", "GitHub bridge not wired", BRIDGE_UNWIRED);
+}
+
+function boolArg(v: unknown): boolean | undefined | null {
+  if (v === undefined || v === null || v === "") return undefined;
+  if (v === true || v === "true" || v === "1") return true;
+  if (v === false || v === "false" || v === "0") return false;
+  return null;
+}
+
+// Admin: import a GitHub repo as a Forge trunk and link the two.
+export async function importGithubOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
+  if (!p.isAdmin) return forgeFail("admin_required", "importing a GitHub repo needs an admin token", "imports create trunks and link GitHub write access: use an admin API token or the dashboard");
+  const bridge = bridgeOf(deps);
+  if (isOutcome(bridge)) return bridge;
+  const pull = boolArg(args.pullUpstream);
+  if (pull === null) return forgeFail("invalid_request", "pullUpstream must be true or false");
+  const name = args.name === undefined || args.name === null || args.name === "" ? undefined : args.name;
+  // Scope the trunk the import would create, named or defaulted.
+  const github = parseGithubRepo(args.github ?? args.githubRepo ?? args.url);
+  const target = typeof name === "string" ? name : github ? defaultTrunkName(github) : null;
+  if (target && !allowed(deps, p, target)) return forgeFail("repo_not_allowed", "token is not scoped to that repo");
+  const out = await importGithubRepo(bridge, {
+    github: args.github ?? args.githubRepo ?? args.url,
+    name,
+    syncMode: args.syncMode,
+    syncBranch: args.syncBranch,
+    pullUpstream: pull,
+    actor: p.actor,
+  });
+  if ("error" in out) return forgeFail(out.error, out.message);
+  await auditWrite(deps, p, "github.import", `${out.link.githubRepo} -> ${out.trunk} (${out.status})`);
+  return ok(
+    {
+      status: out.status,
+      repo: out.trunk,
+      link: linkView(deps, out.link),
+      remote: out.remote,
+      ...(out.sync ? { sync: out.sync } : {}),
+      warnings: out.warnings,
+      nextSteps: out.status === "failed"
+        ? [{ tool: "import_github_repo", args: { github: out.link.githubRepo }, why: `retry after fixing: ${out.link.detail}` }]
+        : [
+            { tool: "plan_goal", args: { repo: out.trunk, text: "<what you want done>", plan: true }, why: "split a goal into intents with footprints; agents claim them on their own forks" },
+            { tool: "declare_intent", args: { repo: out.trunk, title: "<change>", footprint: ["src/**"] }, why: "or declare one intent directly; trains verify it with the repo's own CI (flare.yml or .github/workflows)" },
+          ],
+    },
+    out.status === "exists" ? 200 : 201,
+  );
+}
+
+export async function listGithubLinksOp(deps: ForgeServiceDeps, p: ForgePrincipal): Promise<ForgeOutcome> {
+  const links = (await listGithubLinks(deps.db)).filter((l) => allowed(deps, p, l.repo));
+  return ok({ links: links.map((l) => linkView(deps, l)), wired: deps.github !== null });
+}
+
+async function loadLink(deps: ForgeServiceDeps, p: ForgePrincipal, v: unknown): Promise<GithubLink | ForgeOutcome> {
+  const r = repoArg(deps, p, v);
+  if (isOutcome(r)) return r;
+  const link = await getGithubLink(deps.db, r.repo);
+  return link ?? forgeFail("forge_not_found", `no GitHub link for ${r.repo}`, "list links with GET /v1/forge/github/links, or import one with POST /v1/forge/github/links");
+}
+
+export async function getGithubLinkOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
+  const link = await loadLink(deps, p, args.repo);
+  if (isOutcome(link)) return link;
+  return ok({ link: linkView(deps, link) });
+}
+
+// Admin: change how landed work flows back (sync mode/branch, pulls).
+export async function updateGithubLinkOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
+  if (!p.isAdmin) return forgeFail("admin_required", "changing GitHub sync settings needs an admin token");
+  const link = await loadLink(deps, p, args.repo);
+  if (isOutcome(link)) return link;
+  const patch: Parameters<typeof patchGithubLink>[2] = {};
+  if (args.syncMode !== undefined) {
+    if (!isSyncMode(args.syncMode)) return forgeFail("invalid_request", `syncMode must be one of ${SYNC_MODES.join(", ")}`);
+    patch.syncMode = args.syncMode;
+  }
+  if (args.syncBranch !== undefined) {
+    if (!validSyncBranch(args.syncBranch)) return forgeFail("invalid_request", "syncBranch must be a plain branch name");
+    patch.syncBranch = args.syncBranch;
+  }
+  const pull = boolArg(args.pullUpstream);
+  if (pull === null) return forgeFail("invalid_request", "pullUpstream must be true or false");
+  if (pull !== undefined) patch.pullUpstream = pull;
+  if (!Object.keys(patch).length) return forgeFail("invalid_request", "nothing to change: pass syncMode, syncBranch or pullUpstream");
+  await patchGithubLink(deps.db, link.repo, patch);
+  await auditWrite(deps, p, "github.update", `${link.repo} ${JSON.stringify(patch)}`);
+  const updated = await getGithubLink(deps.db, link.repo);
+  return ok({ link: updated ? linkView(deps, updated) : null });
+}
+
+// Run one sync now: pull (GitHub -> trunk, ff only), push (trunk ->
+// GitHub per sync mode), or both (default: pull first, then push).
+export async function syncGithubOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
+  const denied = needWrite(p, "sync_github");
+  if (denied) return denied;
+  const bridge = bridgeOf(deps);
+  if (isOutcome(bridge)) return bridge;
+  const link = await loadLink(deps, p, args.repo);
+  if (isOutcome(link)) return link;
+  const direction = str(args.direction) ?? "both";
+  if (!["pull", "push", "both"].includes(direction)) return forgeFail("invalid_request", "direction must be pull, push or both");
+  if (link.status === "importing") await reconcileGithubLinks(bridge, 1);
+  const pull = direction === "push" ? null : await syncFromGithub(bridge, link.repo, { force: true });
+  const push = direction === "pull" ? null : await syncToGithub(bridge, link.repo);
+  await auditWrite(deps, p, "github.sync", `${link.repo} ${direction} pull=${pull?.status ?? "-"} push=${push?.status ?? "-"}`);
+  const updated = await getGithubLink(deps.db, link.repo);
+  return ok({ repo: link.repo, pull, push, link: updated ? linkView(deps, updated) : null });
+}
+
+// Admin: drop the link. Trunk and GitHub repo both stay untouched.
+export async function unlinkGithubOp(deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs): Promise<ForgeOutcome> {
+  if (!p.isAdmin) return forgeFail("admin_required", "unlinking needs an admin token");
+  const link = await loadLink(deps, p, args.repo);
+  if (isOutcome(link)) return link;
+  await deleteGithubLink(deps.db, link.repo);
+  await auditWrite(deps, p, "github.unlink", `${link.repo} -/- ${link.githubRepo}`);
+  return ok({ repo: link.repo, unlinked: true });
+}
+
 export type ForgeOp = (deps: ForgeServiceDeps, p: ForgePrincipal, args: ForgeArgs) => Promise<ForgeOutcome>;
 
 export const FORGE_MCP_OPS: Record<string, ForgeOp> = {
@@ -1383,4 +1546,7 @@ export const FORGE_MCP_OPS: Record<string, ForgeOp> = {
   why: whyOp,
   fork_session: forkSessionOp,
   forge_snapshot: snapshotOp,
+  import_github_repo: importGithubOp,
+  github_links: listGithubLinksOp,
+  sync_github: syncGithubOp,
 };

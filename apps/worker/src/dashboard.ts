@@ -8,6 +8,8 @@ import { forgeFixturesJson } from "./forge-fixtures";
 // plus approve_plan/send_back/review_sample from the UX spec); stream B
 // registers them in mcp.ts MCP_TOOL_RISK.
 export const FORGE_MCP_TOOL_NAMES = [
+  "import_github_repo",
+  "sync_github",
   "plan_goal",
   "declare_intent",
   "whats_happening",

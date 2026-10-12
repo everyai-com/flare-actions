@@ -40,6 +40,8 @@ import {
   type WhyPort,
 } from "./forge-ports";
 import { aiGoalPlanner, type GoalPlanner } from "./forge-planner";
+import type { BridgeDeps } from "./forge-github";
+import { bridgeDepsFromEnv } from "./forge-github-env";
 import { getIntent, getTrain as getTrainD1 } from "./intents";
 import { driftPaths, type Intent, type RiskTerm } from "./intents-core";
 import { forkTrunk, replayForkName, type ReplayDeps } from "./replay";
@@ -443,6 +445,7 @@ export interface ForgeAdapterSet {
   trains?: TrainPort;
   feed: FeedPort | null;
   planner: GoalPlanner | null;
+  github: BridgeDeps | null;
 }
 
 // Every adapter whose binding exists; the rest stay on the D1 fallbacks
@@ -455,5 +458,6 @@ export function forgeAdaptersFromEnv(env: WorkerEnv, opts: { waitUntil?: WaitUnt
     ...(env.ARTIFACTS ? { trains: trainPort(env) } : {}),
     feed: feedPort(env),
     planner: forgePlanner(env),
+    github: bridgeDepsFromEnv(env),
   };
 }

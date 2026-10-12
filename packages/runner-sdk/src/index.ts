@@ -679,6 +679,7 @@ export type {
   ForgeClaimResult,
   ForgeDeclareResult,
   ForgeGoal,
+  ForgeGithubLink,
   ForgeIntent,
   ForgeJson,
   ForgeLiveIntent,
@@ -689,6 +690,7 @@ export type {
   ForgePushResult,
   ForgeReadyResult,
   ForgeRiskTerm,
+  ForgeSyncMode,
 } from "./forge.ts";
 
 // Tolerant claim-decision reader: unknown shapes read as null (no

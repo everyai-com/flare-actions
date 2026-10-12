@@ -68,3 +68,5 @@ same as unknown ids (no existence oracle).
 | `conflict_not_claimable` | 409 | conflict already claimed/resolved, out of replay attempts, or resolved by a non-claimer | list `state=open` conflicts; only the claimer resolves |
 | `admin_required` | 403 | plan approval by a non-admin | a human admin approves in the dashboard Inbox |
 | `not_implemented` | 501 | capability not wired on this deployment (e.g. the live feed before the Coordinator) | follow the fallback in `hint` (poll `/v1/forge/snapshot`) |
+| `github_repo_unavailable` | 404 | `import_github_repo` on a repo that is missing, or private without the GitHub App | fix owner/name, or install the Flare GitHub App on the repo, retry |
+| `github_link_exists` | 409 | the trunk name is already linked to a different GitHub repo | pick another `name`, or unlink the old link first |

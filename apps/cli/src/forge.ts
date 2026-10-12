@@ -10,6 +10,7 @@ import {
   forgeConnectAgent,
   FORGE_AGENTS_MD_SNIPPET,
   type ForgeAgentClient,
+  type ForgeGithubLink,
   type ForgeNextStep,
 } from "flare-actions-runner-sdk";
 import { printJson } from "./json.ts";
@@ -52,6 +53,12 @@ export const FORGE_USAGE = [
   "  forge snapshot <repo>                                live map JSON (counters, cells, track)",
   "  forge fork <intentId>                                continue someone else's intent on a new one",
   "  forge approve <intentId>                             approve a protected-path plan (admin)",
+  "  forge import <owner/name|github url> [--name N] [--sync pr|branch|direct|off] [--sync-branch B] [--no-pull]",
+  "                                                       bring a GitHub repo into Forge as a trunk (admin)",
+  "  forge links [repo]                                   GitHub links: sync mode, last push/pull, PR",
+  "  forge sync <repo> [--pull|--push]                    sync a linked trunk with GitHub now (default both)",
+  "  forge link-set <repo> [--sync MODE] [--sync-branch B] [--pull on|off]   change sync settings (admin)",
+  "  forge unlink <repo>                                  drop the GitHub link (trunk + GitHub untouched)",
   "  forge connect-agent --client claude|codex|cursor [--agent name] [--agents-md]",
   "                                                       ready-to-paste MCP config + agent workflow prompt",
   "intentId defaults to `git config flare.intent` (set by `forge claim --clone`) or FLARE_INTENT.",
@@ -164,12 +171,94 @@ export function cloneFork(
   d.writeText(config, withForgeAuth(current, input.token, { intent: input.intentId, repo: input.repo }));
 }
 
+function printLink(d: ForgeCliDeps, l: ForgeGithubLink): void {
+  const target = l.syncMode === "off" ? "off" : l.syncMode === "direct" ? `direct -> ${l.defaultBranch}` : `${l.syncMode} -> ${l.syncBranch}`;
+  d.out(`${l.repo}\t${l.status}\tgithub.com/${l.githubRepo}\tsync ${target}\tpull ${l.pullUpstream ? "on" : "off"}`);
+  if (l.prUrl) d.out(`  PR: ${l.prUrl}`);
+  if (l.lastPushedSha || l.lastPulledSha) d.out(`  pushed ${l.lastPushedSha.slice(0, 12) || "-"}  pulled ${l.lastPulledSha.slice(0, 12) || "-"}  at ${l.lastSyncAt || "-"}`);
+  if (l.detail) d.out(`  detail: ${l.detail}`);
+}
+
 export async function runForge(argv: string[], d: ForgeCliDeps): Promise<number> {
   const [verb, ...args] = argv;
   try {
     if (!verb || verb === "--help" || verb === "help" || verb === "-h") {
       d.out(FORGE_USAGE);
       return verb ? 0 : 2;
+    }
+    if (verb === "import") {
+      const f = parseFlags(args, { values: ["name", "sync", "sync-branch", "agent"], bools: ["no-pull"] });
+      const [github] = f.pos;
+      if (!github) throw new UsageError("forge import <owner/name|github url> [--name N] [--sync pr|branch|direct|off]");
+      const mode = f.values["sync"];
+      if (mode !== undefined && !["off", "branch", "pr", "direct"].includes(mode)) throw new UsageError("--sync must be off, branch, pr or direct");
+      const out = await d.forge().importGithub({
+        github,
+        ...(f.values["name"] ? { name: f.values["name"] } : {}),
+        ...(mode ? { syncMode: mode as "off" | "branch" | "pr" | "direct" } : {}),
+        ...(f.values["sync-branch"] ? { syncBranch: f.values["sync-branch"] } : {}),
+        ...(f.bools.has("no-pull") ? { pullUpstream: false } : {}),
+      });
+      emit(d, "import", out, () => {
+        d.out(`${out.status}: github.com/${out.link.githubRepo} -> trunk ${out.repo}`);
+        d.out(`  sync: ${out.link.syncMode}${out.link.syncMode === "off" ? "" : ` (${out.link.syncMode === "direct" ? out.link.defaultBranch : out.link.syncBranch})`}; pull upstream: ${out.link.pullUpstream ? "on" : "off"}`);
+        if (out.remote) d.out(`  trunk remote: ${out.remote} (read-only to agents; trains land on main)`);
+        if (out.link.detail) d.out(`  detail: ${out.link.detail}`);
+        for (const w of out.warnings) d.err(`warning: ${w}`);
+        printSteps(d, out.nextSteps);
+      });
+      return out.status === "failed" ? 1 : 0;
+    }
+    if (verb === "links") {
+      const f = parseFlags(args, { values: ["agent"] });
+      const [repo] = f.pos;
+      if (repo) {
+        const out = await d.forge().githubLink(repo);
+        emit(d, "links", out, () => printLink(d, out.link));
+        return 0;
+      }
+      const out = await d.forge().githubLinks();
+      emit(d, "links", out, () => {
+        if (!out.links.length) d.out(out.wired ? "no GitHub links yet: forge import <owner/name>" : "GitHub bridge not wired on this deployment (needs an ARTIFACTS binding)");
+        for (const l of out.links) printLink(d, l);
+      });
+      return 0;
+    }
+    if (verb === "sync") {
+      const f = parseFlags(args, { values: ["agent"], bools: ["pull", "push"] });
+      const [repo] = f.pos;
+      if (!repo) throw new UsageError("forge sync <repo> [--pull|--push]");
+      const direction = f.bools.has("pull") && !f.bools.has("push") ? "pull" : f.bools.has("push") && !f.bools.has("pull") ? "push" : "both";
+      const out = await d.forge().syncGithub(repo, direction);
+      emit(d, "sync", out, () => {
+        if (out.pull) d.out(`pull: ${String(out.pull.status)} — ${String(out.pull.detail)}`);
+        if (out.push) d.out(`push: ${String(out.push.status)} — ${String(out.push.detail)}${out.push.prUrl ? ` ${String(out.push.prUrl)}` : ""}`);
+      });
+      const failed = [out.pull, out.push].some((r) => r !== null && (r.status === "failed" || r.status === "diverged"));
+      return failed ? 1 : 0;
+    }
+    if (verb === "link-set") {
+      const f = parseFlags(args, { values: ["sync", "sync-branch", "pull", "agent"] });
+      const [repo] = f.pos;
+      if (!repo) throw new UsageError("forge link-set <repo> [--sync MODE] [--sync-branch B] [--pull on|off]");
+      const mode = f.values["sync"];
+      if (mode !== undefined && !["off", "branch", "pr", "direct"].includes(mode)) throw new UsageError("--sync must be off, branch, pr or direct");
+      const pull = f.values["pull"];
+      if (pull !== undefined && pull !== "on" && pull !== "off") throw new UsageError("--pull must be on or off");
+      const out = await d.forge().updateGithubLink(repo, {
+        ...(mode ? { syncMode: mode as "off" | "branch" | "pr" | "direct" } : {}),
+        ...(f.values["sync-branch"] ? { syncBranch: f.values["sync-branch"] } : {}),
+        ...(pull ? { pullUpstream: pull === "on" } : {}),
+      });
+      emit(d, "link-set", out, () => printLink(d, out.link));
+      return 0;
+    }
+    if (verb === "unlink") {
+      const [repo] = parseFlags(args, { values: ["agent"] }).pos;
+      if (!repo) throw new UsageError("forge unlink <repo>");
+      const out = await d.forge().unlinkGithub(repo);
+      emit(d, "unlink", out, () => d.out(`unlinked ${out.repo} (trunk and GitHub repo untouched)`));
+      return 0;
     }
     if (verb === "goal") {
       const f = parseFlags(args, { values: ["agent"], bools: ["plan"] });

@@ -300,6 +300,7 @@ import type { OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
 import { buildMcpServer, mcpDiscovery } from "./mcp";
 import { forgeDepsFromEnv, handleForgeRequest } from "./forge-routes";
 import { forgeAdaptersFromEnv } from "./forge-adapters";
+import { reconcileBridge, syncPushFromGithub } from "./forge-github-env";
 import { listAppRepos, loadSetupFacts, setupSteps } from "./setup";
 import { runnerScript } from "./runner-script";
 import {
@@ -1132,6 +1133,12 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
     const repo = payload.repository?.full_name;
     const sha = payload.after ?? payload.pull_request?.head?.sha;
     if (!repo || !sha) return json(apiError("missing_repo_or_sha", "missing repo or sha"), 400);
+    // Forge GitHub bridge: a push to a linked repo's tracked branch
+    // fast-forwards its trunk (human commits, merged sync PRs). Runs
+    // before the CI gates below: syncing code is not spending compute.
+    if (event === "push" && branchFromRef(payload.ref)) {
+      ctx.waitUntil(syncPushFromGithub(env, repo, branchFromRef(payload.ref), payload.installation?.id ?? null));
+    }
     // Kill switch first: paused repos skip silently (200, like block).
     if (await isRepoPaused(env.DB, repo)) {
       log("info", "webhook skipped: repo paused", { repo });
@@ -1672,6 +1679,9 @@ export interface DispatchInput {
   sha: string;
   ref: string;
   pipeline?: string;
+  // Pre-translated jobs (Forge trains on repos verified by their own
+  // `.github/workflows`, trunk-ci.ts); wins over `pipeline`.
+  jobs?: PipelineJob[];
   event?: string;
   priority?: number;
   source?: string;
@@ -1731,7 +1741,11 @@ async function loadDispatchJobs(
       if (!resolved) throw new Error(`could not resolve ref "${sha}" — paste a full commit SHA`);
       sha = resolved;
     }
-    if (input.pipeline) {
+    if (input.jobs && input.jobs.length > 0) {
+      jobs = input.jobs;
+      profiles = emptyProfiles();
+      pipelineSource = "actions";
+    } else if (input.pipeline) {
       const parsed = parsePipelineWithProfiles(input.pipeline);
       if (!parsed) throw new Error("pipeline parse failed");
       jobs = parsed.jobs;
@@ -4978,6 +4992,12 @@ export default {
       const mq = await runMergeQueueTick(env, ctx);
       if (mq.started > 0 || mq.landed > 0 || mq.failed > 0 || mq.requeued > 0) {
         log("info", "merge queue tick finished", { ...mq });
+      }
+      try {
+        const settled = await reconcileBridge(env);
+        if (settled > 0) log("info", "forge github imports settled", { settled });
+      } catch (err) {
+        log("warn", "forge github reconcile failed", { error: String(err) });
       }
       try {
         const trains = await runTrainTick(env);
