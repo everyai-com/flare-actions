@@ -114,6 +114,9 @@ export function gitFixture(): GitFixture {
         p.stderr.on("data", () => undefined);
         p.on("error", reject);
         p.on("close", () => resolve(Buffer.concat(chunks)));
+        // http-backend may exit before draining the body (error replies);
+        // the resulting EPIPE on stdin is not a failure, "close" still resolves.
+        p.stdin.on("error", () => undefined);
         p.stdin.end(input);
       });
       const sep = out.indexOf("\r\n\r\n");
