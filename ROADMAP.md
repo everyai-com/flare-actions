@@ -320,6 +320,21 @@ Needs Phase 0 done:
 
 ## Phase 3 — AI + agent surface + scale
 
+- **Forge vs. git-on-object-storage** (from Enroute's 2026-10-13
+  post, lessons in `docs/GIT-STORAGE-LESSONS.md`; nothing re-measured
+  by us). Forge stays host-agnostic and never chases single-repo
+  push rate; the items we borrow:
+  - Push-every-commit surface: per-commit `report_push`, intent
+    progress in the Feed, why-notes on intermediate shas (M).
+  - Measured train parallelism: lanes merge concurrently, trunk CAS
+    is the only serial point; publish the number next to the 10k
+    bench (M).
+  - Storage-backend contract in `docs/FORGE.md`: forks, CAS ref
+    update, notes refs, push events — what a host must provide so
+    Artifacts is a documented swap, not an assumption (S).
+  - Ledger replay test: rebuild intent + train state from
+    `forge_ledger` and assert equality (M).
+  - Fork GC: bounded sweep of expired/abandoned intent forks (S).
 - **Triage/generate model refresh** (refreshed 2026-10-05, second
   eval run, see `docs/MODEL-EVAL.md`): default stays
   `@cf/meta/llama-3.1-8b-instruct-fp8-fast` (only triage model stable

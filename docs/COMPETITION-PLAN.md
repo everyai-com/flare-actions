@@ -376,6 +376,7 @@ Without a baseline, "10k agents" is just a number. With one, it reads as
 | gittub | AST symbol locks, notes, merge arenas | We don't use locks, per Cursor's evidence. Replay beats arenas for intent conflicts. |
 | git-flare | Fencing leases, two-model review, single-writer CAS | Ours is evidence-based trust (real CI) plus risk routing, not model voting. |
 | gitbots | Mandates, ledger branch, stats | Our policy file covers mandates. Our ledger is per line through `why`. |
+| Enroute (storage layer, not an entry) | 7,600 pushes/s into one repo via a Raft ledger + per-commit segments (their forgemark run, 2026-10-13) | We don't contend on one repo: a fork per intent, ~100 train pushes to trunk. Storage makes the pipe wider; Forge decides what goes through it, on any host. See `docs/GIT-STORAGE-LESSONS.md`. |
 
 **Positioning line:** "Others coordinate agents. **Forge integrates
 them.** Intent in, verified trunk out, humans only where it matters."
@@ -668,3 +669,4 @@ suggests one.
 - Merge-Bench: https://homes.cs.washington.edu/~mernst/pubs/merge-bench-icpr2026-abstract.html
 - Agent Trace: https://www.infoq.com/news/2026/02/agent-trace-cursor
 - git-ai: https://usegitai.com/docs/how-git-ai-works
+- Enroute, Git on S3 (2026-10-13): https://enroute.sh/blog/everyone-is-doing-git-on-s3-wrong (lessons: `docs/GIT-STORAGE-LESSONS.md`)
