@@ -88,7 +88,7 @@ describe("runConnect", () => {
   it("--dry-run prints the plan and touches nothing", async () => {
     const h = harness({ repo: "o/r", dryRun: true, wire: true });
     const out = await runConnect(h.opts);
-    expect(out).toEqual({ exitCode: 0, repo: "o/r", stacks: [], pipeline: "none", scaffolded: false });
+    expect(out).toEqual({ exitCode: 0, repo: "o/r", stacks: [], pipeline: "none", scaffolded: false, next: "next: cli connect o/r --wire   (do it for real)" });
     expect(h.calls.fetch).toEqual([]);
     expect(h.calls.git).toEqual([]);
     expect(h.lines.join("\n")).toContain("plan for o/r");

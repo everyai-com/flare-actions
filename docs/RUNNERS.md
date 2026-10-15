@@ -50,14 +50,30 @@ mints a short single-use code and shows one line. Paste it on the
 machine — no clone, no `.env` editing, no token copying:
 
 ```bash
-curl -fsSL https://<your-worker>.workers.dev/runner.sh | sh -s K7MD-Q2XA ci-metal-01
+curl -fsSL https://<your-worker>.workers.dev/runner.sh | FLARE_PAIR_CODE=K7MD-Q2XA FLARE_PAIR_NAME=ci-metal-01 sh
 ```
 
 `/runner.sh` checks for git and Node.js 22.6+ (plain-language errors
-with install links), clones or updates the runner into
-`~/flare-runner` (`FLARE_RUNNER_DIR` overrides), pairs, and starts
-polling. Run the same line without the code to restart it later. From
-an existing checkout the equivalent is:
+with install links), fetches the runner into `~/flare-runner`
+(`FLARE_RUNNER_DIR` overrides) at a **pinned ref**, pairs, and starts
+polling. Run the same line without the code to restart it later.
+
+- **Pinned, not `main`.** The script checks out a release tag or a full
+  commit SHA, never a moving branch, and verifies a SHA pin against the
+  checkout before running anything. The worker picks the ref:
+  `FLARE_RUNNER_REF` (var; e.g. the commit you deployed), else the fleet
+  `runner_version` as its `v<semver>` tag, else a built-in SHA
+  (`RUNNER_DEFAULT_REF` in `runner-script.ts`). `FLARE_RUNNER_REF` on the
+  machine overrides it locally. A pinned checkout is detached, so
+  `--auto-update` (which pulls) reports it cannot update; re-run the
+  line to move to the current pin.
+- **The code never sits in argv.** `FLARE_PAIR_CODE` travels in the
+  environment (owner-only) to the pairing step, which reads it from
+  there, and is unset before the runner starts. The older
+  `| sh -s K7MD-Q2XA [name]` form still works, but leaves the code in
+  the shell's argv (visible to `ps`) while the script runs.
+
+From an existing checkout the equivalent is:
 
 ```bash
 FLARE_ACTIONS_URL=https://<your-worker>.workers.dev npm run runner -- --pair K7MD-Q2XA --pair-name ci-metal-01

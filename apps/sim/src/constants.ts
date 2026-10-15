@@ -84,6 +84,11 @@ export interface SimConstants {
   opsPerLaneLand: number; // push train ref + CAS main + notes
   dollarsPer1kOps: number;
 
+  // Train groups in flight at once for the trains-only mode. 1 = the
+  // pre-speculation executor (one group per repo at a time). Forge mode
+  // uses policy.lanes.speculationDepth (the shipped default).
+  trainsSpeculationDepth: number;
+
   policy: ForgePolicy;
 }
 
@@ -139,6 +144,8 @@ export const DEFAULT_CONSTANTS: SimConstants = {
   opsPerLaneLand: 6,
   dollarsPer1kOps: 0.15,
 
+  trainsSpeculationDepth: 1,
+
   policy: { ...DEFAULT_POLICY, protected: PROTECTED_GLOBS },
 };
 
@@ -160,7 +167,8 @@ export const CONSTANT_SOURCES: Record<string, string> = {
   mttrMin: "assumption (detect + revert)",
   afterWaitMaxMin: "assumption (planner wait budget)",
   reviewMin: "assumption (human minutes per small agent PR)",
-  policy: "DEFAULT_POLICY from intents-core.ts + protected src/auth/**, migrations/**",
+  policy: "DEFAULT_POLICY from intents-core.ts (lanes 50 per group x 8 parallel, speculation depth 3) + protected src/auth/**, migrations/**",
+  trainsSpeculationDepth: "1: trains-only models the pre-speculation executor (one group in flight per repo)",
   dollarsPer1kOps: "COMPETITION-PLAN.md §4 ($0.15 / 1k Artifacts ops); verify against current pricing",
   opsPerIntent: "assumption: fork 1 + token 1 + clone 2 + push 2 + revoke 1",
 };

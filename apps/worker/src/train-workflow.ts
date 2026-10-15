@@ -27,10 +27,11 @@ import {
   revokeLandedTokens,
   writeNotes,
   loadPolicy,
+  pumpRepo,
   type CheckResult,
   type TrainDispatchInput,
 } from "./train";
-import { MAX_CI_POLLS, maxTrainRounds, pollBackoffSeconds } from "./train-core";
+import { ABANDONED_TRAIN_MS, auditRoll, MAX_CI_POLLS, maxTrainRounds, pollBackoffSeconds } from "./train-core";
 
 export interface TrainWorkflowParams {
   repo: string;
@@ -102,7 +103,17 @@ export class TrainWorkflow extends WorkflowEntrypoint<WorkerEnv, TrainWorkflowPa
       let decided: CheckResult | null = null;
       for (let poll = 0; poll < MAX_CI_POLLS; poll++) {
         const r = await step.do(`check-${round}-${poll}`, STEP, () => checkTrains(deps, repo));
-        if (r.status === "waiting" || r.status === "retry" || r.status === "building") {
+        if (r.status === "waiting" || r.status === "retry" || r.status === "building" || r.status === "progress") {
+          // Keep the speculative pipeline full while CI runs: cut a group
+          // on the chain head when a level + lane refs are free, build it.
+          await step.do(`pump-${round}-${poll}`, STEP, async () => {
+            const p = await pumpRepo(deps, repo);
+            return { cut: p.cut.status, build: p.build?.status ?? null };
+          });
+          if (r.status === "progress") {
+            await step.do(`notes-${round}-${poll}`, STEP, () => writeNotes(deps, repo));
+            await step.do(`revoke-${round}-${poll}`, STEP, () => revokeLandedTokens(deps, repo));
+          }
           await step.sleep(`ci-wait-${round}-${poll}`, pollBackoffSeconds(poll) * 1000);
           continue;
         }
@@ -122,6 +133,22 @@ export class TrainWorkflow extends WorkflowEntrypoint<WorkerEnv, TrainWorkflowPa
       });
       if (next.status !== "busy" && next.status !== "cut") break;
     }
+    // Round budget spent with speculative groups or bisect children still
+    // in flight: hand the repo to a successor instance (id keyed on the
+    // chain head, so a replayed step re-creates nothing).
+    await step.do("handoff", STEP, async () => {
+      const active = await activeTrains(deps.db, repo);
+      const wf = workflowOf(this.env);
+      if (!active.length || !wf) return { handoff: null };
+      // Distinct from this instance's id (which may share the chain head).
+      const id = trainInstanceId(repo, `${active[0].id}-${Math.floor(auditRoll(event.instanceId) * 1e9).toString(36)}`);
+      try {
+        await wf.create({ id, params: { repo } });
+      } catch {
+        // Already exists (replay) or cannot start: the cron tick drives it.
+      }
+      return { handoff: id };
+    });
     return { rounds: round };
   }
 }
@@ -129,7 +156,9 @@ export class TrainWorkflow extends WorkflowEntrypoint<WorkerEnv, TrainWorkflowPa
 // Cron fallback (every minute). With a Workflow binding: cut trains for
 // idle repos (the cut launches an instance) and advance only repos whose
 // trains look abandoned. Without one: advance every repo a step.
-export const TICK_STALE_MS = 10 * 60 * 1000;
+// Staleness must exceed the Workflow's own CI wait (review #13): a
+// verifying train sits untouched while the Workflow polls for ~75 min.
+export const TICK_STALE_MS = ABANDONED_TRAIN_MS;
 
 export async function runTrainTick(env: WorkerEnv): Promise<{ repos: number; advanced: number; cut: number }> {
   const out = { repos: 0, advanced: 0, cut: 0 };

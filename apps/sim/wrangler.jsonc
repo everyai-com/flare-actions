@@ -9,20 +9,32 @@
   "durable_objects": {
     "bindings": [
       { "name": "AGENT_POOL", "class_name": "AgentPool" },
-      { "name": "SIM_REGISTRY", "class_name": "SimRegistry" }
+      { "name": "SIM_REGISTRY", "class_name": "SimRegistry" },
+      // demo-loop: keeps the public spectator repo moving (docs/DEMO.md).
+      { "name": "DEMO_LOOP", "class_name": "DemoLoop" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AgentPool", "SimRegistry"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["AgentPool", "SimRegistry"] },
+    { "tag": "v2", "new_sqlite_classes": ["DemoLoop"] }
+  ],
   // Cleanup deletes the forks a run created; the target Forge must
   // create its forks in this namespace (point a preview at flare-sim).
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "flare-sim" }],
+  // demo-loop also needs the Forge deployment's own namespace to reset the
+  // public trunk and delete its forks. Operator-added, never committed
+  // (it can delete repos there):
+  //   { "binding": "DEMO_ARTIFACTS", "namespace": "<ARTIFACTS_NAMESPACE of the Forge worker>" }
   "vars": {
     // Target Forge deployment; set per run (never production for full-git).
     "FORGE_URL": "",
     "SIM_REPO": "flare-sim-trunk",
     "MAX_FULL_GIT_AGENTS": "1000",
-    "PUBLIC_RESULTS": "false"
+    "PUBLIC_RESULTS": "false",
+    // demo-loop default repo (must be in the Forge's forge_public_repos).
+    "DEMO_REPO": "bookshelf"
   },
-  // Secrets (wrangler secret put, via stdin): FORGE_TOKEN, SIM_ADMIN_TOKEN.
+  // Secrets (wrangler secret put, via stdin): FORGE_TOKEN, SIM_ADMIN_TOKEN,
+  // DEMO_FORGE_TOKEN (runner token pinned to <namespace>/<DEMO_REPO>).
   "observability": { "enabled": true }
 }

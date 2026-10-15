@@ -5,7 +5,7 @@
 // most a handful of bounded, best-effort GitHub calls — any GitHub
 // failure degrades to `repos: null`, never a 5xx.
 import { repoAllowSql, type Db } from "./db";
-import { mintAppJwt, getInstallationToken } from "./github";
+import { mintAppJwt } from "./github";
 import { reposAllow } from "./tokens";
 
 export const SETUP_MAX_INSTALLS = 5;
@@ -92,8 +92,9 @@ interface GhRepo {
   archived?: boolean;
 }
 
-async function ghJson<T>(url: string, token: string, signal: AbortSignal): Promise<T | null> {
+async function ghJson<T>(url: string, token: string, signal: AbortSignal, method: "GET" | "POST" = "GET"): Promise<T | null> {
   const res = await fetch(url, {
+    method,
     headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "User-Agent": "flare-actions" },
     signal,
   });
@@ -101,7 +102,21 @@ async function ghJson<T>(url: string, token: string, signal: AbortSignal): Promi
   return (await res.json()) as T;
 }
 
-// Repos the App is installed on (newest installs first, bounded).
+// Installation token minting under the same abort signal as every other
+// call here (github.ts's getInstallationToken takes no signal), so one
+// slow token POST cannot outlive the setup deadline.
+async function installationToken(jwt: string, installationId: number, signal: AbortSignal): Promise<string | null> {
+  const data = await ghJson<{ token?: unknown }>(
+    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    jwt,
+    signal,
+    "POST",
+  );
+  return typeof data?.token === "string" && data.token ? data.token : null;
+}
+
+// Repos the App is installed on (newest installs first, bounded). One
+// deadline covers every GitHub call, token minting included.
 export async function listAppRepos(creds: { appId: string; privateKey: string }, timeoutMs = 5000): Promise<SetupRepo[] | null> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
@@ -112,7 +127,7 @@ export async function listAppRepos(creds: { appId: string; privateKey: string },
     const out: SetupRepo[] = [];
     for (const inst of installs.slice(0, SETUP_MAX_INSTALLS)) {
       if (typeof inst.id !== "number") continue;
-      const tok = await getInstallationToken(jwt, inst.id);
+      const tok = await installationToken(jwt, inst.id, ctl.signal);
       if (!tok) continue;
       const page = await ghJson<{ repositories?: GhRepo[] }>("https://api.github.com/installation/repositories?per_page=100", tok, ctl.signal);
       for (const r of page?.repositories ?? []) {

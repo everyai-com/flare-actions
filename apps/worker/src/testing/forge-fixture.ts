@@ -114,6 +114,9 @@ export function gitFixture(): GitFixture {
         p.stderr.on("data", () => undefined);
         p.on("error", reject);
         p.on("close", () => resolve(Buffer.concat(chunks)));
+        // http-backend may exit before draining the body (error replies);
+        // the resulting EPIPE on stdin is not a failure, "close" still resolves.
+        p.stdin.on("error", () => undefined);
         p.stdin.end(input);
       });
       const sep = out.indexOf("\r\n\r\n");
@@ -205,11 +208,27 @@ export function gitFixture(): GitFixture {
       const h = head(name, opts?.ref ?? "main");
       return h ? [{ hash: h }] : [];
     },
-    async readTree() {
-      return null;
+    async readTree(hash: string) {
+      try {
+        const out = sh(["--git-dir", bare(name), "ls-tree", hash]);
+        return out
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            const [meta, entryName] = line.split("\t");
+            const [mode, , oid] = meta.split(" ");
+            return { name: entryName, mode: mode === "040000" ? "40000" : mode, hash: oid };
+          });
+      } catch {
+        return null;
+      }
     },
-    async readCommit() {
-      return null;
+    async readCommit(hash: string) {
+      try {
+        return { treeHash: sh(["--git-dir", bare(name), "rev-parse", "--verify", "-q", `${hash}^{tree}`]) };
+      } catch {
+        return null;
+      }
     },
     async createToken(scope: "read" | "write") {
       const token = `art_v2_${name}_${scope}_${++tokenN}`;

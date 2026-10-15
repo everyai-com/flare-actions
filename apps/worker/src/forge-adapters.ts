@@ -443,6 +443,7 @@ export interface ForgeAdapterSet {
   trains?: TrainPort;
   feed: FeedPort | null;
   planner: GoalPlanner | null;
+  waitUntil: WaitUntil | null;
 }
 
 // Every adapter whose binding exists; the rest stay on the D1 fallbacks
@@ -455,5 +456,6 @@ export function forgeAdaptersFromEnv(env: WorkerEnv, opts: { waitUntil?: WaitUnt
     ...(env.ARTIFACTS ? { trains: trainPort(env) } : {}),
     feed: feedPort(env),
     planner: forgePlanner(env),
+    waitUntil: opts.waitUntil ?? null,
   };
 }

@@ -37,6 +37,10 @@ export interface WorkerSecrets {
   // Env-only by design — never a D1 setting — so self-hosted deploys
   // can never be paywalled by accident. See cloud.ts / docs/HOSTED.md.
   FLARE_CLOUD?: string;
+  // Runner ref /runner.sh pins (release tag or full commit SHA), e.g. the
+  // commit this worker was deployed from. Unset = the fleet
+  // runner_version tag, else RUNNER_DEFAULT_REF (runner-script.ts).
+  FLARE_RUNNER_REF?: string;
   // R2 bucket for cache + artifacts; absent on forks that skipped it.
   CACHE?: R2Bucket;
   // No seats binding here by design: wakes travel over the SEAT_QUEUE

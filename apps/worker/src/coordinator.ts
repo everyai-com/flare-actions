@@ -45,7 +45,9 @@ import {
 } from "./coordinator-core";
 import {
   coalesceOps,
+  dashboardOps,
   deltaFrames,
+  FEED_RESYNC_HINT,
   FEED_MAX_SOCKETS,
   FEED_PING,
   FEED_PONG,
@@ -273,6 +275,9 @@ export class ForgeFeed extends DurableObject<WorkerEnv> {
     try {
       const snap = await coordinatorFor(this.env, repo).snapshot({ maxIntents: FEED_SNAPSHOT_INTENTS, forFeed: true });
       ws.send(snapshotFrame(snap, this.nextSeq()));
+      // The DO has no cells/train track/head: point view clients at the
+      // REST snapshot for those (no seq; agents may ignore it).
+      ws.send(FEED_RESYNC_HINT);
     } catch (e) {
       log("warn", "feed snapshot failed", { repo, error: String(e) });
       ws.send(JSON.stringify({ v: 1, type: "error", code: "snapshot_failed", message: "snapshot unavailable; retry with resync" }));
@@ -328,7 +333,7 @@ export class ForgeFeed extends DurableObject<WorkerEnv> {
     const sockets = this.ctx.getWebSockets();
     if (!rows.length || !sockets.length) return;
     const ops = rows.map((r) => JSON.parse(r.op_json) as FeedOp);
-    const { frames, seq } = deltaFrames(ops, this.meta("seq") ?? 0);
+    const { frames, seq } = deltaFrames(dashboardOps(ops), this.meta("seq") ?? 0);
     this.setMetaValue("seq", String(seq));
     const texts = frames.map((f) => JSON.stringify(f));
     for (const ws of sockets) {

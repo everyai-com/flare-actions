@@ -47,7 +47,11 @@ describe("dashboard", () => {
 
   it("lands on a guided Home with plain-language steps and status", () => {
     expect(DASHBOARD_HTML).toContain('id="tabHome"');
+    // Home (the signed-in landing screen + setup checklist) is pinned
+    // first; the Forge group leads every other section.
     expect(DASHBOARD_HTML.indexOf('id="tabHome"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabLive"'));
+    expect(DASHBOARD_HTML.indexOf('id="tabLive"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabRuns"'));
+    expect(DASHBOARD_HTML.indexOf('id="tabHome"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabRuns"'));
     expect(DASHBOARD_HTML).toContain('id="homePane"');
     expect(DASHBOARD_HTML).toContain('api("/v1/setup")');
     expect(DASHBOARD_HTML).toContain("Your tests are waiting for a computer");
@@ -60,11 +64,21 @@ describe("dashboard", () => {
   });
 
   it("renders the first-run onboarding checklist", () => {
-    expect(DASHBOARD_HTML).toContain("three steps to the first one");
+    // Home owns the guided checklist; the empty Runs pane points there.
+    expect(DASHBOARD_HTML).toContain("Finish setup on Home");
     expect(DASHBOARD_HTML).toContain("setupStep");
     expect(DASHBOARD_HTML).toContain("ol.steps");
-    expect(DASHBOARD_HTML).toContain("Start an executor");
     expect(DASHBOARD_HTML).toContain("Dispatch a run");
+  });
+
+  it("keeps settings navigable and repo inputs autocompleted", () => {
+    expect(DASHBOARD_HTML).toContain('class="settings-jump"');
+    expect(DASHBOARD_HTML).toContain('list="ghRepoList"');
+    expect(DASHBOARD_HTML).toContain('<datalist id="flareRepoList">');
+    expect(DASHBOARD_HTML).toContain("[hidden] { display: none !important; }");
+    // Home hands agents this deployment's llms.txt in one copyable line.
+    expect(DASHBOARD_HTML).toContain('id="homeAgentPrompt"');
+    expect(DASHBOARD_HTML).toContain('location.origin + "/llms.txt');
   });
 
   it("polishes auth and small screens", () => {
@@ -94,7 +108,8 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("pairCmd");
     expect(DASHBOARD_HTML).toContain("copyPairBtn");
     expect(DASHBOARD_HTML).toContain("/v1/admin/pair-codes");
-    expect(DASHBOARD_HTML).toContain("/runner.sh | sh -s ");
+    expect(DASHBOARD_HTML).toContain("/runner.sh | FLARE_PAIR_CODE=");
+    expect(DASHBOARD_HTML).not.toContain("/runner.sh | sh -s ");
   });
 
   it("renders the savings counter strip", () => {
@@ -203,7 +218,7 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toContain("side-foot");
     expect(DASHBOARD_HTML).toContain("side-group");
     expect(DASHBOARD_HTML).not.toContain("nav.tabs");
-    expect(DASHBOARD_HTML.indexOf('id="tabTournaments"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabRuns"'));
+    expect(DASHBOARD_HTML.indexOf('id="tabRuns"')).toBeLessThan(DASHBOARD_HTML.indexOf('id="tabTournaments"'));
     // Signed-in users land on Home (guided setup / plain status); the
     // signed-out demo tour still opens the forge Live screen.
     expect(DASHBOARD_HTML).toContain('else if (!applyHashRoute()) palGoTab("home")');

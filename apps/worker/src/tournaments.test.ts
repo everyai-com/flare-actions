@@ -5,6 +5,8 @@ import {
   appendLedger,
   claimAttempt,
   createTournament,
+  createTournamentChecked,
+  isForgeTrunk,
   forkHead,
   forkNameFor,
   getAttemptRace,
@@ -35,6 +37,8 @@ CREATE TABLE verdicts (tournament_id TEXT PRIMARY KEY, ranking TEXT NOT NULL DEF
   rationale TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
 CREATE TABLE ledger (id TEXT PRIMARY KEY, tournament_id TEXT NOT NULL, kind TEXT NOT NULL,
   body TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+CREATE TABLE intents (id TEXT PRIMARY KEY, repo TEXT NOT NULL);
+CREATE TABLE goals (id TEXT PRIMARY KEY, repo TEXT NOT NULL);
 CREATE TABLE runs (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'queued', repo TEXT NOT NULL DEFAULT '',
   sha TEXT NOT NULL DEFAULT '', event TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE webhook_deliveries (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);`;
@@ -136,6 +140,41 @@ describe("createTournament", () => {
     expect(row?.["base_ref"]).toBe("dev");
     const ledger = await db.prepare("SELECT kind FROM ledger WHERE tournament_id = ?").bind(id).all<{ kind: string }>();
     expect(ledger.results.map((r) => r.kind)).toEqual(["opened"]);
+  });
+});
+
+describe("createTournamentChecked (invariant 1: only the train writes a trunk's main)", () => {
+  const base = { intent: "race", baseRef: "main", baseSha: "" };
+  it("refuses a promoting tournament on a Forge trunk (intents or goals)", async () => {
+    const db = sqliteDb();
+    await db.prepare("INSERT INTO intents (id, repo) VALUES ('i1', 'trunk')").bind().run();
+    await db.prepare("INSERT INTO goals (id, repo) VALUES ('g1', 'goal-trunk')").bind().run();
+    for (const sourceRepo of ["trunk", "goal-trunk"]) {
+      const out = await createTournamentChecked(db, { ...base, sourceRepo, promote: true });
+      expect(out).toMatchObject({ code: "forge_trunk_promote" });
+    }
+    const rows = await db.prepare("SELECT COUNT(*) AS n FROM tournaments").bind().first<{ n: number }>();
+    expect(rows?.n).toBe(0);
+  });
+  it("allows promote:false on a trunk with the stop row pre-filed", async () => {
+    const db = sqliteDb();
+    await db.prepare("INSERT INTO intents (id, repo) VALUES ('i1', 'trunk')").bind().run();
+    const out = await createTournamentChecked(db, { ...base, sourceRepo: "trunk", promote: false });
+    if ("error" in out) throw new Error(out.error);
+    const ledger = await db.prepare("SELECT kind, body FROM ledger WHERE tournament_id = ? ORDER BY rowid").bind(out.id).all<{ kind: string; body: string }>();
+    expect(ledger.results.map((r) => r.kind)).toEqual(["opened", "promote-failed"]);
+    expect(ledger.results[1]?.body).toContain("Forge trunk");
+  });
+  it("leaves plain repos promotable", async () => {
+    const db = sqliteDb();
+    const out = await createTournamentChecked(db, { ...base, sourceRepo: "plain", promote: true });
+    if ("error" in out) throw new Error(out.error);
+    const ledger = await db.prepare("SELECT kind FROM ledger WHERE tournament_id = ?").bind(out.id).all<{ kind: string }>();
+    expect(ledger.results.map((r) => r.kind)).toEqual(["opened"]);
+  });
+  it("fails closed when the trunk lookup errors", async () => {
+    const broken = { prepare: () => { throw new Error("no such table"); } } as unknown as Db;
+    expect(await isForgeTrunk(broken, "x")).toBe(true);
   });
 });
 
@@ -369,13 +408,16 @@ describe("validators", () => {
       sourceRepo: "base",
       baseRef: "main",
       baseSha: "",
+      promote: true,
     });
+    expect(validateTournamentCreate({ intent: "x", sourceRepo: "b", promote: false })).toHaveProperty("promote", false);
     expect(validateTournamentClaim({ agent: "agent-1" })).toEqual({ agent: "agent-1" });
   });
   it("rejects malformed input", () => {
     expect(validateTournamentCreate({ intent: "", sourceRepo: "base" })).toHaveProperty("error");
     expect(validateTournamentCreate({ intent: "x", sourceRepo: "a/b" })).toHaveProperty("error");
     expect(validateTournamentCreate({ intent: "x", sourceRepo: "b", baseRef: "" })).toHaveProperty("error");
+    expect(validateTournamentCreate({ intent: "x", sourceRepo: "b", promote: "no" })).toHaveProperty("error");
     expect(validateTournamentClaim({ agent: "no spaces" })).toHaveProperty("error");
     expect(validateTournamentClaim({})).toHaveProperty("error");
   });

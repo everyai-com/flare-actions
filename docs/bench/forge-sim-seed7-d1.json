@@ -1,0 +1,169 @@
+{
+  "kind": "simulated",
+  "note": "SIMULATED: outputs of apps/sim/src/sim.ts under the constants below; not measurements.",
+  "generated_at": "2026-10-10",
+  "sha": "7b37655",
+  "command": "node --experimental-strip-types scripts/forge-bench.mjs --agents 10000 --seed 7 --modes forge --speculation-depth 1",
+  "seed": 7,
+  "constants": {
+    "arrivalWindowMin": 10,
+    "repoFiles": 100000,
+    "filesPerDir": 20,
+    "zipfS": 0.7,
+    "footprintExtraMean": 1.5,
+    "footprintMax": 12,
+    "protectedDirFraction": 0.02,
+    "pDrift": 0.1,
+    "work": {
+      "median": 8,
+      "sigma": 0.6
+    },
+    "ci": {
+      "median": 10,
+      "sigma": 0.3
+    },
+    "reviewLatency": {
+      "median": 30,
+      "sigma": 0.8
+    },
+    "rereviewLatency": {
+      "median": 15,
+      "sigma": 0.8
+    },
+    "planApprovalLatency": {
+      "median": 30,
+      "sigma": 0.8
+    },
+    "replay": {
+      "median": 3,
+      "sigma": 0.5
+    },
+    "mergeMin": 0.5,
+    "trainMergeBaseMin": 0.5,
+    "trainMergePerItemMin": 0.02,
+    "reworkFactor": 0.5,
+    "pConflictPerSharedFile": 0.35,
+    "pDefect": 0.05,
+    "pDefectCaught": 0.9,
+    "pInteraction": 0.02,
+    "pFlake": 0.05,
+    "pWeakEvidence": 0.15,
+    "pReviewerDisagrees": 0.06,
+    "replaySuccess": 0.6,
+    "mttrMin": 30,
+    "afterWaitMaxMin": 15,
+    "cutScanLimit": 2000,
+    "maxRebases": 3,
+    "maxFixes": 3,
+    "maxConflicts": 8,
+    "reviewMin": 10,
+    "rereviewMin": 3,
+    "planApprovalMin": 5,
+    "auditMin": 5,
+    "escalationMin": 10,
+    "opsPerIntent": 7,
+    "opsPerExtraPush": 2,
+    "opsPerLaneItem": 2,
+    "opsPerLaneLand": 6,
+    "dollarsPer1kOps": 0.15,
+    "trainsSpeculationDepth": 1,
+    "policy": {
+      "protected": [
+        "src/auth/**",
+        "migrations/**"
+      ],
+      "autoLandMaxRisk": 30,
+      "auditSample": 0.05,
+      "lanes": {
+        "maxPerTrain": 50,
+        "maxParallel": 8,
+        "speculationDepth": 1
+      },
+      "replay": {
+        "maxAttempts": 2,
+        "raceK": 1
+      }
+    }
+  },
+  "constant_sources": {
+    "arrivalWindowMin": "COMPETITION-PLAN.md §4 scale math (10k agents in 10 min)",
+    "repoFiles": "assumption (a large monorepo)",
+    "zipfS": "assumption; calibrated so ~22% of intents overlap a live intent at 1k agents (51% at 10k, 75% at 100k)",
+    "pDrift": "assumption",
+    "work": "assumption (agent session, median 8 min)",
+    "ci": "assumption (median 10 min suite)",
+    "reviewLatency": "assumption; reviewers modeled as unlimited (favors the baselines)",
+    "pConflictPerSharedFile": "assumption; overlap is necessary, not sufficient, for a textual conflict",
+    "pFlake": "assumption (per CI run); Google reports ~1.5% of test runs flaky (2016 testing blog)",
+    "pDefect": "assumption (reaches CI with a real bug; 90% caught by the intent's own CI)",
+    "pInteraction": "assumption (semantic conflict caught only on the combined SHA)",
+    "replaySuccess": "Merge-Bench (COMPETITION-PLAN.md §13), default 0.6",
+    "mttrMin": "assumption (detect + revert)",
+    "afterWaitMaxMin": "assumption (planner wait budget)",
+    "reviewMin": "assumption (human minutes per small agent PR)",
+    "policy": "DEFAULT_POLICY from intents-core.ts (lanes 50 per group x 8 parallel, speculation depth 3) + protected src/auth/**, migrations/**",
+    "trainsSpeculationDepth": "1: trains-only models the pre-speculation executor (one group in flight per repo)",
+    "dollarsPer1kOps": "COMPETITION-PLAN.md §4 ($0.15 / 1k Artifacts ops); verify against current pricing",
+    "opsPerIntent": "assumption: fork 1 + token 1 + clone 2 + push 2 + revoke 1"
+  },
+  "runs": [
+    {
+      "run": "sim-s7-n10000",
+      "measured_at": "2026-10-10",
+      "sha": "7b37655",
+      "kind": "simulated",
+      "simulated": true,
+      "agents": 10000,
+      "seed": 7,
+      "repo_files": 100000,
+      "overlap_at_declare": 0.5041,
+      "command": "node --experimental-strip-types scripts/forge-bench.mjs --agents 10000 --seed 7 --modes forge --speculation-depth 1",
+      "modes": [
+        {
+          "mode": "forge",
+          "label": "Forge, full",
+          "metrics": {
+            "landed": 9975,
+            "abandoned": 25,
+            "changes_per_min": 1.31,
+            "median_declare_to_land_min": 3282.17,
+            "p95_declare_to_land_min": 6995.19,
+            "time_to_80pct_landed_min": 5783.03,
+            "makespan_min": 7625.21,
+            "conflicts_hit": 5187,
+            "conflicts_avoided": 944,
+            "stacked_intents": 1986,
+            "replays_attempted": 8027,
+            "replays_succeeded": 4789,
+            "escaped_defects": 59,
+            "escaped_defect_min": 1599.35,
+            "main_red_integration_min": 0,
+            "unverified_landings": 0,
+            "speculative_groups": 0,
+            "invalidated_lanes": 1412,
+            "human_min": 29648,
+            "human_breakdown_min": {
+              "review": 11810,
+              "rereview": 3018,
+              "plan_approval": 2510,
+              "audit": 3190,
+              "escalation": 9120
+            },
+            "routes": {
+              "auto": 13080,
+              "audit": 638,
+              "human": 2187
+            },
+            "ci_runs": 22442,
+            "trains": 5173,
+            "bisections": 627,
+            "artifacts_ops": 144166,
+            "dollars_per_1k_agents": 2.16
+          },
+          "projected": false,
+          "simulated": true
+        }
+      ]
+    }
+  ]
+}

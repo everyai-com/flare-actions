@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { convertActionsWorkflow, isImportSuccess, mapRunsOn, sanitizeCacheKey } from "./importActions";
+import { parsePipeline } from "../../../apps/worker/src/pipeline.ts";
+import { convertActionsWorkflow, isImportSuccess, mapRunsOn, sanitizeCacheKey, shellEnvValue } from "./importActions";
 
 const SAMPLE = `
 on: [push]
@@ -211,5 +212,98 @@ describe("import helpers", () => {
     );
     if (!isImportSuccess(res)) throw new Error(res.error);
     expect(res.warnings.join("\n")).toContain("Settings → Schedules");
+  });
+});
+
+describe("matrix include/exclude", () => {
+  const WF = `
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: [18, 20]
+        include:
+          - node: 22
+            experimental: true
+        exclude:
+          - node: 18
+    steps:
+      - run: echo node-\${{ matrix.node }} exp=\${{ matrix.experimental }}
+`;
+
+  it("emits include/exclude natively and the output validates via the worker parser", () => {
+    const res = convertActionsWorkflow(WF);
+    if (!isImportSuccess(res)) throw new Error(res.error);
+    expect(res.warnings.join("\n")).not.toMatch(/matrix/);
+    const jobs = parsePipeline(res.yaml);
+    expect(jobs).not.toBeNull();
+    expect(jobs?.map((j) => j.matrix)).toEqual([
+      { os: "ubuntu-latest", node: "20" },
+      { node: "22", experimental: "true" },
+    ]);
+    expect(jobs?.map((j) => j.base)).toEqual(["test", "test"]);
+    // include-only keys resolve in the cells that carry them
+    expect(jobs?.[1].steps[0].run).toBe("echo node-22 exp=true");
+    expect(jobs?.[0].steps[0].run).toBe("echo node-20 exp=");
+  });
+
+  it("warns and drops expression matrices instead of emitting invalid output", () => {
+    const res = convertActionsWorkflow(`
+jobs:
+  test:
+    strategy:
+      matrix: \${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps: [{ run: echo hi }]
+  b:
+    strategy:
+      matrix:
+        node: \${{ fromJSON('[1,2]') }}
+        os: [linux]
+        include: \${{ fromJSON('[]') }}
+        exclude:
+          - arch: arm
+    steps: [{ run: echo hi }]
+`);
+    if (!isImportSuccess(res)) throw new Error(res.error);
+    const w = res.warnings.join("\n");
+    expect(w).toContain("test: dropped matrix `${{ fromJSON(needs.setup.outputs.matrix) }}`");
+    expect(w).toContain("expression-generated matrices (fromJSON etc.) are unsupported");
+    expect(w).toContain("b: dropped matrix axis node (expression-generated values are unsupported)");
+    expect(w).toContain("b: dropped matrix include (expression-generated lists are unsupported)");
+    expect(w).toContain("b: dropped a matrix exclude entry");
+    const jobs = parsePipeline(res.yaml);
+    expect(jobs?.map((j) => j.name)).toEqual(["test", "b (os=linux)"]);
+  });
+
+  it("drops a matrix that exceeds flare's bounds with the reason", () => {
+    const vals = Array.from({ length: 9 }, (_, i) => i).join(", ");
+    const res = convertActionsWorkflow(`jobs:\n  a:\n    strategy:\n      matrix:\n        x: [${vals}]\n        y: [${vals}]\n    steps: [{ run: echo }]\n`);
+    if (!isImportSuccess(res)) throw new Error(res.error);
+    expect(res.warnings.join("\n")).toContain("a: dropped matrix (matrix expands past 32 combinations)");
+    expect(parsePipeline(res.yaml)?.map((j) => j.name)).toEqual(["a"]);
+  });
+});
+
+describe("step env stays step-scoped", () => {
+  it("exports step env at the top of that run step only", () => {
+    const res = convertActionsWorkflow("jobs:\n  t:\n    runs-on: ubuntu-latest\n    env:\n      A: job\n    steps:\n      - run: echo one\n        env:\n          A: \"it's step\"\n      - run: echo two\n");
+    if (!isImportSuccess(res)) throw new Error(res.error);
+    expect(res.yaml).toContain("export A='it'\\''s step'");
+    expect(res.yaml).toContain("A: job");
+    expect(res.warnings.join("\n")).not.toContain("overrode job env");
+  });
+  it("quotes literals and keeps expressions expandable", () => {
+    expect(shellEnvValue("a ${{ matrix.n }} $HOME")).toBe(`'a '"\${{ matrix.n }}"' $HOME'`);
+  });
+});
+
+describe("matrix runs-on coverage", () => {
+  it("names the include cell that leaves runs-on empty", () => {
+    const res = convertActionsWorkflow("jobs:\n  b:\n    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n        os: [ubuntu-latest]\n        node: [20]\n        include:\n          - node: 22\n    steps:\n      - run: echo hi\n");
+    if (!isImportSuccess(res)) throw new Error(res.error);
+    expect(res.warnings.join("\n")).toContain("runs-on needs matrix.os but cell (node=22) has none");
   });
 });

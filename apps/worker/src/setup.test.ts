@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "./db";
-import { loadSetupFacts, setupSteps, SETUP_WAITING_MS, type SetupFacts } from "./setup";
+import { listAppRepos, loadSetupFacts, setupSteps, SETUP_WAITING_MS, type SetupFacts } from "./setup";
 import { sqliteDb } from "./testing/forge-fixture";
 
 function facts(over: Partial<SetupFacts> = {}): SetupFacts {
@@ -129,5 +129,72 @@ describe("loadSetupFacts", () => {
       now: NOW,
     });
     expect(f.repos).toBeNull();
+  });
+});
+
+describe("listAppRepos", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function pem(): Promise<string> {
+    const pair = (await crypto.subtle.generateKey(
+      { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+      true,
+      ["sign", "verify"],
+    )) as CryptoKeyPair;
+    const pkcs8 = new Uint8Array((await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer);
+    let bin = "";
+    for (const b of pkcs8) bin += String.fromCharCode(b);
+    return `-----BEGIN PRIVATE KEY-----\n${btoa(bin)}\n-----END PRIVATE KEY-----\n`;
+  }
+
+  it("lists repos across installs, skipping archived ones", async () => {
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/app/installations?")) return new Response(JSON.stringify([{ id: 1 }]), { status: 200 });
+      if (url.endsWith("/access_tokens")) return new Response(JSON.stringify({ token: "ghs_x" }), { status: 201 });
+      if (url.includes("/installation/repositories")) {
+        return new Response(
+          JSON.stringify({ repositories: [{ full_name: "o/b", default_branch: "dev" }, { full_name: "o/a", private: true }, { full_name: "o/old", archived: true }] }),
+          { status: 200 },
+        );
+      }
+      return new Response("nope", { status: 404 });
+    });
+    expect(await listAppRepos({ appId: "1", privateKey: await pem() })).toEqual([
+      { fullName: "o/a", defaultBranch: "main", private: true },
+      { fullName: "o/b", defaultBranch: "dev", private: false },
+    ]);
+  });
+
+  it("applies the deadline to installation-token minting too (a hung POST cannot stall setup)", async () => {
+    const key = await pem();
+    let tokenAborted = false;
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/app/installations?")) return Promise.resolve(new Response(JSON.stringify([{ id: 1 }]), { status: 200 }));
+      if (url.endsWith("/access_tokens")) {
+        // Never answers; only the abort signal can end it.
+        return new Promise<Response>((_, reject) => {
+          const signal = init?.signal;
+          if (!signal) return; // unbounded: the test times out
+          if (signal.aborted) {
+            tokenAborted = true;
+            reject(new Error("aborted"));
+            return;
+          }
+          signal.addEventListener("abort", () => {
+            tokenAborted = true;
+            reject(new Error("aborted"));
+          });
+        });
+      }
+      return Promise.resolve(new Response("nope", { status: 404 }));
+    });
+    const started = Date.now();
+    expect(await listAppRepos({ appId: "1", privateKey: key }, 50)).toBeNull();
+    expect(tokenAborted).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 });

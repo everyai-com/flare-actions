@@ -10,6 +10,11 @@
 //   POST /runs/:id/stop        stop all pools                               (admin)
 //   POST /runs/:id/cleanup     delete forks the run created                 (admin)
 //
+// demo-loop (keeps the public spectator repo alive; docs/DEMO.md):
+//   GET  /demo-loop            status (read)
+//   POST /demo-loop/start      {repo?, pristine?, paceMs?, holdMs?, ...}    (admin)
+//   POST /demo-loop/pause | /resume | /stop | /reset                        (admin)
+//
 // Admin = `Authorization: Bearer <SIM_ADMIN_TOKEN>`. Reads need it too
 // unless PUBLIC_RESULTS="true". Without SIM_ADMIN_TOKEN everything 503s.
 
@@ -17,14 +22,20 @@ import type { SimEnv } from "./env.ts";
 import { DEFAULT_LIMITS, mapLimit, planRun, type RunLimits } from "./harness/plan.ts";
 import { aggregate, type PoolSnapshot, type RunSummary } from "./harness/pool.ts";
 import type { RunMeta } from "./pool-do.ts";
+import { demoConfigFrom } from "./demo/loop.ts";
 
 export { AgentPool, SimRegistry } from "./pool-do.ts";
+export { DemoLoop } from "./demo-do.ts";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body, null, 2), {
     status,
     headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
   });
+}
+
+function raw(body: string, status = 200): Response {
+  return new Response(body, { status, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } });
 }
 
 function err(status: number, code: string, message: string): Response {
@@ -128,7 +139,28 @@ export default {
     const canRead = admin || env.PUBLIC_RESULTS === "true";
     try {
       if (parts.length === 0 && req.method === "GET") {
-        return json({ service: "flare-forge-sim", docs: "docs/FORGE-BENCH.md", routes: ["POST /runs", "GET /runs", "GET /runs/:id/results"] });
+        return json({ service: "flare-forge-sim", docs: "docs/FORGE-BENCH.md", routes: ["POST /runs", "GET /runs", "GET /runs/:id/results", "GET /demo-loop", "POST /demo-loop/start"] });
+      }
+      if (parts[0] === "demo-loop") {
+        const loop = env.DEMO_LOOP.get(env.DEMO_LOOP.idFromName("singleton"));
+        if (parts.length === 1 && req.method === "GET") {
+          if (!canRead) return err(401, "unauthorized", "bearer SIM_ADMIN_TOKEN required");
+          return raw(await loop.status());
+        }
+        if (req.method !== "POST" || parts.length !== 2) return err(404, "not_found", "unknown route");
+        if (!admin) return err(401, "unauthorized", "bearer SIM_ADMIN_TOKEN required");
+        if (parts[1] === "start") {
+          const body: unknown = await req.json().catch(() => ({}));
+          const cfg = demoConfigFrom(body, { repo: env.DEMO_REPO ?? "bookshelf" });
+          if (!cfg.ok) return err(400, "invalid_request", cfg.message);
+          const out = await loop.start(cfg.config);
+          return out.ok ? raw(out.status ?? "{}", 202) : err(503, "not_configured", out.error ?? "not configured");
+        }
+        if (parts[1] === "pause") return raw(await loop.setPaused(true));
+        if (parts[1] === "resume") return raw(await loop.setPaused(false));
+        if (parts[1] === "stop") return raw(await loop.stop());
+        if (parts[1] === "reset") return raw(await loop.resetNow());
+        return err(404, "not_found", "unknown route");
       }
       if (parts[0] !== "runs") return err(404, "not_found", "unknown route");
 

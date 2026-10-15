@@ -19,6 +19,10 @@ import {
 } from "./session";
 import { sqliteDb } from "./why-fakes.test-util";
 
+// These suites spawn real git processes (or run the full simulator), which
+// can exceed vitest's 5 s default on a loaded machine.
+const SLOW_TEST_MS = 60_000;
+
 // SessionArtifacts over a bare repo through the git CLI (stands in for
 // the binding: first-parent log + readFile by ref/path).
 function cliArtifacts(bare: string): SessionArtifacts {
@@ -66,7 +70,7 @@ describe("session log format", () => {
   });
 });
 
-describe("readSession (SDK writer -> real git remote -> Worker reader)", () => {
+describe("readSession (SDK writer -> real git remote -> Worker reader)", { timeout: SLOW_TEST_MS }, () => {
   it("reads plan + steps an agent pushed with the SDK helper", async () => {
     const root = mkdtempSync(join(tmpdir(), "flare-session-"));
     const bare = join(root, "i-abc.git");

@@ -74,22 +74,26 @@ Please don't report vulnerabilities in public issues — see
 
 ## Publishing to npm
 
-The runner SDK (`flare-actions-runner-sdk`) and CLI (`flare-actions`) ship
-as TypeScript sources and run under Node's type stripping (engines:
-`>=22.6`) — no build step, no generated artifacts to drift. Both names are
-claimed in this repo's package manifests and were unpublished at v0.1.0.
+The CLI publishes as **`flare-forge`** (bins `flare-forge` and `flare`).
+In the repo it runs from TypeScript source under Node type stripping; for
+npm, `npm run build:cli` bundles it with esbuild into one self-contained
+`apps/cli/dist/cli.mjs` (the runner SDK and the worker/seats modules it
+imports are inlined, so the package has zero runtime dependencies).
+`prepublishOnly` rebuilds and smoke-runs the bundle.
 
 ```bash
+npm run pack:cli                          # build + flare-forge-X.Y.Z.tgz; inspect the file list
+npm install -g ./flare-forge-*.tgz && flare-forge forge help   # optional local smoke
 npm login
-npm publish --dry-run --workspace packages/runner-sdk   # inspect the file list
-npm publish --workspace packages/runner-sdk
-npm publish --workspace apps/cli                        # depends on the SDK version above
+npm publish --workspace apps/cli          # publishes flare-forge
 ```
 
-Bump `version` in both manifests together (the CLI pins the SDK version),
-and tag the release (`vX.Y.Z`). The CLI exposes a `flare` bin; after
-publishing, users can `npx flare runs` / `npx flare local` without
-cloning.
+Bump `version` in `apps/cli/package.json` and tag the release (`vX.Y.Z`).
+After publishing, `npx flare-forge forge connect-agent --client claude`
+and `npx flare-forge connect` work without cloning. The runner SDK
+(`flare-actions-runner-sdk`) still ships as TypeScript sources and is
+published separately only if you want it as a library; the CLI no longer
+needs it at runtime.
 
 ## License
 

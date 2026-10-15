@@ -36,6 +36,8 @@ function harness(opts: { json?: boolean; git?: (args: string[]) => GitResult; re
     err: (l) => err.push(l),
     readText: (p) => files.get(p) ?? null,
     writeText: (p, t) => files.set(p, t),
+    writeFile: (p, t) => files.set(p, t),
+    cwd: "/work",
   };
   return { deps, out, err, gitCalls, files, fetches };
 }
@@ -73,7 +75,8 @@ describe("cli forge", () => {
     expect(await runForge([], harness().deps)).toBe(2);
     const h = harness();
     expect(await runForge(["bogus"], h.deps)).toBe(2);
-    expect(h.err[0]).toMatch(/unknown forge verb/);
+    expect(h.err.join("\n")).toMatch(/Unknown forge verb: bogus/);
+    expect(h.err[h.err.length - 1]).toBe("next: cli forge --help");
   });
 
   it("declare sends the footprint and prints overlaps + next steps", async () => {
@@ -91,7 +94,7 @@ describe("cli forge", () => {
     expect(h.fetches[0]).toMatchObject({ method: "POST", body: { repo: "demo", title: "Add cache", footprint: ["src/a.ts"], accept: "npm test" } });
     expect(h.fetches[0].headers["X-Flare-Agent"]).toBe("alpha");
     expect(h.out.join("\n")).toMatch(/OVERLAP i0 "Other"/);
-    expect(h.out.join("\n")).toMatch(/send_note/);
+    expect(h.out.join("\n")).toMatch(/next: cli forge note i0 "<text>"/);
   });
 
   it("push runs plain git push, reads HEAD, then reports the sha", async () => {

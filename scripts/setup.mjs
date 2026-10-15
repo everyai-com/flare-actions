@@ -84,6 +84,13 @@ for (const q of ["flare-actions-runs", "flare-actions-dlq", "flare-actions-seats
       const { ensureNamespace, ensurePushSubscriptions } = await import("./artifacts-admin.mjs");
       const ns = await ensureNamespace({ apiToken, accountId, namespace });
       console.log(ns.reused ? `Artifacts: namespace ${namespace} already exists, reusing` : `Artifacts: namespace ${namespace} created`);
+      // Previews bind their own namespace (wrangler.jsonc previews block):
+      // never production Artifacts repos (Forge trunks, agent forks).
+      const previewNs = process.env.ARTIFACTS_PREVIEW_NAMESPACE ?? "flare-forge-preview";
+      if (previewNs !== namespace) {
+        const pns = await ensureNamespace({ apiToken, accountId, namespace: previewNs });
+        console.log(pns.reused ? `Artifacts: preview namespace ${previewNs} already exists, reusing` : `Artifacts: preview namespace ${previewNs} created`);
+      }
       if (repos.length === 0) {
         console.log("Artifacts: ARTIFACTS_SUBSCRIBE_REPOS unset — skipping push subscriptions (the worker poller still covers tournament forks).");
       } else {

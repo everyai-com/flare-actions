@@ -165,6 +165,37 @@ describe("handleForgePush", () => {
     const landed = await setup("landed");
     expect(await handleForgePush(landed.deps, push())).toEqual({ status: "skipped", reason: "not-pushable" });
   });
+  it("ignores a trunk-sync push to a mirror's default branch (not an intent fork)", async () => {
+    // Seats fast-forward the GitHub mirror's trunk (repo "trunk" here,
+    // the repo intents are declared against) on default-branch pushes;
+    // the namespace trigger fires for it like any push. It must not
+    // touch intents, the coordinator, or the ledger.
+    const s = await setup();
+    let opened = 0;
+    const deps = { ...s.deps, openRepo: async () => { opened++; return Promise.reject(new Error("must not open")); } };
+    const before = s.deps.db;
+    const ledgerBefore = await before.prepare("SELECT COUNT(*) AS n FROM forge_ledger").bind().first<{ n: number }>();
+    const out = await handleForgePush(deps, {
+      type: "cf.artifacts.repo.pushed",
+      source: { namespace: "ns", repoName: "trunk" },
+      payload: { ref: "refs/heads/main", before: BASE, after: HEAD },
+    });
+    expect(out).toEqual({ status: "skipped", reason: "not-a-fork" });
+    expect(s.calls).toEqual([]);
+    expect(opened).toBe(0);
+    const ledgerAfter = await before.prepare("SELECT COUNT(*) AS n FROM forge_ledger").bind().first<{ n: number }>();
+    expect(ledgerAfter?.n).toBe(ledgerBefore?.n);
+    const intent = await before.prepare("SELECT state, base_sha FROM intents WHERE id = ?").bind(s.id).first<{ state: string; base_sha: string }>();
+    expect(intent).toEqual({ state: "working", base_sha: BASE });
+    // The lazy checkout-cache branch on a mirror is equally inert.
+    expect(
+      await handleForgePush(deps, {
+        type: "cf.artifacts.repo.pushed",
+        source: { namespace: "ns", repoName: "trunk" },
+        payload: { ref: "refs/heads/flare-mirror", before: "", after: HEAD },
+      }),
+    ).toEqual({ status: "skipped", reason: "not-a-fork" });
+  });
   it("falls back to `before` when the intent has no base; zero before = no-base", async () => {
     const s = await setup("working", "");
     expect((await handleForgePush(s.deps, push())).status).toBe("reported");

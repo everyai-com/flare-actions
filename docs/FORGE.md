@@ -96,11 +96,13 @@ interface ForgePolicy { protected: string[]; autoLandMaxRisk: number; auditSampl
   lanes: { maxPerTrain: number; maxParallel: number }; replay: { maxAttempts: number; raceK: number } }
 POLICY_PATH = ".flare/policy.yml"; DEFAULT_POLICY  // risk 30, sample 0.05, lanes 50/8, replay 2/1
 parsePolicy(text: string | null | undefined): Result<ForgePolicy>
-protectedMatches(fp: Footprint, policy: ForgePolicy): string[]
+BUILTIN_PROTECTED = ["flare.yml", ".flare/**", ".github/workflows/**"]  // always protected
+effectiveProtected(policy): string[]               // built-ins + policy.protected (deduped)
+protectedMatches(fp: Footprint, policy: ForgePolicy): string[]  // over effectiveProtected
 
 // risk (§3.5)
 RISK_WEIGHTS, GLOBSTAR_WEIGHT (= 10 files)
-scoreRisk(input: { footprint; actualFootprint?; policy?; llmReplay?; weakEvidence?; reviewerDisagrees? })
+scoreRisk(input: { footprint; actualFootprint?; policy?; llmReplay?; weakEvidence?; reviewerDisagrees?; truncated? })
   : { risk: number /*0-100, capped*/; terms: RiskTerm[] }
 footprintWeight(fp): number; footprintSizePoints(weight): number   // log-scaled, ≤15
 routeLanding(risk: number, policy: ForgePolicy, roll: number): "auto" | "audit" | "human"
@@ -117,7 +119,7 @@ interface WhyNote { v: 1; goal: {id,text}|null; intent: {id,title,reasoning,acce
   review: {decision: "auto"|"audit"|"human"|"approved"|"rejected", by, policy}; train_id }
 serializeWhyNote(note: WhyNote): string             // stable key order, bounded fields
 parseWhyNote(text: string): WhyNote | null          // strict; corrupt -> null
-labelUntrusted(fromAgent: string, body: string): string  // mailbox framing (invariant 5)
+labelUntrusted(fromAgent: string, body: string, nonce?: string): string  // nonce-fenced mailbox framing (invariant 5)
 ```
 
 ### `apps/worker/src/intents.ts` (D1, injected `db`)
@@ -454,11 +456,20 @@ c.hydrate() -> { indexed, removed, edges, truncated }          // forced rebuild
 ```
 
 - **`OverlapView`** is `{ intentId, agent, title, reasoning (≤500
-  chars), state, pairs: [{ mine, theirs }], viaActual, untrusted: true
-  }`. Results are sorted by pair count and capped at 50. `title` and
-  `reasoning` are another agent's words, so render them as data.
+  chars), state, pairs: [{ mine, theirs }], viaActual, untrusted: true,
+  untrustedFields }`. Results are sorted by pair count and capped at 50.
+  `title` and `reasoning` are another agent's words, so render them as
+  data.
+- **Peer fields are marked structurally.** Every agent-facing view
+  carries `untrustedFields` naming exactly its peer-authored fields
+  (`PEER_FIELDS` in `coordinator-core.ts`): overlaps and
+  `whats_happening` items `["agent", "title", "reasoning"]`, similar
+  `["agent", "title"]`, inbox `["fromAgent", "text"]`, and the snapshot
+  `untrustedFields.intents = ["agent", "title"]`. Agent names are
+  self-reported, never a verified identity.
 - **`InboxNote`** is `{ id, fromIntent, fromAgent, text, createdAt,
-  untrusted: true }`. `text` is already framed by `labelUntrusted`.
+  untrusted: true, untrustedFields }`. `text` is already fenced by
+  `labelUntrusted` (header + nonce-carrying BEGIN/END lines).
   Draining is exactly-once (`drainInbox`).
 - **Automatic notes.** When `declare` or `reportPush` creates a *new*
   overlap edge, the other intent's mailbox gets one note (at most 10
@@ -519,6 +530,18 @@ LiveCounters = { intents, agents, overlaps, overlapsCaught, pushOverlaps, driftA
 CoordinatorSnapshot = { v: 1, repo, at, ver, intents: LiveIntent[], edges: LiveEdge[], counters, truncated }
 ```
 
+Dashboard view fields (additive; `feed-core.ts` `dashboardOps` /
+`dashboardSnapshot`): the snapshot frame also carries `data`, the same
+snapshot in the REST shape the dashboard reads (intents with
+`footprint.{paths,declared,actual,drift}` and `path`, edges as
+`overlaps`, snake_case counters such as `overlaps_caught`). Intent and
+counters ops carry the same extra fields, and every `edge` op is
+followed by an `overlap` twin (`{ a, b, paths, state: "overlap" }`,
+same id and ver). Right after the snapshot the server sends
+`{ v: 1, type: "resync" }` (no seq): a hint to read
+`GET /v1/forge/snapshot` for what the DO does not hold (cells, train
+track, trunk head). Agents may ignore both.
+
 Client to server: `{"type":"resync"}` returns a fresh snapshot, and
 `{"type":"ping"}` returns a pong.
 
@@ -564,9 +587,14 @@ backoff):
 6. **Call `reportPush`** on the trunk repo's coordinator with
    `source: "trigger"`.
 
-The trigger is configured only at the top level. Previews share the
-`flare-tournaments` namespace, so a preview trigger would also consume
-production pushes. Workflow names are also account-global.
+The trigger is configured only at the top level. Previews bind their
+own Artifacts namespace, `flare-forge-preview` (binding and
+`ARTIFACTS_NAMESPACE` var in the `previews` block), and their own train
+Workflow, `flare-forge-train-preview`, so a preview never reads or
+writes production trunks or forks (AGENTS.md: previews never point at
+prod resources). Event triggers are namespace-filtered and Workflow
+names are account-global, so previews get no push trigger; preview
+forks rely on `report_push`.
 
 ### Benchmark: index at 100k intents
 
@@ -645,49 +673,108 @@ the router reads on each call. Going back to one DO is a re-hydrate.
 
 ## Trains and conflicts
 
-> Provenance: agent-drafted 2026-10-10 (trains stream). The behavior
-> described here is covered by `train-core.test.ts`, `train.test.ts`
-> and `replay.test.ts` (`npm test`, 2026-10-10). The end-to-end tests
-> run isomorphic-git and MemoryFS against real bare repos, served
-> in-process by `git http-backend` with no network. The timings were
-> measured in those tests on a laptop, not against Artifacts.
+> Provenance: agent-drafted 2026-10-10 (trains stream), revised the same
+> day for speculative stacked trains (branch `feat/forge-speculative`).
+> The behavior described here is covered by `train-core.test.ts`
+> (exhaustive + property tests of the chain, probes and capacity),
+> `train.test.ts` and `replay.test.ts` (`npm test`, 2026-10-10). The
+> end-to-end tests run isomorphic-git and MemoryFS against real bare
+> repos, served in-process by `git http-backend` with no network. The
+> timings were measured in those tests on a laptop, not against
+> Artifacts.
 
 ### Model
 
-- **One train group per repo at a time.**
-  - `cutTrain` orders ready intents by priority, then by oldest ready,
-    then by id.
-  - It takes at most `lanes.max_per_train` of them.
-  - It splits them into lanes whose footprints don't overlap: at most
-    `min(lanes.max_parallel, 8)` lanes.
-- **Stacked lanes.**
-  - Lane *i* is built on lane *i−1*'s head.
-  - Each lane head gets its own CI run on that exact SHA, so the runs
-    happen in parallel.
-  - If lane *i* is green, the whole prefix through *i* is green as one
-    SHA.
-  - The longest green prefix lands with one non-force push of `main`,
-    a compare-and-swap against the cut's base.
-  - The first red lane is bisected. Lanes stacked behind it go back to
-    the queue without blame.
-- **Bisect.**
-  - The red lane splits into two child trains (`parent_train_id`), with
-    the left half stacked under the right half.
-  - Left red: recurse into the left half and requeue the right half.
-  - Left green and right red: land the left half and recurse into the
-    right half.
-  - A red lane with a single intent is the culprit. That intent goes to
-    `failed`, and a `culprit` ledger row records the evidence.
-  - Bisection takes at most ⌈log₂ n⌉ rounds.
+- **Speculative chain** (`train-core.ts`: `cutCapacity`, `decideChain`,
+  `chainBreak`, `SpeculativeChain`; Zuul dependent pipeline / Uber
+  SubmitQueue speculation).
+  - Up to `lanes.speculation_depth` train groups (default **3**) may be
+    in flight per repo. A group cut while others are in flight is
+    *speculative*: its first lane is built on the chain head — the last
+    in-flight lane's head — assuming everything ahead passes.
+  - All active lanes form **one linear chain**: main ← group 1 lanes ←
+    group 2 lanes ← … An intent that overlaps in-flight work therefore
+    rides the next group, stacked on its overlap partner, instead of
+    waiting for it to land. (On an exact-SHA main the group holding the
+    partner is always an ancestor of the newest group.)
+  - Each group has at most `lanes.max_parallel` lanes (default 8); the
+    chain at most `speculation_depth × max_parallel` lanes, capped at
+    24 (the chain's share of the ref pool).
+- **Cutting a group** (`planTrain`).
+  - Order ready intents by priority, then oldest ready, then id; take at
+    most `lanes.max_per_train`.
+  - Split them into overlap components on the declared footprint (a
+    component never splits: overlapping intents merge in order in one
+    lane), then **pack** the components into at most the free lane
+    count, least-full first. Before this revision only the first 8
+    components were kept, so 50 disjoint ready intents yielded a train
+    of 8.
+- **Stacked lanes, exact SHA.**
+  - Every lane head gets its own CI run on that exact SHA, in parallel,
+    with the pipeline read from **trunk** (the chain root's base), never
+    from the lane head.
+  - `checkTrains` lands the longest contiguous green prefix of the chain
+    *as soon as it is green*, even while lanes behind it are still
+    verifying, with one non-force push of `main` (compare-and-swap
+    against the first lane's base). Lane *i*'s head contains exactly the
+    lanes before it, so invariant 2 holds: `main` only ever points at a
+    SHA whose own CI run is green.
+  - The landing gate is re-evaluated before `main` moves; a lane with an
+    intent that now needs human approval does not land (it and every
+    lane behind it are requeued).
+  - `chainBreak`: a lane whose base is not the previous lane's head (the
+    lane ahead was swept or failed to dispatch) is invalidated with
+    everything behind it; the CAS refuses a first lane whose base is not
+    main.
+- **A red lane** (with everything ahead of it green).
+  - Every lane behind it, in every descendant group, is **invalidated**:
+    aborted and its intents requeued without blame. Requeued intents
+    keep their place in line (their queue time goes back to when they
+    joined the train), so they are rebuilt at once on the new chain
+    head, without the red lane.
+  - The red lane leaves the chain. One intent: it is the culprit
+    (`failed`, with a `culprit` ledger row). More: it splits into two
+    **bisect probes**.
+- **Bisect probes** (off-chain).
+  - A probe (`parent_train_id` = the red train) is built alone on main
+    in a reserved slot and verified as its own exact SHA; both halves
+    run in parallel. Probes never land.
+  - Green probe: its intents are innocent and requeue without blame
+    (`probe_green` ledger row); they land through the chain.
+  - Red probe: one intent is the culprit, more split again. A culprit is
+    isolated within ⌈log₂ n⌉ probe rounds after its red lane.
+  - Why off-chain: in-chain bisect children block the pipeline and every
+    speculative group stacked on them holds the culprit. In the
+    simulator, moving bisection off the chain cut time-to-80%-landed
+    roughly in half at 2k agents (see `docs/FORGE-BENCH.md`).
 - **Lane refs.**
-  - Lanes use the fixed refs `forge/lane-0..7` and force-update them for
-    each train. Spike S5 found that pushing a *new* ref from
-    isomorphic-git uploads the whole history.
-  - Create the lane refs once, when the repo is bootstrapped.
+  - A fixed pool of 32 refs, `forge/lane-0..31`, force-updated per train
+    (spike S5: pushing a *new* ref from isomorphic-git uploads the whole
+    history). The chain uses slots 0–23 (lowest free first, so lane
+    order in a group = slot order); probes use 24–31. A train holds its
+    slot (`trains.lane`) until it leaves the active set; a probe waiting
+    for a slot has `lane = -1`.
+  - The Worker never creates a ref: a build that finds its slot's ref
+    missing aborts the lane (`lane ref … missing`) and requeues it.
+  - **Create the pool once, at repo bootstrap**:
+    `node scripts/artifacts-mirror.mjs lanes <artifacts-repo>` (any
+    existing Artifacts repo, at its current main), and
+    `artifacts-mirror.mjs sync` creates any missing pool ref at the
+    synced sha. Existing refs are never touched.
   - `main` is never force-pushed.
+- **Groups in D1.** `trains.group_seq` (migration
+  `0049_train_groups.sql`) orders groups; the chain is the active trains
+  without a parent, ordered by `(group_seq, lane)`.
+- **Executor.** `TrainWorkflow` keeps the pipeline full: on every CI
+  poll it runs `pumpRepo` (cut a speculative group when a level and
+  refs are free, build forming groups and probes), lands progress as it
+  happens (`progress`), and hands the repo to a successor instance when
+  its round budget is spent with work still in flight. The cron
+  fallback treats trains as abandoned only after the Workflow's full CI
+  wait (~75 min + 15).
 - **CI dispatch.**
-  - Lane runs use event `artifacts`, so seats check out the Artifacts
-    remote.
+  - Lane and probe runs use event `artifacts`, so seats check out the
+    Artifacts remote.
   - They run as agent `forge-train` at priority 8.
   - The train claims the `(repo, sha)` delivery before it pushes, so the
     push trigger doesn't start a duplicate run.
@@ -736,29 +823,48 @@ the router reads on each call. Going back to one DO is a re-hydrate.
 ```ts
 enqueueReady(deps, intentId, { cut? }): Promise<EnqueueResult | ForgeError>   // {risk, riskTerms, route, held, cut}
 approveLanding(deps, intentId, approvedBy): Promise<boolean>                  // human route -> may ride trains
-cutTrain(deps, repo): Promise<CutResult>         // cut | busy | idle | unavailable | no-pipeline | invalid-repo
-listTrains(deps, repo, { state?, limit? }): Promise<Train[]>
-getTrainDetail(deps, id): Promise<TrainDetail | null>  // lane intents (+squashed commit), CI run, bisect subtree, ledger
+cutTrain(deps, repo): Promise<CutResult>
+  // cut {trainIds, lanes, baseSha, deferred, speculative, groupSeq, slots}
+  // | busy (no free speculation level or lane ref) | idle | unavailable | no-pipeline | invalid-repo
+pumpRepo(deps, repo): Promise<{ cut, build }>    // cut (speculatively when allowed) + build forming groups and probes
+checkTrains(deps, repo): Promise<CheckResult>
+  // idle | building | waiting | retry | rebuild {requeued}
+  // | progress {mainSha, landed, requeued}   (green prefix landed, lanes behind still verifying; probes decided)
+  // | decided  {mainSha, landed, failed, requeued, bisected}   (chain red handled, or everything landed)
+listTrains(deps, repo, { state?, limit? }): Promise<Train[]>   // Train.groupSeq; probes have parentTrainId
+getTrainDetail(deps, id): Promise<TrainDetail | null>  // lane intents (+squashed commit), CI run, probe subtree, ledger
 claimConflictFor(deps, conflictId, agent): Promise<{ conflict, intent } | ForgeError>
 resolveConflictFor(deps, conflictId, agent, sha, { forkRepo?, llmReplay? })
-  : Promise<{ conflict, enqueue } | ForgeError>
-buildTrains / dispatchTrains / checkTrains / writeNotes / revokeLandedTokens / advanceRepo  // idempotent steps
+  : Promise<{ conflict, enqueue } | ForgeError>   // recomputes the replay's footprint vs trunk; footprint-unavailable fails closed
+buildTrains / dispatchTrains / writeNotes / revokeLandedTokens / advanceRepo  // idempotent steps
 runTrainTick(env)        // train-workflow.ts: cron fallback; also cuts and launches the Workflow
 replayTick(deps, repo)   // replay.ts: start replays, finalize races
 trainDepsFromEnv(env)    // production deps (isomorphic-git, MemoryFS, ARTIFACTS, AI, notes writer)
 ```
 
-`TrainWorkflow` (binding `TRAIN_WORKFLOW`) runs these durable steps in
-order:
+Policy (`.flare/policy.yml`):
+
+```yaml
+lanes:
+  max_per_train: 50      # intents per group (1-500)
+  max_parallel: 8        # lanes per group (1-64; capped by the ref pool)
+  speculation_depth: 3   # groups in flight per repo (1-8; 1 = no speculation)
+```
+
+`TrainWorkflow` (binding `TRAIN_WORKFLOW`) runs these durable steps:
 
 1. policy
 2. build
 3. check, polling with a `step.sleep` backoff from 10 s up to 2 min, at
-   most 40 polls
+   most 40 polls. While the chain is waiting (or made progress), each
+   poll also runs `pump` (speculative cut + build); a `progress` poll
+   also writes why notes and revokes landed tokens.
 4. notes
 5. revoke
 6. replays
 7. cut the next round
+8. after the last round: hand off to a successor instance if trains are
+   still in flight
 
 The number of rounds is capped at ⌈log₂ max_per_train⌉ + 5.
 
@@ -771,3 +877,291 @@ The number of rounds is capped at ⌈log₂ max_per_train⌉ + 5.
   one conflict.
 - Every number includes spawning a `git http-backend` process for each
   HTTP request.
+
+## Integration status
+
+> Provenance: agent-drafted 2026-10-10 (integration stream, branch
+> `feat/forge-wiring`). Live claims come from `npx wrangler dev
+> --persist-to /tmp/forge-e2e-<ts>` (fresh local D1 + Durable Objects;
+> Artifacts and Workers AI are remote bindings even in dev) driven by
+> throwaway scripts in `/tmp/forge-e2e-work` on 2026-10-10. Everything
+> else is covered by `npm test` (`forge-dashboard-api.test.ts`,
+> `forge-review-fixes.test.ts`, `forge-planner.test.ts`,
+> `feed-core.test.ts`, 2026-10-10).
+
+### Wiring
+
+- `forgeAdaptersFromEnv` (forge-adapters.ts) plugs the real ports into
+  REST and MCP when the bindings exist: the `RepoCoordinator` DO
+  (declare, report_push via `indexPush` so the push trigger dedupes on
+  `(intent, sha)` instead of recording twice, whats_happening,
+  snapshot, release), why.ts (exact blame + notes; any trace error
+  degrades to the D1 footprint answer with a `warnings` entry), the
+  `ForgeFeed` WebSocket, the train stream (`enqueueReady`, landing
+  approval, train detail, conflict claim/resolve) and the AI planner.
+  Each coordinator call degrades to D1 on its own (structured log).
+- D1 state changes made by forge-service (claim, ready, approve-plan,
+  approve-landing, send-back, conflict claim/resolve) call coordinator
+  `sync(intentId)` through `ctx.waitUntil`.
+- New routes: `POST /v1/forge/intents/:id/approve-landing` (admin),
+  `GET /v1/forge/intents/:id/session` (flare/session plan + steps),
+  `POST .../send-back` and `.../review` (admin; human review verbs),
+  `GET /v1/forge/agents`, `GET /v1/forge/bench` (the recorded run,
+  `simulated: true`), `POST /v1/forge/goals/plan`, and `POST
+  /v1/forge/goals` with `{ goal, intents[] }` (composer launch).
+  Dashboard aliases `/approve`, `/notes`, `/fork` map to approve-plan,
+  messages and fork-session. `GET /llms.txt` and
+  `GET /.well-known/mcp.json` serve the agent index and MCP discovery.
+- `fork_session` forks the source fork (`session.ts` `forkSession`:
+  code + `flare/session` + notes) into `s-<intent>-<agent>-<rand>` with
+  a 1 h write token on the copy; the source's reasoning is carried
+  fenced as untrusted peer data.
+- MCP: `approve_plan`, `send_back`, `review_sample` (human tier, admin
+  only). Successful forge MCP writes keep only the semantic `forge.*`
+  audit row (the generic `mcp.<tool>` row stays for failures).
+
+### Live run (wrangler dev, 2026-10-10)
+
+Trunk: the Artifacts mirror `everyai-com-flare-actions` (namespace
+`flare-tournaments`). Admin via `POST /v1/admin/bootstrap` on the fresh
+D1, then an admin and a runner API token from `POST /v1/admin/tokens`.
+
+| Step | Result |
+|---|---|
+| `POST /v1/forge/goals?plan=1` | 201. First run: glm-5.3 spent all 3,000 tokens reasoning (`finish_reason: length`, no content), so gpt-oss-120b answered in 93 s with 3 grounded proposals and `after` edges. Fix: thinking off for GLM + 8,000 tokens; afterwards glm-5.3 answered a smaller goal in 48 s. Planner latency is 48-235 s on this account: slow, but it never blocks or 500s. |
+| Feed WebSocket opened before declaring | `snapshot` on connect |
+| Declare A (`README.md`, `docs/FORGE-UX.md`), then B (`README.md`) | 201 in ~1.2-1.5 s each; B returns `overlaps: [A, README.md↔README.md]` and `send_note` as the first next step |
+| `GET /v1/forge/snapshot` | `source: "coordinator"`, one edge A~B (`origin: declared`), `overlaps_caught: 1`, 281 ms |
+| Feed frames | `snapshot`, `delta(intent, counters)`, `delta(intent, edge, counters)`; after the view-field change also `resync` and `overlap` twins (re-checked) |
+| `GET /v1/forge/why` README.md:1 | exact blame: commit "Roadmap: market-evidence OSS plan…", `origin: human`, warning "stopped after 50 commits"; no note on the mirror, so `empty: why_not_found` |
+| ONE claim (A) | 200 in 10.3 s: fork `i-28fe33c141e6`, `write:i-28fe33c141e6` token; clone (10.8 s) and push (1.6 s) with the `GIT_CONFIG_*` header form: the token never appeared in argv, the remote URL or `.git/config` |
+| `report_push` | first attempt hit a transient "Network connection lost" from the remote Artifacts binding; retry 200 in 17.4 s: verified diff `README.md`, risk 2, overlap with B |
+| heartbeat, session, intent detail | 200; no `flare/session` branch yet (agent never wrote one) |
+| Dashboard, signed in (no fixtures) | Live, Inbox, Intent, Train, Conflict and Why rendered from this data (trains and the conflict were seeded into the local D1 because they only form from real CI) |
+
+Not verified live: trains building and landing (needs a CI executor
+and would push lane refs to a shared remote repo), conflict replay
+forks, `fork_session` (another remote fork), and the push-trigger
+Workflow (Artifacts events do not reach `wrangler dev`). Those paths
+are covered by tests only.
+
+Left behind on the remote namespace: fork `i-28fe33c141e6` (delete with
+`npx wrangler artifacts repos delete i-28fe33c141e6 --namespace
+flare-tournaments`).
+
+## Spectator mode
+
+> Provenance: agent-drafted 2026-10-10 (spectator stream). Verified by
+> `npx vitest run apps/worker/src/forge-public.test.ts` (16 tests:
+> off-by-default 404s, undesignated repos and out-of-scope ids 404, every
+> write method on every write-shaped path 404/405 with the intents table
+> unchanged, no token/email/credential shapes in any public response or
+> MCP tool result, per-IP limits, feed header stripping, judge-token
+> scope + expiry) and `npx vitest run apps/sim/src/demo/loop.test.ts`
+> (9 tests, fakes for the API, git and Artifacts; every reference
+> solution applied to the real Bookshelf tree). Not yet run against a
+> deployed Worker or real Artifacts.
+
+Judges will not clone, install, or log in. Spectator mode gives them one
+public URL with the real live map, a swarm already moving, and a one-line
+way for their own Claude Code to ask questions about it.
+
+### Enable it
+
+```sh
+# 1. Designate the showcase repo (admin token or admin session).
+curl -X POST "$FLARE_ACTIONS_URL/v1/admin/forge/public" \
+  -H "Authorization: Bearer $FLARE_ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"repos":["bookshelf"]}'
+# 2. Open the page. No login.
+open "$FLARE_ACTIONS_URL/watch?repo=bookshelf"
+```
+
+The setting is D1 `app_settings.forge_public_repos` (a JSON list of
+Artifacts repo names, at most 10). Empty or unset means off, and every
+route below answers 404. `GET /v1/admin/forge/public` reads it back. An
+invalid entry is dropped, so a typo can only hide a repo, never widen the
+scope. Turning it off is `{"repos":[]}`.
+
+### Endpoints (`apps/worker/src/forge-public.ts`)
+
+| Route | What |
+|---|---|
+| `GET /watch?repo=` | The dashboard HTML with `<meta name="flare-public" content="<repo>">` and `<meta name="flare-public-api" content="/v1/public/forge">` injected after `<head>` |
+| `GET /v1/public/forge` | Index: designated repos, endpoint list, join info |
+| `GET /v1/public/forge/join` | Watch URLs, the read-only MCP one-liner, and how to get a write token |
+| `GET /v1/public/forge/{snapshot,live,inbox,goals,intents,trains,conflicts,why,whats-happening}?repo=` | The same payloads as `/v1/forge/*`, sanitized |
+| `GET /v1/public/forge/{goals,intents,trains,conflicts}/:id` | Detail views, sanitized (intent detail has no mailbox) |
+| `GET /v1/public/forge/feed?repo=` | Live map WebSocket. Same frames as `/v1/forge/feed`. Only the handshake headers are forwarded, so cookies and `Authorization` never reach the feed DO |
+| `GET\|POST /v1/public/forge/mcp` | Read-only MCP over Streamable HTTP: `forge_snapshot`, `whats_happening`, `why`, `read_inbox` (repo inbox only). No auth |
+| `GET\|POST /v1/admin/forge/public` | Admin: read or set the designated repos |
+| `POST /v1/admin/forge/judge-token` | Admin: mint a sandbox-only runner token (below) |
+
+Every public read calls the shared forge-service op with a synthetic
+principal: `canWrite: false`, `isAdmin: false`, `repos` = exactly the
+designated `<namespace>/<repo>` keys (never `[]`, which would mean every
+repo). Collection routes check the repo against the list first; detail
+routes rely on the op's own scope check. Either way an undesignated repo
+or id answers `404 forge_not_found`, never 403, so there is no existence
+oracle.
+
+Responses go through `publicView`:
+- It drops `token`, `readToken`, `forkToken`, `remote`, `forkRemote`, every
+  `*Command`, `commitTemplate`, `mailbox`, `messages`, `inbox`, and
+  `nextSteps`.
+- `planApprovedBy` becomes `"operator"`, and so does any `actor` that is
+  not an agent slug (`email:…`, `github:…` and `token:…` all become
+  `"operator"`).
+- It redacts Artifacts tokens, 64-hex strings (Flare API tokens), emails,
+  URL credentials, and `Bearer`/`Basic` values inside any text.
+- It rewrites `links.self` deep links from `/v1/forge/` to
+  `/v1/public/forge/`.
+
+Headers: `Cache-Control: public, max-age=2, s-maxage=2,
+stale-while-revalidate=10`, `Access-Control-Allow-Origin: *`, and
+`X-Flare-Public: read-only`. Successful GETs also go through
+`caches.default` for 2 s, keyed on the URL only. A burst of spectators
+therefore collapses onto one D1 read per colo.
+
+Rate limits are per hashed client IP, per minute: 120 reads, 60 MCP
+calls, and 10 feed connects. They are counted in a bounded per-isolate
+map, so they cost no D1 write per read. For limits that hold across
+isolates, add a [Workers Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+binding named `FORGE_PUBLIC_RATE_LIMITER`. When it is bound, both limits
+must allow the request. Over the limit, the answer is `429 rate_limited`.
+
+### What the dashboard client must do (UX stream)
+
+The server side is done. The dashboard files belong to the UX stream, so
+these client hooks are not implemented yet:
+
+1. **Detect public mode.** Read
+   `document.querySelector('meta[name="flare-public"]')?.content`. A
+   non-empty value is the repo, and the page is in public mode. Also read
+   `meta[name="flare-public-api"]` (always `/v1/public/forge`).
+2. **Skip auth entirely,** the way `?demo=1` does today. Do not call
+   `/v1/admin/status`. Do not show the login screen. Use
+   `fetch(..., { credentials: "omit" })`.
+3. **Rewrite Forge reads** from `/v1/forge/<x>` to `/v1/public/forge/<x>`.
+   That covers snapshot/live, inbox, goals (+ `:id`), intents (+ `:id`),
+   trains (+ `:id`), conflicts (+ `:id`), why, whats-happening, and the
+   `feed` WebSocket (`wss://<host>/v1/public/forge/feed?repo=`). Pin the
+   repo picker to the meta repo.
+4. **Hide every write affordance:** Composer / plan goal, approve plan,
+   abandon, claim/resolve, Settings, Access, and the Runs and Agents tabs
+   (they would 401). Also hide Bench unless `/v1/forge/bench` gets a
+   public twin.
+5. **Never fall back to fixtures in public mode.** A 404 means the repo
+   was un-designated, so show "This demo is offline". A 429 means back
+   off and retry with jitter.
+6. **Add a banner:** "Watching `<repo>` live (read-only)". Add a "Ask
+   your Claude Code" button that shows `mcp.claudeCode` from
+   `GET /v1/public/forge/join` with a copy button.
+7. **Expect missing fields.** Intent detail has no `mailbox` and no
+   `nextSteps`. `planApprovedBy` is `"operator"`. Fork remotes are gone,
+   but `forkRepo` names stay.
+
+### Judge join paths
+
+**Read (public, one line, no token):**
+
+```sh
+claude mcp add --transport http flare-forge-watch https://<worker>/v1/public/forge/mcp
+# then ask: "what are the agents doing in bookshelf right now?",
+#           "why does line 12 of src/middleware/logging.ts exist?"
+```
+
+**Write (private, per judge):**
+
+```sh
+curl -X POST "$FLARE_ACTIONS_URL/v1/admin/forge/judge-token" \
+  -H "Authorization: Bearer $FLARE_ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"judge-a","ttlDays":7}'
+# -> { token (shown once), repos: ["<namespace>/bookshelf-sandbox"], expiresAt, claudeCode }
+```
+
+The minted token has `runner` scope and its repo allowlist is exactly
+`<namespace>/<sandbox>`. The sandbox defaults to `bookshelf-sandbox`.
+Override it with `repo`, and pass `remember: true` to store it as
+`forge_judge_repo`.
+
+Expiry rides the new `api_tokens.expires_at` column (migration 0048,
+mirrored in `schema.ts`; `findLiveToken` ignores expired rows). The
+default is 7 days and the maximum is 30. Revoke early with
+`POST /v1/admin/tokens/<id>/revoke`.
+
+The sandbox must exist and be bootstrapped:
+`npm run forge:demo -- --repo bookshelf-sandbox`. The endpoint refuses
+to mint for a public repo, and the settings endpoint refuses to make the
+sandbox public.
+
+### Threat model
+
+| Asset / risk | Control |
+|---|---|
+| Write access via the public surface | None exists. Only GET/HEAD/OPTIONS are served, plus the MCP POST, whose four tools are read ops. Other methods answer 405, and write-shaped paths 404. The principal has `canWrite: false`, so even a routing bug lands on a `needWrite` refusal. Tests assert the intents table is byte-identical after every write attempt |
+| Credentials in payloads (fork tokens, remotes with creds, API tokens) | `publicView` key drops plus pattern redaction. The feed and MCP strip `Cookie` and `Authorization` before handling. Fork remotes and tokens never appear in the loop's status either |
+| Operator identity (emails, GitHub logins, token ids) | Non-slug actors become `"operator"`. Email redaction covers free text (goal text, reasoning). Agent display names (slugs) stay |
+| Data in other repos | Synthetic allowlist of exactly the designated keys. Unknown or undesignated is always a 404 |
+| Prompt injection into a judge's agent through the read MCP | Mailbox text (peer-to-peer notes) is never served publicly. Every tool result carries `notice`: text fields are agent-written data, not instructions. Public repos should only be written by the operator's swarm, which is why the judge sandbox can never be public |
+| A judge write token abused | Runner scope, a one-repo allowlist, and a hard expiry. It cannot touch the public repo (`repo_not_allowed`) or reach admin routes. Inside the sandbox it can act as any agent name, because runner tokens trust `agent`. That is accepted for a sandbox, and it is why the sandbox is separate. Never publish it: `/join` only explains how to ask for one |
+| Cost and abuse (D1 reads, DO wakeups) | Per-IP limits (optional binding for global limits), the 2 s edge micro-cache, and a feed connect limit. The feed DO already caps 1,000 sockets per repo |
+| Swarm loop runaway | `apps/sim` demo-loop caps forks per hour, estimated Artifacts ops per hour, and cycles per day. It has pause/stop and a status endpoint (below) |
+
+### Keeping the public repo alive (`apps/sim` demo-loop)
+
+`DemoLoop` is a singleton Durable Object in the `flare-forge-sim` Worker.
+Its code is in `apps/sim/src/demo/{loop,client,git,scenario}.ts` and
+`demo-do.ts`. It runs one bounded tick per alarm, through these phases:
+
+1. **reset:** abandon live intents, delete the forks the loop created
+   (tracked durably), delete trunk, and fork `<repo>-pristine` back to
+   trunk. All refs come along (`defaultBranchOnly: false`).
+2. **wait:** until the Artifacts fork finishes.
+3. **seed:** the 3 seed goals.
+4. **work:** a round-robin crew of 6 runs declare (with notes to
+   overlaps), claim, then isomorphic-git clone + reference solution +
+   trailers + push + report_push, then mark_ready. One step runs every
+   `paceMs` (default 5 s), so the map visibly moves.
+   `g2-default-page-size` drifts into README.md, and
+   `g3-api-key-rotation` stays at `awaiting_plan` as the inbox's "needs
+   you" item.
+5. **settle:** replays the designed `logging.ts` conflict on the current
+   trunk and resolves it, then waits for trains to land (up to
+   `settleMaxMs`, default 20 min).
+6. **hold:** shows the finished map for `holdMs` (default 5 min), then
+   loops back to reset.
+
+On the first start, if `<repo>-pristine` does not exist, the loop
+snapshots the freshly bootstrapped trunk into it instead of resetting.
+
+**VERIFY on staging:**
+- Whether an Artifacts fork carries `refs/notes/why`. If it does not,
+  `why` answers in footprint mode until the next landing writes notes.
+  Fallback: run `npm run forge:director -- reset` from a box on a timer.
+- That trains advance on the target deployment, which needs the cron
+  plus CI capacity.
+
+```sh
+# one-time: bootstrap the public trunk, then configure the sim worker
+npm run forge:demo -- --repo bookshelf
+#  apps/sim/wrangler.jsonc: add { "binding": "DEMO_ARTIFACTS", "namespace": "<Forge ARTIFACTS_NAMESPACE>" }
+printf %s "$RUNNER_TOKEN_PINNED_TO_BOOKSHELF" | npx wrangler secret put DEMO_FORGE_TOKEN -c apps/sim/wrangler.jsonc
+#  (FORGE_URL var, SIM_ADMIN_TOKEN secret as in docs/FORGE-BENCH.md)
+npx wrangler deploy -c apps/sim/wrangler.jsonc
+curl -X POST "$SIM_URL/demo-loop/start" -H "Authorization: Bearer $SIM_ADMIN_TOKEN" \
+  -d '{"repo":"bookshelf","paceMs":5000,"holdMs":300000,"maxForksPerHour":40}'
+curl "$SIM_URL/demo-loop" -H "Authorization: Bearer $SIM_ADMIN_TOKEN"     # status
+curl -X POST "$SIM_URL/demo-loop/pause"  -H "Authorization: Bearer $SIM_ADMIN_TOKEN"   # or resume | stop | reset
+```
+
+`GET /demo-loop` returns the phase, cycle, per-intent steps, counters,
+budget use (`forksThisHour`, `artifactsOpsThisHour`, `cyclesToday`) and
+the last 15 log lines. With `PUBLIC_RESULTS=true` it is readable without
+the admin token, and it never contains fork credentials.
+
+Mint `DEMO_FORGE_TOKEN` as a runner token with
+`repos: ["<namespace>/bookshelf"]`, so the loop can only ever write the
+public repo. The ops counter is an estimate per call (claim = 2, clone +
+push = 2, replay = 4, reset ≈ 2 + forks). It is a guard rail, not
+billing.

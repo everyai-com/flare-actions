@@ -19,6 +19,9 @@ export const FORGE_ICONS = {
 };
 
 export const FORGE_CSS = String.raw`
+/* [hidden] always wins on Forge surfaces: component display rules
+   (flex/grid) must never resurrect a hidden element as an empty bar. */
+#forgePane[hidden], #forgePane [hidden], .fx-overlay[hidden], .fx-overlay [hidden], .fx-drawer[hidden], .fx-drawer [hidden], .fx-tip[hidden], .fx-tour[hidden], .fx-tour [hidden], .fx-tour-ring[hidden], .side-nav [hidden] { display: none !important; }
 :root { --st-working: #7db4f7; --st-overlap: #fbbf24; --st-conflict: #f87171; --st-landed: #4ade80; --st-train: #a78bfa; --st-human: #fb923c; --st-idle: #52525b;
   --risk-low: #4ade80; --risk-med: #fbbf24; --risk-high: #f87171;
   --tint-working: rgba(125,180,247,0.12); --tint-overlap: rgba(251,191,36,0.12); --tint-conflict: rgba(248,113,113,0.12); --tint-landed: rgba(74,222,128,0.12); --tint-train: rgba(167,139,250,0.12); --tint-human: rgba(251,146,60,0.12); --tint-idle: rgba(82,82,91,0.18);
@@ -71,6 +74,7 @@ tbody tr.clickable:hover, .run-row:hover, .run-row.selected { background: var(--
 .fx-livebadge[data-state="paused"]::before { border-radius: 1px; width: 7px; background: linear-gradient(90deg, var(--st-human) 0 35%, transparent 35% 65%, var(--st-human) 65%); }
 .fx-demo-tag { font: 600 11px/18px var(--mono); letter-spacing: 0.06em; padding: 0 8px; border-radius: 4px; border: 1px dashed var(--st-human); color: var(--st-human); text-transform: uppercase; white-space: nowrap; }
 .fx-notice { display: flex; gap: 10px; align-items: baseline; border: 1px dashed var(--st-human); background: var(--tint-human); border-radius: 8px; padding: 8px 12px; margin: 0 0 12px; font-size: 12.5px; color: var(--soft); }
+.fx-notice[hidden], .fx-tb[hidden], .fx-demo-tag[hidden], .fx-json[hidden], .fx-panel[hidden] { display: none; }
 .fx-notice strong { color: var(--st-human); font-weight: 600; }
 .fx-notice code { font-family: var(--mono); font-size: 12px; }
 .fx-screen[hidden] { display: none; }
@@ -88,6 +92,10 @@ tbody tr.clickable:hover, .run-row:hover, .run-row.selected { background: var(--
 .fx-spark polyline { fill: none; stroke: var(--soft); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .fx-counters.stale .fx-cval { color: var(--muted); }
 .fx-live-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 12px; align-items: start; }
+html.ui-simple #fxLive[data-live-empty="1"] .fx-big3,
+html.ui-simple #fxLive[data-live-empty="1"] .fx-skey,
+html.ui-simple #fxLive[data-live-empty="1"] #fxRailCol { display: none; }
+html.ui-simple #fxLive[data-live-empty="1"] .fx-live-grid { grid-template-columns: minmax(0, 1fr); }
 .fx-panel { background: var(--card); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
 .fx-panel-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); font: var(--t-micro); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); min-height: 36px; }
 .fx-panel-head .fx-path { font: 500 12px var(--mono); text-transform: none; letter-spacing: 0; color: var(--soft); }
@@ -160,7 +168,8 @@ tbody tr.clickable:hover, .run-row:hover, .run-row.selected { background: var(--
 .fx-stage.failure::before { content: "✕"; }
 .fx-stage.skipped { text-decoration: line-through; }
 .fx-stage-arrow { color: var(--faint); font-size: 10px; }
-.fx-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.fx-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; min-width: 0; }
+.fx-chips .fx-idchip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .fx-recent { list-style: none; margin: 0; padding: 0; }
 .fx-recent li { display: flex; align-items: center; gap: 8px; padding: 5px 0; font: 500 12px var(--mono); color: var(--soft); border-top: 1px solid var(--line); }
 .fx-recent li:first-child { border-top: none; }
@@ -306,7 +315,10 @@ button kbd { margin-left: 6px; }
 .fx-li .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fx-li .r { font: 500 12px var(--mono); color: var(--muted); white-space: nowrap; }
 .fx-lanes { display: flex; flex-direction: column; }
-.fx-lanerow { display: grid; grid-template-columns: 240px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.fx-lanerow { display: grid; grid-template-columns: minmax(160px, 240px) minmax(0, 1fr) minmax(0, max-content); gap: 12px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.fx-lanerow > * { min-width: 0; }
+.fx-lanerow .fx-chips { margin-top: 0; }
+.fx-lanerow .fx-cichip { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; }
 .fx-lanerow:last-child { border-bottom: none; }
 .fx-lanerow.red { background: var(--tint-conflict); }
 .fx-lanerow .ln { font: 600 12px var(--mono); }
@@ -421,15 +433,268 @@ button kbd { margin-left: 6px; }
 .fx-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
 .fx-tabs button { background: transparent; color: var(--muted); border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 12px; font-size: 13px; }
 .fx-tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); }
+/* ---- polish pass: auth demo CTA, Home card, agents rail, master-detail, tour ---- */
+.auth-demo { margin-top: 20px; padding-top: 4px; }
+.auth-demo h3 { margin: 12px 0 4px; font-size: 14px; }
+.auth-demo p { margin: 0 0 12px; font-size: 13px; line-height: 1.5; color: var(--soft); }
+.auth-demo .auth-demo-note { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+a.auth-demo-btn { display: flex; align-items: center; justify-content: center; min-height: 40px; border-radius: 6px; border: 1px solid var(--line-strong); color: var(--ink); text-decoration: none; font-size: 13.5px; font-weight: 600; background: var(--hover); }
+a.auth-demo-btn:hover { border-color: var(--ring); background: var(--card); }
+a.home-forge { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 14px; align-items: center; margin: 22px 0 0; padding: 16px; border-radius: 10px; border: 1px solid var(--line-strong); border-left: 3px solid var(--st-train); background: var(--tint-train); color: var(--ink); text-decoration: none; }
+a.home-forge:hover { border-color: var(--st-train); }
+.home-forge-icon { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 8px; background: var(--card); border: 1px solid var(--line-strong); color: var(--st-train); }
+.home-forge-icon svg { width: 18px; height: 18px; }
+.home-forge-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.home-forge-text strong { font-size: 14.5px; }
+.home-forge-text span { font-size: 12.5px; color: var(--soft); line-height: 1.45; }
+.home-forge-go { font: 600 12.5px var(--mono); color: var(--st-train); white-space: nowrap; }
+.fx-info { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin-left: 4px; border-radius: 999px; border: 1px solid var(--line-strong); font: 700 9px/1 var(--mono); color: var(--muted); text-transform: none; cursor: help; vertical-align: 1px; }
+.fx-info:hover, .fx-info:focus-visible { color: var(--ink); border-color: var(--ring); }
+.fx-railcol { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }
+.fx-railcol > .fx-rail { flex: 1 1 auto; min-height: 0; }
+.fx-agentsrail { flex: 0 1 auto; display: flex; flex-direction: column; min-height: 0; max-height: 48%; }
+.fx-agentsrail .fx-ar-list { list-style: none; margin: 0; padding: 4px 6px 6px; overflow-y: auto; min-height: 0; }
+.fx-ar-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 1px 8px; align-items: center; padding: 4px 6px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+.fx-ar-row:hover, .fx-ar-row.hl, .fx-ar-row:focus-visible { background: var(--hover); border-color: var(--line); }
+.fx-ar-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.fx-ar-name { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fx-ar-name .c { font: 500 11.5px var(--mono); color: var(--muted); margin-left: 4px; }
+.fx-ar-st { font: 600 11.5px var(--mono); white-space: nowrap; }
+.fx-ar-it { grid-column: 2 / 4; font-size: 12px; color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fx-ar-it .mono { color: var(--muted); font-size: 11.5px; margin-right: 4px; }
+#fxMap.agent-hl .fx-dot { opacity: 0.25; }
+#fxMap.agent-hl .fx-dot.hl { opacity: 1; z-index: 7; }
+.fx-dot.hl .fx-dot-core { box-shadow: 0 0 0 2px var(--card), 0 0 0 5px var(--ink); }
+.fx-dot.hl .fx-dot-tag { border-color: var(--ink); }
+.fx-cell.hot .fx-cell-label { right: auto; max-width: none; overflow: visible; text-overflow: clip; background: var(--card); padding: 0 4px; margin-left: -4px; border-radius: 3px; color: var(--ink); font-weight: 600; z-index: 6; }
+.fx-cell.overlap.hot .fx-cell-label, .fx-cell.conflict.hot .fx-cell-label { box-shadow: 0 0 0 1px var(--line-strong); }
+.fx-tip-sub { color: var(--muted); font-size: 12px; }
+.fx-md { display: grid; grid-template-columns: minmax(380px, 520px) minmax(0, 1fr); gap: 12px; align-items: start; }
+.fx-md-list { position: sticky; top: 60px; max-height: calc(100vh - 76px); display: flex; flex-direction: column; overflow: hidden; }
+.fx-md-list .fx-md-scroll { overflow-y: auto; min-height: 0; }
+.fx-md-detail { min-width: 0; }
+.fx-md-detail > .fx-md-dhead { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; font: var(--t-micro); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.fx-md-detail > .fx-md-dhead a { font: 500 12px var(--mono); letter-spacing: 0; text-transform: none; color: var(--soft); text-decoration: none; margin-left: auto; }
+.fx-md-detail > .fx-md-dhead a:hover { color: var(--ink); }
+.fx-md-detail .fx-detail-grid { grid-template-columns: minmax(0, 1fr) 270px; }
+@media (max-width: 1440px) { .fx-md-detail .fx-detail-grid { grid-template-columns: minmax(0, 1fr); } .fx-md-detail .fx-detail-grid > aside { position: static !important; } }
+.fx-fchips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.fx-fchip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--line-strong); background: transparent; color: var(--soft); font-size: 12px; font-weight: 500; }
+.fx-fchip:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+.fx-fchip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.fx-fchip[aria-pressed="true"] .n { color: var(--bg); opacity: 0.75; }
+.fx-fchip .g { font-size: 11px; }
+.fx-fchip .n { font: 600 11.5px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.fx-fchip:disabled { opacity: 0.45; }
+.fx-mgroup { padding: 10px 12px 4px; font: var(--t-micro); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); display: flex; gap: 6px; align-items: baseline; border-top: 1px solid var(--line); }
+.fx-mgroup:first-child { border-top: none; }
+.fx-mgroup .mono { flex: none; white-space: nowrap; text-transform: none; font: 600 11.5px var(--mono); color: var(--muted); letter-spacing: 0; }
+.fx-mgroup .t { text-transform: none; letter-spacing: 0; font: 500 12.5px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.fx-mrows { list-style: none; margin: 0; padding: 0; }
+.fx-mrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; padding: 10px 12px 10px 10px; border-bottom: 1px solid var(--line); border-left: 2px solid transparent; cursor: pointer; }
+.fx-mrow:last-child { border-bottom: none; }
+.fx-mrow:hover { background: var(--hover); }
+.fx-mrow.sel { background: var(--hover); border-left-color: var(--ink); }
+.fx-mrow:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.fx-mrow[data-tone="conflict"] { border-left-color: var(--st-conflict); }
+.fx-mrow[data-tone="human"] { border-left-color: var(--st-human); }
+.fx-mrow.sel[data-tone] { box-shadow: inset 2px 0 0 var(--ink); }
+.fx-mrow .m1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fx-mrow .m1 .t { font-weight: 600; font-size: 13.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-mrow .mr { display: flex; align-items: center; gap: 8px; justify-content: flex-end; font: 500 12px var(--mono); color: var(--muted); white-space: nowrap; }
+.fx-mrow .m2 { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; font: 500 12px var(--mono); color: var(--muted); min-width: 0; }
+.fx-mrow .m2 .ok { color: var(--st-landed); } .fx-mrow .m2 .bad { color: var(--st-conflict); } .fx-mrow .m2 .run { color: var(--st-train); } .fx-mrow .m2 .warn { color: var(--st-overlap); }
+.fx-mrow .m3 { grid-column: 1 / -1; font-size: 12.5px; color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.fx-mrow .m3 .k { font: 600 11px var(--mono); color: var(--faint); text-transform: uppercase; letter-spacing: 0.04em; margin-right: 6px; }
+.fx-avs { display: inline-flex; align-items: center; }
+.fx-avs .fx-mono-av { width: 20px; height: 20px; font-size: 9px; margin-left: -4px; box-shadow: 0 0 0 2px var(--card); }
+.fx-avs .fx-mono-av:first-child { margin-left: 0; }
+.fx-md-foot { padding: 8px 12px; border-top: 1px solid var(--line); font: 500 11.5px var(--mono); color: var(--muted); }
+.fx-next { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; counter-reset: fxn; }
+.fx-next li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 4px 10px; align-items: start; counter-increment: fxn; }
+.fx-next li::before { content: counter(fxn); display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 999px; border: 1px solid var(--line-strong); font: 600 12px var(--mono); color: var(--soft); }
+.fx-next .t { font-weight: 600; font-size: 13.5px; margin: 1px 0 2px; }
+.fx-next .d { font-size: 12.5px; color: var(--muted); margin: 0 0 6px; }
+.fx-next .fx-cmd, .fx-next a.fx-json { grid-column: 2; }
+.fx-next a.fx-json { justify-self: start; }
+.fx-tour { position: fixed; z-index: 80; width: 360px; max-width: calc(100vw - 32px); background: var(--card); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); padding: 14px 16px 12px; animation: tRise 140ms ease; }
+.fx-tour[hidden], .fx-tour-ring[hidden] { display: none; }
+.fx-tour-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.fx-tour-step { font: var(--t-micro); letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-train); }
+.fx-tour-dots { display: inline-flex; gap: 4px; margin-left: auto; }
+.fx-tour-dots i { width: 6px; height: 6px; border-radius: 999px; background: var(--line-strong); }
+.fx-tour-dots i.on { background: var(--st-train); }
+.fx-tour-q { margin: 0 0 6px; font-size: 18px; line-height: 24px; letter-spacing: -0.01em; }
+.fx-tour-b { margin: 0 0 8px; font-size: 13px; line-height: 1.5; color: var(--soft); }
+.fx-tour-try { margin: 0 0 12px; font: 500 12px/1.45 var(--mono); color: var(--muted); }
+.fx-tour-try:empty { display: none; }
+.fx-tour-acts { display: flex; align-items: center; gap: 8px; }
+.fx-tour-acts button { padding: 7px 12px; font-size: 12.5px; }
+.fx-tour-ring { position: fixed; z-index: 79; pointer-events: none; border-radius: 10px; box-shadow: 0 0 0 2px var(--st-train), 0 0 0 6px var(--tint-train); transition: left 200ms ease, top 200ms ease, width 200ms ease, height 200ms ease; }
+.fx-tourbtn { white-space: nowrap; }
 .fx-flash { animation: fxFlash 600ms ease-out; }
 @keyframes fxFlash { from { background-color: var(--tint-working); } to { background-color: transparent; } }
+/* Simple mode (docs/UX-BUDGET.md): html.ui-simple. Pro extras hide
+   until "Show more" (#forgePane.fx-more); Pro-only views never show. */
+html:not(.ui-simple) .fx-simple-only { display: none !important; }
+.ui-simple #forgePane:not(.fx-more) .fx-pro-only, .ui-simple .fx-pro-view { display: none !important; }
+.ui-simple .fx-empty .fx-code, .ui-simple .fx-md-foot, .ui-simple .fx-mgroup .mono { display: none; }
+.ui-simple .fx-mrow .fx-idchip, .ui-simple .fx-mrow .fx-sha { display: none; }
+.ui-simple .fx-mrow:hover .fx-idchip, .ui-simple .fx-mrow:focus-within .fx-idchip, .ui-simple .fx-mrow.sel .fx-idchip { display: inline-flex; }
+.fx-sh-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin: 0 0 12px; }
+.fx-sh-h { margin: 0; font-size: 22px; line-height: 28px; font-weight: 650; letter-spacing: -0.01em; }
+.fx-sh-p { margin: 0; color: var(--soft); font-size: 14px; line-height: 20px; }
+.fx-big3 { list-style: none; margin: 0 0 10px; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.fx-big { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 12px 16px; background: var(--card); border: 1px solid var(--line); border-top: 3px solid var(--st-working); border-radius: 10px; }
+.fx-big[data-tone="overlap"] { border-top-color: var(--st-overlap); }
+.fx-big[data-tone="landed"] { border-top-color: var(--st-landed); }
+.fx-big .v { font-size: 34px; line-height: 38px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.fx-big .l { font-size: 13.5px; color: var(--soft); }
+.fx-skey { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 0 0 12px; font-size: 12.5px; color: var(--soft); }
+.fx-main-ok { font-size: 13.5px; font-weight: 600; }
+.fx-main-ok.ok { color: var(--st-landed); }
+.fx-main-ok.bad { color: var(--st-conflict); }
+.fx-land { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.fx-land li { display: flex; gap: 8px; align-items: baseline; min-width: 0; font-size: 13px; }
+.fx-land .s { flex: none; font-weight: 600; white-space: nowrap; }
+.fx-land .t { min-width: 0; color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fx-iq { max-width: 640px; }
+.fx-qcard { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--st-human); border-radius: 12px; padding: 18px 20px; }
+.fx-qcard[data-bucket="sample"] { border-left-color: var(--st-overlap); }
+.fx-qtop { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12.5px; color: var(--muted); }
+.fx-qrisk { font-weight: 600; }
+.fx-qrisk.low { color: var(--risk-low); }
+.fx-qrisk.med { color: var(--risk-med); }
+.fx-qrisk.high { color: var(--risk-high); }
+.fx-qh { margin: 0 0 6px; font-size: 22px; line-height: 28px; font-weight: 650; }
+.fx-qtitle { margin: 0 0 12px; font-size: 15px; line-height: 22px; }
+.fx-qev { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 6px; font-size: 13.5px; color: var(--soft); }
+.fx-qev li { overflow-wrap: anywhere; }
+.fx-qacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.fx-qacts button { min-height: 40px; padding: 8px 18px; font-size: 14px; }
+.fx-qacts .sendback { display: flex; gap: 8px; flex: 1 1 100%; }
+.fx-qacts .sendback input { flex: 1 1 auto; min-width: 0; }
+a.fx-btn-primary { display: inline-flex; align-items: center; min-height: 36px; padding: 8px 16px; border-radius: 6px; background: var(--accent); color: var(--accent-fg); font-size: 13.5px; font-weight: 600; text-decoration: none; }
+a.fx-btn-primary:hover { background: var(--accent-hover); }
+.fx-empty-simple .fx-actions { align-items: center; gap: 14px; }
+.fx-acard { max-width: 760px; }
+.fx-acard > summary { list-style: revert; }
+.fx-alist { list-style: none; margin: 0; padding: 0; max-width: 760px; }
+.fx-arow-s { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.fx-arow-s:last-child { border-bottom: none; }
+.fx-arow-s .n { font-weight: 600; font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-arow-s > span:nth-child(3) { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.fx-arow-s .d { grid-column: 2 / -1; font-size: 13px; color: var(--soft); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-meaning { margin: 0 0 6px; font-size: 15px; font-weight: 600; color: var(--st-landed); }
+.fx-quest { list-style: none; margin: 0; padding: 0; counter-reset: q; display: grid; gap: 16px; }
+.fx-quest > li { counter-increment: q; position: relative; padding-left: 38px; }
+.fx-quest > li::before { content: counter(q); position: absolute; left: 0; top: 0; width: 26px; height: 26px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font: 700 13px var(--mono); border: 1px solid var(--line-strong); color: var(--soft); }
+.fx-quest > li[data-state="done"]::before { content: "✓"; background: var(--st-landed); border-color: var(--st-landed); color: var(--accent-fg); }
+.fx-quest .q { margin: 2px 0 8px; font-size: 14px; font-weight: 600; }
+.fx-quest-st { margin: 8px 0 0; font-size: 13.5px; font-weight: 600; }
+.fx-quest-st.wait { color: var(--muted); }
+.fx-quest-st.ok { color: var(--st-landed); }
+.fx-dot.fx-pulse .fx-dot-core { animation: fxPop 0.6s ease-out 3; box-shadow: 0 0 0 3px var(--card), 0 0 0 7px var(--st-overlap); }
+@keyframes fxPop { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.7); } }
+.fx-main-rule.fx-pulse { animation: fxGlow 1.2s ease-out 2; }
+@keyframes fxGlow { 0%, 100% { box-shadow: none; } 50% { box-shadow: 0 0 0 3px var(--tint-landed), 0 0 18px var(--st-landed); } }
+/* Simple detail views (plan, landing, clash, why, speed test). */
+.fx-sv { max-width: 760px; display: flex; flex-direction: column; gap: var(--s-gap, 14px); padding: 20px 22px; background: var(--s-card-bg, var(--card)); border: 1px solid var(--s-border, var(--line)); border-radius: var(--s-radius, 12px); }
+.fx-sv-top { display: flex; flex-direction: column; gap: 8px; }
+.fx-sv-h { margin: 0; font-size: var(--s-h1, 22px); line-height: 1.25; font-weight: 650; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.fx-sv-who { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: var(--s-body, 14px); color: var(--s-muted, var(--soft)); }
+.fx-sv-say { margin: 0; font-size: var(--s-body, 15px); line-height: 1.5; color: var(--ink); }
+.fx-sv-goal, .fx-sv-note, .fx-sv-file { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--s-muted, var(--soft)); }
+.fx-sv .fx-actions { margin-top: 0; }
+.fx-ssec { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--s-border, var(--line)); }
+.fx-ssec-h { margin: 0; font-size: var(--s-h2, 15px); font-weight: 650; color: var(--ink); }
+.fx-sv-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: var(--s-body, 14px); }
+.fx-sv-list li { overflow-wrap: anywhere; }
+.fx-sv-ink { color: var(--ink); }
+.fx-sv-risk { font-weight: 600; }
+.fx-sv-risk.low { color: var(--s-ok, var(--risk-low)); } .fx-sv-risk.med { color: var(--risk-med); } .fx-sv-risk.high { color: var(--s-bad, var(--risk-high)); }
+.fx-sv-plans li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.fx-sv-plans a, .fx-sv-plans .fx-sv-ink { color: var(--ink); font-weight: 600; }
+.fx-sv-st { flex: none; font-weight: 600; white-space: nowrap; }
+.fx-sfiles { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.fx-sfiles li[hidden] { display: none; }
+.fx-slink { padding: 4px 10px; font-size: 13px; }
+.fx-strack { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.fx-sstep { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--s-border, var(--line-strong)); font-size: 13.5px; color: var(--s-muted, var(--muted)); }
+.fx-sstep .g { font-weight: 700; }
+.fx-sstep.done { color: var(--soft); }
+.fx-sstep.done .g { color: var(--s-ok, var(--st-landed)); }
+.fx-sstep.cur { color: var(--ink); font-weight: 650; }
+.fx-sstep.cur[data-tone="train"], .fx-sstep.cur[data-tone="working"] { border-color: var(--s-wait, var(--st-train)); background: var(--tint-train); }
+.fx-sstep.cur[data-tone="train"] .g, .fx-sstep.cur[data-tone="working"] .g { color: var(--s-wait, var(--st-train)); }
+.fx-sstep.cur[data-tone="landed"] { border-color: var(--s-ok, var(--st-landed)); background: var(--tint-landed); }
+.fx-sstep.cur[data-tone="landed"] .g { color: var(--s-ok, var(--st-landed)); }
+.fx-sstep.cur[data-tone="overlap"] { border-color: var(--st-overlap); background: var(--tint-overlap); }
+.fx-sstep.cur[data-tone="overlap"] .g { color: var(--st-overlap); }
+.fx-sstep.cur[data-tone="conflict"] { border-color: var(--s-bad, var(--st-conflict)); background: var(--tint-conflict); }
+.fx-sstep.cur[data-tone="conflict"] .g { color: var(--s-bad, var(--st-conflict)); }
+.fx-schain { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+.fx-schain li { position: relative; display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; padding: 8px 0 8px 18px; border-left: 2px solid var(--s-border, var(--line-strong)); font-size: var(--s-body, 14px); }
+.fx-schain li::before { content: ""; position: absolute; left: -6px; top: 13px; width: 10px; height: 10px; border-radius: 999px; background: var(--soft); }
+.fx-schain li[data-kind="goal"]::before { background: var(--st-human); }
+.fx-schain li[data-kind="intent"]::before { background: var(--st-train); }
+.fx-schain li[data-kind="agent"]::before { background: var(--st-working); }
+.fx-schain li[data-kind="evidence"]::before { background: var(--st-landed); }
+.fx-schain .k { font-weight: 650; color: var(--ink); }
+.fx-schain .v { color: var(--soft); overflow-wrap: anywhere; }
+.fx-schain .v a { color: var(--ink); font-weight: 600; }
+.fx-sv-why { padding: 0; border: none; background: transparent; }
+.fx-smore { margin-top: 12px; max-width: 100%; }
+.fx-smore > summary { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; padding: 6px 12px; border: 1px solid var(--s-border, var(--line-strong)); border-radius: var(--s-radius, 8px); font-size: 13px; font-weight: 600; color: var(--soft); list-style: none; }
+.fx-smore > summary::-webkit-details-marker { display: none; }
+.fx-smore > summary::before { content: "▸"; color: var(--s-muted, var(--faint)); }
+.fx-smore[open] > summary::before { content: "▾"; }
+.fx-smore > summary:hover { color: var(--ink); background: var(--hover); }
+.fx-smore-b { margin-top: 12px; }
+.fx-error-simple .fx-smore p { margin: 8px 0 0; font-size: 12.5px; }
+.fx-error .fx-code { font: 500 11px var(--mono); color: var(--faint); margin-top: 8px; }
+.fx-celebrate { border-color: var(--s-ok, var(--st-landed)); box-shadow: 0 0 0 3px var(--tint-landed); animation: fxCheer 900ms ease-out 1; }
+@keyframes fxCheer { 0% { transform: scale(0.98); box-shadow: 0 0 0 0 var(--tint-landed); } 60% { transform: scale(1.01); box-shadow: 0 0 0 10px var(--tint-landed); } 100% { transform: scale(1); box-shadow: 0 0 0 3px var(--tint-landed); } }
+.fx-sv-bench .fx-big3 { margin: 0; }
+/* Simple look: the shared Simple tokens from dashboard.ts (html.ui-simple),
+   with fallbacks; mono stays only for code, paths and ids. Pro unchanged. */
+html.ui-simple #forgePane, html.ui-simple #forgePane *, html.ui-simple #fxDrawer *, html.ui-simple #fxComposerOverlay *, html.ui-simple #fxTour * { font-family: var(--s-font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif); }
+html.ui-simple #forgePane :is(code, pre, kbd, .mono, .fx-cmd, .fx-cmd *, .fx-hunk, .fx-hunk *, .fx-code, .fx-code *, .fx-sha, .fx-idchip, .fx-fp, .fx-fp *, .fx-sfiles .mono, .fx-map, .fx-map *, .fx-table-twin *, .fx-lanerow .ln, .fx-lanerow .lp, .fx-steplog .t, .fx-note-b, .fx-prop .fps *, select),
+html.ui-simple #fxDrawer :is(code, pre, kbd, .mono, .fx-cmd, .fx-cmd *, .fx-code, .fx-code *, .fx-sha, .fx-idchip),
+html.ui-simple #fxComposerOverlay :is(code, .mono, .fx-fpchip, .fx-prop .fps *) { font-family: var(--mono); }
+html.ui-simple #forgePane .fx-panel, html.ui-simple #forgePane .fx-empty, html.ui-simple #forgePane .fx-error, html.ui-simple #forgePane .fx-qcard, html.ui-simple #forgePane .fx-big, html.ui-simple #fxDrawer .fx-empty { border-radius: var(--s-radius, 12px); background-color: var(--s-card-bg, var(--card)); border-color: var(--s-border, var(--line)); }
+html.ui-simple #forgePane .fx-panel-head, html.ui-simple #forgePane .fx-sec-h, html.ui-simple #forgePane .fx-kv dt, html.ui-simple #forgePane .fx-mgroup, html.ui-simple #fxDrawer .fx-chain .k { text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 650; color: var(--ink); }
+html.ui-simple #forgePane .fx-mrow .m2, html.ui-simple #forgePane .fx-mrow .mr, html.ui-simple #forgePane .fx-stage, html.ui-simple #forgePane .fx-step, html.ui-simple #forgePane .fx-evidence { font-size: 12.5px; }
+html.ui-simple #forgePane .fx-sh-h, html.ui-simple #forgePane .fx-head h1 { font-size: var(--s-h1, 22px); }
+html.ui-simple #forgePane .fx-sh-p, html.ui-simple #forgePane .fx-empty p, html.ui-simple #forgePane .fx-error p { font-size: var(--s-body, 14px); color: var(--s-muted, var(--soft)); }
+html.ui-simple #forgePane button:not(.ghost):not(.fx-fchip):not(.fx-cell):not(.fx-dot):not(.gut):not([role="tab"]), html.ui-simple #forgePane a.fx-btn-primary, html.ui-simple #fxDrawer button:not(.ghost), html.ui-simple #fxPlanBtn, html.ui-simple #fxLaunchBtn { background: var(--s-primary, var(--accent)); color: var(--s-primary-fg, var(--accent-fg)); border-color: var(--s-primary, var(--accent)); border-radius: var(--s-radius, 8px); }
+html.ui-simple #forgePane button.fx-sv-primary { min-height: 40px; padding: 8px 18px; font-size: 14px; font-weight: 650; }
+html.ui-simple #forgePane .fx-fchip[aria-pressed="true"] { background: var(--s-primary, var(--ink)); border-color: var(--s-primary, var(--ink)); color: var(--s-primary-fg, var(--bg)); }
+html.ui-simple #forgePane .st-landed, html.ui-simple #fxDrawer .st-landed { color: var(--s-ok, var(--st-landed)); }
+html.ui-simple #forgePane .st-conflict, html.ui-simple #fxDrawer .st-conflict { color: var(--s-bad, var(--st-conflict)); }
+html.ui-simple #forgePane .st-train, html.ui-simple #fxDrawer .st-train { color: var(--s-wait, var(--st-train)); }
+html.ui-simple #forgePane .muted, html.ui-simple #fxDrawer .muted { color: var(--s-muted, var(--muted)); }
+html.ui-simple .fx-error .fx-code { display: none; }
+html.ui-simple #fxDrawer .fx-drawer-h h2 { font-size: var(--s-h2, 16px); }
+/* Keyboard: every Simple control shows where focus is. */
+html.ui-simple #forgePane :is(a, button, summary, input, select, textarea, [tabindex]):focus-visible,
+html.ui-simple #fxDrawer :is(a, button, summary, [tabindex]):focus-visible,
+html.ui-simple #fxComposerOverlay :is(a, button, input, textarea):focus-visible { outline: 2px solid var(--s-primary, var(--ring)); outline-offset: 2px; }
+@media (max-width: 640px) {
+  .fx-big .v { font-size: 26px; line-height: 30px; }
+  .fx-big { padding: 10px 12px; }
+  .fx-sh-h, .fx-qh { font-size: 19px; line-height: 24px; }
+}
 @media (prefers-reduced-motion: reduce) {
   .fx-dot, .fx-cell, .fx-counter, .fx-row { transition: none; }
   .fx-dot .fx-dot-core, .fx-livebadge::before { animation: none !important; }
   .fx-dot[data-state="working"] .fx-dot-core, .fx-dot[data-state="claimed"] .fx-dot-core, .fx-dot[data-state="replaying"] .fx-dot-core { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--st-working); }
   .fx-counter.flash, .fx-flash { animation: none; background: transparent; outline: 1px solid var(--line-strong); }
-  .fx-drawer, .fx-modal, .fx-bulk { animation: none; }
+  .fx-drawer, .fx-modal, .fx-bulk, .fx-tour { animation: none; }
+  .fx-tour-ring { transition: none; }
   .fx-landing { display: none; }
+  .fx-main-rule.fx-pulse { animation: none; }
+  .fx-celebrate { animation: none; }
 }
 body.fx-stagemode header { width: 60px; padding: 14px 8px; }
 body.fx-stagemode header h1.brand-head span:last-child, body.fx-stagemode .side-link span:not(.fx-badge), body.fx-stagemode .side-group, body.fx-stagemode .side-foot { display: none; }
@@ -449,7 +714,38 @@ body.fx-stagemode .fx-legend { font-size: 14px; position: sticky; bottom: 0; }
 body.fx-stagemode .fx-map { height: calc(100vh - 330px); }
 body.fx-stagemode .fx-cell-label { font-size: 13px; }
 body.fx-stagemode .fx-notice { display: none; }
+/* Spectator mode (GET /watch): banner + no write affordance anywhere. */
+.fx-pub { border: 1px solid var(--line-strong); border-left: 3px solid var(--st-landed); border-radius: 8px; background: var(--card); padding: 8px 12px; margin: 8px 0 4px; }
+.fx-pub[data-state="offline"] { border-left-color: var(--st-conflict); }
+.fx-pub[data-state="slow"], .fx-pub[data-state="connecting"] { border-left-color: var(--st-overlap); }
+.fx-pub-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13.5px; }
+.fx-pub-t strong { font-family: var(--mono); font-weight: 600; }
+.fx-pub-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-landed); flex: none; }
+.fx-pub[data-state="offline"] .fx-pub-dot { background: var(--st-conflict); }
+.fx-pub[data-state="slow"] .fx-pub-dot, .fx-pub[data-state="connecting"] .fx-pub-dot { background: var(--st-overlap); }
+.fx-pub[data-state="live"] .fx-pub-dot { animation: fx-pulse 2s ease-in-out infinite; }
+@keyframes fx-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .fx-pub-dot { animation: none !important; } }
+.fx-pub-st { font-size: 11.5px; color: var(--muted); }
+.fx-askbtn { white-space: nowrap; }
+.fx-pub-off { margin-top: 8px; font-size: 13px; color: var(--soft); }
+.fx-pub-off strong { color: var(--st-conflict); }
+.fx-pub-off code { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.fx-ask { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.fx-ask-h { margin: 0 0 6px; font-size: 12.5px; color: var(--muted); }
+.fx-ask-cmd { display: flex; align-items: center; gap: 8px; }
+.fx-ask-cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; background: var(--code-bg); color: var(--code-ink); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; font-size: 12.5px; user-select: all; }
+.fx-ask-try { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--soft); }
+.fx-whyform { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.fx-whyfiles { list-style: none; margin: 0; padding: 0; columns: 2 240px; font-size: 12.5px; }
+.fx-whyfiles li { padding: 2px 0; break-inside: avoid; }
+body.fx-public [data-action="approve_plan"], body.fx-public [data-action="send_back"], body.fx-public [data-action="review_sample"], body.fx-public [data-action="mark_ready"], body.fx-public [data-action="send_note"], body.fx-public [data-action="fork_session"], body.fx-public [data-action="claim_conflict"], body.fx-public [data-action="plan_goal"], body.fx-public [data-action="declare_intent"], body.fx-public [data-action="select_item"], body.fx-public [data-action="explore_demo"], body.fx-public #fxBulk, body.fx-public #fxComposerOverlay, body.fx-public #fxNoteInput, body.fx-public #tabAgents, body.fx-public #tabBench, body.fx-public #tabSettings, body.fx-public #tabRuns, body.fx-public #tabHome, body.fx-public #tabRepos, body.fx-public #tabMerge, body.fx-public #tabTournaments, body.fx-public #logoutBtn, body.fx-public .fx-demo-tag { display: none !important; }
+body.fx-public #fxRepo:disabled { opacity: 1; cursor: default; }
 body.fx-stagemode .fx-live-grid { grid-template-columns: minmax(0, 1fr) 380px; }
+@media (max-width: 1100px) {
+  .fx-md { grid-template-columns: minmax(0, 1fr); }
+  .fx-md-list { position: static; max-height: none; }
+}
 @media (max-width: 1200px) {
   .fx-inbox-grid { grid-template-columns: 170px minmax(0, 1fr); }
   .fx-inbox-grid .fx-detail { grid-column: 1 / -1; position: static; max-height: none; }
@@ -473,10 +769,16 @@ body.fx-stagemode .fx-live-grid { grid-template-columns: minmax(0, 1fr) 380px; }
   .fx-agent-row { grid-template-columns: 26px 60px minmax(0, 1fr) 60px; }
   .fx-agent-row > :nth-child(3), .fx-agent-row > :nth-child(5), .fx-agent-row > :nth-child(7) { display: none; }
   .fx-drawer { width: 100vw; }
+  .fx-agentsrail { max-height: none; }
+  a.home-forge { grid-template-columns: 36px minmax(0, 1fr); }
+  .home-forge-go { grid-column: 2; }
   .side-link .fx-badge { margin-left: 4px; }
 }
 @media (max-width: 640px) {
   .fx-counters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fx-clabel { white-space: normal; }
+  .fx-notice { font-size: 12px; }
+  .fx-md-list .fx-panel-head .fx-path:last-child { display: none; }
   .fx-counter:nth-child(n) { border-left: none; border-top: 1px solid var(--line); }
   .fx-counter:nth-child(2n) { border-left: 1px solid var(--line); }
   .fx-counter:nth-child(-n+2) { border-top: none; }
@@ -500,56 +802,80 @@ body.fx-stagemode .fx-live-grid { grid-template-columns: minmax(0, 1fr) 380px; }
 }
 `;
 
-const NAV_BTN = (id: string, tab: string, icon: string, label: string, badge = "") =>
-  `<button id="${id}" class="side-link" data-tab="${tab}" type="button">${icon}<span>${label}</span>${badge}</button>`;
+// Nav buttons carry both labels: Pro words, and the plain Simple-mode
+// word (docs/UX-BUDGET.md). CSS on <html class="ui-simple|ui-pro"> shows
+// one; ids, data-tab, and data-* stay precise for agents and tests.
+// `primary` marks the five Simple-mode nav items (data-simple-nav).
+const NAV_BTN = (id: string, tab: string, icon: string, label: string, badge = "", simple = "", primary = false) =>
+  `<button id="${id}" class="side-link" data-tab="${tab}" type="button"${primary ? ' data-simple-nav="primary"' : ""}>${icon}` +
+  (simple && simple !== label
+    ? `<span class="pro-only">${label}</span><span class="simple-only" data-simple="label">${simple}</span>`
+    : `<span>${label}</span>`) +
+  `${badge}</button>`;
 
 export const FORGE_NAV_HTML =
   '<div class="side-group">Agent forge</div>' +
-  NAV_BTN("tabLive", "live", FORGE_ICONS.live, "Live") +
-  NAV_BTN("tabInbox", "inbox", FORGE_ICONS.inbox, "Inbox", '<span class="fx-badge" id="fxBadgeInbox" hidden></span>') +
-  NAV_BTN("tabIntents", "intents", FORGE_ICONS.intents, "Intents") +
-  NAV_BTN("tabTrains", "trains", FORGE_ICONS.trains, "Trains") +
-  NAV_BTN("tabConflicts", "conflicts", FORGE_ICONS.conflicts, "Conflicts", '<span class="fx-badge conflict" id="fxBadgeConflicts" hidden></span>') +
-  NAV_BTN("tabAgents", "agents", FORGE_ICONS.agents, "Agents");
+  NAV_BTN("tabLive", "live", FORGE_ICONS.live, "Live", "", "Agents", true) +
+  NAV_BTN("tabInbox", "inbox", FORGE_ICONS.inbox, "Inbox", '<span class="fx-badge" id="fxBadgeInbox" hidden></span>', "Needs you") +
+  NAV_BTN("tabIntents", "intents", FORGE_ICONS.intents, "Intents", "", "Plans") +
+  NAV_BTN("tabTrains", "trains", FORGE_ICONS.trains, "Trains", "", "Landings") +
+  NAV_BTN("tabConflicts", "conflicts", FORGE_ICONS.conflicts, "Conflicts", '<span class="fx-badge conflict" id="fxBadgeConflicts" hidden></span>', "Clashes") +
+  NAV_BTN("tabAgents", "agents", FORGE_ICONS.agents, "Agents", "", "Agent list");
 
-export const FORGE_NAV_BENCH_HTML = NAV_BTN("tabBench", "bench", FORGE_ICONS.bench, "Bench").replace("<button ", "<button hidden ");
+export const FORGE_NAV_BENCH_HTML = NAV_BTN("tabBench", "bench", FORGE_ICONS.bench, "Bench", "", "Speed test").replace("<button ", "<button hidden ");
 
 export const FORGE_PANE_HTML = String.raw`
 <section id="forgePane" class="fx-root" hidden aria-label="Forge">
+<div class="fx-pub" id="fxPub" role="region" aria-label="Spectator mode" data-state="connecting" hidden>
+<div class="fx-pub-row"><span class="fx-pub-dot" aria-hidden="true"></span><span class="fx-pub-t">Watching <strong id="fxPubRepo"></strong> live · read-only</span><span class="fx-pub-st mono" id="fxPubState" role="status">connecting</span><span class="fx-spacer"></span><button type="button" id="fxAskBtn" class="fx-askbtn" data-action="copy_mcp_config" aria-expanded="false" aria-controls="fxAsk">Ask your Claude Code</button></div>
+<div class="fx-pub-off" id="fxPubOffline" role="alert" hidden></div>
+<div class="fx-ask" id="fxAsk" hidden>
+<p class="fx-ask-h">Paste this in a terminal, then ask your Claude Code about this repo. Read-only, no token.</p>
+<div class="fx-ask-cmd"><code id="fxAskCmd" class="mono"></code><button type="button" class="ghost" id="fxAskCopy" data-action="copy_mcp_config">Copy</button><button type="button" class="ghost" id="fxAskClose" aria-label="Close">✕</button></div>
+<ul class="fx-ask-try" id="fxAskTry" aria-label="Things to ask"></ul>
+</div>
+</div>
 <div class="fx-bar" role="toolbar" aria-label="Forge toolbar">
 <nav class="fx-crumbs" id="fxCrumbs" aria-label="Breadcrumb"></nav>
 <label><span class="sr">Repository</span><select id="fxRepo" aria-label="Repository"></select></label>
-<span class="fx-demo-tag" id="fxDemoTag" hidden title="Fixture data: not measurements">Demo data</span>
+<span class="fx-demo-tag fx-pro-only" id="fxDemoTag" hidden title="Fixture data: not measurements">Demo data</span>
+<button class="ghost fx-tb fx-tourbtn" id="fxTourBtn" type="button" data-action="tour_start" hidden>Take the tour</button>
+<button class="ghost fx-tb fx-simple-only" id="fxMoreBtn" type="button" aria-expanded="false" aria-controls="forgePane">Show more</button>
 <span class="fx-spacer"></span>
-<span class="fx-livebadge" id="fxLiveBadge" data-state="off" role="status">offline</span>
+<span class="fx-livebadge fx-pro-only" id="fxLiveBadge" data-state="off" role="status">offline</span>
 <button class="ghost fx-tb" id="fxPauseBtn" type="button" data-action="pause_live" aria-pressed="false" aria-keyshortcuts="p">Pause <kbd>p</kbd></button>
-<button class="ghost fx-tb" id="fxThemeBtn" type="button" data-action="toggle_theme" aria-label="Toggle light or dark theme">Theme</button>
-<button class="ghost fx-tb" id="fxStageBtn" type="button" data-action="stage_mode" aria-pressed="false" aria-keyshortcuts="Shift+S">Stage <kbd>⇧S</kbd></button>
-<a class="fx-json" id="fxJsonLink" href="/v1/forge/snapshot" target="_blank" rel="noopener" data-action="copy_json_url" title="Open this screen's JSON (shift-click copies the URL)">{} JSON</a>
-<button class="ghost fx-tb" id="fxKeysBtn" type="button" data-action="show_shortcuts" aria-label="Keyboard shortcuts" aria-keyshortcuts="?">?</button>
+<button class="ghost fx-tb fx-pro-only" id="fxThemeBtn" type="button" data-action="toggle_theme" aria-label="Toggle light or dark theme">Theme</button>
+<button class="ghost fx-tb fx-pro-only" id="fxStageBtn" type="button" data-action="stage_mode" aria-pressed="false" aria-keyshortcuts="Shift+S">Stage <kbd>⇧S</kbd></button>
+<a class="fx-json fx-pro-only" id="fxJsonLink" href="/v1/forge/snapshot" target="_blank" rel="noopener" data-action="copy_json_url" title="Open this screen's JSON (shift-click copies the URL)">{} JSON</a>
+<button class="ghost fx-tb fx-pro-only" id="fxKeysBtn" type="button" data-action="show_shortcuts" aria-label="Keyboard shortcuts" aria-keyshortcuts="?">?</button>
 </div>
 <div class="fx-notice" id="fxNotice" hidden></div>
 <div class="fx-screen" id="fxLive" data-screen="live" hidden>
-<ul class="fx-counters" id="fxLiveCounters" aria-label="Live counters"></ul>
+<div class="fx-simple-only" id="fxLiveSimple" role="region" aria-label="At a glance"></div>
+<ul class="fx-counters fx-pro-only" id="fxLiveCounters" aria-label="Live counters"></ul>
 <div class="fx-live-grid">
 <div class="fx-panel" role="region" aria-label="Live map">
-<div class="fx-panel-head"><span>Repository map</span><span class="fx-path" id="fxMapPath"></span><span class="fx-spacer"></span><button class="ghost" id="fxClearPath" type="button" hidden>Clear filter</button><button class="ghost" id="fxTableBtn" type="button" data-action="view_as_table" aria-pressed="false" aria-keyshortcuts="t">View as table <kbd>t</kbd></button></div>
+<div class="fx-panel-head"><span id="fxMapTitle">Repository map</span><span class="fx-path" id="fxMapPath"></span><span class="fx-spacer"></span><button class="ghost" id="fxClearPath" type="button" hidden>Clear filter</button><button class="ghost fx-pro-only" id="fxTableBtn" type="button" data-action="view_as_table" aria-pressed="false" aria-keyshortcuts="t">View as table <kbd>t</kbd></button></div>
 <div class="fx-map" id="fxMap" role="img" aria-label="Live map: repository paths sized by file count, one dot per active intent" aria-describedby="fxLiveTableWrap"></div>
 <div class="fx-table-twin" id="fxLiveTableWrap" hidden><div class="table-scroll"><table id="fxLiveTable"><caption class="sr">Live map as a table: paths, intents, owners, state, overlaps</caption><thead><tr><th scope="col">Path</th><th scope="col">Files</th><th scope="col">Intents</th><th scope="col">Owners</th><th scope="col">State</th><th scope="col">Overlaps with</th></tr></thead><tbody></tbody></table></div></div>
 </div>
+<div class="fx-railcol" id="fxRailCol">
+<aside class="fx-panel fx-agentsrail" id="fxAgentsRail" aria-label="Agents on map"></aside>
 <aside class="fx-panel fx-rail" id="fxTrack" aria-label="Train track into main"></aside>
 </div>
-<div class="fx-legend" id="fxLegend" aria-label="Legend"></div>
+</div>
+<div class="fx-legend fx-pro-only" id="fxLegend" aria-label="Legend"></div>
 </div>
 <div class="fx-screen" id="fxInbox" data-screen="inbox" hidden>
-<ul class="fx-counters" id="fxInboxCounters" aria-label="Review counters"></ul>
-<div class="fx-inbox-grid">
+<div class="fx-simple-only fx-iq" id="fxInboxSimple" role="region" aria-label="Needs you"></div>
+<ul class="fx-counters fx-pro-view" id="fxInboxCounters" aria-label="Review counters"></ul>
+<div class="fx-inbox-grid fx-pro-view">
 <nav class="fx-panel fx-filters" id="fxInboxFilters" aria-label="Inbox filters"></nav>
 <div id="fxStories" role="region" aria-label="Stories"></div>
 <aside class="fx-panel fx-detail" id="fxInboxDetail" aria-label="Detail"></aside>
 </div>
-<p class="fx-foot" id="fxInboxFoot"></p>
-<div class="fx-bulk" id="fxBulk" role="region" aria-label="Bulk actions" hidden></div>
+<p class="fx-foot fx-pro-view" id="fxInboxFoot"></p>
+<div class="fx-bulk fx-pro-view" id="fxBulk" role="region" aria-label="Bulk actions" hidden></div>
 </div>
 <div class="fx-screen" id="fxIntents" data-screen="intents" hidden></div>
 <div class="fx-screen" id="fxTrains" data-screen="trains" hidden></div>
@@ -584,4 +910,29 @@ export const FORGE_OVERLAYS_HTML = String.raw`
 <div class="fx-modal-b"><div class="fx-keys" id="fxKeysGrid"></div></div>
 </div>
 </div>
+<div class="fx-tour-ring" id="fxTourRing" aria-hidden="true" hidden></div>
+<section class="fx-tour" id="fxTour" role="dialog" aria-modal="false" aria-labelledby="fxTourTitle" aria-describedby="fxTourBody" hidden>
+<div class="fx-tour-top"><span class="fx-tour-step" id="fxTourStep"></span><span class="fx-tour-dots" id="fxTourDots" aria-hidden="true"></span></div>
+<h2 class="fx-tour-q" id="fxTourTitle"></h2>
+<p class="fx-tour-b" id="fxTourBody"></p>
+<p class="fx-tour-try" id="fxTourTry"></p>
+<div class="fx-tour-acts"><button class="ghost" id="fxTourSkip" type="button" data-action="tour_skip">Skip tour <kbd>esc</kbd></button><span class="fx-spacer" style="flex:1"></span><button class="ghost" id="fxTourBack" type="button" data-action="tour_back">Back</button><button id="fxTourNext" type="button" data-action="tour_next">Next <kbd>→</kbd></button></div>
+</section>
 `;
+
+// Signed-out setup and login screens: a secondary path for a curious
+// visitor or judge who will never create an account here.
+export const FORGE_AUTH_DEMO_HTML = String.raw`<aside class="auth-demo" id="authDemo" aria-labelledby="authDemoTitle">
+<div class="divider">or just look around</div>
+<h3 id="authDemoTitle">See Flare Forge in action</h3>
+<p>Forge lets many AI coding agents change one repo at once. It shows who is doing what, catches overlapping work before it conflicts, lands changes through CI-verified trains, and keeps the why behind every line.</p>
+<a class="auth-demo-btn" id="authDemoBtn" href="/dashboard?demo=1#/live" data-action="explore_demo">Explore the live demo →</a>
+<p class="auth-demo-note">Read-only demo data. No account needed. Takes about two minutes.</p>
+</aside>`;
+
+// Easy-mode Home: the step that leads from CI setup into Forge.
+export const FORGE_HOME_CARD_HTML = String.raw`<a class="home-forge" id="homeCardForge" href="#/live" data-action="open_detail">
+<span class="home-forge-icon" aria-hidden="true">${FORGE_ICONS.live}</span>
+<span class="home-forge-text"><strong>Coordinate AI agents with Forge</strong><span>Running several coding agents on one repo? See who is doing what, which changes overlap, what needs your review, and why each line exists.</span></span>
+<span class="home-forge-go" aria-hidden="true">Open Live →</span>
+</a>`;

@@ -87,15 +87,14 @@ tab + PR-comment section). OpenAPI is at 88 paths (was 68).
   The spec is served live (`/openapi.yaml` + `/docs`) with a Redocly
   validity gate in CI next to the coverage gate.
 - **Git competition entry** ("next Git platform", deadline Oct 14):
-  **Flare Tournaments** — race N agents in Artifacts forks, verify each
-  with real CI, collision radar, deterministic verdict + AI Why, winner
-  fast-forwarded from the Worker, append-only ledger
-  (`docs/TOURNAMENTS.md`, `npm run harness`). Shipped Oct 6:
-  Artifacts trigger + seats checkout, tournament API + board, verdict +
-  MCP `tournament_why`, isomorphic-git promote with blessed-pointer
-  fallback. Staging-green 3x in a row on the fast-forward path, run/try
-  guide verified cold from a fresh clone. Still open: record the video
-  (`docs/VIDEO-SCRIPT.md`) and submit.
+  **Flare Forge**, intent-native collaboration for many agents on one
+  repo, on Workers and Artifacts: intents with declare-time overlap,
+  per-intent forks, CI-verified trains, conflict replay, a risk-routed
+  review inbox and `why` per line. The Oct 6 "Tournaments" work (race N
+  agents in forks, real CI per attempt, verdict + ledger; staging-green
+  3x) is now Forge's resolution-race tool (`docs/TOURNAMENTS.md`). Plan
+  and status: `docs/COMPETITION-PLAN.md`; demo runbook: `docs/DEMO.md`;
+  video plan: COMPETITION-PLAN §9.
 
 ## Strategy note: @cloudflare/ci and where Flare wins
 
@@ -274,10 +273,11 @@ Needs Phase 0 done:
   "next Git platform" competition — deadline Oct 14, 5–10 min demo
   video + MIT/Apache/BSD source + run instructions, multi-agent
   concurrency required; top 3 fly to Connect SF, first prize $25k
-  credits + VIP dinner. Flare's angle: **Flare Tournaments**, the pull
-  request for the agent era (race → verify → radar → verdict →
-  promote → ledger on Artifacts repos; entry status in Build status
-  above, execution spec in `.agents/plans/2026-10-06-git-competition.md`).
+  credits + VIP dinner. Flare's angle: **Flare Forge**, where the
+  intent (what, where, why, plus evidence) replaces the pull request as
+  the unit of agent collaboration; the original race → verify → radar →
+  verdict → ledger work lives on as Forge's resolution races (entry
+  status in Build status above, plan in `docs/COMPETITION-PLAN.md`).
 - **Per-job CPU/mem + right-sizing** (shipped: seats peak-RSS sampling
   via exec/cgroupfs into result-JSON `peakRssBytes`, hourly
   per-job-name runtime priors with LPT claim order in `priors.ts`,
@@ -320,6 +320,21 @@ Needs Phase 0 done:
 
 ## Phase 3 — AI + agent surface + scale
 
+- **Forge vs. git-on-object-storage** (from Enroute's 2026-10-13
+  post, lessons in `docs/GIT-STORAGE-LESSONS.md`; nothing re-measured
+  by us). Forge stays host-agnostic and never chases single-repo
+  push rate; the items we borrow:
+  - Push-every-commit surface: per-commit `report_push`, intent
+    progress in the Feed, why-notes on intermediate shas (M).
+  - Measured train parallelism: lanes merge concurrently, trunk CAS
+    is the only serial point; publish the number next to the 10k
+    bench (M).
+  - Storage-backend contract in `docs/FORGE.md`: forks, CAS ref
+    update, notes refs, push events — what a host must provide so
+    Artifacts is a documented swap, not an assumption (S).
+  - Ledger replay test: rebuild intent + train state from
+    `forge_ledger` and assert equality (M).
+  - Fork GC: bounded sweep of expired/abandoned intent forks (S).
 - **Triage/generate model refresh** (refreshed 2026-10-05, second
   eval run, see `docs/MODEL-EVAL.md`): default stays
   `@cf/meta/llama-3.1-8b-instruct-fp8-fast` (only triage model stable

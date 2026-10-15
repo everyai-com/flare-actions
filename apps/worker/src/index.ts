@@ -39,6 +39,7 @@ import {
   getUser,
   hasActiveGroupJob,
   isAdminMarkerClaimed,
+  isMirrorRepo,
   isTerminal,
   latestInstallationId,
   latestRunStatus,
@@ -86,6 +87,8 @@ import {
   setNotifyPref,
   setRepoEgressAllow,
   setRepoSecret,
+  releaseWebhookDelivery,
+  setMirrorDefaultBranch,
   setRunPrComment,
   setScheduleEnabled,
   setSetting,
@@ -105,9 +108,10 @@ import {
 import { commitFilesToNewBranch, deleteRunner, fetchChangedFiles, fetchJobLogDigest, generateJitConfig, getDefaultBranch, getInstallationToken, getPullRequestHead, getRepoTreePaths, listMergedPulls, MAX_CHANGED_FILES, mergePullRequest, mintAppJwt, openDraftPullRequest, resolveRefToSha, resolveRunnerGroupId, updatePullRequestBranch, verifyGitHubSignature } from "./github";
 import { processHealClaims, requestHeal } from "./heal";
 import { judgeFlaky } from "./judge";
-import { DASHBOARD_HTML } from "./dashboard";
+import { DASHBOARD_HTML, dashboardRedirectUrl } from "./dashboard";
 import { apiDocsPage } from "./apidocs";
 import { OPENAPI_YAML } from "./openapi-spec";
+import { llmsTxtFor } from "./llms";
 import { ensureSchema } from "./schema";
 import {
   decryptSettingValue,
@@ -224,9 +228,10 @@ import { getCacheStats, handleCacheGet, handleCachePut, listCacheEntries, parseR
 import { deleteJobArtifacts, handleArtifactGet, handleArtifactPut, listRunArtifacts, pruneOldCache } from "./artifacts";
 import { ARTIFACTS_EVENT, handleArtifactsPush } from "./artifacts-push";
 import { ensureRepoMirror } from "./artifacts-mirrors";
+import { resolvePairDedupe } from "./event-dedupe";
 import {
   claimAttempt,
-  createTournament,
+  createTournamentChecked,
   getAttemptRace,
   getTournament,
   getTournamentBoard,
@@ -243,6 +248,7 @@ import {
   getRepoCommits,
   getRepoInfo,
   getRepoTree,
+  isScratchRepo,
   listAllowedRepos,
   normalizeRepoPath,
   validateRef,
@@ -300,8 +306,9 @@ import type { OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
 import { buildMcpServer, mcpDiscovery } from "./mcp";
 import { forgeDepsFromEnv, handleForgeRequest } from "./forge-routes";
 import { forgeAdaptersFromEnv } from "./forge-adapters";
+import { bindingRateLimiter, handleForgePublicRequest } from "./forge-public"; // forge-spectator
 import { listAppRepos, loadSetupFacts, setupSteps } from "./setup";
-import { runnerScript } from "./runner-script";
+import { resolveRunnerRef, runnerScript } from "./runner-script";
 import {
   describeScope,
   handleAuthorizeGet,
@@ -654,7 +661,7 @@ export interface GitHubWebhookPayload {
   ref?: string;
   before?: string;
   deleted?: boolean;
-  repository?: { full_name?: string; private?: boolean };
+  repository?: { full_name?: string; private?: boolean; default_branch?: string };
   after?: string;
   installation?: { id?: number };
   pull_request?: {
@@ -1195,19 +1202,76 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
       log("warn", "run skipped: egress policy violation", { repo, jobs: violating });
       return json({ skipped: "egress-policy", jobs: violating }, 200);
     }
-    const { runId, jobIds, queuedIds, blocked, reused } = await createRunAndFanOut(env, {
-      repo,
-      sha,
-      branch,
-      event,
-      installationId,
-      jobs: webhookJobs,
-      pipelineSource: loaded.source,
-      changedFiles: serializeChangedFiles(changedFiles),
-      prNumber,
-      profile: webhookProfile,
-      repoEgress: webhookEgress,
-    }, basinSink(env, ctx));
+    // Push + pull_request dedupe (event-dedupe.ts has the safe rule):
+    // the second webhook of a pair running the identical job set skips
+    // and points at its twin; a PR stamps its number onto a twin push
+    // run so the PR summary comment still posts. Any error fails open.
+    let pairClaim: string | undefined;
+    try {
+      const pair = await resolvePairDedupe(
+        { db: env.DB },
+        {
+          repo,
+          sha,
+          branch,
+          event,
+          prNumber,
+          pipelineSource: loaded.source,
+          profile: webhookProfile,
+          jobs: webhookPoliced.jobs.map((j) => ({ name: j.name, definition: serializeDefinition(j, j.base ?? j.name) })),
+        },
+      );
+      if (pair.action === "skip") {
+        await audit(env.DB, "system", "webhook.pair-dedupe", `${repo}@${sha.slice(0, 12)} ${event} -> ${pair.runEvent} run ${pair.runId}`);
+        log("info", "webhook skipped: same sha already running for its push/pull_request twin", {
+          repo,
+          sha,
+          event,
+          twinRunId: pair.runId,
+          twinEvent: pair.runEvent,
+          stampedPr: pair.stampedPr,
+        });
+        // The twin push already finished: its terminal transition had
+        // no PR number, so post the PR summary now.
+        if (pair.stampedPr && isTerminal(pair.runStatus)) {
+          ctx.waitUntil(postRunPrComment(env, pair.runId, new URL(request.url).origin));
+        }
+        // A skipped push still supersedes earlier runs on its branch
+        // (keeping the twin), exactly as its own run would have.
+        if (event === "push" && branch) {
+          const supersede = parseSupersedeBranchRuns(await getSetting(env.DB, SETTING_KEYS.supersedeBranchRuns));
+          if ("mode" in supersede && supersede.mode === "push") {
+            await cancelSupersededBranchRuns(env.DB, repo, branch, pair.runId, env.ANALYTICS, basinSink(env, ctx), cloudMetering(env));
+          }
+        }
+        return json({ skipped: "duplicate of twin run", runId: pair.runId, twinEvent: pair.runEvent }, 200);
+      }
+      pairClaim = pair.claimKey;
+    } catch (err) {
+      log("warn", "pair dedupe check failed, running", { repo, sha, event, error: String(err) });
+    }
+    let fanned: Awaited<ReturnType<typeof createRunAndFanOut>>;
+    try {
+      fanned = await createRunAndFanOut(env, {
+        repo,
+        sha,
+        branch,
+        event,
+        installationId,
+        jobs: webhookJobs,
+        pipelineSource: loaded.source,
+        changedFiles: serializeChangedFiles(changedFiles),
+        prNumber,
+        profile: webhookProfile,
+        repoEgress: webhookEgress,
+      }, basinSink(env, ctx));
+    } catch (err) {
+      // Free the pair claim so the twin webhook is not skipped against
+      // a run that never landed.
+      if (pairClaim) await releaseWebhookDelivery(env.DB, pairClaim).catch(() => undefined);
+      throw err;
+    }
+    const { runId, jobIds, queuedIds, blocked, reused } = fanned;
 
     // Auto-supersede (opt-in): one run per branch head — cancel the
     // still-active jobs of earlier runs on this branch.
@@ -1301,6 +1365,14 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
             });
             if (out.status === "failed") log("warn", "mirror provision failed", { repo, detail: out.detail ?? "" });
             else if (out.status === "ready") log("info", "mirror ready", { repo, mirror: out.mirror });
+            // Trunk sync input: seats fast-forward the mirror's default
+            // branch on pushes to it (see apps/seats trunkSyncScript),
+            // keyed on the default branch recorded here (no-op write
+            // when unchanged).
+            const defaultBranch = payload.repository?.default_branch;
+            if (out.status === "ready" && typeof defaultBranch === "string" && defaultBranch && defaultBranch.length <= 200) {
+              await setMirrorDefaultBranch(env.DB, repo, defaultBranch);
+            }
           } catch (err) {
             log("warn", "mirror provision error", { repo, error: String(err) });
           }
@@ -1314,6 +1386,48 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
   } catch (err) {
     log("error", "webhook failed", { error: String(err) });
     return json({ error: "webhook failed" }, 500);
+  }
+}
+
+// The single PR summary comment for a terminal run (created, or edited
+// in place via pr_comment_id). Shared by the status callback's terminal
+// transition and the push/PR dedupe path (a PR whose twin push run is
+// already terminal). Best effort: GitHub failures are swallowed.
+async function postRunPrComment(env: WorkerEnv, runId: string, origin: string): Promise<void> {
+  try {
+    const run = await getRun(env.DB, runId);
+    if (!run || !run.pr_number || !run.installation_id) return;
+    if (run.event === "source" || run.event === ARTIFACTS_EVENT) return;
+    const creds = await getAppCreds(env);
+    const jobs = await getJobsForRun(env.DB, runId);
+    const failing = await listFailingTests(env.DB, runId, 15).catch(() => []);
+    const quarantined = await listQuarantinedFailingTests(env.DB, runId, run.repo, 15).catch(() => []);
+    const selections = await getRunSelections(env.DB, runId).catch(() => []);
+    const id = await upsertPrComment(
+      {
+        appId: creds?.appId,
+        privateKey: creds?.privateKey,
+        installationId: run.installation_id,
+        repo: run.repo,
+        prNumber: run.pr_number,
+        existingCommentId: run.pr_comment_id,
+        origin,
+      },
+      run,
+      jobs,
+      failing.map((f) => ({ jobName: f.job_name, suite: f.suite, name: f.name, message: f.message })),
+      quarantined.map((f) => ({ jobName: f.job_name, suite: f.suite, name: f.name, message: f.message })),
+      selections.map((s) => ({
+        jobName: jobs.find((j) => j.id === s.job_id)?.name ?? s.job_id.slice(0, 8),
+        mode: s.mode,
+        reason: s.reason,
+        selectedCount: s.selected_count,
+        skippedCount: s.skipped_count,
+      })),
+    );
+    if (id && !run.pr_comment_id) await setRunPrComment(env.DB, runId, id).catch(() => undefined);
+  } catch (err) {
+    log("warn", "pr comment failed", { runId, error: String(err) });
   }
 }
 
@@ -1455,38 +1569,7 @@ async function handleStatusCallback(
         ctx.waitUntil(notifyRunCompleted(env.DB, env, { run: finalRun, origin }));
         // One PR comment per run, edited in place on later completions.
         if (run.event !== "source" && run.event !== ARTIFACTS_EVENT && finalRun.pr_number && run.installation_id) {
-          const creds = await getAppCreds(env);
-          ctx.waitUntil(
-            (async () => {
-              const jobs = await getJobsForRun(env.DB, runId);
-              const failing = await listFailingTests(env.DB, runId, 15).catch(() => []);
-              const quarantined = await listQuarantinedFailingTests(env.DB, runId, run.repo, 15).catch(() => []);
-              const selections = await getRunSelections(env.DB, runId).catch(() => []);
-              const id = await upsertPrComment(
-                {
-                  appId: creds?.appId,
-                  privateKey: creds?.privateKey,
-                  installationId: run.installation_id,
-                  repo: run.repo,
-                  prNumber: finalRun.pr_number as number,
-                  existingCommentId: run.pr_comment_id,
-                  origin,
-                },
-                finalRun,
-                jobs,
-                failing.map((f) => ({ jobName: f.job_name, suite: f.suite, name: f.name, message: f.message })),
-                quarantined.map((f) => ({ jobName: f.job_name, suite: f.suite, name: f.name, message: f.message })),
-                selections.map((s) => ({
-                  jobName: jobs.find((j) => j.id === s.job_id)?.name ?? s.job_id.slice(0, 8),
-                  mode: s.mode,
-                  reason: s.reason,
-                  selectedCount: s.selected_count,
-                  skippedCount: s.skipped_count,
-                })),
-              );
-              if (id && !run.pr_comment_id) await setRunPrComment(env.DB, runId, id).catch(() => undefined);
-            })(),
-          );
+          ctx.waitUntil(postRunPrComment(env, runId, origin));
         }
       }
     }
@@ -2490,21 +2573,44 @@ export default {
         }
       }
       if (request.method === "GET" && url.pathname === "/") {
-        return Response.redirect(new URL("/dashboard", url).toString(), 302);
+        // Keep the query (?demo=1, ?stage=1, ?tour=1): judges land on
+        // /?demo=1#/live. Browsers carry the #fragment across a 302.
+        return Response.redirect(dashboardRedirectUrl(url), 302);
       }
       if (request.method === "GET" && url.pathname === "/dashboard") {
         return dashboardResponse();
       }
+      // forge-spectator: /watch, /v1/public/forge/* (read-only, no auth), /v1/admin/forge/{public,judge-token}.
+      const publicForge = await handleForgePublicRequest(request, url, {
+        db: env.DB,
+        forge: () => forgeDepsFromEnv(env, forgeAdaptersFromEnv(env, { waitUntil: (p) => ctx.waitUntil(p) })),
+        namespace: env.ARTIFACTS_NAMESPACE ?? "",
+        auth: () => authIdentity(request, env),
+        sharedLimiter: bindingRateLimiter(env),
+        cache: typeof caches !== "undefined" ? caches.default : null,
+        dashboardHtml: DASHBOARD_HTML,
+        waitUntil: (p) => ctx.waitUntil(p),
+      });
+      if (publicForge) return publicForge;
       // The API serves its own contract (generated module, CI-synced)
       // plus an interactive Redoc reference over it.
       // One-line runner setup for the dashboard's "Use my computer":
-      // curl -fsSL <origin>/runner.sh | sh -s <PAIR-CODE>. Public — the
-      // single-use pairing code (an argument) is the only secret.
+      // curl -fsSL <origin>/runner.sh | FLARE_PAIR_CODE=<CODE> sh. Public:
+      // the single-use pairing code (environment, never argv) is the
+      // only secret, and the runner checkout is pinned to a tag/commit.
       if (request.method === "GET" && url.pathname === "/runner.sh") {
-        const script = runnerScript(url.origin);
+        const fleetVersion = await getSetting(env.DB, SETTING_KEYS.runnerVersion).catch(() => null);
+        const script = runnerScript(url.origin, resolveRunnerRef(env.FLARE_RUNNER_REF, fleetVersion));
         if (!script) return json({ error: "unsupported origin" }, 400);
         return new Response(script, {
           headers: { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "public, max-age=300" },
+        });
+      }
+      // Agent index (llms.txt convention; generated module, CI-synced),
+      // with this deployment's origin filled into the URL placeholders.
+      if (request.method === "GET" && url.pathname === "/llms.txt") {
+        return new Response(llmsTxtFor(url.origin), {
+          headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=300" },
         });
       }
       if (request.method === "GET" && url.pathname === "/openapi.yaml") {
@@ -2520,7 +2626,8 @@ export default {
       if (request.method === "POST" && url.pathname === "/webhooks/github") {
         return await handleWebhook(request, env, ctx);
       }
-      if (request.method === "GET" && url.pathname === "/mcp") {
+      // MCP discovery: same document as GET /mcp, at a well-known path.
+      if (request.method === "GET" && (url.pathname === "/mcp" || url.pathname === "/.well-known/mcp.json")) {
         return json(mcpDiscovery());
       }
       // MCP OAuth: the app-owned consent page. Per-request server
@@ -2783,7 +2890,8 @@ export default {
         if (!repoAllowed(ident, `${namespace}/${valid.sourceRepo}`)) {
           return json({ error: "token is not scoped to that repo" }, 403);
         }
-        const out = await createTournament(env.DB, valid);
+        const out = await createTournamentChecked(env.DB, valid);
+        if ("error" in out) return json({ error: out.error, code: out.code }, 409);
         await audit(env.DB, ident.actor, "tournament.create", out.id);
         return json({ id: out.id }, 201);
       }
@@ -2860,7 +2968,8 @@ export default {
         if (cursor && cursor.length > 500) return json({ error: "cursor too long" }, 400);
         const namespace = env.ARTIFACTS_NAMESPACE ?? "";
         const allow = ident.repos.length > 0 ? (name: string) => repoAllowed(ident, `${namespace}/${name}`) : null;
-        return json(await listAllowedRepos(env.ARTIFACTS, limit, cursor, allow));
+        const hide = url.searchParams.get("all") === "1" ? null : isScratchRepo;
+        return json(await listAllowedRepos(env.ARTIFACTS, limit, cursor, allow, hide));
       }
       const repoTreeMatch = /^\/v1\/repos\/([^/]+)\/tree$/.exec(url.pathname);
       if (repoTreeMatch && request.method === "GET") {
@@ -3774,7 +3883,21 @@ export default {
         if (!(await isAdminRequest(request, env))) return json({ error: "unauthorized" }, 401);
         const rows = await listMirrorRows(env.DB);
         return json({
-          mirrors: rows.map((r) => ({ repo: r.repo, mirror: r.mirror, status: r.status, detail: r.detail, updatedAt: r.updated_at })),
+          mirrors: rows.map((r) => ({
+            repo: r.repo,
+            mirror: r.mirror,
+            status: r.status,
+            detail: r.detail,
+            updatedAt: r.updated_at,
+            // Trunk sync (seats fast-forward the mirror's default
+            // branch on default-branch pushes): last claimed sha + outcome.
+            trunk: {
+              branch: r.default_branch ?? "",
+              sha: r.trunk_sha ?? "",
+              detail: r.trunk_detail ?? "",
+              at: r.trunk_at ?? "",
+            },
+          })),
         });
       }
       if (request.method === "GET" && url.pathname === "/v1/flaky") {
@@ -4755,6 +4878,7 @@ export default {
                 for (const jobId of out.queuedIds) await wakeSeat(env, jobId);
                 return { runId: out.runId };
               },
+              isMirror: (repo) => isMirrorRepo(env.DB, repo),
             },
             body,
           );

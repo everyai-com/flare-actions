@@ -49,7 +49,9 @@ workflow).
 | `run:` steps under sh | kept (the runner's shell), `shell: bash` kept, other shells warned + dropped |
 | top-level, job, and step `env` | kept |
 | step `if` and job `if` | bounded subset: `always()` / `success()` / `failure()` / `cancelled()` and `!fn()` negations; job guards comparing `github.event_name` / `.ref` / `.ref_name` / `.repository` are **evaluated** (a false guard skips the job, so deploy jobs keep their event gates); anything else warned + dropped |
-| `strategy.matrix` | kept, expanded to jobs (`test (node=20)`) |
+| `strategy.matrix` | kept, expanded to jobs (`test (node=20)`), including `include` / `exclude` with GitHub's algorithm (exclude first; include extends matching cells or adds new ones). `fromJSON(...)` matrices are dropped with a warning |
+| `runs-on: ${{ matrix.os }}` | resolved per cell (`ubuntu-*` → `linux`, `macos-*` → `macos`, `windows-*` → `windows`) |
+| `$GITHUB_OUTPUT` / `$GITHUB_ENV` / `$GITHUB_PATH` / `$GITHUB_STEP_SUMMARY` | supported, both `NAME=value` and `NAME<<EOF` heredoc forms. Env and PATH additions reach later steps of the same job; summaries are appended to the job log. `NODE_OPTIONS`, `PATH`, `LD_*`, `DYLD_*`, and `FLARE_*` / `GITHUB_*` / `RUNNER_*` names are ignored in `$GITHUB_ENV` |
 | `needs` | kept (within one workflow file, like Actions) |
 | `concurrency` | kept, including `cancel-in-progress` |
 | `container:` / `services:` | kept (BYO runners with docker; managed seats route these to runners) |
@@ -82,7 +84,9 @@ the common cases working in shell:
 | `${{ github.workflow }}` | `${FLARE_WORKFLOW}` |
 | `${{ secrets.NAME }}` | left for executor-side secret interpolation (masked in logs) |
 | `${{ matrix.* }}` / `${{ env.* }}` | substituted at parse time |
-| anything else (`needs.*`, `steps.*`, `runner.*`, `github.event.*`, …) | **scrubbed to empty** with a warning |
+| `${{ steps.<id>.outputs.<key> }}` | `${FLARE_STEPS_<ID>_<KEY>}` — the value arrives as step env, never pasted into the script |
+| `${{ needs.<job>.outputs.<key> }}` / `${{ needs.<job>.result }}` | `${FLARE_NEEDS_<JOB>_<KEY>}` / `${FLARE_NEEDS_<JOB>_RESULT}` |
+| anything else (`runner.*`, `github.event.*`, `github.actor`, `inputs.*`, …) | **scrubbed to empty** with a warning |
 
 `FLARE_REF` is empty for tag and source runs.
 
@@ -131,9 +135,16 @@ still takes `flare.yml` or an inline pipeline.
 ## Known differences
 
 - No expression engine, no reusable/composite workflows, no JS or
-  container actions. Step/job outputs transfer (`id:` + static
-  `steps.<id>.outputs.<key>` refs only); single-line `KEY=VALUE`
-  writes to `$GITHUB_OUTPUT` (no heredoc syntax).
+  container actions. Step and job outputs transfer through static refs
+  (`steps.<id>.outputs.<key>`, `needs.<job>.outputs.<key>`); computed
+  expressions (`format()`, `toJSON()`, `contains()`, …) do not.
+- `setup-*` actions probe the host toolchain instead of installing it,
+  so a `node-version: ${{ matrix.node }}` matrix runs the runner's one
+  Node in every cell. Install the versions on the runner (or use a
+  `container:` image per cell).
+- `${{ github.ref }}` is `refs/heads/<branch>`; tag runs see an empty
+  branch. `github.event.*`, `github.actor`, and `runner.os` are not
+  mapped — scrubbed with a warning.
 - Caches use Flare's cache semantics (exact-key restore, then
   `restore-keys` prefixes newest-first; saves always land under the
   exact key, even on an exact hit).

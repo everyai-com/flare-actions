@@ -26,7 +26,9 @@ CREATE TABLE attempts (id TEXT PRIMARY KEY, tournament_id TEXT NOT NULL, agent T
 CREATE TABLE verdicts (tournament_id TEXT PRIMARY KEY, ranking TEXT NOT NULL DEFAULT '[]',
   rationale TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
 CREATE TABLE ledger (id TEXT PRIMARY KEY, tournament_id TEXT NOT NULL, kind TEXT NOT NULL,
-  body TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);`;
+  body TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+CREATE TABLE intents (id TEXT PRIMARY KEY, repo TEXT NOT NULL);
+CREATE TABLE goals (id TEXT PRIMARY KEY, repo TEXT NOT NULL);`;
 
 function sqliteDb(): Db {
   const raw = new DatabaseSync(":memory:");
@@ -202,6 +204,35 @@ describe("fastForwardWinner", () => {
     expect(await fastForwardWinner(ffDeps(db, null), "t1")).toEqual({ status: "skipped", reason: "unavailable" });
     expect(await fastForwardWinner(ffDeps(db, fakeGit([]), { remoteFor: () => null }), "t1")).toEqual({ status: "skipped", reason: "unavailable" });
     expect(await fastForwardWinner(ffDeps(db, fakeGit([])), "missing")).toEqual({ status: "skipped", reason: "not-ready" });
+  });
+});
+
+describe("fastForwardWinner on a Forge trunk (invariant 1)", () => {
+  it("refuses to push a trunk's main and files promote-failed with the reason", async () => {
+    const db = sqliteDb();
+    await seedDecided(db, "t1");
+    await db.prepare("INSERT INTO intents (id, repo) VALUES ('i1', 'base')").bind().run();
+    const calls: string[] = [];
+    const seen: string[] = [];
+    const out = await fastForwardWinner(ffDeps(db, fakeGit(calls), {}, seen), "t1");
+    expect(out).toEqual({ status: "skipped", reason: "refused" });
+    expect(calls).toEqual([]);
+    expect(seen).toEqual([]); // no write token was ever minted
+    const row = await db.prepare("SELECT body FROM ledger WHERE tournament_id = 't1' AND kind = 'promote-failed'").bind().first<{ body: string }>();
+    expect(row?.body).toContain("only the train");
+    // The stop row keeps the pass from retrying.
+    expect(await fastForwardPass(ffDeps(db, fakeGit(calls)))).toEqual({ pushed: 0 });
+    expect(calls).toEqual([]);
+  });
+  it("keeps replay races (forge/replay + pre-filed stop row) out of the pass", async () => {
+    const db = sqliteDb();
+    await seedDecided(db, "t2");
+    await db.prepare("UPDATE tournaments SET base_ref = 'forge/replay' WHERE id = 't2'").bind().run();
+    await db.prepare("INSERT INTO goals (id, repo) VALUES ('g1', 'base')").bind().run();
+    await db.prepare("INSERT INTO ledger (id, tournament_id, kind, body, created_at) VALUES ('l1', 't2', 'promote-failed', 'promotion disabled', 'now')").bind().run();
+    const calls: string[] = [];
+    expect(await fastForwardPass(ffDeps(db, fakeGit(calls)))).toEqual({ pushed: 0 });
+    expect(calls).toEqual([]);
   });
 });
 

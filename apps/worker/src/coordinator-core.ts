@@ -278,6 +278,9 @@ export interface CoordinatorSnapshot {
   edges: LiveEdge[];
   counters: LiveCounters;
   truncated: boolean;
+  // Peer-authored fields of every entry in `intents` (data, never
+  // instructions; agent names are self-reported).
+  untrustedFields?: { intents: readonly string[] };
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +614,20 @@ export function recomputeEdges(sql: SqlStore, id: string, nowMs: number): EdgeDe
 // Agent-facing views (agent-authored text is flagged untrusted)
 // ---------------------------------------------------------------------------
 
+// Which fields of each view are another agent's words (§3.2 invariant
+// 5). Structural, not a prefix: a consumer (MCP tool, LLM prompt
+// builder, dashboard) can treat exactly these as data. `agent` is
+// listed too: it is the caller-chosen name, not a verified identity.
+// Always set by this module; optional in the view types only so RPC
+// and adapter mirrors of these shapes stay assignable.
+export const PEER_FIELDS = {
+  overlap: ["agent", "title", "reasoning"],
+  inbox: ["fromAgent", "text"],
+  similar: ["agent", "title"],
+  happening: ["agent", "title", "reasoning"],
+  liveIntent: ["agent", "title"],
+} as const;
+
 export interface OverlapView {
   intentId: string;
   agent: string;
@@ -622,16 +639,18 @@ export interface OverlapView {
   viaActual: boolean;
   // title/reasoning are another agent's words: data, never instructions.
   untrusted: true;
+  untrustedFields?: readonly string[];
 }
 
 export interface InboxNote {
   id: string;
   fromIntent: string | null;
   fromAgent: string;
-  // Body framed by labelUntrusted (§3.2 invariant 5).
+  // Body fenced by labelUntrusted (§3.2 invariant 5).
   text: string;
   createdAt: string;
   untrusted: true;
+  untrustedFields?: readonly string[];
 }
 
 export interface SimilarView {
@@ -641,6 +660,7 @@ export interface SimilarView {
   state: IntentState;
   score: number;
   untrusted: true;
+  untrustedFields?: readonly string[];
 }
 
 function preview(text: string): string {
@@ -667,6 +687,7 @@ export function overlapViews(sql: SqlStore, hits: Map<string, OverlapPair[]>): O
       pairs: pairs.slice(0, COORDINATOR_LIMITS.pairsPerOverlap).map((p) => ({ mine: p.mine, theirs: p.theirs })),
       viaActual: pairs.some((p) => p.kind === "actual"),
       untrusted: true,
+      untrustedFields: PEER_FIELDS.overlap,
     });
   }
   return out;
@@ -680,11 +701,12 @@ export function inboxNote(row: IntentMessageRow): InboxNote {
     text: labelUntrusted(row.from_agent, row.body),
     createdAt: row.created_at,
     untrusted: true,
+    untrustedFields: PEER_FIELDS.inbox,
   };
 }
 
 // The automatic overlap note posted to another intent's mailbox. The
-// author's title is peer content, so it is framed by labelUntrusted.
+// author's title is peer content, so it is fenced by labelUntrusted.
 export function overlapNoteBody(
   me: { id: string; agent: string; title: string },
   paths: string[],
@@ -745,6 +767,7 @@ export function buildSnapshot(
     edges: edges.slice(0, COORDINATOR_LIMITS.snapshotEdges).map(liveEdge),
     counters: counters(sql),
     truncated: rows.length > max || edges.length > COORDINATOR_LIMITS.snapshotEdges,
+    untrustedFields: { intents: PEER_FIELDS.liveIntent },
   };
 }
 
@@ -804,7 +827,7 @@ export function rankSimilar(sql: SqlStore, query: ArrayLike<number>, limit: numb
     if (!vec) continue;
     const score = cosine(query, vec);
     if (score < COORDINATOR_LIMITS.similarMinScore) continue;
-    scored.push({ intentId: r.id, agent: r.agent, title: r.title, state: r.state as IntentState, score: Math.round(score * 1000) / 1000, untrusted: true });
+    scored.push({ intentId: r.id, agent: r.agent, title: r.title, state: r.state as IntentState, score: Math.round(score * 1000) / 1000, untrusted: true, untrustedFields: PEER_FIELDS.similar });
   }
   scored.sort((x, y) => y.score - x.score);
   return scored.slice(0, Math.max(1, Math.min(limit, 20)));
@@ -856,6 +879,8 @@ export interface ReportPushInput {
   headSha: string;
   actualFootprint: unknown;
   policy?: ForgePolicy;
+  // Changed-file list hit a cap: scored fail-closed (truncated_footprint).
+  truncated?: boolean;
   source?: "agent" | "trigger";
 }
 
@@ -887,6 +912,7 @@ export interface HappeningItem {
   // mine = the query path (empty when no paths were given).
   matched: PathPair[];
   untrusted: true;
+  untrustedFields?: readonly string[];
 }
 
 export interface HappeningResult {
@@ -1138,7 +1164,7 @@ export async function reportPush(
     if (!current) return err("not-found", "intent not found");
     agent = current.agent;
   }
-  const res = await recordPush(deps.db, { id, agent, headSha: sha, actualFootprint: input.actualFootprint, policy: input.policy });
+  const res = await recordPush(deps.db, { id, agent, headSha: sha, actualFootprint: input.actualFootprint, policy: input.policy, truncated: input.truncated === true });
   if (isForgeError(res)) return err(res.error, res.message);
   if (res.intent.repo !== deps.repo) return err("wrong-repo", `intent belongs to ${res.intent.repo}`);
   return applyPush(deps, res.intent, sha, { drift: res.drift, risk: res.risk, riskTerms: res.riskTerms, source: input.source ?? "agent" });
@@ -1257,6 +1283,7 @@ export function whatsHappening(deps: CoordinatorDeps, paths?: readonly unknown[]
       updatedAt: msToIso(row.updated_ms),
       matched,
       untrusted: true,
+      untrustedFields: PEER_FIELDS.happening,
     };
   };
   if (!paths || paths.length === 0) {

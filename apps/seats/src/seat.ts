@@ -1,6 +1,7 @@
 import {
   appendJobLog,
   claimJob,
+  claimMirrorTrunkSync,
   cloudRunningCap,
   deleteSeatSnapshot,
   getJob,
@@ -12,6 +13,7 @@ import {
   quarantineDowngrade,
   readNeedsContext,
   recentlyFailedTests,
+  recordMirrorTrunkSync,
   releaseJob,
   rollupRunStatus,
   saveJobEgress,
@@ -51,7 +53,19 @@ import { annotateSpan } from "../../worker/src/trace";
 import { getDecryptedRepoSecrets } from "../../worker/src/secrets";
 import type { AiBinding } from "../../worker/src/triage";
 import { interpolateSecrets, maskSecrets } from "../../../packages/runner-sdk/src/secrets";
-import { buildNeedsEnv, formatOutputsLine, parseStepOutputs, resolveJobOutputs } from "../../../packages/runner-sdk/src/outputs";
+import { buildNeedsEnv, buildStepsEnv, formatOutputsLine, parseStepOutputs, resolveJobOutputs } from "../../../packages/runner-sdk/src/outputs";
+import {
+  applyEnvFile,
+  applyPathFile,
+  envFileLogLines,
+  newEnvFileState,
+  prependedPath,
+  stepFileEnv,
+  stepFilePaths,
+  takeSummary,
+  MAX_ENV_FILE_BYTES,
+  MAX_SUMMARY_BYTES,
+} from "../../../packages/runner-sdk/src/envfiles";
 import { resolveCheckUrl } from "../../../packages/runner-sdk/src/browser";
 import { matrixEnv, parseJobSpec, stepRuns, unsafeTarMember } from "../../../packages/runner-sdk/src/spec";
 import type { JobBrowserActionSpec } from "../../../packages/runner-sdk/src/spec";
@@ -158,6 +172,8 @@ export interface SeatTiming {
   blobMs: number;
   checkoutMs?: number;
   snapshotMs?: number;
+  // Mirror trunk fast-forward (post-terminal, best effort).
+  trunkSyncMs?: number;
 }
 
 export const DEFAULT_TIMING: SeatTiming = {
@@ -390,6 +406,50 @@ async function mintCheckoutToken(
 // `secret?expires=` form (git would misparse the URL).
 function tokenSecret(token: string): string {
   return token.split("?expires=")[0];
+}
+
+// Mirror trunk sync: fast-forward the mirror's default branch to a
+// GitHub default-branch push. The mirror holds full history from the
+// import, but a seat cannot afford a full clone, so: fetch the mirror
+// tip at depth 1, fetch the pushed sha from GitHub (depth 50, then one
+// deepen of 1000 — negotiation offers the mirror tip as a have, so only
+// new objects download), prove tip-is-ancestor locally, then push
+// WITHOUT force. Anything else (diverged trunk — e.g. Forge trains
+// landed in the mirror — or a gap past the deepen budget) prints
+// DIVERGED and pushes nothing; a racing writer makes the non-force
+// push fail. Works in its own dir (never the job workspace) and
+// cleans up on exit. Remotes carry tokens: callers pipe this over
+// stdin and scrub every error.
+export const TRUNK_SYNC_DIR = "/tmp/flare-trunk-sync";
+export const TRUNK_SYNC_MARKERS = {
+  upToDate: "FLARE_TRUNK_UPTODATE",
+  diverged: "FLARE_TRUNK_DIVERGED",
+  pushed: "FLARE_TRUNK_PUSHED",
+} as const;
+
+// Branch names interpolate into a shell script: plain ref segments only.
+export function trunkSyncBranchOk(branch: string): boolean {
+  return /^[\w.-]+(\/[\w.-]+)*$/.test(branch) && !branch.includes("..") && !branch.endsWith(".lock") && branch.length <= 200;
+}
+
+export function trunkSyncScript(opts: { mirrorRemote: string; githubRemote: string; branch: string; sha: string }): string {
+  const { mirrorRemote, githubRemote, branch, sha } = opts;
+  const m = TRUNK_SYNC_MARKERS;
+  return (
+    `set -e\n` +
+    `trap 'cd /; rm -rf ${TRUNK_SYNC_DIR}' EXIT\n` +
+    `rm -rf ${TRUNK_SYNC_DIR}\nmkdir -p ${TRUNK_SYNC_DIR}\ncd ${TRUNK_SYNC_DIR}\ngit init -q\n` +
+    `git fetch -q --depth 1 ${mirrorRemote} +refs/heads/${branch}:refs/flare/trunk\n` +
+    `T=$(git rev-parse refs/flare/trunk)\n` +
+    `if [ "$T" = "${sha}" ]; then echo ${m.upToDate}; exit 0; fi\n` +
+    `git fetch -q --depth 50 ${githubRemote} ${sha}\n` +
+    `if ! git merge-base --is-ancestor "$T" FETCH_HEAD 2>/dev/null; then\n` +
+    `  git fetch -q --deepen 1000 ${githubRemote} ${sha}\n` +
+    `  if ! git merge-base --is-ancestor "$T" FETCH_HEAD 2>/dev/null; then echo ${m.diverged}; exit 0; fi\n` +
+    `fi\n` +
+    `git push -q ${mirrorRemote} FETCH_HEAD:refs/heads/${branch}\n` +
+    `echo ${m.pushed}\n`
+  );
 }
 
 // /proc/net/dev: `iface: rxBytes ... txBytes ...` (tx is the 9th field).
@@ -878,6 +938,10 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     stopSignal = null;
   }
   const ifaceStart = await sampleIface();
+  // Mirror trunk fast-forward, armed by the checkout (it needs the
+  // checkout's mirror/token context) and run after the terminal write
+  // so it never delays the job's result. Best effort throughout.
+  let trunkSync: (() => Promise<void>) | null = null;
 
   try {
     if (run.source) {
@@ -1023,6 +1087,71 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
           const raw = decode(res.timedOut ? res.stderr : new Uint8Array([...res.stdout, ...res.stderr])).slice(0, 200);
           return scrubTokens(raw) || "unknown";
         };
+        // Trunk sync (see trunkSyncScript): push runs on the repo's
+        // default branch fast-forward the mirror's same-named branch so
+        // Forge (whats_happening, why, Live map) sees GitHub's trunk.
+        // The D1 claim (ready mirror + recorded default branch == this
+        // branch + sha not yet claimed) makes it once per push, not
+        // once per job/cell; every failure is logged and swallowed.
+        const trunkBranch = run.branch ?? "";
+        if (
+          mirror &&
+          mirrorRepoName &&
+          deps.artifacts &&
+          run.event === "push" &&
+          trunkBranch &&
+          trunkSyncBranchOk(trunkBranch)
+        ) {
+          const artifacts = deps.artifacts;
+          const repoName = mirrorRepoName;
+          const mirrorHost = mirror.slice("https://".length);
+          trunkSync = async (): Promise<void> => {
+            let claimed = false;
+            try {
+              claimed = await claimMirrorTrunkSync(deps.db, run.repo, trunkBranch, run.sha);
+            } catch {
+              claimed = false;
+            }
+            if (!claimed) return;
+            let detail: string;
+            try {
+              mirrorWriteMinted = await mintCheckoutToken(artifacts, repoName, "write");
+              if (!mirrorWriteMinted) {
+                detail = "error: write token mint failed";
+              } else {
+                const mirrorUrl = `https://x-access-token:${encodeURIComponent(tokenSecret(mirrorWriteMinted))}@${mirrorHost}`;
+                const ghUrl = appToken
+                  ? `https://x-access-token:${appToken}@github.com/${run.repo}.git`
+                  : `https://github.com/${run.repo}.git`;
+                const res = await execBounded(
+                  ["sh", "-s"],
+                  { stdin: trunkSyncScript({ mirrorRemote: mirrorUrl, githubRemote: ghUrl, branch: trunkBranch, sha: run.sha }) },
+                  timing.trunkSyncMs ?? 120000,
+                );
+                const out = decode(res.stdout);
+                if (res.timedOut) detail = "error: timed out";
+                else if (res.exitCode === 0 && out.includes(TRUNK_SYNC_MARKERS.pushed)) detail = "pushed";
+                else if (res.exitCode === 0 && out.includes(TRUNK_SYNC_MARKERS.upToDate)) detail = "up-to-date";
+                else if (res.exitCode === 0 && out.includes(TRUNK_SYNC_MARKERS.diverged)) {
+                  detail = "diverged: mirror trunk is not an ancestor of the push (not forced)";
+                } else {
+                  const raw = scrubTokens(decode(new Uint8Array([...res.stdout, ...res.stderr])).slice(0, 300));
+                  detail = /non-fast-forward|fetch first|\[rejected\]/.test(raw)
+                    ? "diverged: push rejected as non-fast-forward (not forced)"
+                    : `error: ${raw || `exit ${res.exitCode}`}`;
+                }
+              }
+            } catch (err) {
+              detail = `error: ${scrubTokens(String(err)).slice(0, 200)}`;
+            }
+            try {
+              await recordMirrorTrunkSync(deps.db, run.repo, run.sha, detail);
+            } catch {
+              // Best effort.
+            }
+            await note(`[seat] mirror trunk ${trunkBranch}@${run.sha.slice(0, 7)}: ${detail}`.slice(0, 400));
+          };
+        }
         if (mirror && mirrorToken) {
           const mirrorRemoteUrl = `https://x-access-token:${encodeURIComponent(mirrorToken)}@${mirror.slice("https://".length)}`;
           const mirrorErr = await checkoutVia(mirrorRemoteUrl);
@@ -1267,6 +1396,32 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     let jobFailed = false;
     // Collected $FLARE_OUTPUT values by step id (`step<N>` fallback).
     const stepOutputs: Record<string, Record<string, string>> = {};
+    // $GITHUB_ENV / $GITHUB_PATH / summary state, scoped to this job
+    // (same shared rules as BYO runners: runner-sdk envfiles.ts).
+    const envState = newEnvFileState();
+    // Container's own PATH, probed lazily the first time a step adds
+    // to $GITHUB_PATH (job env PATH wins). The step's PATH is set
+    // explicitly as prepends + this base.
+    let basePath: string | undefined = stepEnv["PATH"];
+    const containerPath = async (): Promise<string> => {
+      if (basePath !== undefined) return basePath;
+      const probe = await execBounded(["printenv", "PATH"], {}, 15000).catch(() => null);
+      const found = probe && !probe.timedOut && probe.exitCode === 0 ? decode(probe.stdout).trim() : "";
+      basePath = found || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+      return basePath;
+    };
+    const collectStepFiles = async (index: number, label: string): Promise<void> => {
+      const files = stepFilePaths("/tmp", index, false);
+      const read = async (path: string, max: number): Promise<string> => {
+        const bytes = await readContainerFile(path, max);
+        return bytes ? decode(bytes) : "";
+      };
+      const envText = await read(files.env, MAX_ENV_FILE_BYTES);
+      const envApplied = envText ? applyEnvFile(envState, envText) : null;
+      const pathAdded = applyPathFile(envState, await read(files.path, MAX_ENV_FILE_BYTES));
+      const summary = takeSummary(envState, await read(files.summary, MAX_SUMMARY_BYTES));
+      for (const line of envFileLogLines(label, envApplied, pathAdded, summary)) logParts.push(mask(line));
+    };
     const collectStepOutputs = async (index: number, label: string): Promise<void> => {
       // Killed steps still publish what they wrote before dying; a
       // missing file means the step published nothing.
@@ -1301,10 +1456,18 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       const startedAt = Date.now();
       const shell = step.shell ?? "sh";
       const stepTimeout = step.timeoutMinutes !== undefined ? step.timeoutMinutes * 60000 : timing.stepMs;
-      const outFile = `/tmp/flare-output-${i}`;
+      // Step files ($GITHUB_OUTPUT/ENV/PATH/STEP_SUMMARY + FLARE_
+      // aliases) start fresh: a snapshot-restored container may carry
+      // a previous job's files at these fixed paths.
+      const files = stepFilePaths("/tmp", i, false);
+      await execBounded(["rm", "-f", files.output, files.env, files.path, files.summary], {}, 15000).catch(() => null);
+      // Earlier steps' $GITHUB_ENV overlays the job env (later steps
+      // only); $GITHUB_PATH prepends to the container's PATH.
+      const env: Record<string, string> = { ...stepEnv, ...buildStepsEnv(stepOutputs), ...envState.env, ...stepFileEnv(files) };
+      if (envState.pathAdds.length > 0) env["PATH"] = prependedPath(envState, await containerPath());
       const r = await execBounded(
         ["sh", "-c", `${shell} -s > /tmp/step.log 2>&1; printf 'EXIT:%d' $?`],
-        { stdin: command, env: { ...stepEnv, FLARE_OUTPUT: outFile, GITHUB_OUTPUT: outFile }, cwd: WORKDIR },
+        { stdin: command, env, cwd: WORKDIR },
         stepTimeout,
       );
       const durationMs = Date.now() - startedAt;
@@ -1314,6 +1477,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         records.push({ command: mask(command), exitCode: 124, durationMs, output: limit });
         logParts.push(mask(`--- step ${i + 1}: ${command} ---\n${limit}\n(exit 124, ${durationMs}ms)`));
         await collectStepOutputs(i, label);
+        await collectStepFiles(i, label);
         anyFailed = true;
         if (step.continueOnError) {
           logParts.push(`--- step ${i + 1} failed but continue-on-error is set ---`);
@@ -1338,6 +1502,7 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       records.push({ command: mask(command), exitCode, durationMs, output });
       logParts.push(mask(`--- step ${i + 1}: ${command} ---\n${output}\n(exit ${exitCode}, ${durationMs}ms)`));
       await collectStepOutputs(i, label);
+      await collectStepFiles(i, label);
       if (exitCode !== 0) {
         anyFailed = true;
         if (step.continueOnError) {
@@ -1802,6 +1967,16 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         }
       } catch (err) {
         await note(`[seat] snapshot skipped: ${String(err).slice(0, 160)}`);
+      }
+    }
+
+    // Mirror trunk sync after the result is recorded (and after the
+    // snapshot, whose filesystem must not carry the sync dir).
+    if (trunkSync) {
+      try {
+        await trunkSync();
+      } catch {
+        // Never fails a finished job.
       }
     }
 
