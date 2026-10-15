@@ -175,6 +175,34 @@ describe("forge MCP tools: workflow", () => {
     expect(unwired.data.code).toBe("not_implemented");
   });
 
+  it("premises catch a conflict that file overlap misses, at declare and at push", async () => {
+    const { deps, fake } = setup();
+    const a = await tool(deps, "declare_intent", {
+      repo: "demo",
+      title: "CLI uses parse",
+      footprint: ["src/cli.ts"],
+      premises: [{ target: "src/parse.ts#parse", claim: "parse(text) returns Ast" }],
+    });
+    expect(a.isError).toBe(false);
+    expect((a.data.intent as { footprint: { premises: unknown[] } }).footprint.premises).toHaveLength(1);
+    const aId = (a.data.intent as { id: string }).id;
+    const b = await tool({ ...deps, agent: "beta" }, "declare_intent", { repo: "demo", title: "Rewrite parser", footprint: ["src/parse.ts"] });
+    expect(b.data.overlaps).toEqual([]);
+    const conflicts = b.data.premiseConflicts as Array<{ intentId: string; direction: string; hits: Array<{ kind: string }> }>;
+    expect(conflicts.map((c) => [c.intentId, c.direction, c.hits[0].kind])).toEqual([[aId, "theirs", "file"]]);
+    expect((b.data.nextSteps as Array<{ tool: string }>)[0].tool).toBe("send_note");
+
+    // A scoped to another symbol, then a push that touches the file anyway.
+    const c = await tool({ ...deps, agent: "gamma" }, "declare_intent", { repo: "demo", title: "Lexer tweak", footprint: { paths: ["src/parse.ts"], entities: ["src/parse.ts#lex"] } });
+    expect(c.data.premiseConflicts).toEqual([]);
+    const cId = (c.data.intent as { id: string }).id;
+    const claim = await tool({ ...deps, agent: "gamma" }, "claim_intent", { intentId: cId });
+    fake.commit(claim.data.forkRepo as string, sha("8"), { "src/parse.ts": "p8" });
+    const pushed = await tool({ ...deps, agent: "gamma" }, "report_push", { intentId: cId, sha: sha("8") });
+    const hits = (pushed.data.premiseConflicts as Array<{ intentId: string; hits: Array<{ pushed: boolean }> }>).find((x) => x.intentId === aId);
+    expect(hits?.hits[0].pushed).toBe(true);
+  });
+
   it("conflict replay and fork_session over MCP", async () => {
     const { deps, db, fake } = setup();
     const a = await tool(deps, "declare_intent", { repo: "demo", title: "First change", footprint: ["src/x.ts"] });

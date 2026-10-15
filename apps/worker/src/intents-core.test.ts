@@ -38,6 +38,9 @@ import {
   validateReasoning,
   type Footprint,
   type WhyNote,
+  normalizePremises,
+  premiseConflicts,
+  premiseHits,
 } from "./intents-core";
 
 const fp = (...paths: string[]): Footprint => ({ paths });
@@ -168,6 +171,72 @@ describe("overlap math", () => {
     expect(globBase("**/x")).toBe("");
     expect(globBase("a/b.ts")).toBe("a/b.ts");
     expect(ancestorPaths("a/b/c")).toEqual(["a", "a/b"]);
+  });
+});
+
+describe("premises", () => {
+  it("normalizes, dedupes by target, and rides inside the footprint", () => {
+    const r = normalizeFootprint({
+      paths: ["src/a.ts"],
+      premises: [
+        { target: "./src/parse.ts#parse", claim: "old" },
+        { target: "src/parse.ts#parse", claim: " returns Ast " },
+        { target: "src/api/**", claim: "routes stable" },
+      ],
+    });
+    expect(r.ok && r.value.premises).toEqual([
+      { target: "src/api/**", claim: "routes stable" },
+      { target: "src/parse.ts#parse", claim: "returns Ast" },
+    ]);
+    // Round-trips like footprint_json does.
+    const again = r.ok ? normalizeFootprint(JSON.parse(JSON.stringify(r.value))) : null;
+    expect(again?.ok && again.value).toEqual(r.ok && r.value);
+  });
+
+  it("rejects malformed premises", () => {
+    expect(normalizePremises("x").ok).toBe(false);
+    expect(normalizePremises([{ target: "src/a.ts" }]).ok).toBe(false);
+    expect(normalizePremises([{ target: "src/a.ts", claim: "x".repeat(301) }]).ok).toBe(false);
+    expect(normalizePremises([{ target: "src/*.ts#f", claim: "c" }]).ok).toBe(false);
+    expect(normalizePremises([{ target: "src/a.ts#a b", claim: "c" }]).ok).toBe(false);
+    expect(normalizePremises([{ target: "../a.ts", claim: "c" }]).ok).toBe(false);
+    expect(normalizePremises(Array.from({ length: 51 }, (_, i) => ({ target: `f${i}`, claim: "c" }))).ok).toBe(false);
+  });
+
+  const parse = { target: "src/parse.ts#parse", claim: "returns Ast" };
+
+  it("ranks symbol, file and path hits", () => {
+    expect(premiseHits([parse], { footprint: { paths: ["src/parse.ts"], entities: ["src/parse.ts#parse"] }, actualFootprint: null })).toEqual([
+      { premise: parse, kind: "symbol", effect: "src/parse.ts#parse", pushed: false },
+    ]);
+    expect(premiseHits([parse], { footprint: { paths: ["src/**"] }, actualFootprint: null })[0]).toMatchObject({ kind: "file", effect: "src/**" });
+    const dir = { target: "src/api", claim: "routes stable" };
+    expect(premiseHits([dir], { footprint: { paths: ["src/api/users.ts"] }, actualFootprint: null })[0]).toMatchObject({ kind: "path" });
+    expect(premiseHits([dir], { footprint: { paths: ["src/web"] }, actualFootprint: null })).toEqual([]);
+  });
+
+  it("trusts other entities in the same file until a push touches it", () => {
+    const scoped = { footprint: { paths: ["src/parse.ts"], entities: ["src/parse.ts#lex"] }, actualFootprint: null };
+    expect(premiseHits([parse], scoped)).toEqual([]);
+    expect(premiseHits([parse], { ...scoped, actualFootprint: { paths: ["src/parse.ts"] } })[0]).toMatchObject({ kind: "file", pushed: true });
+  });
+
+  it("reports both directions, skips self and terminal intents", () => {
+    const me = { id: "a", footprint: { paths: ["src/cli.ts"], premises: [parse] }, actualFootprint: null };
+    const base = { agent: "x", title: "t", actualFootprint: null };
+    const others = [
+      { ...base, id: "a", state: "working" as const, footprint: { paths: ["src/parse.ts"] } },
+      { ...base, id: "b", state: "working" as const, footprint: { paths: ["src/parse.ts"], entities: ["src/parse.ts#parse"] } },
+      { ...base, id: "c", state: "landed" as const, footprint: { paths: ["src/parse.ts"] } },
+      { ...base, id: "d", state: "draft" as const, footprint: { paths: ["src/web.ts"], premises: [{ target: "src/cli.ts", claim: "flags stable" }] } },
+    ];
+    const out = premiseConflicts(me, others);
+    expect(out.map((c) => [c.intentId, c.direction])).toEqual([
+      ["b", "mine"],
+      ["d", "theirs"],
+    ]);
+    // No file overlap between a and d, yet the premise links them.
+    expect(out[1].hits[0]).toMatchObject({ kind: "path", effect: "src/cli.ts" });
   });
 });
 
