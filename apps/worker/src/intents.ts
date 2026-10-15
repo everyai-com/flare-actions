@@ -498,6 +498,18 @@ export async function listIntents(db: Db, repo: string, filter: ListIntentsFilte
   return res.results.map(toIntent);
 }
 
+// Live (non-terminal) intents in a repo, newest first, for premise
+// checks. Bounded: premises compare against at most `limit` rows.
+export async function listLiveIntents(db: Db, repo: string, limit = 200): Promise<Intent[]> {
+  const res = await db
+    .prepare(
+      "SELECT * FROM intents WHERE repo = ? AND state NOT IN ('landed', 'failed', 'abandoned') ORDER BY created_at DESC, id DESC LIMIT ?",
+    )
+    .bind(repo, clampLimit(limit))
+    .all<IntentRow>();
+  return res.results.map(toIntent);
+}
+
 // Whitelisted columns a transition may stamp alongside the state.
 export interface IntentPatch {
   trainId?: string | null;

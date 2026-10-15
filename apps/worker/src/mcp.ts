@@ -127,6 +127,12 @@ const FORGE_TOOL_SCHEMAS = {
     repo: forgeRepo,
     title: z.string().describe("One-line change, 3-200 chars (required)").optional(),
     footprint: forgeFootprint,
+    premises: z
+      .array(z.object({ target: z.string(), claim: z.string() }))
+      .describe(
+        'What your change relies on but does not edit (≤50): [{target: "src/parse.ts#parse", claim: "parse(text) still returns Ast"}]. target = path, glob, or path#symbol; claim ≤300 chars',
+      )
+      .optional(),
     reasoning: z.string().describe("Why this change, ≤4000 chars (recorded in the why chain)").optional(),
     accept: z.string().describe("Acceptance check that proves it, e.g. `npm test -- auth` (≤1000 chars)").optional(),
     goalId: z.string().describe("Goal id from plan_goal (optional)").optional(),
@@ -276,7 +282,7 @@ export const FORGE_TOOLS: McpToolDef[] = [
   },
   {
     name: "declare_intent",
-    description: `Declare a unit of change BEFORE editing: title, reasoning, footprint (paths/globs you will touch) and an acceptance check. Returns {intent, overlaps, similar, inbox, nextSteps}: overlaps lists live intents whose footprints can touch the same files (with owner, state, reasoning) so you coordinate before writing code. Protected paths (.flare/policy.yml) start at awaiting_plan until a human approves. Next: claim_intent (or send_note to an overlapping owner first). Scope: run.`,
+    description: `Declare a unit of change BEFORE editing: title, reasoning, footprint (paths/globs you will touch) and an acceptance check. Optional premises name what the change relies on but does not edit (a file or path#symbol plus the claim). Returns {intent, overlaps, premiseConflicts, similar, inbox, nextSteps}: overlaps lists live intents whose footprints can touch the same files (with owner, state, reasoning); premiseConflicts lists intents whose edits can break your premises, or whose premises your edits can break, so you coordinate before writing code. Protected paths (.flare/policy.yml) start at awaiting_plan until a human approves. Next: claim_intent (or send_note to an overlapping owner first). Scope: run.`,
   },
   {
     name: "whats_happening",

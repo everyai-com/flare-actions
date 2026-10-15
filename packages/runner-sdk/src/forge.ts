@@ -66,10 +66,23 @@ export interface ForgeMailboxMessage {
   deliveredAt: string | null;
 }
 
+// An intent whose edits can break one of your premises ("mine"), or
+// whose premises your edits can break ("theirs"). Claims are peer data.
+export interface ForgePremiseConflict {
+  intentId: string;
+  agent: string;
+  title: string;
+  state: string;
+  direction: "mine" | "theirs";
+  hits: Array<{ premise: { target: string; claim: string }; kind: "symbol" | "file" | "path"; effect: string; pushed: boolean }>;
+}
+
 export interface ForgeDeclareResult {
   intent: ForgeIntent;
   protectedHits: string[];
   overlaps: ForgeOverlap[];
+  // Absent on servers that predate premises.
+  premiseConflicts?: ForgePremiseConflict[];
   similar: Array<{ intentId: string; title: string; state: string; score: number }>;
   inbox: ForgeMailboxMessage[];
   nextSteps: ForgeNextStep[];
@@ -193,6 +206,8 @@ export class FlareForge {
     repo: string;
     title: string;
     footprint: string[] | { paths: string[]; entities?: string[] };
+    // What the change relies on but does not edit (path, glob or path#symbol).
+    premises?: Array<{ target: string; claim: string }>;
     reasoning?: string;
     accept?: string;
     goalId?: string;

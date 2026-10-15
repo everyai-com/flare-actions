@@ -66,7 +66,8 @@ canTransitionConflict(from: ConflictState, to: ConflictState): boolean
 canTransitionTrain(from: TrainState, to: TrainState): boolean
 
 // domain types (camelCase, parsed)
-interface Footprint { paths: string[]; entities?: string[] }
+interface Footprint { paths: string[]; entities?: string[]; premises?: Premise[] }
+interface Premise { target: string; claim: string } // target = path | glob | path#symbol
 interface Goal, Intent, Conflict, Train, RiskTerm
 
 // validators
@@ -86,6 +87,19 @@ driftPaths(declared: Footprint, actual: Footprint): string[]
 globBase(entry: string): string                     // literal prefix before first wildcard segment
 ancestorPaths(path: string): string[]               // "a/b/c" -> ["a","a/b"]
 pathRange(prefix: string): [lo: string, hi: string] // WHERE p >= lo AND p < hi (replaces LIKE)
+
+// premises (what a change relies on but does not edit; idea from Keel)
+normalizePremises(raw: unknown): Result<Premise[]>  // ≤50, claim ≤300, no glob with #symbol, dedupe by target
+premiseHits(premises, { footprint, actualFootprint }): PremiseHit[]
+  // symbol = other side declared the exact path#symbol; file/path = declared
+  // path or pushed file covers the target. A symbol premise is skipped when
+  // the other side scoped that file to other entities (until it pushes it).
+premiseConflicts(me, others, limit = 20): PremiseConflict[]
+  // both directions: "mine" (their edits vs my premises), "theirs"
+  // (my edits vs their premises); strongest first. declare_intent and
+  // report_push return them as premiseConflicts[] with send_note nextSteps
+  // and a premise_conflict ledger row. Premises persist inside
+  // footprint_json (no schema change); claims are untrusted peer data.
 
 // trains
 partitionLanes<T extends { id: string; footprint: Footprint }>(items: readonly T[]): T[][]

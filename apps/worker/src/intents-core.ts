@@ -128,8 +128,20 @@ export interface Footprint {
   // A literal entry covers itself and, if it is a directory, its subtree.
   paths: string[];
   // Optional symbol-level entities (`src/auth/session.ts#refresh`); not
-  // used by overlap math yet.
+  // used by path overlap math, but matched exactly against premises.
   entities?: string[];
+  // What this change relies on staying true elsewhere (see Premises).
+  // Rides inside footprint_json so no schema change is needed.
+  premises?: Premise[];
+}
+
+// A premise: a target this change depends on but does not edit (a file,
+// glob, or `path#symbol`) plus the claim it relies on, e.g.
+// { target: "src/parse.ts#parse", claim: "parse(text) still returns Ast" }.
+// The claim is peer data: shown to other agents, never executed.
+export interface Premise {
+  target: string;
+  claim: string;
 }
 
 export interface Goal {
@@ -210,6 +222,8 @@ export const LIMITS = {
   footprintEntries: 200,
   pathLength: 512,
   entityLength: 200,
+  premises: 50,
+  premiseClaim: 300,
   messageBody: 2000,
   agent: 40,
 } as const;
@@ -324,7 +338,50 @@ export function normalizeFootprint(raw: unknown): Result<Footprint> {
     }
     if (entities.size) out.entities = [...entities].sort();
   }
+  const premisesIn = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as { premises?: unknown }).premises : undefined;
+  if (premisesIn !== undefined) {
+    const r = normalizePremises(premisesIn);
+    if (!r.ok) return fail(r.error);
+    if (r.value.length) out.premises = r.value;
+  }
   return ok(out);
+}
+
+// Split a premise target into its path part and optional `#symbol`.
+export function premiseParts(target: string): { path: string; symbol: string | null } {
+  const i = target.indexOf("#");
+  return i < 0 ? { path: target, symbol: null } : { path: target.slice(0, i), symbol: target.slice(i + 1) };
+}
+
+// Validate premises: target path normalized like a footprint entry,
+// optional symbol (no glob on a symbol target), non-empty bounded claim.
+// Deduped by target (last claim wins), sorted by target, capped at 50.
+export function normalizePremises(raw: unknown): Result<Premise[]> {
+  if (!Array.isArray(raw)) return fail("premises must be an array of { target, claim }");
+  if (raw.length > LIMITS.premises) return fail(`more than ${LIMITS.premises} premises`);
+  const byTarget = new Map<string, string>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") return fail("premise must be { target, claim }");
+    const { target, claim } = item as { target?: unknown; claim?: unknown };
+    if (typeof target !== "string") return fail("premise.target must be a string");
+    const parts = premiseParts(target.trim());
+    const path = normalizePath(parts.path);
+    if (!path.ok) return fail(`premise.target: ${path.error}`);
+    let norm = path.value;
+    if (parts.symbol !== null) {
+      const sym = parts.symbol.trim();
+      if (!sym || sym.length > LIMITS.entityLength || /[\s#]/.test(sym)) {
+        return fail(`premise.target symbol must be 1-${LIMITS.entityLength} characters with no spaces or "#": ${target}`);
+      }
+      if (isGlob(norm)) return fail(`premise.target with a #symbol must name one file, not a glob: ${target}`);
+      norm = `${norm}#${sym}`;
+    }
+    if (typeof claim !== "string" || !claim.trim() || claim.length > LIMITS.premiseClaim) {
+      return fail(`premise.claim must be a non-empty string of at most ${LIMITS.premiseClaim} characters`);
+    }
+    byTarget.set(norm, claim.trim());
+  }
+  return ok([...byTarget.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([target, claim]) => ({ target, claim })));
 }
 
 // ---------------------------------------------------------------------------
@@ -410,6 +467,100 @@ export function pathCovers(entry: string, file: string): boolean {
 // (drift). `actual` should be concrete file paths (from report_push).
 export function driftPaths(declared: Footprint, actual: Footprint): string[] {
   return actual.paths.filter((file) => !declared.paths.some((entry) => pathCovers(entry, file)));
+}
+
+// ---------------------------------------------------------------------------
+// Premises: contradiction between one change's effects and another's
+// premises (an idea borrowed from Keel). Path overlap only sees two
+// changes editing the same file; a premise also catches B rewriting a
+// function that A merely calls. Effects are what we know B touches:
+// declared entities (exact symbol), declared paths, and pushed files.
+// ---------------------------------------------------------------------------
+
+// How strongly B's effect hits A's premise. `symbol` = B declared the
+// exact `path#symbol`; `file` = B declared or pushed the file (the
+// symbol may or may not change); `path` = a path/glob premise covered.
+export type PremiseHitKind = "symbol" | "file" | "path";
+
+export interface PremiseHit {
+  premise: Premise;
+  kind: PremiseHitKind;
+  // B's footprint entry or pushed file that produced the hit.
+  effect: string;
+  pushed: boolean;
+}
+
+export interface PremiseEffects {
+  footprint: Footprint;
+  actualFootprint: Footprint | null;
+}
+
+// Every premise in `premises` that `effects` can break. Deterministic,
+// bounded by 50 premises x (200 paths + 200 entities + 200 files).
+export function premiseHits(premises: readonly Premise[], effects: PremiseEffects): PremiseHit[] {
+  const out: PremiseHit[] = [];
+  const entities = new Set(effects.footprint.entities ?? []);
+  const actual = effects.actualFootprint?.paths ?? [];
+  for (const premise of premises) {
+    const { path, symbol } = premiseParts(premise.target);
+    if (symbol !== null && entities.has(premise.target)) {
+      out.push({ premise, kind: "symbol", effect: premise.target, pushed: false });
+      continue;
+    }
+    const kind: PremiseHitKind = symbol !== null ? "file" : "path";
+    const pushedFile = actual.find((file) => pathCovers(path, file));
+    if (pushedFile !== undefined) {
+      out.push({ premise, kind, effect: pushedFile, pushed: true });
+      continue;
+    }
+    // B scoped its edit of this file to other symbols: trust the
+    // declaration until a push says otherwise.
+    if (symbol !== null && [...entities].some((e) => premiseParts(e).path === path)) continue;
+    const declared = effects.footprint.paths.find((entry) => pathsOverlap(entry, path));
+    if (declared !== undefined) out.push({ premise, kind, effect: declared, pushed: false });
+  }
+  return out;
+}
+
+export interface PremiseConflict {
+  intentId: string;
+  agent: string;
+  title: string;
+  state: IntentState;
+  // `mine`: their change can break one of my premises.
+  // `theirs`: my change can break one of their premises.
+  direction: "mine" | "theirs";
+  hits: PremiseHit[];
+}
+
+const HIT_RANK: Record<PremiseHitKind, number> = { symbol: 0, file: 1, path: 2 };
+
+// Premise conflicts between `me` and each other live intent, both
+// directions, strongest (symbol, pushed) first. Self and terminal
+// intents are skipped by the caller's list or here by id.
+export function premiseConflicts(
+  me: Pick<Intent, "id" | "footprint" | "actualFootprint">,
+  others: ReadonlyArray<Pick<Intent, "id" | "agent" | "title" | "state" | "footprint" | "actualFootprint">>,
+  limit = 20,
+): PremiseConflict[] {
+  const out: PremiseConflict[] = [];
+  const mine = me.footprint.premises ?? [];
+  for (const o of others) {
+    if (o.id === me.id || TERMINAL_INTENT_STATES.includes(o.state)) continue;
+    const base = { intentId: o.id, agent: o.agent, title: o.title, state: o.state };
+    if (mine.length) {
+      const hits = premiseHits(mine, o);
+      if (hits.length) out.push({ ...base, direction: "mine", hits });
+    }
+    const theirs = o.footprint.premises ?? [];
+    if (theirs.length) {
+      const hits = premiseHits(theirs, me);
+      if (hits.length) out.push({ ...base, direction: "theirs", hits });
+    }
+  }
+  const strength = (c: PremiseConflict) =>
+    Math.min(...c.hits.map((h) => HIT_RANK[h.kind] * 2 + (h.pushed ? 0 : 1)));
+  return out.sort((a, b) => strength(a) - strength(b) || (a.intentId < b.intentId ? -1 : 1)).slice(0, limit);
 }
 
 // The literal directory prefix of an entry before its first wildcard

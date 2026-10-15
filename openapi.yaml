@@ -4755,6 +4755,22 @@ paths:
                           type: array
                           items:
                             type: string
+                premises:
+                  type: array
+                  maxItems: 50
+                  description: What the change relies on but does not edit; compared against other live intents' edits (premiseConflicts)
+                  items:
+                    type: object
+                    required:
+                      - target
+                      - claim
+                    properties:
+                      target:
+                        type: string
+                        description: Path, glob, or path#symbol
+                      claim:
+                        type: string
+                        maxLength: 300
                 reasoning:
                   type: string
                   maxLength: 4000
