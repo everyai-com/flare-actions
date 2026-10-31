@@ -43,8 +43,12 @@ verify loop — never poll, never sleep.
   quarantined land as success with a log note.
 - Budgets may refuse dispatch (`429` / skipped webhook): the repo is over
   its monthly cap — surface it, don't retry in a loop.
-- Slow checks: `npx flare-forge bottlenecks <repo>` shows p50/p95 and queue
-  wait before you blame the machine.
+- Slow checks: `npx flare-forge bottlenecks <repo>` splits each check into
+  wait / overhead / setup / run with its cache hit rate and one hint; fix
+  that hint before you blame the machine or the tests.
+- Push gate: `npx flare-forge hook install` adds a pre-push hook that runs
+  the fast checks (the repo's `npm run check`, or a `smoke` profile via
+  `local --profile`). Don't bypass it with `--no-verify` to save time.
 
 ## Reporting back
 

@@ -5,6 +5,7 @@
 // silently skip verification, so malformed means fail closed.)
 import { validatePreviewTemplate } from "./browser.ts";
 import { evaluateCondition, normalizeCondition, type ConditionContext } from "./conditions.ts";
+import { isValidFetchDepth } from "./gitfetch.ts";
 import { MAX_JOB_OUTPUTS, isValidOutputName, parseOutputRef, type NeedsContext } from "./outputs.ts";
 import { MAX_RESTORE_KEYS, isValidRestoreKey } from "./parity.ts";
 
@@ -44,6 +45,9 @@ export interface JobSpec {
   artifacts?: JobArtifactsSpec;
   testReports?: JobTestReportsSpec;
   timeoutMinutes?: number;
+  // Checkout history (gitfetch.ts): absent/1 = shallow, N = N commits,
+  // 0 = everything (mirrors worker pipeline.ts `fetch-depth`).
+  fetchDepth?: number;
   // Managed seats only: keep the failed container alive for debugging
   // instead of destroying it (BYO runners ignore this).
   retainOnFailure?: boolean;
@@ -274,6 +278,10 @@ export function parseJobSpec(definition: string): JobSpec | null {
   if (parsed.timeoutMinutes !== undefined) {
     if (typeof parsed.timeoutMinutes !== "number" || parsed.timeoutMinutes < 1) return null;
     spec.timeoutMinutes = Math.floor(parsed.timeoutMinutes);
+  }
+  if (parsed.fetchDepth !== undefined) {
+    if (!isValidFetchDepth(parsed.fetchDepth)) return null;
+    spec.fetchDepth = parsed.fetchDepth;
   }
   if (parsed.testReports !== undefined) {
     if (!isRecord(parsed.testReports)) return null;

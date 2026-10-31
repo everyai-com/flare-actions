@@ -68,6 +68,8 @@ import {
 } from "../../../packages/runner-sdk/src/envfiles";
 import { resolveCheckUrl } from "../../../packages/runner-sdk/src/browser";
 import { matrixEnv, parseJobSpec, stepRuns, unsafeTarMember } from "../../../packages/runner-sdk/src/spec";
+import { gitFetchArgs, shellJoin } from "../../../packages/runner-sdk/src/gitfetch";
+import { CPU_PROBE_SCRIPT, cpusFromProbe } from "../../../packages/runner-sdk/src/cpus";
 import type { JobBrowserActionSpec } from "../../../packages/runner-sdk/src/spec";
 import {
   groupGrepLines,
@@ -1015,8 +1017,12 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
         }
         return out;
       };
+      // Same fetch plan as BYO runners (gitfetch.ts). Always blobless
+      // when the job asks for history: seat remotes carry their token, so
+      // a step reading an old file's contents can still fetch the blob.
+      const fetchCmd = shellJoin(gitFetchArgs({ remote: "origin", sha: run.sha, depth: spec.fetchDepth, blobless: true }));
       const checkoutVia = async (remote: string): Promise<string | null> => {
-        const script = `set -e\nrm -rf ${WORKDIR}\nmkdir -p ${WORKDIR}\ncd ${WORKDIR}\ngit init -q\ngit remote add origin ${remote}\ngit fetch -q --depth 1 origin ${run.sha}\ngit checkout -q FETCH_HEAD\n`;
+        const script = `set -e\nrm -rf ${WORKDIR}\nmkdir -p ${WORKDIR}\ncd ${WORKDIR}\ngit init -q\ngit remote add origin ${remote}\ngit ${fetchCmd}\ngit checkout -q FETCH_HEAD\n`;
         const co = await execBounded(["sh", "-s"], { stdin: script }, timing.checkoutMs ?? 180000);
         if (!co.timedOut && co.exitCode === 0) return null;
         const raw = decode(co.timedOut ? co.stderr : new Uint8Array([...co.stdout, ...co.stderr])).slice(0, 300);
@@ -1330,9 +1336,20 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
     for (const w of needsCtx.warnings) logParts.push(`[needs] ${w}`);
     if (needsCtx.truncated) logParts.push("[needs] outputs truncated to 64KB");
     for (const s of builtNeeds.skipped) logParts.push(`[needs] env skipped (name collision): ${s}`);
+    // FLARE_CPUS (runner-sdk cpus.ts): the container's CPU quota, so
+    // worker pools stop sizing themselves to the host. Best-effort: a
+    // failed probe omits it.
+    let cpus = 0;
+    try {
+      const probe = await execBounded(["sh", "-c", CPU_PROBE_SCRIPT], {}, 15000);
+      if (!probe.timedOut && probe.exitCode === 0) cpus = cpusFromProbe(decode(probe.stdout));
+    } catch {
+      // Best effort.
+    }
     const stepEnv: Record<string, string> = {
       // Same curated keys as BYO runners and `cli local` (runner-sdk
       // parity.ts); job env may still override (notably CI).
+      ...(cpus > 0 ? { FLARE_CPUS: String(cpus) } : {}),
       ...buildFlareEnv({
         repo: run.repo,
         sha: run.sha,
@@ -1818,6 +1835,9 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       JSON.stringify({
         steps: records,
         cacheHit,
+        // Same contract as the runner SDK: present only when the job
+        // declared a cache (the bottleneck report's per-check hit rate).
+        ...(spec.cache ? { cache: cacheHit ? "hit" : "miss" } : {}),
         artifacts: uploaded,
         executor: "seat",
         ...(spec.outputs ? { outputs: resolvedOutputs.outputs } : {}),

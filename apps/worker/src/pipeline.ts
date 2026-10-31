@@ -4,6 +4,7 @@ import { normalizeCondition } from "../../../packages/runner-sdk/src/conditions.
 import { MAX_JOB_OUTPUTS, isValidOutputName, parseOutputRef } from "../../../packages/runner-sdk/src/outputs.ts";
 import { MAX_RESTORE_KEYS, isValidCacheKey, isValidRestoreKey } from "../../../packages/runner-sdk/src/parity.ts";
 import { expandMatrix, parseMatrixSpec, type MatrixSpec } from "../../../packages/runner-sdk/src/matrix.ts";
+import { isValidFetchDepth } from "../../../packages/runner-sdk/src/gitfetch.ts";
 import { outputEnvName } from "../../../packages/runner-sdk/src/outputs.ts";
 import { parseTestSelectionConfig, type TestSelectionConfig } from "./testselect.ts";
 
@@ -129,6 +130,9 @@ export interface PipelineJob {
   group?: string;
   cancelInProgress?: boolean;
   timeoutMinutes?: number;
+  // Checkout history (runner-sdk gitfetch.ts): absent = shallow depth 1,
+  // N = N commits, 0 = everything. YAML key: `fetch-depth`.
+  fetchDepth?: number;
   // Retries after a failed attempt (0-5); the scheduler requeues while
   // attempts remain. Agent-friendly: flaky suites stop paging humans.
   retry?: number;
@@ -279,6 +283,7 @@ interface RawJob {
   group?: string;
   cancelInProgress: boolean;
   timeoutMinutes?: number;
+  fetchDepth?: number;
   retry?: number;
   // Split a long job into N parallel cells (2-8); each cell gets
   // FLARE_SHARD_INDEX / FLARE_SHARD_TOTAL for `vitest --shard=…`-style
@@ -430,6 +435,11 @@ function parseOneJob(name: string, def: unknown): (RawJob & { matrixSpec?: Matri
     const t = def["timeout-minutes"];
     if (typeof t !== "number" || !Number.isInteger(t) || t < 1 || t > 1440) return null;
     job.timeoutMinutes = t;
+  }
+  if (def["fetch-depth"] !== undefined) {
+    if (!isValidFetchDepth(def["fetch-depth"])) return null;
+    // 1 is the default; storing it would only add noise to definitions.
+    if (def["fetch-depth"] !== 1) job.fetchDepth = def["fetch-depth"];
   }
   if (def.retry !== undefined) {
     const r = def.retry;
@@ -722,6 +732,7 @@ export function parsePipelineWithProfiles(text: string): ParsedPipeline | null {
         if (r.group) job.group = r.group;
         if (r.cancelInProgress) job.cancelInProgress = true;
         if (r.timeoutMinutes !== undefined) job.timeoutMinutes = r.timeoutMinutes;
+        if (r.fetchDepth !== undefined) job.fetchDepth = r.fetchDepth;
         if (r.retry !== undefined) job.retry = r.retry;
         if (r.if !== undefined) job.if = r.if;
         if (r.outputs) job.outputs = r.outputs;
@@ -820,6 +831,7 @@ export function serializeDefinition(job: PipelineJob, baseName: string): string 
     needs: job.needs,
     group: job.group,
     timeoutMinutes: job.timeoutMinutes,
+    fetchDepth: job.fetchDepth,
     retry: job.retry,
     if: job.if,
     outputs: job.outputs,

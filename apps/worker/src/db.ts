@@ -4,6 +4,7 @@ import { capNeedsContext, type NeedsContext } from "../../../packages/runner-sdk
 import { readJobSpec } from "./pipeline";
 import { parsePausedRepos, SETTING_KEYS } from "./settings";
 import { ACTIONS_LIST_USD_PER_MIN } from "./cost";
+import { bottleneckHint, parseStepPairs, splitJobPhases } from "./phases";
 import { labelsMatch, splitLabels } from "./fairness";
 import { deleteJobLogIndex } from "./search";
 import { storeReceiptForRun } from "./attestation";
@@ -1492,16 +1493,45 @@ export interface BottleneckRow {
   p95Ms: number;
   queueP50Ms: number;
   failures: number;
+  // Wait / setup / run split (phases.ts), from the newest jobs that
+  // recorded steps; null when none of this check's jobs did.
+  overheadP50Ms: number | null;
+  setupP50Ms: number | null;
+  runP50Ms: number | null;
+  // Hits over hit+miss for jobs that declared a cache; null when none
+  // reported an outcome (no cache, or rows older than the field).
+  cacheHitRate: number | null;
+  cacheSamples: number;
+  hint: string | null;
+}
+
+export interface BottleneckInput {
+  name: string;
+  status: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  // Compact [[command, durationMs], ...] (bottleneckStats' phase query).
+  steps?: string | null;
+  cache?: string | null;
 }
 
 // Pure: group finished-job timings by pre-matrix check name and
-// percentile them (p50/p95 run time + p50 queue wait). This is the
-// "what's blocking the merge" report data.
-export function summarizeBottlenecks(
-  rows: { name: string; status: string; created_at: string; started_at: string | null; finished_at: string | null }[],
-  limit = 12,
-): BottleneckRow[] {
-  const groups = new Map<string, { durations: number[]; queues: number[]; failures: number }>();
+// percentile them (p50/p95 run time + p50 queue wait), then split the
+// run time into overhead / setup / run and attach the one hint worth
+// acting on. This is the "what's blocking the merge" report data.
+export function summarizeBottlenecks(rows: BottleneckInput[], limit = 12): BottleneckRow[] {
+  interface Group {
+    durations: number[];
+    queues: number[];
+    failures: number;
+    overhead: number[];
+    setup: number[];
+    run: number[];
+    cacheHits: number;
+    cacheMisses: number;
+  }
+  const groups = new Map<string, Group>();
   for (const row of rows) {
     if (!row.started_at || !row.finished_at) continue;
     const suffix = row.name.indexOf(" (");
@@ -1510,10 +1540,20 @@ export function summarizeBottlenecks(
     const started = Date.parse(row.started_at);
     const finished = Date.parse(row.finished_at);
     if (!Number.isFinite(created) || !Number.isFinite(started) || !Number.isFinite(finished)) continue;
-    const g = groups.get(check) ?? { durations: [], queues: [], failures: 0 };
-    g.durations.push(Math.max(0, finished - started));
+    const g = groups.get(check) ?? { durations: [], queues: [], failures: 0, overhead: [], setup: [], run: [], cacheHits: 0, cacheMisses: 0 };
+    const executed = Math.max(0, finished - started);
+    g.durations.push(executed);
     g.queues.push(Math.max(0, started - created));
     if (row.status === "failure" || row.status === "error") g.failures += 1;
+    const steps = parseStepPairs(row.steps);
+    if (steps) {
+      const phases = splitJobPhases(executed, steps);
+      g.overhead.push(phases.overheadMs);
+      g.setup.push(phases.setupMs);
+      g.run.push(phases.runMs);
+    }
+    if (row.cache === "hit") g.cacheHits += 1;
+    else if (row.cache === "miss") g.cacheMisses += 1;
     groups.set(check, g);
   }
   const percentile = (values: number[], p: number): number => {
@@ -1521,34 +1561,74 @@ export function summarizeBottlenecks(
     const sorted = [...values].sort((a, b) => a - b);
     return sorted[Math.min(sorted.length - 1, Math.floor(p * (sorted.length - 1)))];
   };
+  const p50OrNull = (values: number[]): number | null => (values.length > 0 ? percentile(values, 0.5) : null);
   const out: BottleneckRow[] = [];
   for (const [check, g] of groups) {
+    const cacheSamples = g.cacheHits + g.cacheMisses;
+    const summary = {
+      queueP50Ms: percentile(g.queues, 0.5),
+      overheadP50Ms: p50OrNull(g.overhead),
+      setupP50Ms: p50OrNull(g.setup),
+      runP50Ms: p50OrNull(g.run),
+      cacheHitRate: cacheSamples > 0 ? g.cacheHits / cacheSamples : null,
+      cacheSamples,
+    };
     out.push({
       check,
       jobs: g.durations.length,
       p50Ms: percentile(g.durations, 0.5),
       p95Ms: percentile(g.durations, 0.95),
-      queueP50Ms: percentile(g.queues, 0.5),
       failures: g.failures,
+      ...summary,
+      hint: bottleneckHint(summary),
     });
   }
   out.sort((a, b) => b.p95Ms - a.p95Ms || b.p50Ms - a.p50Ms);
   return out.slice(0, limit);
 }
 
+// The phase split parses result JSON, so it samples fewer jobs than the
+// timing scan; 500 recent jobs is plenty for p50s.
+export const PHASE_SAMPLE_JOBS = 500;
+
 // Job timings for a repo over the window, summarized per check. Bounded
-// scan (4000 recent finished jobs); best-effort like every stats read.
+// scans (4000 recent finished jobs for timings, the newest
+// PHASE_SAMPLE_JOBS of them for the phase split); best-effort like
+// every stats read.
 export async function bottleneckStats(db: Db, repo: string, days = 14, limit = 12): Promise<BottleneckRow[]> {
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
   const res = await db
     .prepare(
-      `SELECT j.name, j.status, j.created_at, j.started_at, j.finished_at FROM jobs j JOIN runs r ON r.id = j.run_id
+      `SELECT j.id, j.name, j.status, j.created_at, j.started_at, j.finished_at FROM jobs j JOIN runs r ON r.id = j.run_id
        WHERE r.repo = ? AND j.created_at >= ? AND j.finished_at IS NOT NULL
        ORDER BY j.created_at DESC LIMIT 4000`,
     )
     .bind(repo, since)
-    .all<{ name: string; status: string; created_at: string; started_at: string | null; finished_at: string | null }>();
-  return summarizeBottlenecks(res.results, limit);
+    .all<BottleneckInput & { id: string }>();
+  // Only [command, durationMs] pairs and the cache outcome cross the
+  // wire, never step output. json_valid guards legacy/foreign rows (a
+  // malformed result would otherwise fail the whole query) and the
+  // type filter skips non-object step entries.
+  const phases = await db
+    .prepare(
+      `SELECT j.id,
+         CASE WHEN json_valid(j.result) THEN json_extract(j.result, '$.cache') END AS cache,
+         (SELECT json_group_array(json_array(substr(s.cmd, 1, 120), s.ms)) FROM (
+            SELECT json_extract(e.value, '$.command') AS cmd, json_extract(e.value, '$.durationMs') AS ms
+            FROM json_each(CASE WHEN json_valid(j.result) THEN j.result ELSE '{}' END, '$.steps') e
+            WHERE e.type = 'object' LIMIT 50) s) AS steps
+       FROM jobs j JOIN runs r ON r.id = j.run_id
+       WHERE r.repo = ? AND j.created_at >= ? AND j.finished_at IS NOT NULL
+       ORDER BY j.created_at DESC LIMIT ${PHASE_SAMPLE_JOBS}`,
+    )
+    .bind(repo, since)
+    .all<{ id: string; cache: string | null; steps: string | null }>();
+  const byId = new Map(phases.results.map((p) => [p.id, p]));
+  const rows = res.results.map((row) => {
+    const p = byId.get(row.id);
+    return p ? { ...row, steps: p.steps, cache: p.cache } : row;
+  });
+  return summarizeBottlenecks(rows, limit);
 }
 
 export interface QuarantinedTestRow {

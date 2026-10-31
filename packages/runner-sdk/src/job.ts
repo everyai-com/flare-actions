@@ -3,7 +3,7 @@ import { basename, join, relative, sep } from "node:path";
 import { createTar, restoreCache, safeCachePaths, saveCache, type CacheClient } from "./cache.ts";
 import { executeSteps } from "./execute.ts";
 import { buildNeedsEnv, formatOutputsLine, resolveJobOutputs, type NeedsContext } from "./outputs.ts";
-import { formatBytes, JobResourceMonitor, type ResourceMonitor, type ResourcePeaks } from "./resources.ts";
+import { detectCpus, formatBytes, JobResourceMonitor, type ResourceMonitor, type ResourcePeaks } from "./resources.ts";
 import { interpolateSecrets, maskSecrets } from "./secrets.ts";
 import { dockerServicesCtl, type ServiceHandle, type ServicesCtl } from "./services.ts";
 import { matrixEnv, type JobServiceSpec, type JobSpec } from "./spec.ts";
@@ -306,9 +306,19 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
       for (const s of builtNeeds.skipped) logParts.push(`[needs] env skipped (name collision): ${s}`);
       // GitHub parity: CI=true for every step (enables tool retries and
       // non-interactive modes); runner env or job env may override it.
-      const stepEnv = { CI: "true", ...opts.env, ...builtNeeds.env, ...jobEnv, ...matrix };
+      // FLARE_CPUS (cpus.ts) sizes worker pools to the CPU quota, not
+      // the host's cores; an operator or the job may pin it.
+      const stepEnv = { CI: "true", FLARE_CPUS: String(detectCpus()), ...opts.env, ...builtNeeds.env, ...jobEnv, ...matrix };
       const forwardKeys = spec.container
-        ? [...new Set([...Object.keys(jobEnv), ...Object.keys(matrix), ...Object.keys(opts.env).filter((k) => k.startsWith("FLARE_")), ...Object.keys(builtNeeds.env)])]
+        ? [
+            ...new Set([
+              "FLARE_CPUS",
+              ...Object.keys(jobEnv),
+              ...Object.keys(matrix),
+              ...Object.keys(opts.env).filter((k) => k.startsWith("FLARE_")),
+              ...Object.keys(builtNeeds.env),
+            ]),
+          ]
         : undefined;
       // Preserve per-step flags (continue-on-error, if) — dropping them
       // here would silently disable both on every executor that runs
@@ -365,6 +375,9 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
           JSON.stringify({
             steps: outcome.results,
             cacheHit,
+            // cacheHit alone cannot tell "no cache" from "missed"; the
+            // bottleneck report's per-check hit rate reads this.
+            ...(spec.cache ? { cache: cacheHit ? "hit" : "miss" } : {}),
             artifacts,
             ...(spec.outputs ? { outputs: resolved.outputs } : {}),
             ...(peaks.peakRssBytes > 0 ? { peakRssBytes: peaks.peakRssBytes } : {}),

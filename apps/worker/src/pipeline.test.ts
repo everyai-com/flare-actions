@@ -158,6 +158,19 @@ describe("parsePipeline v2 keys", () => {
     expect(readRetryPolicy("junk")).toBe(0);
   });
 
+  it("parses fetch-depth, keeps the default out of definitions, rejects junk", () => {
+    const full = parsePipeline("jobs:\n  a:\n    fetch-depth: 0\n    strategy:\n      matrix:\n        node: [18, 20]\n    steps:\n      - run: x\n");
+    // Every matrix cell inherits the job's checkout depth.
+    expect(full?.map((j) => j.fetchDepth)).toEqual([0, 0]);
+    expect(JSON.parse(serializeDefinition(full![0], "a")).fetchDepth).toBe(0);
+    expect(parsePipeline("jobs:\n  a:\n    fetch-depth: 50\n    steps:\n      - run: x\n")?.[0].fetchDepth).toBe(50);
+    const shallow = parsePipeline("jobs:\n  a:\n    fetch-depth: 1\n    steps:\n      - run: x\n");
+    expect(shallow?.[0].fetchDepth).toBeUndefined();
+    expect("fetchDepth" in JSON.parse(serializeDefinition(shallow![0], "a"))).toBe(false);
+    expect(parsePipeline("jobs:\n  a:\n    fetch-depth: -1\n    steps:\n      - run: x\n")).toBeNull();
+    expect(parsePipeline("jobs:\n  a:\n    fetch-depth: full\n    steps:\n      - run: x\n")).toBeNull();
+  });
+
   it("parses per-step timeout/shell and job-level conditions", () => {
     const jobs = parsePipeline(
       "jobs:\n  a:\n    if: always()\n    steps:\n      - run: x\n        timeout-minutes: 5\n        shell: bash\n",

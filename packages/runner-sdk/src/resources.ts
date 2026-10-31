@@ -9,6 +9,9 @@
 // shims — the work footprint, not the runner baseline (the runner's
 // own RSS is constant overhead and excluded).
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { availableParallelism } from "node:os";
+import { effectiveCpus } from "./cpus.ts";
 
 export interface TreeUsage {
   rssBytes: number;
@@ -168,4 +171,23 @@ export class JobResourceMonitor implements ResourceMonitor {
       this.busy = false;
     }
   }
+}
+
+function readTrimmed(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+
+// FLARE_CPUS for BYO runners and `cli local` (cpus.ts): the cgroup quota
+// this process runs under (v2, then v1), capped by the visible cores.
+// Machines without cgroups (macOS, bare metal) report their cores.
+export function detectCpus(): number {
+  const v2 = readTrimmed("/sys/fs/cgroup/cpu.max");
+  if (v2 !== null) return effectiveCpus(availableParallelism(), v2);
+  const quota = readTrimmed("/sys/fs/cgroup/cpu/cpu.cfs_quota_us");
+  const period = readTrimmed("/sys/fs/cgroup/cpu/cpu.cfs_period_us");
+  return effectiveCpus(availableParallelism(), quota !== null && period !== null ? `${quota} ${period}` : null);
 }

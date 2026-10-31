@@ -36,6 +36,19 @@ describe("runLocal", () => {
     expect(existsSync(join(dir, "out.txt"))).toBe(true);
   });
 
+  it("runs only a profile's jobs, with the cloud's selection rules", async () => {
+    const dir = workspace({
+      "flare.yml":
+        "jobs:\n  lint:\n    tags: [fast]\n    steps:\n      - run: echo lint > lint.txt\n  e2e:\n    steps:\n      - run: echo e2e > e2e.txt\nprofiles:\n  smoke: {include: [fast]}\n",
+    });
+    const res = await runLocal({ cwd: dir, cacheDir: cacheDir(), env: { ...process.env }, quiet: true, profile: "smoke" });
+    expect(res.jobs.map((j) => j.name)).toEqual(["lint"]);
+    expect(existsSync(join(dir, "e2e.txt"))).toBe(false);
+    await expect(runLocal({ cwd: dir, cacheDir: cacheDir(), quiet: true, profile: "nope" })).rejects.toThrow(
+      /unknown profile "nope" \(available: smoke\)/,
+    );
+  });
+
   it("restores caches through restore-keys across runs", async () => {
     const cdir = cacheDir();
     const dir = workspace({

@@ -8,6 +8,7 @@ import {
   type FlareRunDigest,
 } from "flare-actions-runner-sdk";
 import { formatParityReport, runLocal, runLocalParity } from "./local.ts";
+import { installHook, uninstallHook } from "./hook.ts";
 import { dispatchSource, readLocalPipeline } from "./source.ts";
 import { formatPlan } from "./dryrun.ts";
 import { runInit } from "./init.ts";
@@ -112,8 +113,9 @@ const USAGE_LINES = [
   "  append --dry-run to run/dispatch           plan the fan-out (queued/blocked/budget) without creating a run",
   "  cli watch <runId>                          wait for a run and print the compact digest",
   "  cli explain <runId>                        one narrative: verdict, failures, next command",
-  "  cli local [job] [--file flare.yml]         run the pipeline in this directory (no server, warm cache)",
+  "  cli local [job] [--file flare.yml] [--profile p]  run the pipeline here (no server, warm cache; p = flare.yml profile)",
   "  cli local --parity [--file] [job]          report local-vs-cloud divergences (image, cache, env) without running",
+  "  cli hook install|uninstall [--profile p] [--run cmd] [--force]  pre-push hook: run the fast checks before every push",
   "",
   "Runs:",
   "  cli runs [agent]                          list recent runs, optionally one agent's",
@@ -128,7 +130,7 @@ const USAGE_LINES = [
   "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
   "  cli search <query...>                       search all job logs (branch:main level:error ...)",
   "  cli flaky <repo> [days]                     per-job failure rates, worst first",
-  "  cli bottlenecks <repo> [days]               slowest checks: p50/p95 run time + queue wait",
+  "  cli bottlenecks <repo> [days]               slowest checks: wait / setup / run split + cache hit rate",
   "  cli quarantine list <repo>                  quarantined (flaky) tests for a repo",
   "  cli quarantine add <repo> <test>            move a test out of the blocking gate",
   "  cli quarantine remove <repo> <test>         reinstate a quarantined test",
@@ -407,17 +409,18 @@ try {
     let file: string | undefined;
     const positional: string[] = [];
     let parity = false;
-    for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === "--file") {
-        file = rest[++i];
-      } else if (rest[i] === "--parity") {
+    const { args: localArgs, profile } = takeProfile(rest);
+    for (let i = 0; i < localArgs.length; i++) {
+      if (localArgs[i] === "--file") {
+        file = localArgs[++i];
+      } else if (localArgs[i] === "--parity") {
         parity = true;
       } else {
-        positional.push(rest[i]);
+        positional.push(localArgs[i]);
       }
     }
     if (parity) {
-      const report = runLocalParity({ cwd: process.cwd(), file, job: positional[0], quiet: true });
+      const report = runLocalParity({ cwd: process.cwd(), file, job: positional[0], quiet: true, ...(profile !== undefined ? { profile } : {}) });
       if (JSON_MODE) printJson("local", report);
       else {
         console.log(formatParityReport(report));
@@ -428,12 +431,46 @@ try {
         cwd: process.cwd(),
         file,
         job: positional[0],
+        ...(profile !== undefined ? { profile } : {}),
         ...(JSON_MODE ? { quiet: true } : {}),
       });
       if (JSON_MODE) printJson("local", result);
       else if (result.ok) next(`run ${gitRepo() ?? "owner/repo"} --source`, "passed here; now check it on the server, no commit needed");
-      else nextPlain(`fix the failing step above, then ${CLI} local${positional[0] ? ` ${positional[0]}` : ""}`);
+      else nextPlain(`fix the failing step above, then ${CLI} local${positional[0] ? ` ${positional[0]}` : ""}${profile ? ` --profile ${profile}` : ""}`);
       process.exitCode = result.ok ? 0 : 1;
+    }
+  } else if (cmd === "hook" && (rest[0] === "install" || rest[0] === "uninstall")) {
+    if (rest[0] === "uninstall") {
+      const out = uninstallHook(process.cwd());
+      if (JSON_MODE) printJson("hook", out);
+      else if (!out.removed) console.log(`No flare pre-push hook at ${out.path}; nothing removed.`);
+      else console.log(`Removed ${out.path}${out.restored ? " and restored the hook it replaced" : ""}.`);
+    } else {
+      const { args: hookArgs, profile } = takeProfile(rest.slice(1));
+      const runAt = hookArgs.indexOf("--run");
+      const run = runAt === -1 ? undefined : hookArgs[runAt + 1];
+      if (runAt !== -1 && !run?.trim()) badValue("--run needs a command.", 'hook install --run "npm run lint && npm run typecheck"');
+      let out;
+      try {
+        out = installHook({
+          cwd: process.cwd(),
+          ...(run !== undefined ? { run } : {}),
+          ...(profile !== undefined ? { profile } : {}),
+          force: hookArgs.includes("--force"),
+        });
+      } catch (err) {
+        console.error(String((err as Error)?.message ?? err));
+        process.exit(1);
+      }
+      if (JSON_MODE) printJson("hook", out);
+      else {
+        console.log(`Installed ${out.path}: runs \`${out.command}\` before every push (${out.why}).`);
+        if (out.backup) console.log(`The previous hook is saved at ${out.backup}; \`hook uninstall\` restores it.`);
+        console.log("Skip once with git push --no-verify.");
+        const viaCli = /^npx flare-forge-cli (.+)$/.exec(out.command);
+        if (viaCli) next(viaCli[1], "run the same checks now");
+        else nextPlain(`run the same checks now: ${out.command}`);
+      }
     }
   } else if (cmd === "run" && rest[0]) {
     const { args: noPriority, priority } = takePriority(rest);
@@ -559,11 +596,18 @@ try {
     const checks = await client().getBottlenecks(rest[0], days);
     if (JSON_MODE) printJson("bottlenecks", { repo: rest[0], days, checks });
     else {
-      console.log("check\tp50\tp95\tqueue p50\tjobs\tfailed");
+      // wait / overhead / setup / run are p50s, so they need not sum to p50.
+      console.log("check\tp50\tp95\twait\toverhead\tsetup\trun\tcache\tjobs\tfailed");
+      const secs = (ms: number | null | undefined) => (typeof ms === "number" ? `${(ms / 1000).toFixed(1)}s` : "-");
+      const pct = (rate: number | null | undefined) => (typeof rate === "number" ? `${Math.round(rate * 100)}%` : "-");
       for (const c of checks) {
-        const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
-        console.log(`${c.check}\t${secs(c.p50Ms)}\t${secs(c.p95Ms)}\t${secs(c.queueP50Ms)}\t${c.jobs}\t${c.failures}`);
+        console.log(
+          `${c.check}\t${secs(c.p50Ms)}\t${secs(c.p95Ms)}\t${secs(c.queueP50Ms)}\t${secs(c.overheadP50Ms)}\t${secs(c.setupP50Ms)}\t${secs(c.runP50Ms)}\t${pct(c.cacheHitRate)}\t${c.jobs}\t${c.failures}`,
+        );
       }
+      const hinted = checks.filter((c) => c.hint);
+      if (hinted.length > 0) console.log("");
+      for (const c of hinted) console.log(`${c.check}: ${c.hint}`);
       if (checks.length === 0) {
         console.log("(no finished jobs in the window)");
         next(`run ${rest[0]} HEAD`, "run a check first");

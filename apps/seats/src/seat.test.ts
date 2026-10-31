@@ -292,6 +292,8 @@ class FakeContainer implements ContainerCtl {
   trunkStdout = "FLARE_TRUNK_PUSHED\n";
   trunkStderr = "";
   coStderr = "";
+  // CPU probe answer: 8 visible cores under a 2-CPU cgroup quota.
+  cpuProbe = "8\n200000 100000\n";
   // Test-report scan listing (one absolute path per line) and the bytes
   // served for cat calls that hit those paths.
   testScan = "";
@@ -413,6 +415,9 @@ class FakeContainer implements ContainerCtl {
     if (cmd[0] === "test" && cmd[1] === "-x") return { exitCode: this.shimPresent ? 0 : 1 };
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("grep -qa FLARE_EGRESS_ALLOW")) {
       return { exitCode: this.shimEnforcing ? 0 : 1 };
+    }
+    if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("nproc")) {
+      return { exitCode: 0, stdout: bytes(this.cpuProbe) };
     }
     if (cmd[0] === "sh" && cmd[1] === "-c" && cmd[2]?.startsWith("cat /sys/fs/cgroup")) {
       return { exitCode: 0, stdout: bytes("123456") };
@@ -614,6 +619,8 @@ describe("runSeatJob", () => {
     expect(container.destroys).toBe(1);
     const stepCall = container.calls.find((c) => c.cmd[2]?.startsWith("sh -s >"));
     expect(stepCall?.opts?.env).toMatchObject({ TAG: "v1", FLARE_MATRIX_NODE: "20", FLARE_REPO: "o/r", FLARE_REF: "main", FLARE_CHANGED_FILES: "", CI: "true" });
+    // The container's quota, not its 8 visible cores.
+    expect(stepCall?.opts?.env?.["FLARE_CPUS"]).toBe("2");
     expect(stepCall?.opts?.stdin).toBe("echo one");
     expect(stepCall?.opts?.cwd).toBe("/work");
     // FETCH_HEAD (not the raw ref) so branch names and HEAD resolve.
@@ -1936,7 +1943,7 @@ describe("runSeatJob", () => {
     const out = await runSeatJob(deps(db, container), "j1");
     expect(out.status).toBe("completed");
     expect(db.jobs.get("j1")?.log as string).toContain("skipped (needs.build.result == 'failure')");
-    const stepCall = container.calls.find((c) => c.cmd[0] === "sh" && c.cmd[1] === "-c");
+    const stepCall = container.calls.find((c) => c.cmd[2]?.startsWith("sh -s >"));
     expect(stepCall?.opts?.env).toMatchObject({ FLARE_NEEDS_BUILD_TAG: "v1", FLARE_NEEDS_BUILD_RESULT: "success" });
   });
 

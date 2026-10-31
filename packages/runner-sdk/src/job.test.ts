@@ -123,6 +123,12 @@ describe("runJob", () => {
       );
       expect(res.success).toBe(true);
       expect(res.log).toContain("v1-20");
+      const pinned = await runJob(
+        { steps: [{ run: "echo cpus=$FLARE_CPUS" }], env: { FLARE_CPUS: "3" } },
+        { cwd: dir, env: { ...process.env }, client: fakeClient(), jobId: "j2" },
+      );
+      // Detected by default; the job may pin it.
+      expect(pinned.log).toContain("cpus=3");
       expect(JSON.parse(res.resultJson).steps).toHaveLength(1);
       expect(res.artifacts).toEqual([]);
     } finally {
@@ -149,6 +155,25 @@ describe("runJob", () => {
       );
       expect(again.success).toBe(false);
       expect(client.store.has("k2")).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("records the cache outcome only when a cache is declared", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-cache-outcome-"));
+    try {
+      mkdirSync(join(dir, "data"), { recursive: true });
+      writeFileSync(join(dir, "data", "f"), "v");
+      const client = fakeClient();
+      const spec = { steps: [{ run: "echo hi" }], cache: { key: "k", paths: ["data"] } };
+      const cold = await runJob(spec, { cwd: dir, env: { ...process.env }, client, jobId: "j1" });
+      expect(JSON.parse(cold.resultJson).cache).toBe("miss");
+      const warm = await runJob(spec, { cwd: dir, env: { ...process.env }, client, jobId: "j2" });
+      expect(JSON.parse(warm.resultJson).cache).toBe("hit");
+      // No cache declared: absent, so the hit rate never counts it as a miss.
+      const none = await runJob({ steps: [{ run: "echo hi" }] }, { cwd: dir, env: { ...process.env }, client, jobId: "j3" });
+      expect(JSON.parse(none.resultJson)).not.toHaveProperty("cache");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

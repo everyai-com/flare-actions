@@ -1917,7 +1917,7 @@ paths:
     get:
       tags: [analytics]
       operationId: bottleneckStats
-      summary: Slowest checks for a repo (p50/p95 run time + median queue wait)
+      summary: Slowest checks for a repo (p50/p95 run time, wait / setup / run split, cache hit rate)
       security:
         - bearerAuth: []
       parameters:
@@ -1965,6 +1965,28 @@ paths:
                           type: number
                         failures:
                           type: integer
+                        overheadP50Ms:
+                          type: number
+                          nullable: true
+                          description: Claimed-to-finished time outside every step (checkout, cache transfer, services, artifacts); null when no sampled job recorded steps
+                        setupP50Ms:
+                          type: number
+                          nullable: true
+                          description: Install / toolchain step time
+                        runP50Ms:
+                          type: number
+                          nullable: true
+                          description: Time in the steps that check something (lint, typecheck, tests)
+                        cacheHitRate:
+                          type: number
+                          nullable: true
+                          description: Hits over hit+miss for jobs that declared a cache; null when none reported an outcome
+                        cacheSamples:
+                          type: integer
+                        hint:
+                          type: string
+                          nullable: true
+                          description: The single biggest lever for this check, or null
   /v1/flaky:
     get:
       tags: [analytics]
