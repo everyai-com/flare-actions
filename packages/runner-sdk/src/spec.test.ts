@@ -51,6 +51,12 @@ describe("parseJobSpec", () => {
     expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x", shell: "sh -c evil" }] }))).toBeNull();
   });
 
+  it("reads fetchDepth and fails closed on a malformed one", () => {
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], fetchDepth: 0 }))?.fetchDepth).toBe(0);
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }] }))?.fetchDepth).toBeUndefined();
+    expect(parseJobSpec(JSON.stringify({ steps: [{ run: "x" }], fetchDepth: "0" }))).toBeNull();
+  });
+
   it("rejects bad steps and bad option shapes", () => {
     expect(parseJobSpec("")).toBeNull();
     expect(parseJobSpec(JSON.stringify({ steps: [] }))).toBeNull();

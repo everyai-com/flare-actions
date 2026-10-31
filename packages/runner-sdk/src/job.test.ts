@@ -123,6 +123,12 @@ describe("runJob", () => {
       );
       expect(res.success).toBe(true);
       expect(res.log).toContain("v1-20");
+      const pinned = await runJob(
+        { steps: [{ run: "echo cpus=$FLARE_CPUS" }], env: { FLARE_CPUS: "3" } },
+        { cwd: dir, env: { ...process.env }, client: fakeClient(), jobId: "j2" },
+      );
+      // Detected by default; the job may pin it.
+      expect(pinned.log).toContain("cpus=3");
       expect(JSON.parse(res.resultJson).steps).toHaveLength(1);
       expect(res.artifacts).toEqual([]);
     } finally {

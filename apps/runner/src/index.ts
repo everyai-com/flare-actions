@@ -129,6 +129,7 @@ async function pollOnce(): Promise<boolean> {
         sha: job.sha,
         dir: srcdir,
         token: process.env["GITHUB_TOKEN"],
+        ...(spec.fetchDepth !== undefined ? { fetchDepth: spec.fetchDepth } : {}),
       });
     }
     // Smart test selection: the claim carries the server's safety-net

@@ -33,6 +33,7 @@ jobs:
       paths: [dist]
     env: { TAG: v1 }               # extra step env; ${{ env.TAG }} in steps
     timeout-minutes: 30            # whole job (default 30, max 1440)
+    fetch-depth: 0                 # checkout history: 1 shallow (default), N commits, 0 all + tags
     retry: 2                       # requeue failed jobs up to 2 extra tries
     shards: 4                      # split into 4 cells (2-8) with FLARE_SHARD_*
     steps:
@@ -95,7 +96,21 @@ jobs:
   `FLARE_JOB_ID`, `FLARE_REF` (branch; empty for tags/source runs), and
   `FLARE_MATRIX_*` are always set. `FLARE_CHANGED_FILES` carries the
   run's changed files (newline-separated; empty = unknown) for
-  changed-file test selection.
+  changed-file test selection. `FLARE_CPUS` is the CPU count the job
+  may actually use: the cgroup quota, not the host's cores that `nproc`
+  reports inside containers. Size worker pools with it
+  (`vitest --maxWorkers=$FLARE_CPUS`, `make -j$FLARE_CPUS`); job `env`
+  may pin it.
+- **Checkout** is a shallow single-commit fetch by default, the fastest
+  start when nothing reads history. `fetch-depth: N` fetches N commits
+  and `fetch-depth: 0` all history plus tags; both also fetch every
+  branch head, so `origin/main` exists for `git merge-base`, `nx
+  affected` and `turbo --filter=[origin/main]`. History comes blobless
+  (`--filter=blob:none`, file contents only for the checked-out tree)
+  on seats and on BYO runners without a `GITHUB_TOKEN`; a BYO runner
+  with a token fetches contents too, because steps run without the
+  credential and could not fetch a missing blob later. The Actions
+  importer carries `actions/checkout`'s `fetch-depth` over.
 - **Shards** split a long job into parallel cells (`shards: 2-8`): each
   cell runs the same steps with `FLARE_SHARD_INDEX` (1-based) and
   `FLARE_SHARD_TOTAL` set, so a suite can shard itself:

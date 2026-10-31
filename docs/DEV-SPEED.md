@@ -127,3 +127,11 @@ Run `npm run check` after every change instead of full-repo commands.
 It is scoped (fast), serialized (won't thrash with sibling agents), and
 loud about which step failed. Before pushing, `npm run check -- --full`
 plus `npm run deploy:dry` matches what CI will do.
+
+`npm run cli -- hook install` makes the push itself the gate: a git
+pre-push hook that runs `npm run check` (any repo: its `check` script,
+else a `pre-push`/`smoke`/`fast` profile through `cli local --profile`,
+else the whole pipeline). Agents skip steps written in AGENTS.md during
+long sessions; they cannot skip a hook without `--no-verify`. It never
+replaces a hook it did not write (husky, lefthook) without `--force`,
+which keeps a backup that `hook uninstall` restores.

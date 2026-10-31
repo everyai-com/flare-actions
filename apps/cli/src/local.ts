@@ -25,7 +25,7 @@ import {
   type RunJobResult,
 } from "flare-actions-runner-sdk";
 import { collectWorkspaceFiles } from "../../../packages/runner-sdk/src/testselect-fs.ts";
-import { parsePipeline, seatEligible, serializeDefinition, type PipelineJob } from "../../worker/src/pipeline.ts";
+import { parsePipeline, parsePipelineWithProfiles, seatEligible, selectProfileJobs, serializeDefinition, type PipelineJob } from "../../worker/src/pipeline.ts";
 import { buildCompatJobs, type WorkflowFile } from "../../worker/src/actionsCompat.ts";
 
 // `cli local`: run flare.yml in the current working tree, on this
@@ -55,6 +55,9 @@ export interface LocalOptions {
   file?: string;
   // Run only this job (pre-matrix base name or exact expanded name).
   job?: string;
+  // Run only this flare.yml profile's jobs (same selection as a cloud
+  // dispatch with `--profile`), e.g. a fast set for the pre-push hook.
+  profile?: string;
   env?: NodeJS.ProcessEnv;
   // Override the persistent cache directory (tests).
   cacheDir?: string;
@@ -281,8 +284,19 @@ function loadLocalJobs(opts: LocalOptions): LoadedJobs {
   let jobs: PipelineJob[] | null = null;
   let sourceLabel = filePath;
   if (existsSync(filePath)) {
-    jobs = parsePipeline(readFileSync(filePath, "utf8"));
-    if (!jobs) throw new Error(`${filePath} failed validation (see docs/PIPELINES.md)`);
+    const text = readFileSync(filePath, "utf8");
+    if (opts.profile) {
+      const parsed = parsePipelineWithProfiles(text);
+      if (!parsed) throw new Error(`${filePath} failed validation (see docs/PIPELINES.md)`);
+      const picked = selectProfileJobs(parsed.jobs, parsed.profiles, { override: opts.profile });
+      if ("error" in picked) throw new Error(`${picked.error} in ${filePath}`);
+      jobs = picked.jobs;
+    } else {
+      jobs = parsePipeline(text);
+      if (!jobs) throw new Error(`${filePath} failed validation (see docs/PIPELINES.md)`);
+    }
+  } else if (opts.profile) {
+    throw new Error(`--profile needs a flare.yml (${filePath} not found); .github/workflows have no profiles`);
   } else if (!opts.file) {
     // No flare.yml: fall back to this tree's .github/workflows files —
     // the same compatibility path the server uses for repos without

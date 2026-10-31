@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
+import { gitFetchArgs } from "./gitfetch.ts";
 
 export interface CheckoutOptions {
   repo: string;
@@ -7,6 +8,9 @@ export interface CheckoutOptions {
   dir: string;
   token?: string;
   timeoutMs?: number;
+  // Job `fetch-depth` (gitfetch.ts): 1 = shallow (default), N = N
+  // commits of history, 0 = all of it.
+  fetchDepth?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 180000;
@@ -58,9 +62,10 @@ export async function gitAvailable(): Promise<boolean> {
   }
 }
 
-// Shallow-checkout repo@sha into dir. Public repos need no token;
-// private repos need a token with repo read (e.g. GITHUB_TOKEN).
-// The token never appears in argv, logs, or errors.
+// Check out repo@sha into dir: shallow by default, with history when the
+// job sets fetch-depth. Public repos need no token; private repos need a
+// token with repo read (e.g. GITHUB_TOKEN). The token never appears in
+// argv, logs, or errors.
 export async function checkoutRepo(opts: CheckoutOptions, urlOverride?: string): Promise<void> {
   if (!/^[\w.-]+\/[\w.-]+$/.test(opts.repo)) throw new Error(`invalid repo: ${opts.repo}`);
   if (!/^[\w.-]+$/.test(opts.sha)) throw new Error(`invalid sha: ${opts.sha}`);
@@ -72,7 +77,12 @@ export async function checkoutRepo(opts: CheckoutOptions, urlOverride?: string):
   try {
     await git(["init", "-q"], opts.dir, timeoutMs, env);
     await git(["remote", "add", "origin", url], opts.dir, timeoutMs, env);
-    await git(["fetch", "-q", "--depth", "1", "origin", opts.sha], opts.dir, timeoutMs, env);
+    // Blobless only without a token: the credential lives in this
+    // process's env, never in .git/config, so a step that later reads an
+    // old file's contents could not fetch the missing blob from a
+    // private repo. With a token, history comes with its blobs.
+    const args = gitFetchArgs({ remote: "origin", sha: opts.sha, depth: opts.fetchDepth, blobless: !opts.token });
+    await git(args, opts.dir, timeoutMs, env);
     await git(["checkout", "-q", opts.sha], opts.dir, timeoutMs, env);
   } catch (err) {
     // Belt and braces: scrub the token if a git error ever echoes it.

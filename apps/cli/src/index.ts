@@ -8,6 +8,7 @@ import {
   type FlareRunDigest,
 } from "flare-actions-runner-sdk";
 import { formatParityReport, runLocal, runLocalParity } from "./local.ts";
+import { installHook, uninstallHook } from "./hook.ts";
 import { dispatchSource, readLocalPipeline } from "./source.ts";
 import { formatPlan } from "./dryrun.ts";
 import { runInit } from "./init.ts";
@@ -112,8 +113,9 @@ const USAGE_LINES = [
   "  append --dry-run to run/dispatch           plan the fan-out (queued/blocked/budget) without creating a run",
   "  cli watch <runId>                          wait for a run and print the compact digest",
   "  cli explain <runId>                        one narrative: verdict, failures, next command",
-  "  cli local [job] [--file flare.yml]         run the pipeline in this directory (no server, warm cache)",
+  "  cli local [job] [--file flare.yml] [--profile p]  run the pipeline here (no server, warm cache; p = flare.yml profile)",
   "  cli local --parity [--file] [job]          report local-vs-cloud divergences (image, cache, env) without running",
+  "  cli hook install|uninstall [--profile p] [--run cmd] [--force]  pre-push hook: run the fast checks before every push",
   "",
   "Runs:",
   "  cli runs [agent]                          list recent runs, optionally one agent's",
@@ -407,17 +409,18 @@ try {
     let file: string | undefined;
     const positional: string[] = [];
     let parity = false;
-    for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === "--file") {
-        file = rest[++i];
-      } else if (rest[i] === "--parity") {
+    const { args: localArgs, profile } = takeProfile(rest);
+    for (let i = 0; i < localArgs.length; i++) {
+      if (localArgs[i] === "--file") {
+        file = localArgs[++i];
+      } else if (localArgs[i] === "--parity") {
         parity = true;
       } else {
-        positional.push(rest[i]);
+        positional.push(localArgs[i]);
       }
     }
     if (parity) {
-      const report = runLocalParity({ cwd: process.cwd(), file, job: positional[0], quiet: true });
+      const report = runLocalParity({ cwd: process.cwd(), file, job: positional[0], quiet: true, ...(profile !== undefined ? { profile } : {}) });
       if (JSON_MODE) printJson("local", report);
       else {
         console.log(formatParityReport(report));
@@ -428,12 +431,46 @@ try {
         cwd: process.cwd(),
         file,
         job: positional[0],
+        ...(profile !== undefined ? { profile } : {}),
         ...(JSON_MODE ? { quiet: true } : {}),
       });
       if (JSON_MODE) printJson("local", result);
       else if (result.ok) next(`run ${gitRepo() ?? "owner/repo"} --source`, "passed here; now check it on the server, no commit needed");
-      else nextPlain(`fix the failing step above, then ${CLI} local${positional[0] ? ` ${positional[0]}` : ""}`);
+      else nextPlain(`fix the failing step above, then ${CLI} local${positional[0] ? ` ${positional[0]}` : ""}${profile ? ` --profile ${profile}` : ""}`);
       process.exitCode = result.ok ? 0 : 1;
+    }
+  } else if (cmd === "hook" && (rest[0] === "install" || rest[0] === "uninstall")) {
+    if (rest[0] === "uninstall") {
+      const out = uninstallHook(process.cwd());
+      if (JSON_MODE) printJson("hook", out);
+      else if (!out.removed) console.log(`No flare pre-push hook at ${out.path}; nothing removed.`);
+      else console.log(`Removed ${out.path}${out.restored ? " and restored the hook it replaced" : ""}.`);
+    } else {
+      const { args: hookArgs, profile } = takeProfile(rest.slice(1));
+      const runAt = hookArgs.indexOf("--run");
+      const run = runAt === -1 ? undefined : hookArgs[runAt + 1];
+      if (runAt !== -1 && !run?.trim()) badValue("--run needs a command.", 'hook install --run "npm run lint && npm run typecheck"');
+      let out;
+      try {
+        out = installHook({
+          cwd: process.cwd(),
+          ...(run !== undefined ? { run } : {}),
+          ...(profile !== undefined ? { profile } : {}),
+          force: hookArgs.includes("--force"),
+        });
+      } catch (err) {
+        console.error(String((err as Error)?.message ?? err));
+        process.exit(1);
+      }
+      if (JSON_MODE) printJson("hook", out);
+      else {
+        console.log(`Installed ${out.path}: runs \`${out.command}\` before every push (${out.why}).`);
+        if (out.backup) console.log(`The previous hook is saved at ${out.backup}; \`hook uninstall\` restores it.`);
+        console.log("Skip once with git push --no-verify.");
+        const viaCli = /^npx flare-forge-cli (.+)$/.exec(out.command);
+        if (viaCli) next(viaCli[1], "run the same checks now");
+        else nextPlain(`run the same checks now: ${out.command}`);
+      }
     }
   } else if (cmd === "run" && rest[0]) {
     const { args: noPriority, priority } = takePriority(rest);

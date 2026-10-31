@@ -3,6 +3,7 @@ import { normalizeJobCondition, normalizeStepCondition } from "./spec.ts";
 import { MAX_JOB_OUTPUTS, isValidOutputName } from "./outputs.ts";
 import { MAX_RESTORE_KEYS } from "./parity.ts";
 import { expandMatrix, isValidMatrixKey, matrixScalar, parseMatrixSpec } from "./matrix.ts";
+import { isValidFetchDepth } from "./gitfetch.ts";
 
 // GitHub Actions workflow -> flare.yml translator. Pure and lossless
 // where the models overlap; everything else becomes a warning so the
@@ -79,6 +80,8 @@ interface JobAcc {
   cacheRestoreKeys: string[];
   artifactPaths: string[];
   artifactName: string | null;
+  // actions/checkout `fetch-depth` when it asks for history (not 1).
+  fetchDepth: number | null;
 }
 
 function convertUses(
@@ -90,7 +93,17 @@ function convertUses(
   cond?: string,
 ): void {
   if (/^actions\/checkout@/i.test(uses)) {
-    warnings.push(`${jobId}: dropped actions/checkout (flare checks out natively)`);
+    // Flare checks out natively; only the history depth carries over
+    // (nx/turbo affected and merge-base need it). YAML often quotes it.
+    const raw = withBlock["fetch-depth"];
+    const depth = typeof raw === "string" && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : raw;
+    if (depth !== undefined && depth !== 1 && isValidFetchDepth(depth)) {
+      acc.fetchDepth = depth;
+      warnings.push(`${jobId}: actions/checkout became fetch-depth: ${depth} (flare checks out natively)`);
+    } else {
+      if (depth !== undefined && depth !== 1) warnings.push(`${jobId}: dropped invalid checkout fetch-depth`);
+      warnings.push(`${jobId}: dropped actions/checkout (flare checks out natively)`);
+    }
     return;
   }
   for (const [re, check] of TOOLCHAIN_CHECKS) {
@@ -362,7 +375,7 @@ export function convertActionsWorkflow(text: string): ImportResult {
       warnings.push(`${jobId}: dropped (not a map)`);
       continue;
     }
-    const acc: JobAcc = { steps: [], env: {}, cachePaths: [], cacheKey: null, cacheRestoreKeys: [], artifactPaths: [], artifactName: null };
+    const acc: JobAcc = { steps: [], env: {}, cachePaths: [], cacheKey: null, cacheRestoreKeys: [], artifactPaths: [], artifactName: null, fetchDepth: null };
     if (topEnv) for (const [k, v] of Object.entries(topEnv)) acc.env[k] = String(v);
     if (isRecord(jobDef.env)) for (const [k, v] of Object.entries(jobDef.env)) acc.env[k] = String(v);
     const workdir =
@@ -449,6 +462,7 @@ export function convertActionsWorkflow(text: string): ImportResult {
     if (typeof jobDef["timeout-minutes"] === "number" && jobDef["timeout-minutes"] > 0) {
       out["timeout-minutes"] = Math.floor(jobDef["timeout-minutes"]);
     }
+    if (acc.fetchDepth !== null) out["fetch-depth"] = acc.fetchDepth;
     // Bounded job-level condition, same subset as steps: the scheduler
     // treats `success()` (default) as skip-after-failed-need and
     // `always()`/`failure()` as run. Everything else is warned.

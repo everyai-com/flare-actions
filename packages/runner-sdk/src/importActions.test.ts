@@ -33,6 +33,31 @@ describe("convertActionsWorkflow", () => {
     expect(res.warnings.join("\n")).toContain("on:");
   });
 
+  it("carries actions/checkout fetch-depth over as the job's fetch-depth", () => {
+    const res = convertActionsWorkflow(`
+jobs:
+  affected:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: "0" }
+      - run: npx nx affected -t test
+  plain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 1 }
+      - run: npm test
+`);
+    expect(isImportSuccess(res)).toBe(true);
+    if (!isImportSuccess(res)) return;
+    const jobs = parsePipeline(res.yaml);
+    expect(jobs?.find((j) => j.name === "affected")?.fetchDepth).toBe(0);
+    expect(jobs?.find((j) => j.name === "plain")?.fetchDepth).toBeUndefined();
+    expect(res.warnings).toContain("affected: actions/checkout became fetch-depth: 0 (flare checks out natively)");
+    expect(res.warnings).toContain("plain: dropped actions/checkout (flare checks out natively)");
+  });
+
   it("maps actions/cache restore-keys (multiline) with a cap", () => {
     const res = convertActionsWorkflow(`
 jobs:
