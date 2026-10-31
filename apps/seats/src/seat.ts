@@ -1818,6 +1818,9 @@ export async function runSeatJob(deps: SeatDeps, jobId: string): Promise<SeatOut
       JSON.stringify({
         steps: records,
         cacheHit,
+        // Same contract as the runner SDK: present only when the job
+        // declared a cache (the bottleneck report's per-check hit rate).
+        ...(spec.cache ? { cache: cacheHit ? "hit" : "miss" } : {}),
         artifacts: uploaded,
         executor: "seat",
         ...(spec.outputs ? { outputs: resolvedOutputs.outputs } : {}),

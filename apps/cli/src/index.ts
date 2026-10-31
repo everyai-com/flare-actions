@@ -128,7 +128,7 @@ const USAGE_LINES = [
   "  cli egress <runId>                          per-job egress (uploads/downloads by host)",
   "  cli search <query...>                       search all job logs (branch:main level:error ...)",
   "  cli flaky <repo> [days]                     per-job failure rates, worst first",
-  "  cli bottlenecks <repo> [days]               slowest checks: p50/p95 run time + queue wait",
+  "  cli bottlenecks <repo> [days]               slowest checks: wait / setup / run split + cache hit rate",
   "  cli quarantine list <repo>                  quarantined (flaky) tests for a repo",
   "  cli quarantine add <repo> <test>            move a test out of the blocking gate",
   "  cli quarantine remove <repo> <test>         reinstate a quarantined test",
@@ -559,11 +559,18 @@ try {
     const checks = await client().getBottlenecks(rest[0], days);
     if (JSON_MODE) printJson("bottlenecks", { repo: rest[0], days, checks });
     else {
-      console.log("check\tp50\tp95\tqueue p50\tjobs\tfailed");
+      // wait / overhead / setup / run are p50s, so they need not sum to p50.
+      console.log("check\tp50\tp95\twait\toverhead\tsetup\trun\tcache\tjobs\tfailed");
+      const secs = (ms: number | null | undefined) => (typeof ms === "number" ? `${(ms / 1000).toFixed(1)}s` : "-");
+      const pct = (rate: number | null | undefined) => (typeof rate === "number" ? `${Math.round(rate * 100)}%` : "-");
       for (const c of checks) {
-        const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
-        console.log(`${c.check}\t${secs(c.p50Ms)}\t${secs(c.p95Ms)}\t${secs(c.queueP50Ms)}\t${c.jobs}\t${c.failures}`);
+        console.log(
+          `${c.check}\t${secs(c.p50Ms)}\t${secs(c.p95Ms)}\t${secs(c.queueP50Ms)}\t${secs(c.overheadP50Ms)}\t${secs(c.setupP50Ms)}\t${secs(c.runP50Ms)}\t${pct(c.cacheHitRate)}\t${c.jobs}\t${c.failures}`,
+        );
       }
+      const hinted = checks.filter((c) => c.hint);
+      if (hinted.length > 0) console.log("");
+      for (const c of hinted) console.log(`${c.check}: ${c.hint}`);
       if (checks.length === 0) {
         console.log("(no finished jobs in the window)");
         next(`run ${rest[0]} HEAD`, "run a check first");

@@ -154,6 +154,25 @@ describe("runJob", () => {
     }
   });
 
+  it("records the cache outcome only when a cache is declared", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flare-job-cache-outcome-"));
+    try {
+      mkdirSync(join(dir, "data"), { recursive: true });
+      writeFileSync(join(dir, "data", "f"), "v");
+      const client = fakeClient();
+      const spec = { steps: [{ run: "echo hi" }], cache: { key: "k", paths: ["data"] } };
+      const cold = await runJob(spec, { cwd: dir, env: { ...process.env }, client, jobId: "j1" });
+      expect(JSON.parse(cold.resultJson).cache).toBe("miss");
+      const warm = await runJob(spec, { cwd: dir, env: { ...process.env }, client, jobId: "j2" });
+      expect(JSON.parse(warm.resultJson).cache).toBe("hit");
+      // No cache declared: absent, so the hit rate never counts it as a miss.
+      const none = await runJob({ steps: [{ run: "echo hi" }] }, { cwd: dir, env: { ...process.env }, client, jobId: "j3" });
+      expect(JSON.parse(none.resultJson)).not.toHaveProperty("cache");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("uploads single files raw and bundles the rest", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flare-job-art-"));
     try {

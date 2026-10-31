@@ -196,8 +196,11 @@ export interface FlareQuarantineCandidate {
   sparkline: string;
 }
 
-// "What's blocking the merge": per-check run-time percentiles (ms) and
-// median queue wait for a repo over the trailing window.
+// "What's blocking the merge": per-check run-time percentiles (ms),
+// median queue wait, and where the run time goes (overhead = checkout,
+// cache transfer, services; setup = install steps; run = the checks)
+// for a repo over the trailing window. The split fields are optional:
+// servers before the split omit them.
 export interface FlareBottleneck {
   check: string;
   jobs: number;
@@ -205,6 +208,12 @@ export interface FlareBottleneck {
   p95Ms: number;
   queueP50Ms: number;
   failures: number;
+  overheadP50Ms?: number | null;
+  setupP50Ms?: number | null;
+  runP50Ms?: number | null;
+  cacheHitRate?: number | null;
+  cacheSamples?: number;
+  hint?: string | null;
 }
 
 // Flare Cloud capability probe + prepaid ledger page. Self-hosted

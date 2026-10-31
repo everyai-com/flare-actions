@@ -147,6 +147,12 @@ jobs:
   without it an auto-generated D1 key is used instead.
 - **Cache** restores before steps (miss = clean build, never an error) and
   saves after successful runs only. Keys are static — no expressions.
+  Entries are not branch-scoped: a PR restores the entry `main` saved
+  (on GitHub, PR caches are scoped to their branch and start cold unless
+  something seeds them). Each job records `cache: hit|miss` in its
+  result; `cli bottlenecks <repo>` reports the per-check hit rate and
+  splits run time into wait / overhead (checkout, cache transfer,
+  services) / setup (install steps) / run, with one hint per check.
 - **Artifacts** upload after steps regardless of outcome (test reports on
   failure included). Caps: 1000 files, 400 MB total per job.
 - **Services** start before steps and are removed after (`docker rm -f`

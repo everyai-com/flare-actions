@@ -365,6 +365,9 @@ export async function runJob(spec: JobSpec, opts: RunJobOptions): Promise<RunJob
           JSON.stringify({
             steps: outcome.results,
             cacheHit,
+            // cacheHit alone cannot tell "no cache" from "missed"; the
+            // bottleneck report's per-check hit rate reads this.
+            ...(spec.cache ? { cache: cacheHit ? "hit" : "miss" } : {}),
             artifacts,
             ...(spec.outputs ? { outputs: resolved.outputs } : {}),
             ...(peaks.peakRssBytes > 0 ? { peakRssBytes: peaks.peakRssBytes } : {}),
