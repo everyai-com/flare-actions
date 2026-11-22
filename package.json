@@ -63,7 +63,7 @@
     "zod": "^4.6.5"
   },
   "dependencies": {
-    "@cloudflare/puppeteer": "^1.4.0",
+    "@cloudflare/puppeteer": "^2.0.1",
     "@cloudflare/sandbox": "^1.0.0",
     "yaml": "^2.9.1"
   }
